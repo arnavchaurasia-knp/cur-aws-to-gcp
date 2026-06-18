@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+:root {
+  --facets-purple: #645DF6;
+  --facets-teal: #00C2BB;
+}

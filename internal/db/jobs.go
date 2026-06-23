@@ -14,7 +14,7 @@ type Job struct {
 	AWSSpend  *float64  `json:"aws_spend"`
 	Error     string    `json:"error"`
 	SessionID string    `json:"session_id"`
-	ClaudePID int       `json:"claude_pid"`
+	AgentPID  int       `json:"agent_pid"`
 	Attempts  int       `json:"attempts"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -38,7 +38,7 @@ func (d *DB) UpdateJobSessionID(id, sessionID string) error {
 
 func (d *DB) UpdateJobPID(id string, pid int) error {
 	_, err := d.conn.Exec(
-		`UPDATE jobs SET claude_pid=?, updated_at=datetime('now') WHERE id=?`,
+		`UPDATE jobs SET agent_pid=?, updated_at=datetime('now') WHERE id=?`,
 		pid, id,
 	)
 	return err
@@ -59,7 +59,7 @@ func (d *DB) ResetJobForRetry(id, sessionID string) error {
 	_, err := d.conn.Exec(
 		`UPDATE jobs
 		 SET status='running', error='', aws_spend=NULL,
-		     attempts=1, claude_pid=0, session_id=?,
+		     attempts=1, agent_pid=0, session_id=?,
 		     updated_at=datetime('now')
 		 WHERE id=?`,
 		sessionID, id,
@@ -69,7 +69,7 @@ func (d *DB) ResetJobForRetry(id, sessionID string) error {
 
 func (d *DB) ListNonTerminalJobs() ([]*Job, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, claude_pid, attempts, created_at, updated_at
+		`SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, agent_pid, attempts, created_at, updated_at
 		 FROM jobs WHERE status IN ('pending', 'running') ORDER BY created_at`,
 	)
 	if err != nil {
@@ -89,7 +89,7 @@ func (d *DB) ListNonTerminalJobs() ([]*Job, error) {
 
 func (d *DB) GetJob(id string) (*Job, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, claude_pid, attempts, created_at, updated_at
+		`SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, agent_pid, attempts, created_at, updated_at
 		 FROM jobs WHERE id = ?`, id,
 	)
 	return scanJob(row)
@@ -99,7 +99,7 @@ func (d *DB) GetJob(id string) (*Job, error) {
 // the handler wrapping this is responsible for the access check.
 func (d *DB) ListAllJobs() ([]*Job, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, claude_pid, attempts, created_at, updated_at
+		`SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, agent_pid, attempts, created_at, updated_at
 		 FROM jobs ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -119,7 +119,7 @@ func (d *DB) ListAllJobs() ([]*Job, error) {
 
 func (d *DB) ListJobsByOwner(owner string) ([]*Job, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, claude_pid, attempts, created_at, updated_at
+		`SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, agent_pid, attempts, created_at, updated_at
 		 FROM jobs WHERE owner = ? ORDER BY created_at DESC`, owner,
 	)
 	if err != nil {
@@ -169,13 +169,13 @@ func scanJob(s scanner) (*Job, error) {
 	var spend sql.NullFloat64
 	var errStr sql.NullString
 	var sessionID sql.NullString
-	var claudePID sql.NullInt64
+	var agentPID sql.NullInt64
 	var attempts sql.NullInt64
 	var createdAtStr string
 	var updatedAtStr string
 
 	err := s.Scan(&j.ID, &j.Owner, &j.Prospect, &j.Status, &j.InputExt,
-		&spend, &errStr, &sessionID, &claudePID, &attempts, &createdAtStr, &updatedAtStr)
+		&spend, &errStr, &sessionID, &agentPID, &attempts, &createdAtStr, &updatedAtStr)
 	if err != nil {
 		return nil, err
 	}
@@ -208,8 +208,8 @@ func scanJob(s scanner) (*Job, error) {
 	if sessionID.Valid {
 		j.SessionID = sessionID.String
 	}
-	if claudePID.Valid {
-		j.ClaudePID = int(claudePID.Int64)
+	if agentPID.Valid {
+		j.AgentPID = int(agentPID.Int64)
 	}
 	if attempts.Valid {
 		j.Attempts = int(attempts.Int64)

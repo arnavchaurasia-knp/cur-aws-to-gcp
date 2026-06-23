@@ -53,9 +53,9 @@ sudo install -m 0755 cur-web "$BIN_PATH"
 echo ">> Syncing frontend to ${WEB_ROOT}"
 sudo rsync -a --delete dist/ "$WEB_ROOT/"
 
-echo ">> Syncing skill to ${HOME}/.claude/skills/aws-gcp-cost-projection"
-mkdir -p "$HOME/.claude/skills/aws-gcp-cost-projection"
-rsync -a --delete aws-gcp-cost-projection/ "$HOME/.claude/skills/aws-gcp-cost-projection/"
+echo ">> Syncing skill to ${HOME}/.gemini/skills/aws-gcp-cost-projection"
+mkdir -p "$HOME/.gemini/skills/aws-gcp-cost-projection"
+rsync -a --delete aws-gcp-cost-projection/ "$HOME/.gemini/skills/aws-gcp-cost-projection/"
 
 echo ">> Restarting cur-web.service"
 sudo systemctl restart cur-web

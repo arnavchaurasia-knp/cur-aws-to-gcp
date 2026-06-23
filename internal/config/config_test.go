@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"testing"
+
 	"github.com/facets/cur-web/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,7 +12,6 @@ import (
 func TestLoadFromEnv(t *testing.T) {
 	os.Setenv("PORT", "9090")
 	os.Setenv("DATA_DIR", "/tmp/test-data")
-	os.Setenv("SKILL_DIR", "/tmp/skill")
 	os.Setenv("GOOGLE_CLIENT_ID", "client-id")
 	os.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
 	os.Setenv("GOOGLE_REDIRECT_URI", "http://localhost/callback")
@@ -25,7 +25,6 @@ func TestLoadFromEnv(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "9090", cfg.Port)
 	assert.Equal(t, "/tmp/test-data", cfg.DataDir)
-	assert.Equal(t, "/tmp/skill", cfg.SkillDir)
 }
 
 func TestLoadFromEnv_MissingRequired(t *testing.T) {

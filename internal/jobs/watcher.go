@@ -23,7 +23,7 @@ const (
 	staleTimeout  = 5 * time.Minute
 )
 
-// Watcher polls a job's claude PID until it dies, then finalizes (mark done,
+// Watcher polls a job's gemini PID until it dies, then finalizes (mark done,
 // retry up to maxAttempts, or mark failed). One Watch goroutine per job —
 // either kicked off by the handler when a new job is created, or attached at
 // startup to orphans surviving a backend restart.
@@ -55,87 +55,50 @@ func (w *Watcher) WatchOnce(jobID string, pid int) {
 
 // watchUntilDead is the shared polling loop. Two liveness signals each tick:
 //   - Process liveness via pidAlive (rejects zombies + missing pids).
-//   - Transcript freshness: claude writes to its jsonl on every turn. If the
-//     mtime is older than staleTimeout the process is considered hung and we
-//     SIGKILL the group so the next tick sees the process gone.
+//   - Activity freshness: the newer of gemini.log (continuous stdout/stderr)
+//     and progress.json (rewritten by the skill at each phase transition). A
+//     long phase that goes quiet on stdout still advances progress.json, and a
+//     burst of stdout with no phase change still bumps gemini.log — taking the
+//     max of both avoids SIGKILLing a job that's genuinely still working. If
+//     neither has advanced in staleTimeout the process is considered hung and
+//     we SIGKILL the group so the next tick sees it gone.
 func (w *Watcher) watchUntilDead(jobID string, pid int) {
-	tPath := w.transcriptPathFor(jobID)
+	jobDir := filepath.Join(w.jobsDir, jobID)
 	// Per-watch activity watermark. Initialized to spawn time (now) so a
-	// pre-existing jsonl from a prior run (e.g. when /refine reuses the
-	// same session_id) doesn't false-trip stale detection in the first
-	// few seconds. Bumped each tick to the latest mtime across parent +
-	// sub-agent transcripts.
+	// pre-existing log from a prior run doesn't false-trip stale detection
+	// in the first few seconds.
 	lastActivity := time.Now()
 	for pidAlive(pid) {
-		if m := w.latestTranscriptMtime(tPath); m.After(lastActivity) {
+		if m := w.activityMtime(jobDir); m.After(lastActivity) {
 			lastActivity = m
 		}
 		if time.Since(lastActivity) > staleTimeout {
-			log.Printf("watcher %s: no transcript activity for >%s, killing pid %d", jobID, staleTimeout, pid)
+			log.Printf("watcher %s: no log activity for >%s, killing pid %d", jobID, staleTimeout, pid)
 			killGroup(pid)
 		}
 		time.Sleep(pollInterval)
 	}
 }
 
-// transcriptPathFor resolves the on-disk jsonl path for the job's *current*
-// session_id (which may change between attempts). Returns "" if the job is
-// gone or has no session yet.
-func (w *Watcher) transcriptPathFor(jobID string) string {
-	job, err := w.db.GetJob(jobID)
-	if err != nil || job.SessionID == "" {
-		return ""
-	}
-	jobDir := filepath.Join(w.jobsDir, jobID)
-	p, err := transcriptPath(jobDir, job.SessionID)
-	if err != nil {
-		return ""
-	}
-	return p
-}
-
-// latestTranscriptMtime returns the most recent mtime across the parent
-// jsonl and any sub-agent jsonls. Returns zero-time if the parent doesn't
-// exist yet (claude hasn't started writing) — the caller's watermark
-// stays at its initial spawn value in that case.
-//
-// We consider sub-agent jsonls because during phases like Phase 2 (5
-// parallel sub-agents) the parent jsonl is idle for many minutes while
-// children work — only looking at the parent would false-fire on a
-// healthy job.
-func (w *Watcher) latestTranscriptMtime(path string) time.Time {
-	var zero time.Time
-	if path == "" {
-		return zero
-	}
-	parentInfo, err := os.Stat(path)
-	if err != nil {
-		return zero
-	}
-	latest := parentInfo.ModTime()
-
-	// Walk sub-agent jsonls under <parent>/<session>/subagents/agent-*.jsonl.
-	// Path of the parent jsonl is .../<session>.jsonl ; sub-agents live next
-	// to it under .../<session>/subagents/.
-	subDir := strings.TrimSuffix(path, ".jsonl") + "/subagents"
-	if entries, err := os.ReadDir(subDir); err == nil {
-		for _, e := range entries {
-			if !strings.HasSuffix(e.Name(), ".jsonl") {
-				continue
-			}
-			info, err := e.Info()
-			if err != nil {
-				continue
-			}
-			if info.ModTime().After(latest) {
-				latest = info.ModTime()
-			}
+// activityMtime returns the most recent mtime among the job's liveness
+// signals — gemini.log and progress.json. Returns zero-time if neither file
+// exists yet (gemini hasn't produced output and the skill hasn't written its
+// first phase marker).
+func (w *Watcher) activityMtime(jobDir string) time.Time {
+	var newest time.Time
+	for _, name := range []string{"gemini.log", progressFile} {
+		info, err := os.Stat(filepath.Join(jobDir, name))
+		if err != nil {
+			continue
+		}
+		if m := info.ModTime(); m.After(newest) {
+			newest = m
 		}
 	}
-	return latest
+	return newest
 }
 
-// killGroup sends SIGKILL to the process group rooted at pid (claude was
+// killGroup sends SIGKILL to the process group rooted at pid (gemini was
 // spawned with Setsid so pid is also the pgid). Best-effort; errors are
 // logged but not fatal — the next pidAlive tick will sort it out.
 func killGroup(pid int) {
@@ -146,7 +109,7 @@ func killGroup(pid int) {
 }
 
 func (w *Watcher) finalize(jobID string, allowRetry bool) {
-	// Brief grace period in case claude was just finishing the report write.
+	// Brief grace period in case gemini was just finishing the report write.
 	time.Sleep(finalizeWait)
 
 	job, err := w.db.GetJob(jobID)
@@ -156,7 +119,7 @@ func (w *Watcher) finalize(jobID string, allowRetry bool) {
 	}
 	jobDir := filepath.Join(w.jobsDir, jobID)
 
-	// Explicit structural-failure path: if claude wrote failure.txt, it has
+	// Explicit structural-failure path: if gemini wrote failure.txt, it has
 	// diagnosed the input as unprocessable (wrong cloud, corrupted file,
 	// unknown shape). Surface that reason cleanly and skip the retry loop —
 	// retrying the same broken input would just burn three more attempts on
@@ -203,12 +166,12 @@ func (w *Watcher) finalize(jobID string, allowRetry bool) {
 	}
 
 	if !allowRetry || job.Attempts >= maxAttempts {
-		tail := tailLog(filepath.Join(jobDir, "claude.log"), 500)
+		tail := tailLog(filepath.Join(jobDir, "gemini.log"), 500)
 		var errMsg string
 		if !allowRetry {
 			errMsg = "refinement run exited without updating report.html"
 		} else {
-			errMsg = "claude exited without report.html after " + strconv.Itoa(job.Attempts) + " attempts"
+			errMsg = "gemini exited without report.html after " + strconv.Itoa(job.Attempts) + " attempts"
 		}
 		if tail != "" {
 			errMsg += "; tail: " + tail
@@ -258,7 +221,7 @@ func wipeJobDir(jobDir string) error {
 }
 
 // readFailureReason returns the trimmed contents of <jobDir>/failure.txt, or
-// "" if the file is absent/empty. claude writes this when it detects the
+// "" if the file is absent/empty. gemini writes this when it detects the
 // input is structurally unprocessable (wrong cloud, corrupted, etc.) so the
 // watcher can mark the job failed with a useful message instead of burning
 // three retry attempts on the same broken input.

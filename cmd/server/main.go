@@ -28,7 +28,7 @@ func main() {
 		log.Fatalf("config error: %v", err)
 	}
 
-	if err := preflight.Check(cfg.SkillDir); err != nil {
+	if err := preflight.Check(); err != nil {
 		log.Fatalf("preflight failed: %v", err)
 	}
 
@@ -60,7 +60,7 @@ func main() {
 		log.Println("WARNING: DEV_AUTH_BYPASS=true — Google OAuth disabled, /api/auth/login sets a fake dev@google.com session")
 	}
 
-	spawner := jobs.NewSpawner(jobs.SpawnerConfig{})
+	spawner := jobs.NewSpawner(jobs.SpawnerConfig{GeminiModel: cfg.GeminiModel})
 	notifyCfg := jobs.NotifyConfig{
 		Email: notify.EmailConfig{
 			APIKey:  cfg.ResendAPIKey,
@@ -79,8 +79,8 @@ func main() {
 	if orphans, err := database.ListNonTerminalJobs(); err == nil {
 		for _, j := range orphans {
 			log.Printf("attaching watcher to orphan job %s (status=%s, pid=%d, attempts=%d)",
-				j.ID, j.Status, j.ClaudePID, j.Attempts)
-			go watcher.Watch(j.ID, j.ClaudePID)
+				j.ID, j.Status, j.AgentPID, j.Attempts)
+			go watcher.Watch(j.ID, j.AgentPID)
 		}
 	}
 

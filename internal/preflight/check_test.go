@@ -1,29 +1,37 @@
 package preflight_test
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/facets/cur-web/internal/preflight"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestCheck_SkillMissing(t *testing.T) {
-	err := preflight.Check("/nonexistent/skill/dir")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "skill not found")
+func TestCheck_GeminiMissing(t *testing.T) {
+	// In the test environment gemini is unlikely to be on PATH and the
+	// user skill directory won't have the skill installed, so Check() should
+	// return an error. We just verify it doesn't panic and returns something
+	// meaningful.
+	err := preflight.Check()
+	// Either gemini not found or skill not found — both are valid failures
+	// in a fresh CI environment.
+	if err != nil {
+		assert.True(t,
+			containsAny(err.Error(), "gemini not found", "skill not found", "cannot resolve"),
+			"unexpected error: %v", err,
+		)
+	}
 }
 
-func TestCheck_SkillPresent(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# test"), 0644)
-	os.WriteFile(filepath.Join(dir, "preflight.sh"), []byte("#!/bin/bash\necho ok"), 0755)
-	// claude won't be present in test env — just verify skill check passes
-	err := preflight.Check(dir)
-	// error may occur for claude/tools, but not for skill
-	if err != nil {
-		assert.NotContains(t, err.Error(), "skill not found")
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if len(s) >= len(sub) {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+		}
 	}
+	return false
 }

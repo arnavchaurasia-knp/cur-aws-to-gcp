@@ -1,11 +1,14 @@
 # Phase 2 — Mapping
 
-## Pre-Processing (deterministic — runs before this phase)
+## Pre-Processing (ALREADY DONE by orchestrator — do NOT re-run)
 
-Before Phase 2 agents run, two deterministic scripts have already stamped each row:
+The orchestrator ran these scripts before spawning this agent:
 
-1. classify_mechanics.py — adds mechanic_group to every aws_li_catalog row
-2. classify_transfer.py — pre-fills DataTransfer rows in aws_li_to_gcp_li with correct direction
+1. `classify_mechanics.py` → `mechanic_group` stamped on every row, `projection-audit/phase2_manifest.json` written
+2. `apply_commitment_ignores.py` → `projection-audit/mappings/commitment_discount_mappings.json` written
+3. `apply_static_mappings.py` → flat_hourly, object_storage, per_request mapping files written
+
+**Do NOT run any of these scripts.** They are already done. Your input is `phase2_manifest.json`.
 
 Phase 2 agents MUST check mechanic_group before mapping. The groups and their handling:
 
@@ -68,14 +71,9 @@ manifest = json.load(open("projection-audit/phase2_manifest.json"))
 # manifest[group] = {"rows": [...], "row_count": N, "total_spend": X, "needs_llm": bool}
 ```
 
-**Auto-handled groups (run scripts, zero LLM tokens):**
+**Auto-handled groups (already done by orchestrator):**
 
-```bash
-python3 scripts/apply_commitment_ignores.py projection-audit/projection.duckdb
-python3 scripts/apply_static_mappings.py    projection-audit/projection.duckdb
-```
-
-`apply_static_mappings.py` handles `flat_hourly`, `object_storage`, and `per_request` with lookup tables — no agent needed.
+`apply_static_mappings.py` handled `flat_hourly`, `object_storage`, and `per_request` — their mapping files already exist in `projection-audit/mappings/`. Do not re-run them.
 
 | Group | Handler | Method |
 |---|---|---|
@@ -157,15 +155,9 @@ Each file is a JSON array. Every element maps to one row in `aws_li_to_gcp_li`:
 
 All schema fields from `reference/schemas.md` for `aws_li_to_gcp_li` are valid. Omit fields you don't know — the merge script uses NULL for missing optional fields.
 
-## Merge step — run after ALL agents complete
+## Merge step — run by orchestrator, NOT by this agent
 
-```bash
-python3 scripts/merge_mappings.py projection-audit/projection.duckdb projection-audit/mappings/
-```
-
-The merge script reads every `*_mappings.json` file, bulk-INSERTs into `aws_li_to_gcp_li`, and prints a per-group row count. If a group's file is missing (agent failed), it reports which groups are absent — retry that agent before proceeding.
-
-Phase 2 is complete when `merge_mappings.py` exits 0.
+The orchestrator runs `merge_mappings.py` after this agent exits. Do NOT run it yourself. Phase 2 is complete when all three `_mappings.json` files exist in `projection-audit/mappings/`.
 
 ## Briefing each sub-agent
 
@@ -811,19 +803,6 @@ Glue bills on **DPU-hours** (Data Processing Units, each = 4 vCPU + 16 GB).
 
 ---
 
-## Coverage check before returning to main
+## Coverage check
 
-Before signaling done, verify in your slice:
-
-```sql
--- Every aws_li_key in the slice is covered exactly once:
-SELECT c.aws_li_key
-FROM   aws_li_catalog c
-LEFT JOIN aws_li_to_gcp_li m USING (aws_li_key)
-WHERE  c.aws_li_key IN (<your slice keys>)
-GROUP BY c.aws_li_key
-HAVING COUNT(m.aws_li_key) = 0;
-```
-
-Any rows returned → `unmapped_keys` in your return payload. Main agent
-will flag and either re-dispatch or escalate.
+The orchestrator runs a deterministic gate after merge_mappings.py. You do not need to verify coverage yourself — write your three `_mappings.json` files and stop.

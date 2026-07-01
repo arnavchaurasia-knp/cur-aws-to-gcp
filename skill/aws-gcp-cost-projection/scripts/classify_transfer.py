@@ -1,3 +1,4 @@
+from __future__ import annotations
 #!/usr/bin/env python3
 """
 classify_transfer.py — Deterministic AWS DataTransfer → GCP egress SKU classifier.
@@ -131,7 +132,7 @@ def main(db_path: str) -> int:
                     aws_li_key,
                     usage_type,
                     operation,
-                    description,
+                    operation AS description,
                     product
                 FROM aws_li_catalog
                 WHERE product ILIKE '%DataTransfer%'

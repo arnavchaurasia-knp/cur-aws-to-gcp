@@ -123,11 +123,40 @@ def main():
     html_path = os.path.join(JOB_DIR, "projection-audit", f"report-{run_id}.html")
     with open(html_path, "w") as f:
         f.write(html_content)
-        
+
     with open(os.path.join(JOB_DIR, "projection-audit", "report.html"), "w") as f:
         f.write(html_content)
-        
+
     print(f"Generated {html_path}")
+
+    # Ensure run_results has a row so the frontend TotalsCard works even when
+    # the Phase 6 LLM narrative agent is skipped or hits quota.
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS run_results (
+                run_id       TEXT PRIMARY KEY,
+                aws_total    DOUBLE,
+                gcp_od       DOUBLE,
+                gcp_1yr_cud  DOUBLE,
+                gcp_3yr_cud  DOUBLE,
+                ts_utc       TEXT
+            )
+        """)
+        existing = conn.execute(
+            "SELECT 1 FROM run_results WHERE run_id = ?", [run_id]
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO run_results (run_id, aws_total, gcp_od, gcp_1yr_cud, gcp_3yr_cud, ts_utc) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [run_id, aws_total, gcp_od, gcp_1yr, gcp_3yr, now.strftime("%Y-%m-%dT%H:%M:%SZ")]
+            )
+            conn.commit()
+            print(f"Inserted run_results row for {run_id}")
+    except Exception as e:
+        print(f"Warning: could not write run_results: {e}")
+
+    conn.close()
 
 if __name__ == "__main__":
     main()

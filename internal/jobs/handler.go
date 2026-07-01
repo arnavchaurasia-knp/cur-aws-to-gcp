@@ -139,29 +139,11 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jobDir := filepath.Join(h.jobsDir, id)
-	startPhase := "1"
-	progressPath := filepath.Join(jobDir, "progress.json")
-	if progressBytes, err := os.ReadFile(progressPath); err == nil {
-		var p struct {
-			Phase int `json:"phase"`
-		}
-		if json.Unmarshal(progressBytes, &p) == nil && p.Phase > 1 {
-			startPhase = fmt.Sprintf("%d", p.Phase)
-		}
-	}
-
-	if startPhase == "1" {
-		if err := wipeJobDir(jobDir); err != nil {
-			http.Error(w, `{"error":"wipe failed: `+err.Error()+`"}`, http.StatusInternalServerError)
-			return
-		}
-	} else {
-		os.Remove(filepath.Join(jobDir, "report.html"))
-		os.Remove(filepath.Join(jobDir, "failure.txt"))
-		os.Remove(filepath.Join(jobDir, "validation_report.json"))
-		os.Setenv("START_PHASE", startPhase)
-		defer os.Unsetenv("START_PHASE")
-	}
+	// Remove failure.txt so the watcher doesn't immediately re-fail on the same
+	// structural error. The orchestrator reads phase_checkpoint.json at startup
+	// and resumes from the next unfinished phase — no manual START_PHASE injection
+	// needed and no racy os.Setenv.
+	os.Remove(filepath.Join(jobDir, "failure.txt"))
 
 	newSession := uuid.New().String()
 	if err := h.db.ResetJobForRetry(id, newSession); err != nil {

@@ -34,6 +34,13 @@ type phaseSpec struct {
 	Prompt    string `json:"prompt,omitempty"`
 	Script    string `json:"script,omitempty"`
 	PreScript string `json:"pre_script,omitempty"`
+	// PreLLMScripts / PostLLMScripts: deterministic scripts the orchestrator runs
+	// BEFORE / AFTER spawning agy for this phase. Each entry is a script path
+	// relative to SKILL_DIR; args are space-separated after the path. "$DB" is
+	// substituted with the DB path. These scripts run as direct Python subprocesses
+	// (no agy, no LLM tokens).
+	PreLLMScripts  []string `json:"pre_llm_scripts,omitempty"`
+	PostLLMScripts []string `json:"post_llm_scripts,omitempty"`
 	// CheckName/CheckSQL: a deterministic gate run AFTER the phase's agy call.
 	// CheckSQL must return a single integer that is 0 when healthy (>0 = number
 	// of violations). Empty CheckSQL skips the gate.
@@ -52,13 +59,43 @@ func phaseSpecs(inputExt string) []phaseSpec {
 		},
 		{
 			Num: 2, Name: "Mapping", Activity: "Mapping AWS line items to GCP",
-			Prompt: "Run ONLY Phase 2 (Mapping). projection-audit/projection.duckdb already contains aws_li_catalog " +
-				"from Phase 1 — DO NOT rebuild or re-ingest it. Follow phases/02-mapping.md exactly, INCLUDING " +
-				"launching the 4–5 parallel mapping sub-agents (compute / managed-db / networking / " +
-				"storage-analytics / misc) as the phase specifies. Populate aws_li_to_gcp_li for EVERY aws_li_key " +
-				"and write mapping-notes.md. Enforce rule #10: RDS/Aurora/ElastiCache/EBS/DataTransfer/ELB/S3/EC2 " +
-				"are never-passthrough — map them, do not carry them 1:1; keep total passthrough under 5% of AWS " +
-				"cost. STOP when every catalog row has a mapping — do NOT rate-fill, triage, or report.",
+			// Deterministic scripts run by the orchestrator BEFORE agy starts.
+			// classify_mechanics.py stamps mechanic_group + writes phase2_manifest.json.
+			// apply_commitment_ignores.py + apply_static_mappings.py write their
+			// mapping files. agy is spawned ONLY for the three LLM groups.
+			PreLLMScripts: []string{
+				"scripts/classify_mechanics.py $DB",
+				"scripts/apply_commitment_ignores.py $DB",
+				"scripts/apply_static_mappings.py $DB",
+			},
+			// merge_mappings.py merges all group files (LLM + static) into aws_li_to_gcp_li.
+			PostLLMScripts: []string{
+				"scripts/merge_mappings.py $DB projection-audit/mappings",
+			},
+			Prompt: "Phase 2 — LLM mapping only. Strict protocol, no deviations.\n\n" +
+				"SETUP (already done by orchestrator — DO NOT re-run):\n" +
+				"  • classify_mechanics.py ran → projection-audit/phase2_manifest.json exists\n" +
+				"  • apply_commitment_ignores.py ran → commitment_discount_mappings.json exists\n" +
+				"  • apply_static_mappings.py ran → flat_hourly/object_storage/per_request mappings exist\n\n" +
+				"YOUR ONLY JOB: map the 3 LLM groups by reading the manifest.\n\n" +
+				"MANDATORY STEPS — follow exactly in this order:\n" +
+				"1. Read projection-audit/phase2_manifest.json — this has every row you need with all fields.\n" +
+				"   DO NOT query projection.duckdb directly. The manifest is the single source of truth.\n" +
+				"2. For each group in [compute_breakdown, managed_db, misc]:\n" +
+				"   a. Read that group's rows from the manifest (manifest[group][\"rows\"]).\n" +
+				"   b. Map ALL rows to GCP. Use scripts/find-sku.sh only to look up SKU IDs — no inline DuckDB queries.\n" +
+				"   c. Build a JSON array of mapping objects (schema: aws_li_key, gcp_service, gcp_sku_id,\n" +
+				"      gcp_sku_name, component, strategy, unit_multiplier, gcp_region, projection_note,\n" +
+				"      mapping_confidence, is_workload, break_down).\n" +
+				"   d. Write the array to projection-audit/mappings/<group>_mappings.json in ONE write_to_file call.\n" +
+				"   e. Do NOT write rows one at a time. One file per group, one write per file.\n" +
+				"3. Write projection-audit/mapping-notes.md with a brief summary of decisions.\n\n" +
+				"RULES:\n" +
+				"  • Never-passthrough: EC2/RDS/Aurora/ElastiCache/EBS/DataTransfer/ELB/S3 must be mapped.\n" +
+				"  • Total passthrough must stay under 5% of AWS cost.\n" +
+				"  • DO NOT run merge_mappings.py — the orchestrator runs it after you finish.\n" +
+				"  • DO NOT query projection.duckdb with python3 -c or run_command. Read manifest only.\n" +
+				"  • STOP after writing the 3 _mappings.json files and mapping-notes.md. Nothing else.",
 			CheckName: "mapping_coverage",
 			CheckSQL: "SELECT count(*) FROM aws_li_catalog c WHERE NOT EXISTS " +
 				"(SELECT 1 FROM aws_li_to_gcp_li m WHERE m.aws_li_key = c.aws_li_key)",
@@ -66,11 +103,24 @@ func phaseSpecs(inputExt string) []phaseSpec {
 		{
 			Num: 3, Name: "Review", Activity: "Verifying mappings",
 			PreScript: "scripts/auto_review.py",
-			Prompt: "Run ONLY Phase 3 (Review). The DB has aws_li_catalog and aws_li_to_gcp_li. Follow " +
-				"phases/03-review.md: come in fresh, challenge each mapping against the AWS description text " +
-				"literally, resolve every open item in mapping-notes.md, fix all illegal passthrough rows in " +
-				"review_flags.md, and write corrections directly to aws_li_to_gcp_li. STOP — do NOT rate-fill or report.",
-			// Review has no single numeric invariant; coverage is re-checked after Phase 4's gate.
+			Prompt: "Phase 3 — Review. Strict protocol, no deviations.\n\n" +
+				"SETUP (already done by orchestrator):\n" +
+				"  • auto_review.py ran → review_flags.md lists every detected issue with aws_li_key and reason.\n\n" +
+				"YOUR ONLY JOB: fix the rows listed in review_flags.md.\n\n" +
+				"MANDATORY STEPS — follow exactly in this order:\n" +
+				"1. Read review_flags.md. This is the ONLY input you need.\n" +
+				"   DO NOT re-scan all mappings. DO NOT query aws_li_catalog to find new issues.\n" +
+				"2. For each flagged aws_li_key in review_flags.md:\n" +
+				"   a. Look up its current mapping: run ONE query — SELECT * FROM aws_li_to_gcp_li WHERE aws_li_key='...'.\n" +
+				"   b. Decide the correct fix (wrong SKU, illegal passthrough, wrong strategy).\n" +
+				"   c. Apply fix: run ONE UPDATE on aws_li_to_gcp_li for that row.\n" +
+				"   d. Move to the next flagged row. Do not re-query the same row twice.\n" +
+				"3. After all flags are resolved, append a brief summary to mapping-notes.md.\n\n" +
+				"RULES:\n" +
+				"  • Phase 3 never re-enters Phase 2. All fixes are direct SQL UPDATEs on aws_li_to_gcp_li.\n" +
+				"  • DO NOT run a broad SELECT on all mappings — only SELECT the specific aws_li_key being fixed.\n" +
+				"  • DO NOT write new mapping files. DO NOT call merge_mappings.py or classify_mechanics.py.\n" +
+				"  • STOP after processing every row in review_flags.md. Nothing else.",
 		},
 		{
 			Num: 4, Name: "Rate-Card Fill", Activity: "Fetching GCP rates",
@@ -86,14 +136,26 @@ func phaseSpecs(inputExt string) []phaseSpec {
 		{
 			Num: 5, Name: "Outlier Triage", Activity: "Running outlier queries",
 			PreScript: "scripts/detect_outliers.py",
-			Prompt: "Run ONLY Phase 5 (Outlier triage). Follow phases/05-outlier-triage.md: read outliers.md " +
-				"(which contains results for queries A1,A2,B,C,D,E,F,G,H,I). For each flagged row do triage " +
-				"steps 1–3 (mapping / unit / spec check) BEFORE accepting. When you change a row's SKU to fix it, " +
-				"the NEW SKU's catalog description and resource_group MUST literally match the AWS row's resource " +
-				"or transfer type — e.g. an inter-zone (within-region) egress row must map to an inter-zone egress " +
-				"SKU, NEVER an inter-region egress SKU. Do NOT leave or create an over-projection where GCP " +
-				"On-Demand > 3× the AWS cost unless a visible bill line item explains it. STOP when all nine " +
-				"queries return 0 rows or are documented — do NOT render the report.",
+			Prompt: "Phase 5 — Outlier Triage. Strict protocol, no deviations.\n\n" +
+				"SETUP (already done by orchestrator):\n" +
+				"  • detect_outliers.py ran → outliers.md lists every flagged row with aws_li_key, query ID, and values.\n\n" +
+				"YOUR ONLY JOB: triage each row in outliers.md.\n\n" +
+				"MANDATORY STEPS — follow exactly in this order:\n" +
+				"1. Read outliers.md. This is the ONLY input you need.\n" +
+				"   DO NOT re-run the outlier queries yourself. DO NOT SELECT * from gcp_projection.\n" +
+				"2. For each flagged aws_li_key in outliers.md:\n" +
+				"   a. Check triage order: unit multiplier wrong → wrong SKU → spec mismatch → documented mechanism.\n" +
+				"   b. Apply exactly ONE of:\n" +
+				"      • UPDATE aws_li_to_gcp_li SET unit_multiplier=... WHERE aws_li_key='...'\n" +
+				"      • UPDATE aws_li_to_gcp_li SET gcp_sku_id=..., gcp_sku_name=... WHERE aws_li_key='...'\n" +
+				"      • UPDATE aws_li_to_gcp_li SET strategy='passthrough', unit_multiplier=0.3 WHERE aws_li_key='...' (cannot resolve)\n" +
+				"   c. The NEW SKU description must literally match the AWS resource type — inter-zone egress → inter-zone SKU.\n" +
+				"   d. Never create GCP On-Demand > 3× AWS cost without a visible bill explanation.\n" +
+				"3. Append a one-line note per fixed row to mapping-notes.md.\n\n" +
+				"RULES:\n" +
+				"  • Phase 5 never re-enters Phase 2 or 3. Every fix is a direct SQL UPDATE.\n" +
+				"  • DO NOT run broad SELECTs. One targeted SELECT per row if you need to verify current state.\n" +
+				"  • STOP when all rows in outliers.md are resolved or documented.",
 			CheckName: "over_and_under_projection",
 			CheckSQL: "SELECT (SELECT count(*) FROM gcp_projection WHERE is_workload AND strategy IN ('map','break_down') " +
 				"AND aws_amortized_cost > 20 AND gcp_projected_cost > aws_amortized_cost * 3) + " +
@@ -102,10 +164,31 @@ func phaseSpecs(inputExt string) []phaseSpec {
 		},
 		{
 			Num: 6, Name: "Reporting", Activity: "Generating HTML report",
-			Prompt: "Run ONLY Phase 6 (Report). Follow phases/06-report.md: read from projection.duckdb and " +
-				"generate ONLY the summary-<run_id>.md narrative and insert the row into run_results. Do NOT " +
-				"generate report.html or report.md — a deterministic script handles the math and HTML layout. " +
-				"Sum the AWS Total from aws_li_catalog only. This is the final phase.",
+			// render_report.py runs as a post_llm_script so the HTML is written
+			// BEFORE the quota check fires. If the LLM narrative hits quota, the
+			// report still exists and the watcher marks the job done.
+			PostLLMScripts: []string{"scripts/render_report.py"},
+			Prompt: "Phase 6 — Narrative only. Strict protocol, no deviations.\n\n" +
+				"SETUP (already done by orchestrator):\n" +
+				"  • render_report.py will run after you finish → it generates report.html and run_results row.\n\n" +
+				"YOUR ONLY JOB: write the executive summary narrative.\n\n" +
+				"MANDATORY STEPS — follow exactly in this order:\n" +
+				"1. Run exactly these two queries and nothing else:\n" +
+				"   SELECT SUM(aws_amortized_cost) FROM aws_li_catalog\n" +
+				"   SELECT SUM(gcp_projected_cost), SUM(gcp_cost_1yr_cud), SUM(gcp_cost_3yr_cud) FROM gcp_projection WHERE is_workload\n" +
+				"2. Read customer_name.txt for the customer name.\n" +
+				"3. Write a 3-paragraph executive summary to projection-audit/summary-<YYYYMMDDTHHMMSSZ>.md:\n" +
+				"   Para 1: AWS total, GCP On-Demand, GCP 1yr CUD, GCP 3yr CUD — just the numbers and % deltas.\n" +
+				"   Para 2: Top 2–3 cost drivers and their GCP mappings.\n" +
+				"   Para 3: One sentence on confidence and any caveats.\n" +
+				"4. Insert one row into run_results:\n" +
+				"   INSERT INTO run_results (run_id, aws_total, gcp_od, gcp_1yr_cud, gcp_3yr_cud, created_at)\n" +
+				"   VALUES ('<run_id>', <aws_total>, <gcp_od>, <gcp_1yr>, <gcp_3yr>, '<timestamp>')\n" +
+				"   Only if NOT EXISTS a row with that run_id.\n\n" +
+				"RULES:\n" +
+				"  • DO NOT generate report.html — the orchestrator's render_report.py does that.\n" +
+				"  • DO NOT read gcp_projection row by row. Only the two aggregate SELECTs above.\n" +
+				"  • STOP after writing the summary .md and the run_results INSERT. Nothing else.",
 		},
 	}
 }
@@ -202,8 +285,18 @@ DUCKDB    = os.environ.get("DUCKDB_BIN", "duckdb")
 DB        = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 AGY_LOG   = os.path.join(JOB_DIR, "agy-internal.log")
 PHASES    = json.loads(base64.b64decode("%s").decode())
-START_PHASE = int(os.environ.get("START_PHASE", "1"))
-END_PHASE   = int(os.environ.get("END_PHASE", "6"))
+END_PHASE = int(os.environ.get("END_PHASE", "6"))
+SKILL_DIR = os.environ.get("SKILL_DIR", "")
+
+# Resume from checkpoint if a prior partial run wrote one; fall back to env/default.
+_ckpt_path = os.path.join(JOB_DIR, "phase_checkpoint.json")
+try:
+    _ckpt = json.load(open(_ckpt_path))
+    START_PHASE = int(_ckpt.get("last_completed", 0)) + 1
+    print("[orchestrator] Resuming from checkpoint: last_completed=%%d, starting at phase %%d" %%
+          (_ckpt.get("last_completed", 0), START_PHASE), flush=True)
+except Exception:
+    START_PHASE = int(os.environ.get("START_PHASE", "1"))
 
 # Quota / unrecoverable-auth markers. When agy hits these, every later call
 # 429s too, so marching through the rest of the phases just produces an empty
@@ -212,11 +305,11 @@ END_PHASE   = int(os.environ.get("END_PHASE", "6"))
 QUOTA_MARKERS = ("RESOURCE_EXHAUSTED", "Individual quota reached",
                  "model unreachable", "PERMISSION_DENIED", "UNAUTHENTICATED")
 
-def quota_blocked():
+def quota_blocked(start_pos=0):
+    # Only scan bytes written after start_pos so retries never see old errors.
     try:
         with open(AGY_LOG, "rb") as f:
-            try: f.seek(-8000, 2)
-            except OSError: f.seek(0)
+            f.seek(start_pos)
             tail = f.read().decode("utf-8", "ignore")
     except Exception:
         return None
@@ -234,7 +327,25 @@ def write_progress(num, name, activity):
     with open(os.path.join(JOB_DIR, "progress.json"), "w") as f:
         json.dump({"phase": num, "phase_name": name, "last_activity": activity}, f)
 
-def run_agy(prompt):
+def write_phase_checkpoint(num):
+    with open(os.path.join(JOB_DIR, "phase_checkpoint.json"), "w") as f:
+        json.dump({"last_completed": num, "ts": time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")}, f)
+
+def run_script(script_cmd):
+    """Run a skill script directly (no LLM). script_cmd may contain $DB."""
+    cmd = script_cmd.replace("$DB", DB)
+    parts = cmd.split()
+    script_path = os.path.join(SKILL_DIR, parts[0])
+    full = ["python3", script_path] + parts[1:]
+    log("[SCRIPT] " + " ".join(full))
+    result = subprocess.run(full, cwd=JOB_DIR)
+    if result.returncode != 0:
+        log("[SCRIPT] WARNING: exited with code %%d: %%s" %% (result.returncode, " ".join(full)))
+
+def run_agy(prompt, phase_label=""):
+    t0 = time.time()
+    ts_start = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
+    log("[LLM:START] phase=%%s ts=%%s" %% (phase_label, ts_start))
     # Heartbeat keeps agy.log mtime fresh while the model is "thinking" (quiet
     # on stdout) so the watcher's stale-timeout never kills a working phase.
     stop = threading.Event()
@@ -251,6 +362,9 @@ def run_agy(prompt):
             rc = subprocess.run(args, cwd=JOB_DIR, stdout=lf, stderr=lf).returncode
     finally:
         stop.set()
+    elapsed = int(time.time() - t0)
+    log("[LLM:END] phase=%%s elapsed=%%ds exit_code=%%d ts=%%s" %% (
+        phase_label, elapsed, rc, time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")))
     return rc
 
 def gate(sql):
@@ -469,15 +583,24 @@ for ph in PHASES:
     pre_script = ph.get("pre_script")
     if pre_script:
         log("Running pre_script: " + pre_script)
-        subprocess.run(["python3", os.path.join(os.environ.get("SKILL_DIR", ""), pre_script)], cwd=JOB_DIR, check=True)
+        subprocess.run(["python3", os.path.join(SKILL_DIR, pre_script)], cwd=JOB_DIR, check=True)
 
     script = ph.get("script")
     if script:
         log("Running script: " + script)
-        subprocess.run(["python3", os.path.join(os.environ.get("SKILL_DIR", ""), script)], cwd=JOB_DIR, check=True)
+        subprocess.run(["python3", os.path.join(SKILL_DIR, script)], cwd=JOB_DIR, check=True)
     else:
-        run_agy(ph.get("prompt", ""))
-        
+        # Run deterministic pre-LLM scripts (zero LLM tokens)
+        for scmd in ph.get("pre_llm_scripts") or []:
+            run_script(scmd)
+
+        # Spawn agy only for the LLM portion of this phase
+        run_agy(ph.get("prompt", ""), phase_label=ph.get("name", ""))
+
+        # Run deterministic post-LLM scripts (zero LLM tokens)
+        for scmd in ph.get("post_llm_scripts") or []:
+            run_script(scmd)
+
     phase_convs = get_new_convs(AGY_LOG, start_pos)
     phase_entry = {
         "num": ph["num"],
@@ -485,12 +608,12 @@ for ph in PHASES:
         "convs": phase_convs
     }
     phase_runs.append(phase_entry)
-        
+
     if failed_structurally():
         log("failure.txt present after Phase %%d — structural failure, stopping" %% ph["num"])
         measure_metrics(phase_runs)
         sys.exit(0)
-    qm = quota_blocked()
+    qm = quota_blocked(start_pos)
     if qm:
         log("quota/auth block detected (%%s) after Phase %%d — stopping, no retry" %% (qm, ph["num"]))
         with open(os.path.join(JOB_DIR, "failure.txt"), "w") as f:
@@ -507,29 +630,26 @@ for ph in PHASES:
             log("gate %%s: could not evaluate (skipping)" %% ph.get("check_name", "?"))
         elif v > 0:
             log("gate %%s FAILED: %%d violation(s) — re-running phase once" %% (ph.get("check_name","?"), v))
-            
+
             start_pos_retry = 0
             if os.path.exists(AGY_LOG):
                 start_pos_retry = os.path.getsize(AGY_LOG)
-                
+
             run_agy(ph.get("prompt", "") + " IMPORTANT: a deterministic validation gate ('"
                     + ph.get("check_name","") + "') still reports " + str(v)
-                    + " violation(s). Find and fix exactly those rows in projection-audit/projection.duckdb. DO NOT DELETE, DROP, OR OVERWRITE any existing data or tables. Only address the missing/violating rows; do not stop until the gate passes.")
-            
+                    + " violation(s). Find and fix exactly those rows in projection-audit/projection.duckdb. DO NOT DELETE, DROP, OR OVERWRITE any existing data or tables. Only address the missing/violating rows; do not stop until the gate passes.",
+                    phase_label=ph.get("name","") + "-retry")
+
             retry_convs = get_new_convs(AGY_LOG, start_pos_retry)
             phase_entry["convs"].extend(retry_convs)
-            
+
             v2 = gate(sql)
             log("gate %%s after retry: %%s" %% (ph.get("check_name","?"), "PASS" if v2 == 0 else str(v2) + " remaining"))
         else:
             log("gate %%s PASS" %% ph.get("check_name","?"))
 
-if END_PHASE >= 6:
-    log("Running deterministic report renderer")
-    try:
-        subprocess.run(["python3", os.path.join(os.environ.get("SKILL_DIR", ""), "scripts", "render_report.py")], cwd=JOB_DIR, check=True)
-    except Exception as e:
-        log("Report render failed: " + str(e))
+    # Record this phase as successfully completed so a retry can resume here.
+    write_phase_checkpoint(ph["num"])
 
 try:
     measure_metrics(phase_runs)

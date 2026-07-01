@@ -1,3 +1,4 @@
+from __future__ import annotations
 #!/usr/bin/env python3
 """
 classify_mechanics.py — stamp each row in aws_li_catalog with mechanic_group.
@@ -44,19 +45,21 @@ RULES = [
     (
         "compute_breakdown",
         lambda r: (
-            (_ilike(r["product"], "Elastic Compute") or _ilike(r["product"], "EC2"))
-            and _re(r["usage_type"], r"BoxUsage|SpotUsage|ReservedInstances")
+            (_ilike(r["product"], "Elastic Compute") or _ilike(r["product"], "EC2") or _ilike(r["product"], "Compute Cloud"))
+            and (_re(r["usage_type"], r"BoxUsage|SpotUsage|ReservedInstances|running Linux") or _re(r["operation"], r"Instance Hour"))
             and r["unit"] in ("Hrs", "hours")
         ),
     ),
     (
         "managed_db",
         lambda r: (
-            _ilike(r["product"], "RDS")
-            or _ilike(r["product"], "Aurora")
-            or _ilike(r["product"], "ElastiCache")
-            or _ilike(r["product"], "DocumentDB")
-            or _ilike(r["product"], "MemoryDB")
+            (_ilike(r["product"], "RDS")
+             or _ilike(r["product"], "Relational Database")
+             or _ilike(r["product"], "Aurora")
+             or _ilike(r["product"], "ElastiCache")
+             or _ilike(r["product"], "DocumentDB")
+             or _ilike(r["product"], "MemoryDB"))
+            and not _re(r["usage_type"], r"Storage|gp2|gp3|io1|io2")
         ),
     ),
     (
@@ -64,19 +67,23 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "Elastic Block")
             or _re(r["usage_type"], r"EBS:Volume|EBS:Snapshot|gp2|gp3|io1|io2|sc1|st1")
+            or (_re(r["usage_type"], r"Storage") and not _ilike(r["product"], "S3") and not _ilike(r["product"], "Simple Storage"))
+            or _re(r["operation"], r"GP3-Storage|Provisioned GP3 storage")
         ),
     ),
     (
         "data_transfer",
         lambda r: (
             _ilike(r["product"], "DataTransfer")
-            or _re(r["usage_type"], r"DataTransfer|NatGateway-Bytes")
+            or _ilike(r["product"], "Data Transfer")
+            or _re(r["usage_type"], r"DataTransfer|Data Transfer|NatGateway-Bytes")
         ),
     ),
     (
         "flat_hourly",
         lambda r: (
-            _re(r["usage_type"], r"LoadBalancerUsage|NatGateway-Hours|ElasticIP")
+            (_re(r["usage_type"], r"LoadBalancerUsage|NatGateway-Hours|ElasticIP|IPAddress")
+             or _re(r["operation"], r"LoadBalancer|public IPv4 address"))
             and r["unit"] in ("Hrs", "hours")
         ),
     ),
@@ -90,9 +97,9 @@ RULES = [
     (
         "object_storage",
         lambda r: (
-            _ilike(r["product"], "S3")
-            and r["unit"] in ("GB-Mo", "GB Month")
-            and _re(r["usage_type"], r"TimedStorage")
+            (_ilike(r["product"], "S3") or _ilike(r["product"], "Simple Storage"))
+            and r["unit"] in ("GB-Mo", "GB Month", "GB-Month")
+            and _re(r["usage_type"], r"TimedStorage|ByteHrs")
         ),
     ),
     (
@@ -100,10 +107,12 @@ RULES = [
         lambda r: (
             r["line_item_type"] in ("RIFee", "SavingsPlanRecurringFee", "EdpDiscount")
             or r["pricing_model"] in ("Reserved", "SavingsPlan")
+            or _ilike(r["product"], "Savings Plans")
+            or _ilike(r["product"], "Discounts")
+            or _ilike(r["product"], "CK Discounts")
         ),
     ),
 ]
-
 
 def classify(row: dict) -> str:
     for group, test in RULES:
@@ -219,7 +228,7 @@ def main():
             product,
             usage_type,
             operation,
-            unit,
+            pricing_unit AS unit,
             line_item_type,
             pricing_model,
             aws_amortized_cost
@@ -309,11 +318,11 @@ def main():
         """
         SELECT
             aws_li_key, mechanic_group, product, usage_type, operation,
-            unit, line_item_type, pricing_model,
+            pricing_unit AS unit, line_item_type, pricing_model,
             aws_amortized_cost, instance_type, instance_vcpus,
             instance_ram_gb, instance_arch, workload_class,
             billing_days, instance_count, aws_effective_unit_rate,
-            region, gcp_region, is_workload
+            aws_region AS region, gcp_region, is_workload
         FROM aws_li_catalog
         ORDER BY mechanic_group, aws_amortized_cost DESC
         """

@@ -88,8 +88,7 @@ def ensure_table(con: duckdb.DuckDBPyConnection) -> None:
             projection_note     TEXT,
             mapping_confidence  DOUBLE,
             is_workload         BOOLEAN,
-            break_down          BOOLEAN,
-            PRIMARY KEY (aws_li_key, component)
+            break_down          BOOLEAN
         )
     """)
 
@@ -132,7 +131,7 @@ def main() -> None:
     placeholders = ", ".join(["?"] * len(COLUMNS))
     col_list = ", ".join(COLUMNS)
     con.executemany(
-        f"INSERT OR REPLACE INTO aws_li_to_gcp_li ({col_list}) VALUES ({placeholders})",
+        f"INSERT INTO aws_li_to_gcp_li ({col_list}) VALUES ({placeholders})",
         records,
     )
     con.commit()

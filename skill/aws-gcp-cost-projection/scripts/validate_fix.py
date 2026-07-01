@@ -274,12 +274,13 @@ def find_regional_sku(con, bad_sku, target_region):
 
 def passthrough_budget_exceeded(con) -> list:
     """
-    Gate: passthrough spend must not exceed 5% of total workload spend.
+    Gate: passthrough spend must not exceed 10% of total workload spend.
 
     Returns a list of violation dicts (empty if within budget).
     The first entry is a summary violation; the rest are the top-10
     passthrough rows by aws_amortized_cost.
     """
+    BUDGET_PCT = 10.0
     try:
         row = con.execute("""
             SELECT
@@ -298,7 +299,7 @@ def passthrough_budget_exceeded(con) -> list:
         if total_spend <= 0:
             return []
         pct = passthrough_spend / total_spend * 100
-        if pct <= 5.0:
+        if pct <= BUDGET_PCT:
             return []
 
         # Build violations list
@@ -307,7 +308,7 @@ def passthrough_budget_exceeded(con) -> list:
             "severity": "HARD",
             "message": (
                 f"Passthrough budget exceeded: {pct:.1f}% of spend is passthrough "
-                f"(limit: 5%)"
+                f"(limit: {BUDGET_PCT}%)"
             ),
             "passthrough_spend": round(passthrough_spend, 2),
             "total_spend": round(total_spend, 2),

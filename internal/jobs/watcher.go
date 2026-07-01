@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/facets/cur-web/internal/db"
 	"github.com/facets/cur-web/internal/notify"
-	"github.com/google/uuid"
 )
 
 const (
@@ -44,16 +44,26 @@ func NewWatcher(database *db.DB, spawner *Spawner, jobsDir string, nc NotifyConf
 // Watch blocks until the job reaches a terminal state. Used for fresh runs
 // that may clean-slate retry up to maxAttempts on failure.
 func (w *Watcher) Watch(jobID string, pid int) {
+	logOffset := logSize(filepath.Join(w.jobsDir, jobID, "agy-internal.log"))
 	w.watchUntilDead(jobID, pid)
-	w.finalize(jobID, true)
+	w.finalizeWithOffset(jobID, true, logOffset)
 }
 
 // WatchOnce blocks until the process dies, then finalizes WITHOUT retry.
 // Used for refinement runs — failure must not wipe the original successful
 // projection state.
 func (w *Watcher) WatchOnce(jobID string, pid int) {
+	logOffset := logSize(filepath.Join(w.jobsDir, jobID, "agy-internal.log"))
 	w.watchUntilDead(jobID, pid)
-	w.finalize(jobID, false)
+	w.finalizeWithOffset(jobID, false, logOffset)
+}
+
+// logSize returns the current byte size of a file, 0 if missing.
+func logSize(path string) int64 {
+	if fi, err := os.Stat(path); err == nil {
+		return fi.Size()
+	}
+	return 0
 }
 
 // watchUntilDead is the shared polling loop. Two liveness signals each tick:
@@ -111,7 +121,11 @@ func killGroup(pid int) {
 	}
 }
 
-func (w *Watcher) finalize(jobID string, allowRetry bool) {
+func (w *Watcher) finalizeWithOffset(jobID string, allowRetry bool, logOffset int64) {
+	w.finalize(jobID, allowRetry, logOffset)
+}
+
+func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 	// Brief grace period in case agy was just finishing the report write.
 	time.Sleep(finalizeWait)
 
@@ -122,37 +136,11 @@ func (w *Watcher) finalize(jobID string, allowRetry bool) {
 	}
 	jobDir := filepath.Join(w.jobsDir, jobID)
 
-	// Explicit structural-failure path: if agy wrote failure.txt, it has
-	// diagnosed the input as unprocessable (wrong cloud, corrupted file,
-	// unknown shape). Surface that reason cleanly and skip the retry loop —
-	// retrying the same broken input would just burn three more attempts on
-	// the same error.
-	if reason := readFailureReason(jobDir); reason != "" {
-		if err := w.db.UpdateJobFailed(jobID, reason); err != nil {
-			log.Printf("watcher %s: UpdateJobFailed (failure.txt): %v", jobID, err)
-		}
-		go notify.SendJobFailed(w.notify.Email, job.Owner, job.Owner, job.Prospect)
-		go notify.PostJobFailed(w.notify.SlackURL, job.Prospect, job.Owner, jobID)
-		return
-	}
-
-	// Quota fail-fast: if the API quota was exhausted, mark failed immediately
-	// without retrying (retrying the same quota error just burns more attempts).
-	if quotaExhausted(jobDir) {
-		log.Printf("watcher %s: quota exhausted detected, failing fast", jobID)
-		if err := w.db.UpdateJobFailed(jobID, "Gemini API quota exhausted — wait for quota reset or switch API key"); err != nil {
-			log.Printf("watcher %s: UpdateJobFailed (quota): %v", jobID, err)
-		}
-		go notify.SendJobFailed(w.notify.Email, job.Owner, job.Owner, job.Prospect)
-		go notify.PostJobFailed(w.notify.SlackURL, job.Prospect, job.Owner, jobID)
-		return
-	}
-
-	// Success signal: resolveReportPath finds either a versioned
-	// report-<run_id>.html (via run_results) or the legacy unsuffixed
-	// projection-audit/report.html. The old check (just stat report.html)
-	// missed new-skill outputs which only write versioned files, causing
-	// the watcher to retry and eventually fail a successful job.
+	// SUCCESS CHECK FIRST: report presence is the ground truth. If render_report.py
+	// ran and wrote an HTML file, the job succeeded — regardless of what agy logged
+	// (quota errors from prior attempts, sub-agent noise, etc.). Checking logs before
+	// the report caused healthy jobs to be marked failed when old quota markers were
+	// still present in an append-only agy-internal.log.
 	reportPath, _ := resolveReportPath(jobDir, "")
 	if reportPath != "" {
 		// Source aws_spend from the duckdb (canonical) and fall back to
@@ -192,6 +180,32 @@ func (w *Watcher) finalize(jobID string, allowRetry bool) {
 		return
 	}
 
+	// No report produced. Check for explicit failure signals before retrying.
+
+	// Explicit structural-failure path: if the orchestrator wrote failure.txt, it has
+	// diagnosed the input as unprocessable (wrong cloud, corrupted file, unknown shape).
+	// Surface that reason cleanly — retrying the same broken input burns attempts.
+	if reason := readFailureReason(jobDir); reason != "" {
+		if err := w.db.UpdateJobFailed(jobID, reason); err != nil {
+			log.Printf("watcher %s: UpdateJobFailed (failure.txt): %v", jobID, err)
+		}
+		go notify.SendJobFailed(w.notify.Email, job.Owner, job.Owner, job.Prospect)
+		go notify.PostJobFailed(w.notify.SlackURL, job.Prospect, job.Owner, jobID)
+		return
+	}
+
+	// Quota fail-fast: only scan bytes written by this process (logOffset). A prior
+	// run's quota error in the append-only log will NOT match here.
+	if quotaExhausted(jobDir, logOffset) {
+		log.Printf("watcher %s: quota exhausted detected, failing fast", jobID)
+		if err := w.db.UpdateJobFailed(jobID, "Gemini API quota exhausted — wait for quota reset or switch API key"); err != nil {
+			log.Printf("watcher %s: UpdateJobFailed (quota): %v", jobID, err)
+		}
+		go notify.SendJobFailed(w.notify.Email, job.Owner, job.Owner, job.Prospect)
+		go notify.PostJobFailed(w.notify.SlackURL, job.Prospect, job.Owner, jobID)
+		return
+	}
+
 	if !allowRetry || job.Attempts >= maxAttempts {
 		tail := tailLog(filepath.Join(jobDir, "agy.log"), 500)
 		var errMsg string
@@ -211,17 +225,14 @@ func (w *Watcher) finalize(jobID string, allowRetry bool) {
 		return
 	}
 
-	// Retry: clean slate the job dir except input.*, new session_id, increment attempts, respawn.
-	log.Printf("watcher %s: clean-slate retry (attempt %d/%d)", jobID, job.Attempts+1, maxAttempts)
-	if err := wipeJobDir(jobDir); err != nil {
-		log.Printf("watcher %s: wipe: %v", jobID, err)
-	}
-	newSession := uuid.New().String()
-	w.db.UpdateJobSessionID(jobID, newSession)
+	// Retry: resume from where the orchestrator left off. phase_checkpoint.json
+	// records the last successfully completed phase; the new orchestrator process
+	// reads it and starts from the next phase — no data wipe, no Phase 1 redo.
+	log.Printf("watcher %s: checkpoint retry (attempt %d/%d)", jobID, job.Attempts+1, maxAttempts)
 	w.db.IncrementJobAttempts(jobID)
 	w.db.UpdateJobRunning(jobID)
 
-	pid, err := w.spawner.Start(jobDir, job.InputExt, newSession)
+	pid, err := w.spawner.Start(jobDir, job.InputExt, "")
 	if err != nil {
 		w.db.UpdateJobFailed(jobID, "retry spawn failed: "+err.Error())
 		return
@@ -267,22 +278,32 @@ func readFailureReason(jobDir string) string {
 // quotaMarkers are substrings (case-insensitive) that indicate the Gemini API
 // quota was exhausted. Checked against the last 16 KB of agy-internal.log so
 // the watcher can fail fast without burning retry attempts on a quota error.
+// quotaMarkers must be specific enough to not match benign log lines.
+// "quota" alone is too broad — it matches log lines like "API quota usage: 0/60".
 var quotaMarkers = []string{
 	"RESOURCE_EXHAUSTED",
-	"quota",
-	"429",
-	"rate limit",
+	"Individual quota reached",
+	"quota exhausted",
+	"rate limit exceeded",
+	"Too Many Requests",
 }
 
-func quotaExhausted(jobDir string) bool {
+func quotaExhausted(jobDir string, logOffset int64) bool {
 	logPath := filepath.Join(jobDir, "agy-internal.log")
-	data, err := os.ReadFile(logPath)
+	f, err := os.Open(logPath)
 	if err != nil {
 		return false
 	}
-	// Only check last 16KB to avoid reading huge logs
-	if len(data) > 16384 {
-		data = data[len(data)-16384:]
+	defer f.Close()
+	// Only read bytes written after logOffset so retries don't see old errors.
+	if logOffset > 0 {
+		if _, err := f.Seek(logOffset, 0); err != nil {
+			return false
+		}
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return false
 	}
 	lower := strings.ToLower(string(data))
 	for _, marker := range quotaMarkers {

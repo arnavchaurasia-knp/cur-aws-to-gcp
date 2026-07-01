@@ -1,14 +1,10 @@
 # Phase 3 — Review
 
 **Run by:** one **fresh** sub-agent — not one of the mapping agents.
-The fresh agent comes in without their investment in the choices and
-is more willing to overturn them.
-**Reads:** `projection-audit/mapping-notes.md`, `aws_li_to_gcp_li`,
-`aws_li_catalog`, `data/skus/`, and `review_flags.md`.
-**Writes:** corrections directly to `aws_li_to_gcp_li`; appends a
-`## Review findings` section to `mapping-notes.md`.
-**Returns to main:** one-paragraph summary of what changed and what
-was confirmed.
+**Primary input:** `review_flags.md` (written by auto_review.py before this phase). Fix what is in that file first.
+**Secondary input:** `mapping-notes.md` Alt/Open entries — only read them if review_flags.md has no items or you finish all flags quickly.
+**Writes:** corrections directly to `aws_li_to_gcp_li` via SQL UPDATEs only.
+**Do NOT:** run broad `SELECT *` queries, re-scan all mappings from scratch, or re-run any Phase 2 script. One SELECT per flagged row, one UPDATE per fix.
 
 ## FIRST LINE OF THIS PHASE — write progress marker
 

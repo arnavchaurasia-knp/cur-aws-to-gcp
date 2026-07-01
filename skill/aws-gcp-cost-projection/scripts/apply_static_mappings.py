@@ -140,8 +140,8 @@ def main():
     con = duckdb.connect(db_path)
 
     rows = con.execute("""
-        SELECT aws_li_key, mechanic_group, product, usage_type, unit,
-               aws_amortized_cost, region, gcp_region
+        SELECT aws_li_key, mechanic_group, product, usage_type, pricing_unit AS unit,
+               aws_amortized_cost, aws_region AS region, gcp_region
         FROM aws_li_catalog
         WHERE mechanic_group IN ('flat_hourly', 'object_storage', 'per_request')
     """).fetchall()

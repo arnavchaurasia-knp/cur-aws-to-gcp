@@ -50,18 +50,56 @@ MAPPABLE_SERVICE_PATTERNS = [
     "simple storage service", "s3",
 ]
 
-# GCP published committed-use-discount factors (× OD rate) used by the CUD
-# synthesis autofix below. Compute Engine = resource-based CUD (1yr −37% / 3yr
-# −55%); managed DB / cache from each service's published CUD page. Only applied
-# as a deterministic fallback when Phase 4 left a commit rate missing.
-CUD_PCT = {
-    "Compute Engine":                   (0.63, 0.45),
-    "Cloud SQL":                        (0.75, 0.48),
-    "AlloyDB":                          (0.80, 0.60),
-    "Cloud Memorystore":                (0.75, 0.52),
-    "Cloud Memorystore for Redis":      (0.75, 0.52),
-    "Cloud Memorystore for Memcached":  (0.75, 0.52),
+# CUD discount multipliers (rate/OD). Source: GCP public CUD discount docs.
+# Loaded from data/cud_pct.json at module load; falls back to hardcoded dict
+# if the file is missing. Refresh annually — GCP revises CUD rates.
+# https://cloud.google.com/compute/docs/sustained-use-discounts
+
+_CUD_PCT_FALLBACK = {
+    "Compute Engine":                   (0.70, 0.55),
+    "Cloud SQL":                        (0.75, 0.60),
+    "Cloud Spanner":                    (0.75, 0.60),
+    "Cloud Bigtable":                   (0.75, 0.60),
+    "Memorystore":                      (0.80, 0.65),
+    "Cloud Memorystore":                (0.80, 0.65),
+    "Cloud Memorystore for Redis":      (0.80, 0.65),
+    "Cloud Memorystore for Memcached":  (0.80, 0.65),
+    "Cloud Run":                        (0.83, 0.67),
+    "DEFAULT":                          (0.75, 0.60),
 }
+
+_CUD_PCT_CACHE = None
+
+def load_cud_pct():
+    """Load CUD multipliers from data/cud_pct.json, falling back to hardcoded dict."""
+    global _CUD_PCT_CACHE
+    if _CUD_PCT_CACHE is not None:
+        return _CUD_PCT_CACHE
+
+    skill_dir = os.environ.get("SKILL_DIR", "")
+    if not skill_dir:
+        skill_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    json_path = os.path.join(skill_dir, "data", "cud_pct.json")
+
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                raw = json.load(f)
+            result = {}
+            for svc, vals in raw.items():
+                if svc == "_meta":
+                    continue
+                if isinstance(vals, dict) and "1yr_multiplier" in vals and "3yr_multiplier" in vals:
+                    result[svc] = (float(vals["1yr_multiplier"]), float(vals["3yr_multiplier"]))
+            _CUD_PCT_CACHE = result
+            return _CUD_PCT_CACHE
+        except Exception as e:
+            print(f"WARNING: Could not load cud_pct.json ({e}); using hardcoded fallback.", file=sys.stderr)
+
+    _CUD_PCT_CACHE = dict(_CUD_PCT_FALLBACK)
+    return _CUD_PCT_CACHE
+
+CUD_PCT = load_cud_pct()
 
 # Deterministic AWS-instance -> GCP-family map (mirror of
 # data/instance-family-map.json). Pins family choice so the same instance maps
@@ -72,7 +110,8 @@ def gcp_family_for(itype, arch):
     """Canonical GCP machine family for an AWS instance type, or None if unknown."""
     if not itype:
         return None
-    if (arch or "").lower() == "arm64":
+    arch = (arch or "").lower()
+    if arch == "arm64":
         return "T2A"
     fam = itype.lower().split(":")[0].replace("db.", "").split(".")[0]
     if fam == "a1" or fam.endswith("g") or fam.endswith("gd"):  # Graviton (arch missing)
@@ -144,12 +183,45 @@ def find_regional_sku(con, bad_sku, target_region):
         svc, rg, ut, desc, unit = info
         
         region_names = {
-            "asia-south1": "Mumbai",
-            "us-east4": "Northern Virginia",
-            "asia-southeast1": "Singapore",
-            "us-east1": "South Carolina",
-            "us-central1": "Iowa",
-            "us-west1": "Oregon"
+            # North America
+            "us-east-1":      "us-east4",        # N. Virginia → Northern Virginia
+            "us-east-2":      "us-east1",        # Ohio → South Carolina (closest)
+            "us-west-1":      "us-west1",        # N. California → Oregon
+            "us-west-2":      "us-west1",        # Oregon → Oregon
+            "ca-central-1":   "northamerica-northeast1",  # Montreal
+            "ca-west-1":      "northamerica-northeast2",  # Calgary
+            # Europe
+            "eu-west-1":      "europe-west1",    # Ireland
+            "eu-west-2":      "europe-west2",    # London
+            "eu-west-3":      "europe-west9",    # Paris
+            "eu-central-1":   "europe-west3",    # Frankfurt
+            "eu-central-2":   "europe-west6",    # Zurich
+            "eu-north-1":     "europe-north1",   # Stockholm
+            "eu-south-1":     "europe-west8",    # Milan
+            "eu-south-2":     "europe-southwest1",  # Spain
+            # Asia Pacific
+            "ap-southeast-1": "asia-southeast1", # Singapore
+            "ap-southeast-2": "australia-southeast1",  # Sydney
+            "ap-southeast-3": "asia-southeast2", # Jakarta
+            "ap-southeast-4": "australia-southeast2",  # Melbourne
+            "ap-northeast-1": "asia-northeast1", # Tokyo
+            "ap-northeast-2": "asia-northeast3", # Seoul
+            "ap-northeast-3": "asia-northeast2", # Osaka
+            "ap-south-1":     "asia-south1",     # Mumbai
+            "ap-south-2":     "asia-south2",     # Hyderabad
+            "ap-east-1":      "asia-east2",      # Hong Kong
+            # Middle East & Africa
+            "me-south-1":     "me-west1",        # Bahrain
+            "me-central-1":   "me-central1",     # UAE
+            "af-south-1":     "africa-south1",   # Cape Town
+            # South America
+            "sa-east-1":      "southamerica-east1",  # São Paulo
+            "sa-west-1":      "southamerica-west1",  # Chile (Santiago)
+            # US Gov / China (passthrough — no GCP equivalent region, use closest)
+            "us-gov-east-1":  "us-east4",
+            "us-gov-west-1":  "us-west1",
+            "cn-north-1":     "asia-east1",
+            "cn-northwest-1": "asia-east2",
         }
         
         candidates = con.execute("""
@@ -198,6 +270,73 @@ def find_regional_sku(con, bad_sku, target_region):
             con.execute("DETACH catalog")
         except Exception:
             pass
+
+
+def passthrough_budget_exceeded(con) -> list:
+    """
+    Gate: passthrough spend must not exceed 5% of total workload spend.
+
+    Returns a list of violation dicts (empty if within budget).
+    The first entry is a summary violation; the rest are the top-10
+    passthrough rows by aws_amortized_cost.
+    """
+    try:
+        row = con.execute("""
+            SELECT
+                COALESCE(SUM(c.aws_amortized_cost) FILTER (
+                    WHERE m.strategy = 'passthrough' AND c.is_workload = TRUE
+                ), 0.0)                                   AS passthrough_spend,
+                COALESCE(SUM(c.aws_amortized_cost) FILTER (
+                    WHERE c.is_workload = TRUE
+                ), 0.0)                                   AS total_spend
+            FROM aws_li_catalog c
+            JOIN aws_li_to_gcp_li m ON m.aws_li_key = c.aws_li_key
+        """).fetchone()
+        if not row:
+            return []
+        passthrough_spend, total_spend = row
+        if total_spend <= 0:
+            return []
+        pct = passthrough_spend / total_spend * 100
+        if pct <= 5.0:
+            return []
+
+        # Build violations list
+        violations = [{
+            "gate": "passthrough_budget",
+            "severity": "HARD",
+            "message": (
+                f"Passthrough budget exceeded: {pct:.1f}% of spend is passthrough "
+                f"(limit: 5%)"
+            ),
+            "passthrough_spend": round(passthrough_spend, 2),
+            "total_spend": round(total_spend, 2),
+            "pct": round(pct, 2),
+        }]
+
+        top10 = con.execute("""
+            SELECT c.product, ROUND(c.aws_amortized_cost, 2) AS aws_cost
+            FROM aws_li_catalog c
+            JOIN aws_li_to_gcp_li m ON m.aws_li_key = c.aws_li_key
+            WHERE m.strategy = 'passthrough' AND c.is_workload = TRUE
+            ORDER BY c.aws_amortized_cost DESC
+            LIMIT 10
+        """).fetchall()
+        for product, aws_cost in top10:
+            violations.append({
+                "gate": "passthrough_budget",
+                "severity": "HARD",
+                "product": (product or "")[:80],
+                "aws_amortized_cost": aws_cost,
+            })
+
+        return violations
+    except Exception as e:
+        return [{
+            "gate": "passthrough_budget",
+            "severity": "WARN",
+            "message": f"passthrough_budget gate could not run: {e}",
+        }]
 
 
 def main():
@@ -327,16 +466,15 @@ def main():
                                         INSERT OR REPLACE INTO gcp_sku_rates VALUES
                                         (?, ?, ?, ?, ?, 'OnDemand', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
                                     """, (good_sku, svc, desc, rf, rg, target_region, unit, rate))
-                                    if svc in CUD_PCT:
-                                        p1, p3 = CUD_PCT[svc]
-                                        con.execute("""
-                                            INSERT OR REPLACE INTO gcp_sku_rates VALUES
-                                            (?, ?, ?, ?, ?, 'Commit1Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
-                                        """, (good_sku, svc, desc + " (Commit1Yr alias)", rf, rg, target_region, unit, rate * p1))
-                                        con.execute("""
-                                            INSERT OR REPLACE INTO gcp_sku_rates VALUES
-                                            (?, ?, ?, ?, ?, 'Commit3Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
-                                        """, (good_sku, svc, desc + " (Commit3Yr alias)", rf, rg, target_region, unit, rate * p3))
+                                    p1, p3 = _cud_factors(svc)
+                                    con.execute("""
+                                        INSERT OR REPLACE INTO gcp_sku_rates VALUES
+                                        (?, ?, ?, ?, ?, 'Commit1Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
+                                    """, (good_sku, svc, desc + " (Commit1Yr alias)", rf, rg, target_region, unit, rate * p1))
+                                    con.execute("""
+                                        INSERT OR REPLACE INTO gcp_sku_rates VALUES
+                                        (?, ?, ?, ?, ?, 'Commit3Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
+                                    """, (good_sku, svc, desc + " (Commit3Yr alias)", rf, rg, target_region, unit, rate * p3))
                     finally:
                         try:
                             con.execute("DETACH catalog")
@@ -398,16 +536,15 @@ def main():
                                 """, (good_sku, svc, desc, rf, rg, target_region, unit, rate))
                                 
                                 # Synthesize Commit1Yr and Commit3Yr rates
-                                if svc in CUD_PCT:
-                                    p1, p3 = CUD_PCT[svc]
-                                    con.execute("""
-                                        INSERT OR REPLACE INTO gcp_sku_rates VALUES
-                                        (?, ?, ?, ?, ?, 'Commit1Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
-                                    """, (good_sku, svc, desc + " (Commit1Yr alias)", rf, rg, target_region, unit, rate * p1))
-                                    con.execute("""
-                                        INSERT OR REPLACE INTO gcp_sku_rates VALUES
-                                        (?, ?, ?, ?, ?, 'Commit3Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
-                                    """, (good_sku, svc, desc + " (Commit3Yr alias)", rf, rg, target_region, unit, rate * p3))
+                                p1, p3 = _cud_factors(svc)
+                                con.execute("""
+                                    INSERT OR REPLACE INTO gcp_sku_rates VALUES
+                                    (?, ?, ?, ?, ?, 'Commit1Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
+                                """, (good_sku, svc, desc + " (Commit1Yr alias)", rf, rg, target_region, unit, rate * p1))
+                                con.execute("""
+                                    INSERT OR REPLACE INTO gcp_sku_rates VALUES
+                                    (?, ?, ?, ?, ?, 'Commit3Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
+                                """, (good_sku, svc, desc + " (Commit3Yr alias)", rf, rg, target_region, unit, rate * p3))
                         finally:
                             try:
                                 con.execute("DETACH catalog")
@@ -423,13 +560,21 @@ def main():
     # deterministically from the OD rate using GCP's published CUD percentages.
     # Only fires for sku_ids that have an OD rate but lack the commit row, so it
     # never overwrites a real aliased commit rate the model already loaded.
+    _CUD_DEFAULT = (0.70, 0.55)  # conservative fallback when service not in CUD_PCT
+
+    def _cud_factors(svc):
+        if svc not in CUD_PCT:
+            print(f"[WARN] CUD_PCT has no entry for service '{svc}' — using conservative default {_CUD_DEFAULT}")
+            return _CUD_DEFAULT
+        return CUD_PCT[svc]
+
     cud_synth = 0
     if not check_only:
         for svc, (p1, p3) in CUD_PCT.items():
             for pt, factor in (("Commit1Yr", p1), ("Commit3Yr", p3)):
                 try:
-                    n = con.execute(f"""
-                        INSERT INTO gcp_sku_rates
+                    con.execute(f"""
+                        INSERT OR REPLACE INTO gcp_sku_rates
                           (gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
                            resource_group, pricing_type, region, unit, rate_usd, source, audit_url)
                         SELECT od.gcp_sku_id, od.gcp_service, od.gcp_sku_name, od.resource_family,
@@ -441,13 +586,10 @@ def main():
                           AND NOT EXISTS (SELECT 1 FROM gcp_sku_rates r
                             WHERE r.gcp_sku_id = od.gcp_sku_id AND r.region = od.region
                               AND r.pricing_type = '{pt}')
-                    """, [svc]).fetchall()
-                    # DuckDB INSERT ... SELECT doesn't return rowcount via fetchall;
-                    # count what we just added for this service+type instead.
-                    cud_synth += con.execute(
-                        "SELECT count(*) FROM gcp_sku_rates WHERE gcp_service=? "
-                        "AND pricing_type=? AND source='validator-cud-synth'",
-                        [svc, pt]).fetchone()[0]
+                    """, [svc])
+                    # Use changes() to count rows affected by this INSERT OR REPLACE,
+                    # which correctly counts new inserts and stale-rate replacements.
+                    cud_synth += con.execute("SELECT changes()").fetchone()[0]
                 except Exception:
                     pass
 
@@ -460,6 +602,19 @@ def main():
         con.execute("SELECT 1 FROM gcp_projection LIMIT 1")
     except Exception:
         has_view = False
+
+    view_missing_violation = None
+    if not has_view:
+        view_missing_violation = {
+            "gate": "projection_view_missing",
+            "severity": "CRITICAL",
+            "message": (
+                "gcp_projection view does not exist — Phase 4 rate-fill may have failed. "
+                "All projection-based gates are disabled."
+            ),
+            "count": 1,
+            "rows": [],
+        }
 
     # ---------- GATES ------------------------------------------------------
     like = " OR ".join(["LOWER(c.product) LIKE ?"] * len(MAPPABLE_SERVICE_PATTERNS))
@@ -583,6 +738,12 @@ def main():
     aws_total = con.execute(
         "SELECT ROUND(COALESCE(SUM(aws_amortized_cost),0),2) FROM aws_li_catalog").fetchone()[0]
     bill_total = extract_bill_total(jobdir)
+    if bill_total is None:
+        print("[WARN] bill_total not found in input — reconciliation skipped")
+        report["autofixes"]["bill_total_unavailable"] = (
+            "Bill total could not be extracted from input — reconciliation gate skipped. "
+            "Verify GCP total manually."
+        )
     recon = []
     if bill_total is not None:
         delta = round(aws_total - bill_total, 2)
@@ -638,6 +799,14 @@ def main():
         pass
     report["violations"]["capacity_reconciliation"] = cap_recon
 
+    # GATE: passthrough budget. If passthrough rows account for more than 5% of
+    # total workload spend, the mapping phase has left too much unresolved.
+    report["violations"]["passthrough_budget"] = passthrough_budget_exceeded(con)
+
+    # Inject CRITICAL view-missing violation at the end so it always appears
+    if view_missing_violation is not None:
+        report["violations"]["projection_view_missing"] = [view_missing_violation]
+
     # ---------- deterministic totals + verdict ----------------------------
     gcp_od = gcp_1yr = gcp_3yr = None
     if has_view:
@@ -648,12 +817,15 @@ def main():
             FROM gcp_projection WHERE is_workload""").fetchone()
     diff = None if gcp_od is None else round(aws_total - gcp_od, 2)
     verdict = None
-    if diff is not None:
+    if not has_view:
+        verdict = "view missing — projection totals unavailable"
+    elif diff is not None:
         verdict = "GCP cheaper" if diff > 0 else ("GCP more expensive" if diff < 0 else "~ equal")
     report["totals"] = {"aws_total": aws_total, "gcp_od": gcp_od,
                         "gcp_1yr_cud": gcp_1yr, "gcp_3yr_cud": gcp_3yr,
                         "bill_total": bill_total,
-                        "diff_aws_minus_gcp_od": diff, "verdict": verdict}
+                        "diff_aws_minus_gcp_od": diff, "verdict": verdict,
+                        **({"view_missing": True} if not has_view else {})}
 
     con.close()
     with open(os.path.join(jobdir, "validation_report.json"), "w") as f:

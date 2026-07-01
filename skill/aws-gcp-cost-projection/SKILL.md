@@ -180,6 +180,19 @@ empty, `mapping-notes.md` missing, agy killed mid-run):
    it captures quota exhaustion, auth errors, and hard crashes that
    the main log doesn't show.
 
+## Scripts Added in Product Build
+
+These scripts were added during the product build phase and extend the core skill pipeline with deterministic classification and confidence layers.
+
+| Script | Purpose |
+|---|---|
+| `classify_mechanics.py` | Stamps `mechanic_group` on `aws_li_catalog` rows — groups each line item by billing mechanic (On-Demand, Spot, Reserved, Savings Plan, etc.) so downstream phases can apply the correct GCP equivalent |
+| `classify_transfer.py` | Deterministic DataTransfer direction classification — reads the AWS usage type and description to assign `transfer_direction` (ingress / egress / inter-AZ / inter-region / internet) without relying on LLM inference |
+| `field_state.py` | Annotates field availability from CUR vs external APIs — marks each schema field as `present_in_cur`, `needs_api`, or `not_available` so Phase 2 agents know which fields they can rely on |
+| `service_contracts.py` | Validates required fields per service — enforces that each mapped GCP service has the minimum fields populated (e.g. `gcp_sku_id`, `unit_multiplier`) before Phase 5 runs |
+| `candidate_pool.py` | Scored GCP candidate pool for compute rows — queries the catalog to produce a ranked list of GCP SKU candidates for each EC2/RDS instance type, used by Phase 2 mapping agents as a starting point |
+| `confidence_engine.py` | Computes overall projection confidence score — aggregates per-row mapping quality signals (field completeness, mechanic match, rate coverage) into a single `confidence` label (`HIGH` / `MEDIUM` / `LOW`) written to the report |
+
 ## What you never do
 
 - Render the report while any outlier query has unreviewed results.

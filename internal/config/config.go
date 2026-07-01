@@ -33,7 +33,7 @@ func (c *Config) DBPath() string  { return c.DataDir + "/cur-web.db" }
 func LoadFromEnv() (*Config, error) {
 	devBypass := os.Getenv("DEV_AUTH_BYPASS") == "true"
 
-	required := []string{"DATA_DIR", "SESSION_SECRET", "APP_BASE_URL"}
+	required := []string{"SESSION_SECRET", "APP_BASE_URL"}
 	if !devBypass {
 		required = append(required,
 			"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI",
@@ -57,10 +57,18 @@ func LoadFromEnv() (*Config, error) {
 	if model == "" {
 		model = "gemini-3.5-flash"
 	}
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = "/var/lib/cur-web"
+		}
+		dataDir = home + "/.cur-web"
+	}
 	return &Config{
 		AGYModel:           model,
 		Port:               port,
-		DataDir:            os.Getenv("DATA_DIR"),
+		DataDir:            dataDir,
 		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		GoogleRedirectURI:  os.Getenv("GOOGLE_REDIRECT_URI"),

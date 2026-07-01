@@ -136,6 +136,18 @@ func (w *Watcher) finalize(jobID string, allowRetry bool) {
 		return
 	}
 
+	// Quota fail-fast: if the API quota was exhausted, mark failed immediately
+	// without retrying (retrying the same quota error just burns more attempts).
+	if quotaExhausted(jobDir) {
+		log.Printf("watcher %s: quota exhausted detected, failing fast", jobID)
+		if err := w.db.UpdateJobFailed(jobID, "Gemini API quota exhausted — wait for quota reset or switch API key"); err != nil {
+			log.Printf("watcher %s: UpdateJobFailed (quota): %v", jobID, err)
+		}
+		go notify.SendJobFailed(w.notify.Email, job.Owner, job.Owner, job.Prospect)
+		go notify.PostJobFailed(w.notify.SlackURL, job.Prospect, job.Owner, jobID)
+		return
+	}
+
 	// Success signal: resolveReportPath finds either a versioned
 	// report-<run_id>.html (via run_results) or the legacy unsuffixed
 	// projection-audit/report.html. The old check (just stat report.html)
@@ -250,6 +262,35 @@ func readFailureReason(jobDir string) string {
 		s = s[:1000] + "…"
 	}
 	return s
+}
+
+// quotaMarkers are substrings (case-insensitive) that indicate the Gemini API
+// quota was exhausted. Checked against the last 16 KB of agy-internal.log so
+// the watcher can fail fast without burning retry attempts on a quota error.
+var quotaMarkers = []string{
+	"RESOURCE_EXHAUSTED",
+	"quota",
+	"429",
+	"rate limit",
+}
+
+func quotaExhausted(jobDir string) bool {
+	logPath := filepath.Join(jobDir, "agy-internal.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return false
+	}
+	// Only check last 16KB to avoid reading huge logs
+	if len(data) > 16384 {
+		data = data[len(data)-16384:]
+	}
+	lower := strings.ToLower(string(data))
+	for _, marker := range quotaMarkers {
+		if strings.Contains(lower, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	return false
 }
 
 // awsSpendRe matches the legacy total-spend element rendered by older

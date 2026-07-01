@@ -40,7 +40,11 @@ CREATE TABLE aws_li_catalog (
     instance_arch           VARCHAR,               -- 'x86_64' | 'arm64'; from lookup
     instance_count          DOUBLE,                -- derived: total_usage / billing_hours (NULL if ambiguous)
     billing_days            INTEGER,               -- billing period length in days (28/29/30/31); from bill or inferred
-    aws_effective_unit_rate DOUBLE                 -- aws_amortized_cost / total_usage; stored for back-check reference
+    aws_effective_unit_rate DOUBLE,                -- aws_amortized_cost / total_usage; stored for back-check reference
+    mechanic_group          TEXT                   -- billing mechanic label stamped by classify_mechanics.py:
+                                                   --   'compute_breakdown' | 'managed_db' | 'block_storage' |
+                                                   --   'data_transfer'     | 'flat_hourly' | 'per_request'   |
+                                                   --   'object_storage'    | 'commitment_discount' | 'misc'
 );
 
 

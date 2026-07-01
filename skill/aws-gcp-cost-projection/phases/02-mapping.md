@@ -1,5 +1,46 @@
 # Phase 2 — Mapping
 
+## Pre-Processing (deterministic — runs before this phase)
+
+Before Phase 2 agents run, two deterministic scripts have already stamped each row:
+
+1. classify_mechanics.py — adds mechanic_group to every aws_li_catalog row
+2. classify_transfer.py — pre-fills DataTransfer rows in aws_li_to_gcp_li with correct direction
+
+Phase 2 agents MUST check mechanic_group before mapping. The groups and their handling:
+
+| mechanic_group | Who maps it | Approach |
+|---|---|---|
+| compute_breakdown | candidate_pool.py (script) | Family already resolved; agent confirms SKU ID |
+| data_transfer | classify_transfer.py (script) | Pre-filled; agent only handles unclassified rows |
+| block_storage | Phase 2 storage agent | volume_type→PD type lookup table (below) |
+| managed_db | Phase 2 managed-db agent | Engine + tier judgment |
+| flat_hourly | Phase 2 networking agent | Fixed SKU per service type |
+| per_request | Phase 2 misc agent | Request-unit mapping |
+| object_storage | Phase 2 storage-analytics agent | S3 class → GCS class lookup |
+| commitment_discount | Auto-ignore | Set strategy='ignore', gcp_sku_id=NULL |
+| misc | Phase 2 misc agent | Best-effort, document confidence |
+
+### Block Storage Lookup Table (deterministic — use this, do not guess)
+
+| AWS Volume Type | GCP PD Type | Notes |
+|---|---|---|
+| gp2 | pd-balanced | Standard balanced persistent disk |
+| gp3 | pd-balanced | Same tier, gp3 is newer but same GCP equivalent |
+| io1 | pd-ssd | Provisioned IOPS → SSD |
+| io2 | pd-ssd | Same as io1 |
+| st1 | pd-standard | Throughput-optimized HDD |
+| sc1 | pd-standard | Cold HDD → standard |
+| magnetic (standard) | pd-standard | Legacy |
+| Aurora storage | pd-ssd | Aurora uses high-performance storage |
+| EFS | Filestore (Basic HDD or Basic SSD) | Match to perf tier |
+
+### Commitment/Discount rows — always ignore
+Rows with mechanic_group='commitment_discount' MUST be set to strategy='ignore'.
+These include: RIFee, SavingsPlanRecurringFee, EdpDiscount, BundledDiscount.
+They represent amortized commitment costs already reflected in effective rates.
+NEVER try to map these to GCP — it double-counts.
+
 **Run by:** 4–5 sub-agents in parallel, partitioned by GCP target
 family. Main agent dispatches all in one multi-tool message and waits.
 **Reads:** the slice of `aws_li_catalog` rows owned by the partition,

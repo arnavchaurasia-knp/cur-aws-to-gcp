@@ -41,14 +41,10 @@ These include: RIFee, SavingsPlanRecurringFee, EdpDiscount, BundledDiscount.
 They represent amortized commitment costs already reflected in effective rates.
 NEVER try to map these to GCP — it double-counts.
 
-**Run by:** 4–5 sub-agents in parallel, partitioned by GCP target
-family. Main agent dispatches all in one multi-tool message and waits.
-**Reads:** the slice of `aws_li_catalog` rows owned by the partition,
-the bundled catalog at `data/skus/`, the helper at
-`scripts/find-sku.sh`.
-**Writes:** rows in `aws_li_to_gcp_li` for the owned `aws_li_key`s; an
-append-only `projection-audit/mapping-notes.md` with rationale entries.
-**Returns to main:** `{slice_name, mapped_count, unmapped_keys[]}`.
+**Run by:** main agent dispatches one sub-agent per mechanic_group in parallel; all write to temp files; a merge script does one bulk INSERT.
+**Reads:** `projection-audit/phase2_manifest.json` (written by Phase 1).
+**Writes:** `projection-audit/mappings/<group>_mappings.json` per agent, then merged into `aws_li_to_gcp_li`.
+**Returns to main:** `{group, mapped_count, unmapped_keys[]}` per agent.
 
 ## FIRST LINE OF THIS PHASE — write progress marker
 
@@ -62,33 +58,120 @@ with open("progress.json", "w") as f:
 
 This is required — the UI reads it every 5 s and will show a blank screen for phases before the last if you skip it.
 
-## Partition table
+## Dispatch — mechanic-group parallel agents
 
-Standard partition (drop empty ones; combine if a partition has <5 rows):
+Phase 1 wrote `projection-audit/phase2_manifest.json`. Read it to get groups and their rows:
 
-| Partition | AWS sources | Primary GCP services |
+```python
+import json
+manifest = json.load(open("projection-audit/phase2_manifest.json"))
+# manifest[group] = {"rows": [...], "row_count": N, "total_spend": X, "needs_llm": bool}
+```
+
+**Auto-handled groups (run scripts, no LLM agent):**
+
+| Group | Script | What it does |
 |---|---|---|
-| **compute** | EC2 (Box/Reserved/Spot/SoleTenancy), EBS, EIP, Snapshots, Dedicated Hosts | Compute Engine |
-| **managed-db** | RDS, Aurora, ElastiCache, DynamoDB, MemoryDB, DocumentDB | Cloud SQL, AlloyDB, Cloud Memorystore, Cloud Bigtable, Cloud Firestore |
-| **networking** | DataTransfer, NAT/Transit Gateway, ELB/ALB/NLB, Route 53, CloudFront, Shield/WAF, VPN, Direct Connect | Networking, Cloud DNS, Cloud Load Balancing, Cloud CDN, Cloud Armor |
-| **storage-analytics** | S3, S3 Glacier, Athena, Glue, EMR, Redshift, Kinesis Firehose | Cloud Storage, BigQuery, Cloud Dataflow, Cloud Dataproc |
-| **misc** | Lambda, SQS/SNS/Kinesis Streams, KMS, Secrets Manager, CloudWatch, EKS, ECS/Fargate, anything else | Cloud Run / Functions, Pub/Sub, KMS, Cloud Logging/Monitoring, GKE |
+| `commitment_discount` | `scripts/apply_commitment_ignores.py <db>` | Sets `strategy='ignore'` for all RI/SP/EDP rows |
+| `data_transfer` | already run by `scripts/classify_transfer.py <db>` in Phase 1 | Pre-filled direction lookup |
+| `block_storage` | inline Python (see table below) | Volume type → PD type lookup, no judgment |
 
-Keep concurrency at **4–5 max**. If a partition is huge (compute often
-is, with distinct instance families × regions), split it once more by
-region group rather than launching a 6th agent.
+**Block storage — write mappings directly using this table:**
+
+| AWS volume_type | GCP disk SKU family | strategy |
+|---|---|---|
+| gp2, gp3 | `pd-balanced` | `map` |
+| io1, io2 | `pd-ssd` | `map` |
+| st1, sc1 | `pd-standard` | `map` |
+| Aurora storage | `alloydb-storage` | `map` |
+| EFS | `filestore-basic-ssd` or `filestore-basic-hdd` per perf tier | `map` |
+
+Write block_storage mappings to `projection-audit/mappings/block_storage_mappings.json` using the same JSON format as LLM agents (see Output contract below).
+
+**Groups that spawn an LLM agent (in parallel):**
+
+| mechanic_group | Rows contain | Curated prompt focus |
+|---|---|---|
+| `compute_breakdown` | EC2 Box/Spot/Reserved/Dedicated | Family already resolved by scripts; agent confirms SKU ID + unit_multiplier |
+| `managed_db` | RDS, Aurora, ElastiCache, MemoryDB, DocumentDB | Engine → GCP service (MySQL→Cloud SQL, Postgres→AlloyDB, Redis→Memorystore) |
+| `flat_hourly` | NAT GW, ELB, ALB, NLB, EIP | LB tier selection, NAT gateway equivalent |
+| `per_request` | Lambda, SQS, SNS, Kinesis, API GW | GCP service equivalent + request unit conversion |
+| `object_storage` | S3 timed storage | Storage class match (Standard, Nearline, Coldline) |
+| `misc` | Unclassified rows | Use `misc_annotation` per row — targeted guidance per service type |
+
+Merge groups with <5 rows into `misc` before dispatching. Keep **5 max concurrent agents**.
+
+### Misc agent — how to use `misc_annotation`
+
+Every misc row in the manifest has a `misc_annotation` field injected by `classify_mechanics.py`. Read it before mapping the row:
+
+```json
+{
+  "why": "no mechanic rule matched; product='Amazon EKS'",
+  "service_hint": "Amazon EKS",
+  "available_from_cur": ["usage_type", "operation", "unit", "region"],
+  "not_available_cur_only": ["node_count", "cluster_mode"],
+  "mapping_guidance": "Map Amazon EKS to its GCP equivalent. Fields ['node_count', 'cluster_mode'] are not in CUR — use service defaults and document assumptions."
+}
+```
+
+Apply this protocol per row:
+
+1. **`service_hint` is set** → you know the AWS service. Follow `mapping_guidance`. Fields in `not_available_cur_only` cannot be retrieved — pick conservative defaults (e.g. single-cluster, standard tier) and record each assumption in `mapping-notes.md` under `Assumed:`.
+2. **`service_hint` is null** + `aws_amortized_cost < $10/mo` → `strategy='passthrough'`, `mapping_confidence=0.3`, note `"low-spend unrecognized service"`.
+3. **`service_hint` is null** + `aws_amortized_cost ≥ $10/mo` → look up the product name in `data/services.json`. If found, map to the best GCP equivalent. If not found, `strategy='outlier_triage'` and add to `mapping-notes.md` with `why` text so Phase 5 can handle it.
+
+Never leave a misc row unmapped without an explicit `strategy`. The valid strategies for misc rows are: `map`, `passthrough`, `outlier_triage`, `ignore`.
+
+## Output contract — temp files, never direct DuckDB writes
+
+**Every agent (and every script) writes to its own JSON file. No agent touches DuckDB.**
+
+Output path: `projection-audit/mappings/<mechanic_group>_mappings.json`
+
+Each file is a JSON array. Every element maps to one row in `aws_li_to_gcp_li`:
+
+```json
+[
+  {
+    "aws_li_key": "abc123",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_id": "6F81-5844-456A",
+    "gcp_sku_name": "N2D AMD Instance Core running in Americas",
+    "component": "core",
+    "strategy": "map",
+    "unit_multiplier": 16,
+    "gcp_region": "us-east4",
+    "projection_note": "N2D AMD preferred over N2 Intel; 60/40 win",
+    "mapping_confidence": 0.92
+  }
+]
+```
+
+All schema fields from `reference/schemas.md` for `aws_li_to_gcp_li` are valid. Omit fields you don't know — the merge script uses NULL for missing optional fields.
+
+## Merge step — run after ALL agents complete
+
+```bash
+python3 scripts/merge_mappings.py projection-audit/projection.duckdb projection-audit/mappings/
+```
+
+The merge script reads every `*_mappings.json` file, bulk-INSERTs into `aws_li_to_gcp_li`, and prints a per-group row count. If a group's file is missing (agent failed), it reports which groups are absent — retry that agent before proceeding.
+
+Phase 2 is complete when `merge_mappings.py` exits 0.
 
 ## Briefing each sub-agent
 
-Each mapping sub-agent must read this whole file before starting. Brief
-it with:
-- Path to the schema reference: `reference/schemas.md`.
-- Its slice of `aws_li_catalog` (export to a small JSON/CSV under
-  `mapping/slices/<partition>.csv`, or pass via filter).
-- Path to the catalog: `data/skus/`, `data/services.json`.
-- Path to the helper: `scripts/find-sku.sh`.
-- Path to the notes journal: `projection-audit/mapping-notes.md`
-  (append-only).
+Each mapping sub-agent receives:
+- This whole file (`phases/02-mapping.md`).
+- Its rows from the manifest: `manifest["<mechanic_group>"]["rows"]` — embedded in the prompt, not fetched from DuckDB.
+- Path to schema reference: `reference/schemas.md`.
+- Path to catalog: `data/skus/`, `data/services.json`.
+- Path to helper: `scripts/find-sku.sh`.
+- Its output path: `projection-audit/mappings/<mechanic_group>_mappings.json`.
+- Path to notes journal: `projection-audit/mapping-notes.md` (append-only).
+
+The agent MUST NOT query DuckDB for its own rows — they are already in the manifest. The agent MAY query DuckDB or call `find-sku.sh` only for SKU rate lookups.
 
 ## Per-row reasoning — `operation` is the authoritative detail field
 

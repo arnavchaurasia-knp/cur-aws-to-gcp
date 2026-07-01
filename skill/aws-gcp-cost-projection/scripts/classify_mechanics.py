@@ -19,6 +19,7 @@ Rules applied in order (first match wins):
 Exits 0 on success. Prints WARNING if misc > 15% of total aws_amortized_cost.
 """
 
+import json
 import sys
 import re
 import duckdb
@@ -114,6 +115,79 @@ def classify(row: dict) -> str:
     return "misc"
 
 
+# Canonical field coverage per service keyword — used to annotate misc rows.
+# Maps a product-name fragment → (service_label, available_fields, missing_fields).
+# missing_fields = fields that are NOT_AVAILABLE_CUR_ONLY for this service type,
+# so the misc agent knows what to assume rather than hallucinate.
+_MISC_SERVICE_HINTS: list[tuple[str, str, list[str], list[str]]] = [
+    ("Lambda",          "AWS Lambda",           ["usage_type", "operation", "unit", "region"],
+                                                 ["avg_cpu_utilization", "memory_mb_configured"]),
+    ("SQS",             "Amazon SQS",           ["usage_type", "operation", "unit", "region"],
+                                                 ["avg_message_size_kb", "replication_factor"]),
+    ("SNS",             "Amazon SNS",           ["usage_type", "operation", "unit", "region"],
+                                                 []),
+    ("Kinesis",         "Amazon Kinesis",       ["usage_type", "operation", "unit", "region"],
+                                                 ["shard_count", "retention_hours"]),
+    ("CloudWatch",      "Amazon CloudWatch",    ["usage_type", "operation", "unit", "region"],
+                                                 []),
+    ("KMS",             "AWS KMS",              ["usage_type", "operation", "unit", "region"],
+                                                 []),
+    ("Secrets Manager", "AWS Secrets Manager",  ["usage_type", "operation", "unit", "region"],
+                                                 ["secret_count"]),
+    ("EKS",             "Amazon EKS",           ["usage_type", "operation", "unit", "region"],
+                                                 ["node_count", "cluster_mode"]),
+    ("ECS",             "Amazon ECS",           ["usage_type", "operation", "unit", "region"],
+                                                 ["task_count", "avg_cpu_utilization"]),
+    ("Fargate",         "AWS Fargate",          ["usage_type", "operation", "unit", "region"],
+                                                 ["avg_cpu_utilization"]),
+    ("API Gateway",     "Amazon API Gateway",   ["usage_type", "operation", "unit", "region"],
+                                                 []),
+    ("Glue",            "AWS Glue",             ["usage_type", "operation", "unit", "region"],
+                                                 ["dpu_count"]),
+    ("Athena",          "Amazon Athena",        ["usage_type", "operation", "unit", "region"],
+                                                 ["bytes_scanned"]),
+    ("Redshift",        "Amazon Redshift",      ["usage_type", "operation", "unit", "region"],
+                                                 ["node_count", "cluster_mode"]),
+    ("EMR",             "Amazon EMR",           ["usage_type", "operation", "unit", "region"],
+                                                 ["node_count", "instance_type"]),
+]
+
+
+def _misc_reason(row: dict) -> str:
+    """Produce a structured reason dict for a misc-classified row."""
+    product = row.get("product") or ""
+    usage_type = row.get("usage_type") or ""
+    unit = row.get("unit") or ""
+
+    # Try to match a known service hint
+    for fragment, service_label, available, missing in _MISC_SERVICE_HINTS:
+        if fragment.lower() in product.lower() or fragment.lower() in usage_type.lower():
+            return json.dumps({
+                "why": f"no mechanic rule matched; product={product!r}",
+                "service_hint": service_label,
+                "available_from_cur": available,
+                "not_available_cur_only": missing,
+                "mapping_guidance": (
+                    f"Map {service_label} to its GCP equivalent. "
+                    f"Fields {missing} are not in CUR — use service defaults and document assumptions."
+                ),
+            })
+
+    # Unknown service — provide generic annotation
+    return json.dumps({
+        "why": f"unrecognized product={product!r} usage_type={usage_type!r} unit={unit!r}",
+        "service_hint": None,
+        "available_from_cur": ["usage_type", "operation", "unit", "region", "aws_amortized_cost"],
+        "not_available_cur_only": [],
+        "mapping_guidance": (
+            "Service is unrecognized. Map by spend share: if aws_amortized_cost < $10/mo "
+            "set strategy='passthrough'. Otherwise find the closest GCP equivalent by product "
+            "name and usage_type, document your reasoning in mapping-notes.md, and set "
+            "mapping_confidence ≤ 0.6."
+        ),
+    })
+
+
 def main():
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <projection.duckdb>", file=sys.stderr)
@@ -160,10 +234,13 @@ def main():
 
     # --- Classify ---
     updates: list[tuple[str, str]] = []
+    misc_reasons: dict[str, str] = {}   # aws_li_key → why it landed in misc
     for raw in rows:
         row = dict(zip(col_names, raw))
         group = classify(row)
         updates.append((group, row["aws_li_key"]))
+        if group == "misc":
+            misc_reasons[row["aws_li_key"]] = _misc_reason(row)
 
     # Bulk update
     con.executemany(
@@ -226,7 +303,7 @@ def main():
             )
 
     # --- Emit phase2_manifest.json alongside the DB ---
-    import json, os, collections
+    import os, collections
     manifest: dict[str, list] = collections.defaultdict(list)
     row_data_full = con.execute(
         """
@@ -251,6 +328,8 @@ def main():
     ]
     for raw in row_data_full:
         row = dict(zip(full_cols, raw))
+        if row["mechanic_group"] == "misc" and row["aws_li_key"] in misc_reasons:
+            row["misc_annotation"] = json.loads(misc_reasons[row["aws_li_key"]])
         manifest[row["mechanic_group"]].append(row)
 
     # Skip groups that need no LLM work — commitment_discount is always ignore

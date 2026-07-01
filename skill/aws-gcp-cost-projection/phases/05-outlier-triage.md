@@ -25,12 +25,15 @@ A deterministic script (`detect_outliers.py`) has already run and executed all 9
 
 Your job is to read `outliers.md` and resolve every row that was flagged as **FAIL** in any of the categories. 
 
-For each flagged row, follow these triage steps:
+**Phase 5 never re-enters Phase 2 or Phase 3.** Every fix is a direct SQL UPDATE on `aws_li_to_gcp_li` — change `unit_multiplier`, `gcp_sku_id`, or `strategy` in place. If a row needs a different SKU, look it up via `find-sku.sh` and UPDATE. Never re-run mapping prompts or scripts.
 
-1. **Mapping check.** Does the GCP SKU's HA tier, instance family, region, and engine match the AWS description text *literally*? Re-read the description; don't infer. Most common bug class.
-2. **Unit check.** Check if the `unit_multiplier` is completely off (e.g. 100x or 1000x). If the AWS qty is "raw requests" but the mapper assumed "per 10K", fix the multiplier.
-3. **Spec check.** Does `unit_multiplier` match the AWS instance type's actual vCPU / RAM / IOPS?
-4. **Bill is ground truth.** The only commercial mechanisms you may invoke as the explanation are those visible as line items in the input: `reserved instance applied`, SP-coverage offsets, EDP / Private Pricing / CK Discount lines. If a documented line item explains the row, note it in `projection_note` and move on. If **no** documented mechanism explains the row, the row is wrong. Fix it.
+Triage each flagged row in this order (stop at first match):
+
+1. **Unit multiplier** (most common). Off by 10x/100x/1000x? `UPDATE aws_li_to_gcp_li SET unit_multiplier = <corrected> WHERE aws_li_key = '<key>'`.
+2. **Wrong SKU**. Wrong region, HA tier, or engine? `find-sku.sh` → `UPDATE gcp_sku_id`.
+3. **Spec mismatch**. `unit_multiplier` doesn't match `instance_vcpus`/`instance_ram_gb` from `aws_li_catalog`? Fix with UPDATE.
+4. **Documented mechanism**. A visible bill line item (RI-applied, SP offset, EDP) explains it → note in `projection_note`, no fix needed.
+5. **Cannot resolve**. No fix found → `UPDATE SET strategy = 'passthrough', mapping_confidence = 0.3` and document under `## Outlier acceptance` in `mapping-notes.md`.
 
 ## The nine queries (for reference)
 

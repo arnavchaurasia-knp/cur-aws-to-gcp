@@ -55,6 +55,8 @@ Read `review_flags.md`. It contains two sections:
 
 ## Writing corrections
 
+**Phase 3 never re-enters Phase 2.** All fixes happen via direct SQL UPDATE on `aws_li_to_gcp_li`. You already have the full catalog — look up the correct SKU via `find-sku.sh` and UPDATE in place. Do not re-run any Phase 2 script or prompt.
+
 Write corrections directly to `aws_li_to_gcp_li`.
 Append a brief justification to `mapping-notes.md` under a new `## Review findings` section at the bottom.
 

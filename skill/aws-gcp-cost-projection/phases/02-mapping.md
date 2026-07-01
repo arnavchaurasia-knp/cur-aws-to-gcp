@@ -68,13 +68,23 @@ manifest = json.load(open("projection-audit/phase2_manifest.json"))
 # manifest[group] = {"rows": [...], "row_count": N, "total_spend": X, "needs_llm": bool}
 ```
 
-**Auto-handled groups (run scripts, no LLM agent):**
+**Auto-handled groups (run scripts, zero LLM tokens):**
 
-| Group | Script | What it does |
+```bash
+python3 scripts/apply_commitment_ignores.py projection-audit/projection.duckdb
+python3 scripts/apply_static_mappings.py    projection-audit/projection.duckdb
+```
+
+`apply_static_mappings.py` handles `flat_hourly`, `object_storage`, and `per_request` with lookup tables — no agent needed.
+
+| Group | Handler | Method |
 |---|---|---|
-| `commitment_discount` | `scripts/apply_commitment_ignores.py <db>` | Sets `strategy='ignore'` for all RI/SP/EDP rows |
-| `data_transfer` | already run by `scripts/classify_transfer.py <db>` in Phase 1 | Pre-filled direction lookup |
-| `block_storage` | inline Python (see table below) | Volume type → PD type lookup, no judgment |
+| `commitment_discount` | `apply_commitment_ignores.py` | All rows → `strategy='ignore'` |
+| `data_transfer` | `classify_transfer.py` (Phase 1) | Direction lookup, pre-filled |
+| `block_storage` | inline (see table below) | Volume type → PD tier |
+| `flat_hourly` | `apply_static_mappings.py` | ALB/NLB/NAT/EIP fixed SKU map |
+| `object_storage` | `apply_static_mappings.py` | S3 class → GCS class |
+| `per_request` | `apply_static_mappings.py` | Lambda/SQS/SNS/Kinesis fixed map |
 
 **Block storage — write mappings directly using this table:**
 
@@ -94,9 +104,6 @@ Write block_storage mappings to `projection-audit/mappings/block_storage_mapping
 |---|---|---|
 | `compute_breakdown` | EC2 Box/Spot/Reserved/Dedicated | Family already resolved by scripts; agent confirms SKU ID + unit_multiplier |
 | `managed_db` | RDS, Aurora, ElastiCache, MemoryDB, DocumentDB | Engine → GCP service (MySQL→Cloud SQL, Postgres→AlloyDB, Redis→Memorystore) |
-| `flat_hourly` | NAT GW, ELB, ALB, NLB, EIP | LB tier selection, NAT gateway equivalent |
-| `per_request` | Lambda, SQS, SNS, Kinesis, API GW | GCP service equivalent + request unit conversion |
-| `object_storage` | S3 timed storage | Storage class match (Standard, Nearline, Coldline) |
 | `misc` | Unclassified rows | Use `misc_annotation` per row — targeted guidance per service type |
 
 Merge groups with <5 rows into `misc` before dispatching. Keep **5 max concurrent agents**.

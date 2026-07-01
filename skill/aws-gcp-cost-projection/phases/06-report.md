@@ -6,16 +6,10 @@ holistic view.
 **Reads:** `aws_li_catalog`, `gcp_projection`, `aws_li_to_gcp_li`,
 `run_results` (own history).
 **Writes:**
-- `projection-audit/report-<run_id>.md`
-- `projection-audit/report-<run_id>.html`
-- `projection-audit/summary-<run_id>.md` (new scannable narrative)
+- `projection-audit/summary-<run_id>.md` (scannable narrative)
 - one new row in `run_results` inside `projection-audit/projection.duckdb`
 
-Reports are customer-shareable. **Do not invent new sections in the
-main report, do not add narrative commentary inline, do not add an
-appendix.** The Description column carries per-row rationale; bulk
-narrative belongs in `summary-<run_id>.md`, not the main report
-table.
+Reports are customer-shareable. **Do not generate HTML or markdown tabular reports (report.html or report.md).** A deterministic python script handles the tabular reporting. The bulk narrative belongs in `summary-<run_id>.md`.
 
 ## Run identity — compute this first
 
@@ -40,8 +34,6 @@ artifacts (HTML, MD, summary, and the `run_results` row).
 
 | Artifact | Path |
 |---|---|
-| Customer report (HTML) | `projection-audit/report-<run_id>.html` |
-| Customer report (MD)   | `projection-audit/report-<run_id>.md` |
 | Narrative summary (MD) | `projection-audit/summary-<run_id>.md` |
 
 Do **not** write `report.md` or `report.html` without the suffix. Do
@@ -173,162 +165,7 @@ is still `provisional` (e.g. a rate fell through to a placeholder)
 the run is `provisional`. This is intentionally pessimistic — one
 shaky row means the customer should re-check before signing off.
 
-## Layout (in order)
 
-1. **Title block.**
-   - `# AWS to GCP Cloud Cost Analysis` — large, brand-blue (#1A73E8),
-     with a horizontal blue rule under it.
-   - One-line subhead:
-     `**Customer:** <name>  **Analysis Date:** <Month YYYY>  **Line Items:** <N> services analyzed`
-2. **Cost Summary** — 4-row table.
-3. **Cost Comparison by Service** — one row per `aws_li_catalog` row
-   (every row, including ignores and SP offsets), plus a TOTAL row at
-   the bottom.
-4. **Diff legend** — single italic line under the table:
-   *"Diff = AWS − GCP On-Demand. Negative values (green) indicate GCP
-   is lower cost."*
-5. **Methodology** — short bulleted list (compute family choices,
-   region mapping policy, CUD discount tiers, egress tier). No more.
-
-## Cost Summary — exact rows (no extras)
-
-|  |  |
-|---|---:|
-| AWS Total | $X,XXX |
-| GCP On-Demand | $X,XXX |
-| GCP with 1-Year Commitment | $X,XXX |
-| GCP with 3-Year Commitment | $X,XXX |
-
-`AWS Total` is `SUM(aws_amortized_cost) FROM aws_li_catalog`
-(post-tax, post-classification — **never** from `gcp_projection`,
-because `break_down` mappings double-count there).
-
-**HTML output:** Immediately after the Cost Summary table (or
-anywhere in the `<body>`), include a hidden machine-readable marker
-with the raw AWS total — no `$`, no commas, two decimals max:
-
-```html
-<div id="aws-total-spend" hidden>48320.50</div>
-```
-
-Downstream automation greps this element to extract the headline
-spend number. Render it once. The visible table is unchanged.
-
-## Cost Comparison by Service — column spec
-
-| # | Service (AWS → GCP) | Description | AWS | GCP OD | GCP CUD | GCP 3yr | Diff |
-|---|---|---|---:|---:|---:|---:|---:|
-
-- **#** — 1-indexed. Sort the body **by `aws_amortized_cost`
-  descending** (positive rows largest-first), then **negative
-  SP-offset / discount rows at the bottom** sorted by absolute value
-  descending. The TOTAL row is always last and not numbered.
-- **Service (AWS → GCP)** — *category pill* + service text.
-  - Pill values (one per row, exact spelling — render as a colored
-    badge in HTML, plain `[Compute]` prefix in MD): `Compute`,
-    `Storage`, `Database`, `Network`, `Messaging`, `Monitoring`,
-    `Container`, `Other`. Map from the AWS product family —
-    Compute = EC2 / Lambda / Fargate; Storage = S3 / EBS / EFS /
-    Snapshots; Database = RDS / DynamoDB / ElastiCache / DocumentDB;
-    Network = ELB / Route 53 / DataTransfer / VPC / NAT;
-    Messaging = SQS / SNS / Kinesis / MSK / EventBridge;
-    Monitoring = CloudWatch / X-Ray; Container = ECR / EKS;
-    Other = Savings Plan offsets, KMS, Secrets, GuardDuty, SCC,
-    Shield/WAF (where appropriate), and anything else.
-  - Service text: AWS source description (verbatim or lightly edited)
-    + ` → ` + chosen GCP target. Example:
-    "On Demand Linux c5a.4xlarge Instance Hour → Compute Engine N2D".
-    For ignored rows: "→ N/A - <reason>" (e.g.
-    "N/A - Savings Plans Payment", "N/A - SP Offset",
-    "N/A - Zero Cost Data Transfer").
-  - **Passthrough rows** (`strategy = 'passthrough'`) get a different
-    treatment:
-    - **AWS side:** use the bill's specific `usage_type` (not the
-      broad `product`) so the reader sees what sub-feature is being
-      carried — e.g. *"S3 Glacier Transition (Mumbai)"*, not just
-      *"Simple Storage Service"*. Append the region in parens when
-      the `usage_type` doesn't already encode it.
-    - **GCP target:** the literal word `passthrough` — not the
-      broad GCP service name. The row carries AWS cost forward 1:1;
-      naming a GCP service implies a mapping we don't have.
-    - Combined example:
-      `S3 Glacier Transition (Mumbai) → passthrough`.
-- **Description** — math + rationale, **3–6 lines** of compact text.
-  Always include:
-  - Spec resolution: `c5a.4xlarge (16 vCPU, 32 GB AMD)`
-  - Hours/qty arithmetic: `2232 hrs = 3 instances × 744h`
-  - Effective rate: `Rate = 16×$0.033929 + 32×$0.004547`
-  - 1yr / 3yr CUD math when applicable
-  - Cross-region or HA-tier note when applicable
-
-  Don't truncate; the cell wraps. Don't abbreviate to a single
-  sentence — the customer reads this column to validate the
-  projection.
-
-  **Passthrough rows** are the exception: render the
-  `aws_li_to_gcp_li.projection_note` **verbatim** as the entire
-  Description. Phase 3's passthrough audit rewrote those notes to
-  be specific and definitive ("S3 Glacier transition requests
-  Mumbai; ratio would be <0.33 vs Class A ops — passthrough"); the
-  reader sees that reasoning, not a generic template. **Never
-  emit the templated string** *"No direct GCP SKU mapping available;
-  carrying AWS cost forward"* — if you see it on a row, Phase 3 left
-  a hole; fall back to the verbatim `projection_note` anyway and
-  flag the row to the user.
-
-  ### Worked example — passthrough row before / after
-
-  Wrong (what the report used to emit):
-
-  ```
-  [Storage] Simple Storage Service → Cloud Storage |
-  No direct GCP SKU mapping available; carrying AWS cost forward |
-  $109.22
-  ```
-
-  Right (what Phase 6 now emits):
-
-  ```
-  [Storage] S3 Glacier Transition (Mumbai) → passthrough |
-  S3 Glacier transition requests Mumbai; ratio would be <0.33 vs
-  Class A ops — passthrough |
-  $109.22
-  ```
-- **AWS** — `aws_amortized_cost` rounded to 2dp, `$X,XXX.XX`.
-  SP-offset rows render as negative.
-- **GCP OD / GCP CUD / GCP 3yr** — `gcp_projected_cost`,
-  `gcp_cost_1yr_cud`, `gcp_cost_3yr_cud` rounded to 2dp.
-  Right-aligned.
-- **Diff** — `aws_amortized_cost - gcp_projected_cost` rounded to
-  2dp, rendered with explicit sign:
-  - Negative → `-$X.XX` in **green** (#0F9D58) — GCP is cheaper.
-  - Positive → `+$X.XX` in **red** (#D93025) — GCP is more
-    expensive.
-  - Zero or near-zero → `-$0.00` in default text.
-
-## TOTAL row
-
-Last row of the table. No `#`. Label "TOTAL" in the Service column,
-empty Description. Sums of AWS / GCP OD / GCP CUD / GCP 3yr / Diff
-columns. The Diff total is colored using the same rule.
-
-## Methodology — keep it short
-
-Four bullets, no more:
-
-- **Compute:** AWS EC2 t4g/t3 → GCP N2D or E2 instances (or whichever
-  families you actually used)
-- **Region:** Per-service region mapping applied based on source data
-- **CUD Discounts:** 1-year and 3-year committed use discounts applied
-  where available
-- **Network:** GCP Standard Tier (or Premium Tier — say which) egress
-  pricing used
-
-That's the whole report. No "Key findings", no "Caveats", no
-"Recommended next steps". Those belong in `summary-<run_id>.md`, the
-companion narrative — see below.
-
-## `summary-<run_id>.md` — scannable narrative
 
 A short, customer-facing companion to the main report. **Target
 30–60 lines of markdown.** This is where the agent does its thinking
@@ -397,9 +234,7 @@ high-confidence mappings, where the soft spots are>
     the catalog yet — note that the 1yr/3yr columns reflect OD
     pricing for those rows.
   - **Passthroughs** — name how many rows passed through and the
-    cumulative dollar amount. ("3 rows passed through totaling
-    $142.18 — AWS Support, AWS Config item recording, and one
-    S3-INT monitoring fee with no GCP analog.")
+    cumulative dollar amount.
   - **Region mapping** assumptions when a non-trivial region had
     no GCP equivalent (e.g. AWS Bahrain → GCP Doha).
 - **Confidence** — one paragraph, prose. Quantify:

@@ -20,10 +20,13 @@ const (
 	maxAttempts   = 3
 	pollInterval  = 5 * time.Second
 	finalizeWait  = 2 * time.Second
-	staleTimeout  = 5 * time.Minute
+	// staleTimeout: AGY writes nothing to agy.log while waiting for the model
+	// API response (can take 20-40 min on large bills). Set generously so the
+	// watcher never kills a job that's genuinely waiting on the API.
+	staleTimeout  = 45 * time.Minute
 )
 
-// Watcher polls a job's gemini PID until it dies, then finalizes (mark done,
+// Watcher polls a job's agy PID until it dies, then finalizes (mark done,
 // retry up to maxAttempts, or mark failed). One Watch goroutine per job —
 // either kicked off by the handler when a new job is created, or attached at
 // startup to orphans surviving a backend restart.
@@ -55,10 +58,10 @@ func (w *Watcher) WatchOnce(jobID string, pid int) {
 
 // watchUntilDead is the shared polling loop. Two liveness signals each tick:
 //   - Process liveness via pidAlive (rejects zombies + missing pids).
-//   - Activity freshness: the newer of gemini.log (continuous stdout/stderr)
+//   - Activity freshness: the newer of agy.log (continuous stdout/stderr)
 //     and progress.json (rewritten by the skill at each phase transition). A
 //     long phase that goes quiet on stdout still advances progress.json, and a
-//     burst of stdout with no phase change still bumps gemini.log — taking the
+//     burst of stdout with no phase change still bumps agy.log — taking the
 //     max of both avoids SIGKILLing a job that's genuinely still working. If
 //     neither has advanced in staleTimeout the process is considered hung and
 //     we SIGKILL the group so the next tick sees it gone.
@@ -81,12 +84,12 @@ func (w *Watcher) watchUntilDead(jobID string, pid int) {
 }
 
 // activityMtime returns the most recent mtime among the job's liveness
-// signals — gemini.log and progress.json. Returns zero-time if neither file
-// exists yet (gemini hasn't produced output and the skill hasn't written its
+// signals — agy.log and progress.json. Returns zero-time if neither file
+// exists yet (agy hasn't produced output and the skill hasn't written its
 // first phase marker).
 func (w *Watcher) activityMtime(jobDir string) time.Time {
 	var newest time.Time
-	for _, name := range []string{"gemini.log", progressFile} {
+	for _, name := range []string{"agy.log", "agy-internal.log", progressFile, "run_all.py"} {
 		info, err := os.Stat(filepath.Join(jobDir, name))
 		if err != nil {
 			continue
@@ -98,7 +101,7 @@ func (w *Watcher) activityMtime(jobDir string) time.Time {
 	return newest
 }
 
-// killGroup sends SIGKILL to the process group rooted at pid (gemini was
+// killGroup sends SIGKILL to the process group rooted at pid (agy was
 // spawned with Setsid so pid is also the pgid). Best-effort; errors are
 // logged but not fatal — the next pidAlive tick will sort it out.
 func killGroup(pid int) {
@@ -109,7 +112,7 @@ func killGroup(pid int) {
 }
 
 func (w *Watcher) finalize(jobID string, allowRetry bool) {
-	// Brief grace period in case gemini was just finishing the report write.
+	// Brief grace period in case agy was just finishing the report write.
 	time.Sleep(finalizeWait)
 
 	job, err := w.db.GetJob(jobID)
@@ -119,7 +122,7 @@ func (w *Watcher) finalize(jobID string, allowRetry bool) {
 	}
 	jobDir := filepath.Join(w.jobsDir, jobID)
 
-	// Explicit structural-failure path: if gemini wrote failure.txt, it has
+	// Explicit structural-failure path: if agy wrote failure.txt, it has
 	// diagnosed the input as unprocessable (wrong cloud, corrupted file,
 	// unknown shape). Surface that reason cleanly and skip the retry loop —
 	// retrying the same broken input would just burn three more attempts on
@@ -157,6 +160,18 @@ func (w *Watcher) finalize(jobID string, allowRetry bool) {
 				spend = extractAWSSpendFromHTML(string(content))
 			}
 		}
+		// Deterministic validation backstop: never mark a job "done" if the
+		// projection still has hard violations (passthrough-on-mappable,
+		// phantom / under-projection, unreachable rate, reconciliation). This
+		// is the code gate that makes the skill's Phase 5.5 guarantee real —
+		// a varying agent cannot skip it and ship a flawed report as "done".
+		if ok, summary := runValidatorGate(jobDir); !ok {
+			log.Printf("watcher %s: validation gate FAILED:\n%s", jobID, summary)
+			if err := w.db.UpdateJobFailed(jobID, "validation gate failed — report withheld:\n"+summary); err != nil {
+				log.Printf("watcher %s: UpdateJobFailed (validation): %v", jobID, err)
+			}
+			return
+		}
 		if err := w.db.UpdateJobDone(jobID, spend); err != nil {
 			log.Printf("watcher %s: UpdateJobDone: %v", jobID, err)
 		}
@@ -166,12 +181,12 @@ func (w *Watcher) finalize(jobID string, allowRetry bool) {
 	}
 
 	if !allowRetry || job.Attempts >= maxAttempts {
-		tail := tailLog(filepath.Join(jobDir, "gemini.log"), 500)
+		tail := tailLog(filepath.Join(jobDir, "agy.log"), 500)
 		var errMsg string
 		if !allowRetry {
 			errMsg = "refinement run exited without updating report.html"
 		} else {
-			errMsg = "gemini exited without report.html after " + strconv.Itoa(job.Attempts) + " attempts"
+			errMsg = "agy exited without report.html after " + strconv.Itoa(job.Attempts) + " attempts"
 		}
 		if tail != "" {
 			errMsg += "; tail: " + tail
@@ -221,7 +236,7 @@ func wipeJobDir(jobDir string) error {
 }
 
 // readFailureReason returns the trimmed contents of <jobDir>/failure.txt, or
-// "" if the file is absent/empty. gemini writes this when it detects the
+// "" if the file is absent/empty. agy writes this when it detects the
 // input is structurally unprocessable (wrong cloud, corrupted, etc.) so the
 // watcher can mark the job failed with a useful message instead of burning
 // three retry attempts on the same broken input.
@@ -280,3 +295,36 @@ func pidAlive(pid int) bool {
 	return true
 }
 
+
+// runValidatorGate runs the deterministic projection validator in check-only
+// mode against the job's projection.duckdb. Returns (passed, summary).
+//
+// Policy: fail-CLOSED on validator violations (exit 1) and on a malformed
+// projection (exit 2) — a report with hard violations must not be served as
+// "done". Fail-OPEN only when the validator literally cannot run (python or
+// the script missing), so an environment problem never blocks a good job.
+func runValidatorGate(jobDir string) (bool, string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return true, "skill dir unresolved; gate skipped"
+	}
+	script := filepath.Join(home, ".gemini", "antigravity-cli", "skills",
+		"aws-gcp-cost-projection-gemini", "scripts", "validate_fix.py")
+	if _, err := os.Stat(script); err != nil {
+		return true, "validator script absent; gate skipped"
+	}
+	// First run in autofix mode to automatically repair minor errors (e.g. regional SKU mismatches, missing CUD rates, per-N clamping)
+	_ = exec.Command("python3", script, jobDir).Run()
+
+	out, err := exec.Command("python3", script, "--check-only", jobDir).CombinedOutput()
+	summary := strings.TrimSpace(string(out))
+	if err != nil {
+		// Non-zero exit (violations or malformed db) -> fail closed.
+		if _, ok := err.(*exec.ExitError); ok {
+			return false, summary
+		}
+		// Could not start python at all -> fail open (env issue, not a data issue).
+		return true, "validator could not run (" + err.Error() + "); gate skipped"
+	}
+	return true, summary
+}

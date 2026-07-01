@@ -19,17 +19,28 @@ CREATE TABLE aws_raw AS
 --     × line_item_type × is_workload).
 --    (Populated by Phase 1.)
 CREATE TABLE aws_li_catalog (
-    aws_li_key         VARCHAR PRIMARY KEY,   -- md5 of the dedup tuple
-    product            VARCHAR,               -- AWS Service (e.g. "Elastic Compute Cloud")
-    aws_region         VARCHAR,               -- raw AWS region string from input
-    gcp_region         VARCHAR,               -- mapped equivalent (you derive)
-    usage_type         VARCHAR,               -- AWS usage_type / "Custom Usage Type" — Cost-Explorer rollup string, not row-distinguishing
-    operation          VARCHAR,               -- AWS operation / verbatim Description (carries instance type, disk class, transfer sub-type, net rate); Phase 2's structural mapping key
-    line_item_type     VARCHAR,               -- 'Usage' | 'DiscountedUsage' | 'SavingsPlanCoveredUsage' | 'RIFee' | …
-    pricing_model      VARCHAR,               -- 'OnDemand' | 'Spot' | 'Committed'
-    is_workload        BOOLEAN,               -- TRUE = projects to GCP; FALSE = AWS-side commercial mechanism
-    total_usage        DOUBLE,
-    aws_amortized_cost DOUBLE
+    aws_li_key              VARCHAR PRIMARY KEY,   -- md5 of the dedup tuple
+    product                 VARCHAR,               -- AWS Service (e.g. "Elastic Compute Cloud")
+    aws_region              VARCHAR,               -- raw AWS region string from input
+    gcp_region              VARCHAR,               -- mapped equivalent (you derive)
+    usage_type              VARCHAR,               -- AWS usage_type / "Custom Usage Type" — Cost-Explorer rollup string, not row-distinguishing
+    operation               VARCHAR,               -- AWS operation / verbatim Description (carries instance type, disk class, transfer sub-type, net rate); Phase 2's structural mapping key
+    line_item_type          VARCHAR,               -- 'Usage' | 'DiscountedUsage' | 'SavingsPlanCoveredUsage' | 'RIFee' | …
+    pricing_model           VARCHAR,               -- 'OnDemand' | 'Spot' | 'Committed'
+    is_workload             BOOLEAN,               -- TRUE = projects to GCP; FALSE = AWS-side commercial mechanism
+    total_usage             DOUBLE,
+    aws_amortized_cost      DOUBLE,
+    -- Structured fields populated by Phase 1 Step 7 from instance-type lookup tables.
+    -- NULL when not applicable (S3, Lambda, egress, etc.) or when the instance type
+    -- is not found in data/ec2-instance-types.json or data/rds-instance-types.json.
+    -- Phase 2 must read these columns for break_down unit_multiplier; do NOT re-infer.
+    instance_type           VARCHAR,               -- e.g. 't3.medium', 'db.r7g.12xlarge', 'cache.r6g.4xlarge'
+    instance_vcpus          INTEGER,               -- from lookup; NULL if not a compute/DB row
+    instance_ram_gb         DOUBLE,                -- from lookup; NULL if not a compute/DB row
+    instance_arch           VARCHAR,               -- 'x86_64' | 'arm64'; from lookup
+    instance_count          DOUBLE,                -- derived: total_usage / billing_hours (NULL if ambiguous)
+    billing_days            INTEGER,               -- billing period length in days (28/29/30/31); from bill or inferred
+    aws_effective_unit_rate DOUBLE                 -- aws_amortized_cost / total_usage; stored for back-check reference
 );
 
 

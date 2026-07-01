@@ -71,6 +71,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	io.Copy(dst, file)
 	dst.Close()
 
+	// Persist the user-entered prospect name as the deterministic customer name
+	// for the report. Phase 6 reads this instead of guessing from the bill
+	// (which produced wrong labels like an AWS account ID or a discount line).
+	_ = os.WriteFile(filepath.Join(jobDir, "customer_name.txt"), []byte(prospect), 0644)
+
 	h.db.CreateJob(jobID, sess.Email, prospect, ext, jobID)
 
 	go notify.PostJobSubmitted(h.notify.SlackURL, prospect, sess.Email, jobID)
@@ -134,9 +139,28 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jobDir := filepath.Join(h.jobsDir, id)
-	if err := wipeJobDir(jobDir); err != nil {
-		http.Error(w, `{"error":"wipe failed: `+err.Error()+`"}`, http.StatusInternalServerError)
-		return
+	startPhase := "1"
+	progressPath := filepath.Join(jobDir, "progress.json")
+	if progressBytes, err := os.ReadFile(progressPath); err == nil {
+		var p struct {
+			Phase int `json:"phase"`
+		}
+		if json.Unmarshal(progressBytes, &p) == nil && p.Phase > 1 {
+			startPhase = fmt.Sprintf("%d", p.Phase)
+		}
+	}
+
+	if startPhase == "1" {
+		if err := wipeJobDir(jobDir); err != nil {
+			http.Error(w, `{"error":"wipe failed: `+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+	} else {
+		os.Remove(filepath.Join(jobDir, "report.html"))
+		os.Remove(filepath.Join(jobDir, "failure.txt"))
+		os.Remove(filepath.Join(jobDir, "validation_report.json"))
+		os.Setenv("START_PHASE", startPhase)
+		defer os.Unsetenv("START_PHASE")
 	}
 
 	newSession := uuid.New().String()

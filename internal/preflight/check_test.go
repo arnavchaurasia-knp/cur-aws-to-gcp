@@ -7,17 +7,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestCheck_GeminiMissing(t *testing.T) {
-	// In the test environment gemini is unlikely to be on PATH and the
+func TestCheck_AGYMissing(t *testing.T) {
+	// In the test environment agy is unlikely to be on PATH and the
 	// user skill directory won't have the skill installed, so Check() should
 	// return an error. We just verify it doesn't panic and returns something
 	// meaningful.
 	err := preflight.Check()
-	// Either gemini not found or skill not found — both are valid failures
+	// Either agy not found or skill not found — both are valid failures
 	// in a fresh CI environment.
 	if err != nil {
 		assert.True(t,
-			containsAny(err.Error(), "gemini not found", "skill not found", "cannot resolve"),
+			containsAny(err.Error(), "agy not found", "skill not found", "cannot resolve"),
 			"unexpected error: %v", err,
 		)
 	}

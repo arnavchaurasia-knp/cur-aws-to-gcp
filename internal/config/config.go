@@ -18,10 +18,9 @@ type Config struct {
 	AppBaseURL         string
 	SlackWebhookURL    string
 	DevAuthBypass      bool
-	// GeminiModel is the model alias passed to `gemini --model`. From
-	// $GEMINI_MODEL, default "pro". Set to "flash" for cheaper/free-tier
-	// runs (Pro has no free-tier quota).
-	GeminiModel string
+	// AGYModel is the model alias passed to `agy --model`. From
+	// $AGY_MODEL, default "gemini-3.5-flash".
+	AGYModel string
 	// AdminEmails is a comma-separated allow-list from $ADMIN_EMAILS.
 	// Members can see every job (not just their own) via /api/admin/*.
 	// Empty = no admins. Compared case-insensitively against session.Email.
@@ -41,10 +40,10 @@ func LoadFromEnv() (*Config, error) {
 			"RESEND_API_KEY", "RESEND_FROM", "SLACK_WEBHOOK_URL",
 		)
 	}
-	// GEMINI_API_KEY is intentionally NOT in the required list. It must be
+	// ANTIGRAVITY_API_KEY is intentionally NOT in the required list. It must be
 	// set in the host environment (VM-wide on prod, shell on dev) so the
-	// spawned gemini subprocess inherits it via os.Environ(). Treating it as
-	// part of cur-web's config would force operators to duplicate it.
+	// spawned agy subprocess inherits it via os.Environ(). GEMINI_API_KEY is
+	// ignored by agy — use ANTIGRAVITY_API_KEY.
 	for _, k := range required {
 		if os.Getenv(k) == "" {
 			return nil, errors.New("missing required env var: " + k)
@@ -54,12 +53,12 @@ func LoadFromEnv() (*Config, error) {
 	if port == "" {
 		port = "8080"
 	}
-	model := os.Getenv("GEMINI_MODEL")
+	model := os.Getenv("AGY_MODEL")
 	if model == "" {
-		model = "pro"
+		model = "gemini-3.5-flash"
 	}
 	return &Config{
-		GeminiModel:        model,
+		AGYModel:           model,
 		Port:               port,
 		DataDir:            os.Getenv("DATA_DIR"),
 		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),

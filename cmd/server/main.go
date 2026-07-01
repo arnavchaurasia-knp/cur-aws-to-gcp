@@ -60,7 +60,7 @@ func main() {
 		log.Println("WARNING: DEV_AUTH_BYPASS=true — Google OAuth disabled, /api/auth/login sets a fake dev@google.com session")
 	}
 
-	spawner := jobs.NewSpawner(jobs.SpawnerConfig{GeminiModel: cfg.GeminiModel})
+	spawner := jobs.NewSpawner(jobs.SpawnerConfig{AGYModel: cfg.AGYModel})
 	notifyCfg := jobs.NotifyConfig{
 		Email: notify.EmailConfig{
 			APIKey:  cfg.ResendAPIKey,

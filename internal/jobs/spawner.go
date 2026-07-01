@@ -9,11 +9,12 @@ import (
 )
 
 type SpawnerConfig struct {
-	GeminiPath  string
-	GeminiModel string // `gemini --model` alias; defaults to "pro" if empty.
-	// GEMINI_API_KEY is intentionally not part of SpawnerConfig. The spawned
-	// gemini process inherits it from os.Environ(); set it on the host
-	// (VM-wide on prod, shell on dev). No duplication, no per-process plumbing.
+	AGYPath  string
+	AGYModel string // `agy --model` alias; defaults to "gemini-3.5-flash" if empty.
+	// ANTIGRAVITY_API_KEY is intentionally not part of SpawnerConfig. The spawned
+	// agy process inherits it from os.Environ(); set it on the host
+	// (VM-wide on prod, shell on dev). GEMINI_API_KEY is ignored by agy —
+	// use ANTIGRAVITY_API_KEY (same key value, different var name).
 }
 
 type SpawnResult struct {
@@ -29,20 +30,19 @@ func (s *Spawner) Run(jobDir, inputExt string) SpawnResult {
 	return s.RunWithSession(jobDir, inputExt, "")
 }
 
-// RunWithSession runs gemini synchronously, starting the session with the
-// given id (via --session-id) so it matches the job's DB session_id and can be
-// resumed later for refinement. Empty sessionID lets gemini assign its own.
-// Synchronous path is test-only; production uses Start + the watcher.
-func (s *Spawner) RunWithSession(jobDir, inputExt, sessionID string) SpawnResult {
+// RunWithSession runs agy synchronously. sessionID is accepted for API
+// compatibility but not forwarded to agy (--conversation is resume-only;
+// fresh starts let agy assign its own ID). Test-only path.
+func (s *Spawner) RunWithSession(jobDir, inputExt, _ string) SpawnResult {
 	prompt := buildProjectionPrompt(inputExt)
-	geminiBin := s.geminiBin()
-	args := append(s.baseFlags(), sessionFlag(sessionID)...)
-	args = append(args, "-p", prompt)
-	cmd := exec.Command(geminiBin, args...)
+	agyBin := s.agyBin()
+	// --add-dir roots AGY's workspace at jobDir (see startDetached for why).
+	args := append(s.baseFlags(), "--add-dir", jobDir, "-p", prompt)
+	cmd := exec.Command(agyBin, args...)
 	cmd.Dir = jobDir
 	cmd.Env = s.skillEnv()
 
-	logPath := filepath.Join(jobDir, "gemini.log")
+	logPath := filepath.Join(jobDir, "agy.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		return SpawnResult{Err: fmt.Errorf("create log: %w", err)}
@@ -53,7 +53,7 @@ func (s *Spawner) RunWithSession(jobDir, inputExt, sessionID string) SpawnResult
 
 	if err := cmd.Run(); err != nil {
 		tail := tailLog(logPath, 500)
-		return SpawnResult{Err: fmt.Errorf("gemini failed: %s", tail)}
+		return SpawnResult{Err: fmt.Errorf("agy failed: %s", tail)}
 	}
 
 	reportPath := filepath.Join(jobDir, "report.html")
@@ -69,30 +69,26 @@ func (s *Spawner) RunWithSession(jobDir, inputExt, sessionID string) SpawnResult
 	return SpawnResult{AWSSpend: spend}
 }
 
-// Start spawns gemini detached for a fresh projection run. sessionID is passed
-// as --session-id so the gemini session is created with the job's known UUID
-// (matching the DB session_id); a later refine resumes it. Empty sessionID
-// lets gemini assign its own.
-func (s *Spawner) Start(jobDir, inputExt, sessionID string) (int, error) {
-	args := append(s.baseFlags(), sessionFlag(sessionID)...)
-	args = append(args, "-p", buildProjectionPrompt(inputExt))
-	return s.startDetached(jobDir, args)
+// Start spawns a fresh projection run. Instead of one agy call that
+// self-orchestrates all six phases (unreliable on Gemini), it launches the
+// run_all.py orchestrator, which drives the phases one at a time with tight
+// per-phase prompts and a deterministic DuckDB gate between each. See
+// orchestrate.go. The watcher polls the returned PID (the orchestrator) and
+// finalizes when the report appears — same contract as before.
+func (s *Spawner) Start(jobDir, inputExt, _ string) (int, error) {
+	return s.StartOrchestrated(jobDir, inputExt)
 }
 
-// StartRefine resumes the job's prior gemini session (--resume latest) so the
+// StartRefine resumes the job's most recent agy session via --continue so the
 // agent keeps the full conversational context of the original run, then feeds
-// it the user's refinement instruction. Each job dir is its own gemini
-// "project" with one session per run (plus one per retry), so "latest"
-// resolves unambiguously to this job's most recent run. (gemini --resume takes
-// "latest"/index rather than a UUID, so we can't target the session_id
-// directly — per-job project isolation is what makes "latest" correct.) The
-// DuckDB state also persists on disk, so the prompt names it as a fallback
-// pointer in case the resumed context is thin.
+// it the user's refinement instruction. --continue resumes the most recent
+// conversation in the CWD (each job dir is isolated, so this is unambiguous).
+// The DuckDB state also persists on disk as a fallback pointer.
 func (s *Spawner) StartRefine(jobDir, _, instruction string) (int, error) {
 	prompt := "Refine an existing AWS-to-GCP cost projection. " +
 		"The projection state is in projection-audit/projection.duckdb in this directory. " +
 		"Refinement instruction from the user: " + instruction + ". " +
-		"Using the aws-gcp-cost-projection skill: update aws_li_to_gcp_li for affected " +
+		"Using the aws-gcp-cost-projection-gemini skill: update aws_li_to_gcp_li for affected " +
 		"rows, recompute gcp_projection, then re-run Phase 6 to produce a new versioned " +
 		"report. Keep all unrelated mappings unchanged. " +
 		"IMPORTANT: run_results column meaning is fixed — gcp_od is always GCP On-Demand, " +
@@ -100,46 +96,60 @@ func (s *Spawner) StartRefine(jobDir, _, instruction string) (int, error) {
 		"instructions (e.g. 'use 3yr CUD as primary') change report layout only; they " +
 		"NEVER permute run_results schema columns. Always use the named-column " +
 		"INSERT (col_list) SELECT ... AS alias form per Phase 6. Report when done."
-	args := append(s.baseFlags(), "--resume", "latest", "-p", prompt)
+	args := append(s.baseFlags(), "--continue", "-p", prompt)
 	return s.startDetached(jobDir, args)
 }
 
-// baseFlags are the gemini CLI flags common to every spawn:
-//   --approval-mode=yolo : auto-approve all tool calls (no interactive prompts)
-//   --skip-trust         : trust the workspace folder for this session. Without
-//                          this, gemini downgrades yolo→default in untrusted dirs
-//                          (job dirs under DATA_DIR are never pre-trusted), which
-//                          would hang the headless run on the first tool approval.
-//   --model <alias>      : from SpawnerConfig.GeminiModel (default "pro").
+// baseFlags are the agy CLI flags common to every spawn:
+//
+//	--dangerously-skip-permissions : auto-approve all tool calls (no interactive prompts)
+//	--model <alias>                : from SpawnerConfig.AGYModel (default "gemini-3.5-flash").
+//	--print-timeout 45m            : override agy's default 5-minute print-mode timeout;
+//	                                 large bills take 20-40 min across 6 phases.
 func (s *Spawner) baseFlags() []string {
-	model := s.cfg.GeminiModel
+	model := s.cfg.AGYModel
 	if model == "" {
-		model = "pro"
+		model = "gemini-3.5-flash"
 	}
-	return []string{"--approval-mode=yolo", "--skip-trust", "--model", model}
+	return []string{"--dangerously-skip-permissions", "--model", model, "--print-timeout", "45m"}
 }
 
-// sessionFlag returns the --session-id flag pair when id is non-empty, so the
-// spawned gemini session is created with the job's known UUID (matching the DB
-// session_id). Empty id → no flag, and gemini assigns its own session id.
-func sessionFlag(id string) []string {
+// conversationFlag returns the --conversation flag pair when id is non-empty,
+// so the spawned agy session is created/resumed with the job's known UUID
+// (matching the DB session_id). Empty id → no flag, and agy assigns its own.
+func conversationFlag(id string) []string {
 	if id == "" {
 		return nil
 	}
-	return []string{"--session-id", id}
+	return []string{"--conversation", id}
 }
 
 // startDetached is the shared spawn machinery: Setsid for true detachment,
-// stdout/stderr → gemini.log (append, not truncate, so refinement output
+// stdout/stderr → agy.log (append, not truncate, so refinement output
 // follows the original run's log), Process.Release so we never block on Wait.
 func (s *Spawner) startDetached(jobDir string, args []string) (int, error) {
-	cmd := exec.Command(s.geminiBin(), args...)
+	// --log-file captures AGY's internal errors (quota, auth) that never reach
+	// stdout/stderr — without it, quota exhaustion looks like a silent crash.
+	args = append(args, "--log-file", filepath.Join(jobDir, "agy-internal.log"))
+	// --add-dir makes jobDir AGY's workspace root. WITHOUT it, AGY runs every
+	// tool command in its shared scratch sandbox (~/.gemini/antigravity-cli/scratch),
+	// ignoring cmd.Dir — so progress.json, projection.duckdb, and report.html all
+	// land in scratch and the watcher (which waits on jobDir/report.html) never
+	// sees them. The shared scratch also leaks artifacts between the two AGY repos.
+	args = append(args, "--add-dir", jobDir)
+
+	exec.Command("git", "init", jobDir).Run()
+	skillDir := s.resolveSkillDir()
+	exec.Command("cp", "-r", filepath.Join(skillDir, "phases"), jobDir).Run()
+	exec.Command("cp", "-r", filepath.Join(skillDir, "scripts"), jobDir).Run()
+
+	cmd := exec.Command(s.agyBin(), args...)
 	cmd.Dir = jobDir
 	cmd.Env = s.skillEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	logFile, err := os.OpenFile(
-		filepath.Join(jobDir, "gemini.log"),
+		filepath.Join(jobDir, "agy.log"),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644,
 	)
 	if err != nil {
@@ -150,37 +160,46 @@ func (s *Spawner) startDetached(jobDir string, args []string) (int, error) {
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
-		return 0, fmt.Errorf("start gemini: %w", err)
+		return 0, fmt.Errorf("start agy: %w", err)
 	}
 	pid := cmd.Process.Pid
 	cmd.Process.Release()
 	return pid, nil
 }
 
-func (s *Spawner) geminiBin() string {
-	if s.cfg.GeminiPath != "" {
-		return s.cfg.GeminiPath
+func (s *Spawner) agyBin() string {
+	if s.cfg.AGYPath != "" {
+		return s.cfg.AGYPath
 	}
-	return "gemini"
+	return "agy"
+}
+
+func (s *Spawner) resolveSkillDir() string {
+	if envDir := os.Getenv("SKILL_DIR"); envDir != "" {
+		return envDir
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		localDir := filepath.Join(cwd, "skill", "aws-gcp-cost-projection")
+		if stat, err := os.Stat(localDir); err == nil && stat.IsDir() {
+			return localDir
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".gemini", "antigravity-cli", "skills", "aws-gcp-cost-projection-gemini")
 }
 
 // skillEnv returns os.Environ() plus SKILL_DIR pointing to the installed skill.
 // The skill's bash scripts (preflight.sh, scripts/find-sku.sh) use $SKILL_DIR
 // to resolve their own paths, since the agent's CWD is jobDir, not the skill dir.
 func (s *Spawner) skillEnv() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return os.Environ()
-	}
-	skillDir := filepath.Join(home, ".gemini", "skills", "aws-gcp-cost-projection")
-	return append(os.Environ(), "SKILL_DIR="+skillDir)
+	return append(os.Environ(), "SKILL_DIR="+s.resolveSkillDir())
 }
 
 func buildProjectionPrompt(inputExt string) string {
 	return fmt.Sprintf(
-		"Use the aws-gcp-cost-projection skill to project costs from ./input%s. "+
-			"Do not invoke any other skills — only aws-gcp-cost-projection. "+
-			"If a skill other than aws-gcp-cost-projection seems relevant, ignore it. "+
+		"Use the aws-gcp-cost-projection-gemini skill to project costs from ./input%s. "+
+			"Do not invoke any other skills — only aws-gcp-cost-projection-gemini. "+
+			"If a skill other than aws-gcp-cost-projection-gemini seems relevant, ignore it. "+
 			"If the input cannot be processed for a structural reason (wrong cloud — "+
 			"e.g. Azure or GCP bill rather than AWS — corrupted file, unknown shape "+
 			"that even the skill's PDF/CUR/CSV branches can't make sense of), write "+

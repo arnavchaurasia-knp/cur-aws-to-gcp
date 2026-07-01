@@ -149,6 +149,7 @@ export function JobStatus({ user }: { user: UserInfo }) {
       const j = await getJob(id).catch(() => null)
       if (!j || cancelled) return
       setJob(j)
+      setJobs(prev => prev.map(old => old.id === j.id ? { ...old, status: j.status } : old))
       if (j.status === 'running' || j.status === 'pending') {
         getProgress(id).then(p => { if (!cancelled && p) setProgress(p) })
         setTimeout(poll, 5000)

@@ -1,0 +1,31 @@
+{
+  "_note": "DETERMINISTIC AWS-instance -> GCP machine-family map. Phase 2 MUST use this instead of a per-row 60/40 price-performance judgment, so the same AWS instance type ALWAYS maps to the same GCP family on every run. This is the single biggest source of run-to-run GCP-cost variance: when family choice is left to the model, c5.9xlarge maps to N2D on one run and N2 on the next, swinging the total by ~50%. validate_fix.py enforces this via the instance_family_mismatch gate.",
+  "_resolution_order": [
+    "1. If the instance is arm64 / Graviton (instance_arch='arm64', e.g. *g / *gd families and a1) -> T2A (GCP Arm).",
+    "2. Else if it is a burstable T-family (t2, t3, t3a) -> E2 (GCP cost-optimized).",
+    "3. Else (all other x86_64 general/compute/memory-optimized) -> N2D (AMD; best price-performance, the 60/40 winner, and what the validated reference run used)."
+  ],
+  "rules": {
+    "arm64_any": "T2A",
+    "burstable_prefixes": ["t2", "t3", "t3a"],
+    "burstable_family": "E2",
+    "default_x86": "N2D"
+  },
+  "examples": {
+    "c5.9xlarge": "N2D",
+    "c5a.4xlarge": "N2D",
+    "c4.8xlarge": "N2D",
+    "c3.2xlarge": "N2D",
+    "m5.2xlarge": "N2D",
+    "r6i.large": "N2D",
+    "t2.2xlarge": "E2",
+    "t3.large": "E2",
+    "t3a.xlarge": "E2",
+    "m6g.large": "T2A",
+    "c6g.8xlarge": "T2A",
+    "c7g.2xlarge": "T2A",
+    "r6g.2xlarge": "T2A",
+    "a1.2xlarge": "T2A",
+    "t4g.medium": "T2A"
+  }
+}

@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeGemini records its args, writes a minimal report.html, and exits 0
-const fakeGemini = `#!/bin/bash
+// fakeAGY records its args, writes a minimal report.html, and exits 0
+const fakeAGY = `#!/bin/bash
 echo "$@" > args.txt
-echo "fake gemini running"
+echo "fake agy running"
 echo '<div id="aws-total-spend">12345.00</div>' > report.html
 exit 0`
 
@@ -23,11 +23,11 @@ func TestSpawner_Success(t *testing.T) {
 	os.MkdirAll(jobDir, 0755)
 	os.WriteFile(filepath.Join(jobDir, "input.csv"), []byte("header,data"), 0644)
 
-	geminiPath := filepath.Join(dir, "gemini")
-	os.WriteFile(geminiPath, []byte(fakeGemini), 0755)
+	agyPath := filepath.Join(dir, "agy")
+	os.WriteFile(agyPath, []byte(fakeAGY), 0755)
 
 	s := jobs.NewSpawner(jobs.SpawnerConfig{
-		GeminiPath: geminiPath,
+		AGYPath: agyPath,
 	})
 
 	result := s.Run(jobDir, ".csv")
@@ -38,16 +38,19 @@ func TestSpawner_Success(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestSpawner_PassesSessionID(t *testing.T) {
+// AGY does not accept a caller-supplied session ID for fresh starts
+// (--conversation is resume-only). Verify the session ID is accepted by the
+// API but not forwarded to the agy binary as --conversation.
+func TestSpawner_SessionIDNotForwardedOnFreshRun(t *testing.T) {
 	dir := t.TempDir()
 	jobDir := filepath.Join(dir, "job-sid")
 	os.MkdirAll(jobDir, 0755)
 	os.WriteFile(filepath.Join(jobDir, "input.csv"), []byte("header,data"), 0644)
 
-	geminiPath := filepath.Join(dir, "gemini")
-	os.WriteFile(geminiPath, []byte(fakeGemini), 0755)
+	agyPath := filepath.Join(dir, "agy")
+	os.WriteFile(agyPath, []byte(fakeAGY), 0755)
 
-	s := jobs.NewSpawner(jobs.SpawnerConfig{GeminiPath: geminiPath})
+	s := jobs.NewSpawner(jobs.SpawnerConfig{AGYPath: agyPath})
 
 	const sid = "11111111-2222-3333-4444-555555555555"
 	result := s.RunWithSession(jobDir, ".csv", sid)
@@ -55,26 +58,27 @@ func TestSpawner_PassesSessionID(t *testing.T) {
 
 	args, err := os.ReadFile(filepath.Join(jobDir, "args.txt"))
 	require.NoError(t, err)
-	assert.Contains(t, string(args), "--session-id "+sid)
+	assert.NotContains(t, string(args), "--conversation")
+	assert.NotContains(t, string(args), sid)
 }
 
-func TestSpawner_NoSessionIDFlagWhenEmpty(t *testing.T) {
+func TestSpawner_NoConversationFlagOnFreshRun(t *testing.T) {
 	dir := t.TempDir()
 	jobDir := filepath.Join(dir, "job-nosid")
 	os.MkdirAll(jobDir, 0755)
 	os.WriteFile(filepath.Join(jobDir, "input.csv"), []byte("header,data"), 0644)
 
-	geminiPath := filepath.Join(dir, "gemini")
-	os.WriteFile(geminiPath, []byte(fakeGemini), 0755)
+	agyPath := filepath.Join(dir, "agy")
+	os.WriteFile(agyPath, []byte(fakeAGY), 0755)
 
-	s := jobs.NewSpawner(jobs.SpawnerConfig{GeminiPath: geminiPath})
+	s := jobs.NewSpawner(jobs.SpawnerConfig{AGYPath: agyPath})
 
-	result := s.Run(jobDir, ".csv") // empty session id
+	result := s.Run(jobDir, ".csv")
 	require.NoError(t, result.Err)
 
 	args, err := os.ReadFile(filepath.Join(jobDir, "args.txt"))
 	require.NoError(t, err)
-	assert.NotContains(t, string(args), "--session-id")
+	assert.NotContains(t, string(args), "--conversation")
 }
 
 func TestSpawner_Failure(t *testing.T) {
@@ -82,11 +86,11 @@ func TestSpawner_Failure(t *testing.T) {
 	jobDir := filepath.Join(dir, "job-fail")
 	os.MkdirAll(jobDir, 0755)
 
-	geminiPath := filepath.Join(dir, "gemini-fail")
-	os.WriteFile(geminiPath, []byte("#!/bin/bash\necho 'error' >&2\nexit 1"), 0755)
+	agyPath := filepath.Join(dir, "agy-fail")
+	os.WriteFile(agyPath, []byte("#!/bin/bash\necho 'error' >&2\nexit 1"), 0755)
 
 	s := jobs.NewSpawner(jobs.SpawnerConfig{
-		GeminiPath: geminiPath,
+		AGYPath: agyPath,
 	})
 
 	result := s.Run(jobDir, ".csv")

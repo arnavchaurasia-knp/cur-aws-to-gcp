@@ -1,5 +1,5 @@
 ---
-name: aws-gcp-cost-projection
+name: aws-gcp-cost-projection-gemini
 description: "Project an AWS bill to GCP cost. Loads a CUR or flat AWS Cost Explorer Detail Report into DuckDB, maps each unique line item to its GCP equivalent, and produces a per-row cost comparison report. Use when user says CUR, AWS-to-GCP cost, GCP migration projection, AWS bill projection, GCP cost estimate, AWS CUR analysis, projection audit, AWS to GCP TCO, AWS to GCP migration cost."
 ---
 
@@ -12,10 +12,52 @@ totals — On-Demand, 1-year CUD, 3-year CUD.
 This skill is a guide, not a recipe. You run the queries, fetch the
 data, decide the mappings, and render the report.
 
+## Phase progress tracking — REQUIRED
+
+At the **start** of each phase, write `progress.json` in the working
+directory (the job dir, not the skill dir). The web UI reads this file
+every 5 seconds to display which phase is running. Omitting it leaves
+the user with a blank progress screen for the entire run.
+
+```python
+import json, os
+def write_progress(phase_num: int, phase_name: str, activity: str = ""):
+    with open("progress.json", "w") as f:
+        json.dump({"phase": phase_num, "phase_name": phase_name,
+                   "last_activity": activity}, f)
+```
+
+Call `write_progress(N, "Name", "short description")` as the very first
+line of each phase block — before any queries or file I/O — so the UI
+updates immediately when the phase begins:
+
+| Call | When |
+|---|---|
+| `write_progress(1, "Ingestion", "Loading bill into DuckDB")` | start of Phase 1 |
+| `write_progress(2, "Mapping", "Mapping AWS line items to GCP")` | start of Phase 2 |
+| `write_progress(3, "Review", "Verifying mappings")` | start of Phase 3 |
+| `write_progress(4, "Rate-Card Fill", "Fetching GCP rates")` | start of Phase 4 |
+| `write_progress(5, "Outlier Triage", "Running outlier queries")` | start of Phase 5 |
+| `write_progress(6, "Reporting", "Generating HTML report")` | start of Phase 6 |
+
 **Scope: project the entire dataset provided.** Don't ask the user to
 pick a time range, month, or service subset. Whatever rows are in the
 input file, all of them are in scope — the report covers the full
 period the file represents. Only filter if the user explicitly asks.
+
+## Valid input shapes — check this BEFORE writing failure.txt
+
+Three input shapes are ALL valid. Do not write `failure.txt` for any of them:
+
+| Shape | How to recognise | Example first row |
+|---|---|---|
+| **Flat AWS Cost Explorer Detail Report** | 6 columns: `Service, Region, Custom Usage Type, Description, Usage Quantity, Cost ($)` — comma-separated, may have thousand-separator quotes | `Amazon Elastic Compute Cloud,Asia Pacific (Mumbai),APS3-BoxUsage:m6g.4xlarge,"$0.616 per On Demand Linux m6g.4xlarge Instance Hour",720,"443.52"` |
+| **Raw AWS CUR** | Many columns (50+), has `lineItem/LineItemType`, may be CSV/parquet/gzip/dir of part files | `lineItem/LineItemType,product/instanceType,...` |
+| **AWS console PDF bill** | `file` reports `PDF document`; convert via `pdftotext -layout` first | N/A |
+
+**The 6-column flat CSV is the most common input shape. It is a valid AWS bill export. Do NOT reject it.**
+
+Only write `failure.txt` when the file is clearly from a different cloud provider (Azure, GCP), is corrupted/unreadable, or has a completely unknown structure that matches none of the three shapes above.
 
 ## Pipeline (six phases)
 
@@ -100,6 +142,44 @@ The DuckDB schemas (`aws_raw`, `aws_li_catalog`, `aws_li_to_gcp_li`,
    [reference/schemas.md](reference/schemas.md) live there. Initialize
    them empty; each phase populates its own.
 
+## Large bills (>500 deduped line items after Phase 1)
+
+When `aws_li_catalog` has >500 rows after Phase 1 dedup:
+
+1. **Phase 2 — split compute partition further** if it has >200 rows:
+   split by region group (Americas / EMEA / APAC) before launching
+   sub-agents, keeping each agent's slice under 100 rows.
+2. **Phase 5 — always split** across 4 sub-agents by query family
+   (A1+A2 / B+C / D+E+G / F+H+I). Don't attempt all 9 queries in
+   one agent for a large bill.
+3. **Phase 2 — pre-filter obvious service splits**: If the bill has
+   distinct product families that a single agent would never finish
+   in one context (e.g. 150 Lambda rows + 200 EC2 rows), add an
+   extra partition or subdivide compute further. The concurrency cap
+   is 4–5 agents; more slices = more serial turns, so balance.
+
+## Mid-run failure recovery
+
+If a phase exits or errors before writing its output (DuckDB table
+empty, `mapping-notes.md` missing, agy killed mid-run):
+
+1. **Don't restart from scratch.** The DuckDB at
+   `projection-audit/projection.duckdb` is durable. Check what's
+   there:
+   ```sql
+   SELECT table_name, estimated_size FROM duckdb_tables();
+   ```
+2. **Re-run only the failed phase** — the prior phases' tables are
+   intact. Brief the sub-agent with the current state of the database
+   and the phase file; it picks up from where the failure left.
+3. **If `aws_li_to_gcp_li` is partially populated** (Phase 2 failed
+   mid-flight): run the coverage query from Phase 2 to find which
+   `aws_li_key`s are missing, then dispatch only the missing slices
+   to new sub-agents.
+4. **If `agy-internal.log` exists in the job dir**, read it first —
+   it captures quota exhaustion, auth errors, and hard crashes that
+   the main log doesn't show.
+
 ## What you never do
 
 - Render the report while any outlier query has unreviewed results.
@@ -120,3 +200,5 @@ The DuckDB schemas (`aws_raw`, `aws_li_catalog`, `aws_li_to_gcp_li`,
   (it double-counts `break_down` mappings). Always sum from
   `aws_li_catalog`.
 - Mutate AWS data or write back to GCP. Read-only audit.
+- Use `view_file` (or similar viewing tools) to read the contents of raw SKU catalog files (e.g., `data/skus/<id>.json.gz` or `data/services.json`). Instead, read and filter them programmatically using Python scripts or DuckDB JSON table readers without printing their raw content to the stdout.
+- Print large query results, arrays, or text outputs containing more than 50 rows/lines to the stdout of your command executions, as this inflates the token context window. Use `LIMIT` in SQL or summarize outputs in your python scripts.

@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/bash
+#!/usr/bin/env bash
 # Refreshes data/services.json and data/skus/*.json.gz from Cloud Billing Catalog API.
 # Run when GCP rates change (quarterly is fine; pricing rarely shifts day-to-day).
 # Requires: gcloud auth (any GCP-authenticated user — the catalog API is public),
@@ -98,3 +98,7 @@ META
 
 echo ""
 echo "Done in $((END - START))s. $SVC_COUNT services, $TOTAL SKUs, $(du -sh "$OUT_DIR" | cut -f1) gz."
+
+# Rebuild the DuckDB index so find-sku.sh uses the fresh data immediately.
+echo ">> Rebuilding catalog.duckdb index..."
+bash "$(dirname "$0")/build-catalog-index.sh"

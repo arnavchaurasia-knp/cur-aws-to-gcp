@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 )
 
-// Progress is a snapshot of an in-flight gemini session, derived from the
+// Progress is a snapshot of an in-flight agy session, derived from the
 // progress.json file the skill writes to the job directory at each phase
 // transition.
 type Progress struct {
@@ -31,13 +31,20 @@ type skillProgress struct {
 
 // ReadProgress reads progress.json from the job directory. The second argument
 // (sessionID) is kept for API compatibility with callers but is unused —
-// Gemini CLI manages session state internally.
+// AGY CLI manages session state internally.
 // Returns Progress{TranscriptOK: false} if the file doesn't exist yet.
 func ReadProgress(jobDir, _ string) (*Progress, error) {
 	data, err := os.ReadFile(filepath.Join(jobDir, progressFile))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &Progress{}, nil
+			// Agent is initializing or running early steps before the skill writes progress.json.
+			// Default to Phase 1 so the UI shows activity immediately.
+			return &Progress{
+				TranscriptOK: true,
+				PhaseNumber:  1,
+				Phase:        "Initialization",
+				LastActivity: "Initializing agent...",
+			}, nil
 		}
 		return &Progress{}, err
 	}

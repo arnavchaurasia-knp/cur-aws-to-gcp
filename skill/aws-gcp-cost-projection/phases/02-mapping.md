@@ -9,6 +9,18 @@ the bundled catalog at `data/skus/`, the helper at
 append-only `projection-audit/mapping-notes.md` with rationale entries.
 **Returns to main:** `{slice_name, mapped_count, unmapped_keys[]}`.
 
+## FIRST LINE OF THIS PHASE — write progress marker
+
+Before any other work, write `progress.json` in the job working directory:
+
+```python
+import json
+with open("progress.json", "w") as f:
+    json.dump({"phase": 2, "phase_name": "Mapping", "last_activity": "Mapping AWS line items to GCP"}, f)
+```
+
+This is required — the UI reads it every 5 s and will show a blank screen for phases before the last if you skip it.
+
 ## Partition table
 
 Standard partition (drop empty ones; combine if a partition has <5 rows):
@@ -93,12 +105,17 @@ deviation from defaults, treat that as strong evidence you're wrong.
 
 ### 2. Equivalence intent (price–performance, 60/40)
 
-Pick the GCP SKU that is the **best price–performance equivalent**,
-not the closest spec match. Weight is **60% price / 40% performance**
-— but this is a fine-line judgment call, not a license to cost-cut.
+To prevent the mapping agent from making catastrophic "cheap-out" mistakes (e.g., mapping a memory-heavy database to a shared-core e2-micro), you must apply a **Two-Stage Filtering Pipeline**:
 
-The rule kicks in only when **both options are genuinely close** on
-the other axis:
+#### Stage 1: The Hard Boundary Filter (Zero Tolerance)
+Before running any scoring or price comparison, eliminate incompatible candidates by applying these strict limits:
+1. **The RAM/vCPU Ratio Floor:** Calculate the exact Gigabytes-per-vCPU ratio of the source AWS instance (e.g., `r5.xlarge` has 4 vCPUs and 32 GiB RAM, a ratio of 8:1). The target GCP instance **must have a ratio of ≥ source ratio** (e.g. `n2-highmem-4` or custom with ratio `≥8:1`). Disqualify any candidate family with a lower ratio.
+2. **The Shared-Core / Burstable Block:** If the AWS `instance_type` does not start with `t` (meaning it is not a burstable instance type like `t3` or `t4g`), **you must explicitly exclude GCP's shared-core tiers (`e2-micro`, `e2-small`, `e2-medium`)** from the eligible candidate pool.
+
+#### Stage 2: The 60/40 Optimization Within the Safe Pool
+Only after filtering out the invalid, under-provisioned instances do you select the final SKU:
+* Weight is **60% price / 40% performance** on the remaining safe, compatible candidates.
+* The rule kicks in only when **both options are genuinely close** on the other axis:
 
 - **Don't sacrifice cost for slight perf/availability gains.** Picking
   Cloud SQL Regional (HA) over Zonal because "it's more reliable"
@@ -141,22 +158,33 @@ following this checklist. Skim every row against every rule:
    databases (core+ram+storage+backup), accelerator instances
    (core+ram+accelerator), local-SSD families (core+ram+storage).
    Don't force a single-row `map` for compute.
-6. **HA tier comes from the description text, not from instance size.**
-   For services with HA-tier pricing on GCP (Cloud SQL Regional vs
-   Zonal, AlloyDB primary vs read pool, Memorystore Standard vs
-   Basic):
-   - Map to the HA / Regional tier **only when the AWS description
-     literally contains** `"Multi-AZ"`, `"Multi-Region"`, `"HA"`, or
-     equivalent.
-   - Otherwise default to Zonal / Single-AZ, even for large instance
-     sizes.
-   - Never infer HA from "this is a production-sized DB". The bill
-     tells you what the customer is actually paying for. A 48-vCPU
-     `db.m6g.12xlarge` with `"reserved instance applied"` (and no
-     Multi-AZ in the text) is Zonal.
-7. **Pick concrete `gcp_sku_id` after evaluating alternatives.** For
-   each AWS LI, don't latch onto the first plausible SKU. Run a small
-   evaluation:
+6. **HA tier comes from deployment_option or description text, not from instance size.**
+    For services with HA-tier pricing on GCP (Cloud SQL Regional vs
+    Zonal, AlloyDB primary vs read pool, Memorystore Standard vs
+    Basic):
+    - Map to the HA / Regional tier **when deployment_option is 'Multi-AZ'** or when the AWS description contains "Multi-AZ", "Multi-Region", "HA", or equivalent.
+    - Otherwise default to Zonal / Single-AZ, even for large instance
+      sizes.
+    - Never infer HA from "this is a production-sized DB". The bill
+      tells you what the customer is actually paying for. A 48-vCPU
+      `db.m6g.12xlarge` with `"reserved instance applied"` (and no
+      Multi-AZ in the text) is Zonal.
+7. **Licensing and BYOL routing rules.**
+    Check the `license_model` column in `aws_li_catalog`:
+    - If `license_model = 'Bring Your Own License'` or `Customer-provided`, map the workload to GCE/Cloud SQL BYOL instances to project compute-only charges and avoid double license fees.
+    - If `license_model = 'License Included'`, map to GCP license-included SKUs.
+8. **Workload Class Specific Routing Rules.**
+    Read the `workload_class` column in `aws_li_catalog` and apply strict family gates:
+    - **Burstable:** Map exclusively to GCP shared-core shapes (`e2-micro`, `e2-small`, `e2-medium`).
+    - **ARM:** Map exclusively to Tau (`T2A`) or Axion (`C4A`) shapes. Disallow Intel/AMD GCE templates.
+    - **Memory-Optimized:** Enforce RAM-to-vCPU ratio $\ge 8:1$ (e.g. `n2-highmem-4` or custom shapes with $\ge 8:1$ memory ratio).
+    - **GPU:** Map to `g2` (L4) or `a2` (A100) shapes, matching physical GPU counts and RAM exactly.
+    - **Outlier:** If `workload_class = 'Outlier'` (e.g., bare-metal `u-` or `hpc-` instances), mark the row with `strategy = 'outlier_triage'`, assign no default SKU, and write its details to `outlier_instances.md`. Do not apply standard 60/40 heuristics.
+9. **Strict Region Descriptor Matching.**
+    For standard network egress/data transfer and storage SKUs, the SKU description must match the target row's region display name (e.g. Mumbai -> `... from Mumbai`, Northern Virginia -> `... from Northern Virginia`). NEVER map to a Singapore SKU for egress originating in Mumbai or Virginia; the validation gates will instantly fail.
+10. **Pick concrete `gcp_sku_id` after evaluating alternatives.** For
+    each AWS LI, don't latch onto the first plausible SKU. Run a small
+    evaluation:
 
    a. **Find the obvious candidate** by matching
       `category.serviceDisplayName` + `category.resourceGroup` +
@@ -222,6 +250,24 @@ following this checklist. Skim every row against every rule:
    - `Requests-1000 → Count-10000` at 0.1
    - `Requests → TiBy` at `avg_msg_bytes / 1024^4` (SQS → Pub/Sub)
 
+   **For `break_down` compute and database rows, read vCPU and RAM from
+   the catalog — do NOT infer from the operation string or model weights.**
+   Phase 1 Step 7 wrote `instance_vcpus` and `instance_ram_gb` into
+   `aws_li_catalog` exactly for this purpose. Use them:
+
+   ```sql
+   SELECT c.aws_li_key, c.operation, c.total_usage,
+          c.instance_vcpus, c.instance_ram_gb, c.instance_arch
+   FROM   aws_li_catalog c
+   WHERE  c.aws_li_key = '<key>';
+   -- Set unit_multiplier = c.instance_vcpus  for the 'core' row
+   -- Set unit_multiplier = c.instance_ram_gb for the 'ram'  row
+   ```
+
+   If `instance_vcpus` is NULL (lookup miss flagged in Phase 1 anomalies),
+   surface a `projection_note` that the multiplier was inferred, and flag
+   it in `mapping-notes.md` under `Open:` so Phase 3 can challenge it.
+
    **Don't normalize EC2/RDS hours to 730 hr/mo.** `total_usage` from
    the bill is already the actual hours billed (744 for a 31-day
    month, 720 for 30-day, 672/696 for Feb). Re-normalizing
@@ -284,6 +330,34 @@ following this checklist. Skim every row against every rule:
     in the report. Every passthrough is a row where we couldn't do
     our job.
 
+    **Services that may NEVER be passthrough — they always have a GCP
+    target.** If a row's `product` matches any entry below, passthrough is
+    **FORBIDDEN** — you MUST map it (run `find-sku.sh` to get the SKU).
+    Passing these through is the single most common way this skill fails: on a
+    real bill it can leave the *majority* of spend unprojected, which makes the
+    whole report worthless.
+
+    | AWS product (substring of `product`) | Mandatory GCP target — never passthrough |
+    |---|---|
+    | EC2 / Elastic Compute Cloud | Compute Engine (`break_down` core+ram) |
+    | EBS / Elastic Block Store | Hyperdisk Balanced / Persistent Disk |
+    | RDS / Aurora | Cloud SQL or AlloyDB |
+    | ElastiCache | Cloud Memorystore (Redis/Memcached) |
+    | S3 / Simple Storage Service | Cloud Storage |
+    | Data Transfer / Bandwidth / egress | Compute Engine / Networking egress |
+    | ELB / ALB / NLB / Load Balancing | Cloud Load Balancing |
+    | Lambda | Cloud Run / Cloud Run Functions |
+    | Route 53 | Cloud DNS |
+    | KMS | Cloud KMS |
+    | CloudWatch Logs / Metrics | Cloud Logging / Cloud Monitoring |
+
+    For any row in that table, **none** of these are valid reasons to
+    passthrough: "I'm not sure of the exact SKU", "the price ratio looks
+    weird", "the AWS rate is RI/SP/PRC-discounted", "it's a small row". They
+    are mapping problems to **solve**, not reasons to give up. If you genuinely
+    cannot find the exact SKU, map to the closest one and set
+    `confidence: low` — but **do not passthrough**.
+
     **Valid reasons to use `passthrough`:**
 
     - **No GCP equivalent exists at all.** AWS Support / Enterprise
@@ -324,10 +398,132 @@ following this checklist. Skim every row against every rule:
     of the two valid reasons applies. "No equivalent" or "unit
     irreconcilable" — anything else is suspect and Phase 3 will
     overturn it.
+
+    **Passthrough budget — a hard self-check before you return.** A
+    correctly-mapped bill has at most a handful of passthrough rows and
+    **well under 5% of total AWS spend** in passthrough. Before signaling
+    done, sum `aws_amortized_cost` of your passthrough rows and divide by your
+    slice's total. If it exceeds 5% — or if *any* row from the
+    never-passthrough table above is passthrough — **you are not finished**:
+    the excess is mappable-service rows you gave up on. Go back and map them.
+    (A run that passes through the majority of spend has failed, even if every
+    individual passthrough "felt" justified.)
 11. **`projection_note`**: one sentence per row. Capture the
     rationale ("baseline gp3 → Hyperdisk Balanced", "Multi-AZ → Cloud
     SQL Regional", "RI-applied: AWS rate is post-RI, compare GCP
     CUD", etc.). The reviewer reads these.
+
+## Service-specific mapping guides
+
+These services have non-obvious billing model differences that a
+one-line checklist entry can't capture. Read the relevant section
+before mapping any row in that category.
+
+### DynamoDB → Cloud Bigtable / Cloud Firestore
+
+DynamoDB bills on **provisioned or on-demand capacity units** (WCU, RCU)
+plus storage GB-month, not on instance hours. GCP has no direct
+WCU/RCU analogue. Map based on the workload pattern visible in the
+bill:
+
+| DynamoDB charge | GCP target | Mapping logic |
+|---|---|---|
+| Provisioned WCU / RCU (consistent traffic) | **Cloud Bigtable** node-hours | Map one Bigtable SSD node ≈ 10K QPS sustained; WCU and RCU are not interchangeable with node count — use `passthrough` and note "sizing requires workload analysis" unless the bill shows a clear capacity tier |
+| On-Demand reads (DynamoDB `ReadRequestUnits`) | **Cloud Firestore** read ops | `unit_multiplier = 1.0`; Firestore bills per read op; back-check ratio |
+| On-Demand writes (`WriteRequestUnits`) | **Cloud Firestore** write ops | same; separate SKU per write vs read |
+| DynamoDB Streams | Cloud Dataflow / Pub/Sub | `passthrough` unless stream volume is visible; note in `projection_note` |
+| DynamoDB storage (GB-month) | Cloud Bigtable or Firestore storage | `unit_multiplier = 1.0` (GB-month → GiBy.mo, adjust 1 GB = 0.931 GiBy if precise) |
+| DynamoDB global table replicas | Bigtable multi-cluster replication surcharge | No direct SKU; use `passthrough` and note |
+| DynamoDB backup / PITR | Bigtable backup GB-month | `unit_multiplier = 1.0` |
+
+**Key rule:** do NOT blindly map DynamoDB WCU to Firestore write ops at
+unit_multiplier=1. The billing denominations are different (one DynamoDB
+WCU ≠ one Firestore write op in capacity). If you cannot find a
+reconcilable unit, use `passthrough` and write a specific note explaining
+which capacity concept has no equivalent — this is one of the few valid
+`passthrough` uses.
+
+---
+
+### Lambda → Cloud Run / Cloud Run Functions
+
+Lambda bills on **invocations + GB-seconds** (duration × memory). GCP
+bills Cloud Run on **vCPU-seconds + GiB-seconds** separately.
+
+| Lambda charge | GCP target | unit_multiplier |
+|---|---|---|
+| `Request` (invocation count) | Cloud Run Functions — invocations | `1.0` (1 invocation = 1 invocation) |
+| `Duration` (GB-seconds) | Cloud Run Functions — compute (GiB-s) | `1.0` — Lambda GB-seconds and Cloud Run GiB-seconds are the same denomination; back-check passes |
+| Lambda@Edge requests | Cloud Run at network edge or Cloud CDN | `passthrough` — no direct peer; note |
+| Lambda@Edge duration | same | `passthrough` |
+| Provisioned Concurrency | Cloud Run min-instances idle charge | Map to Cloud Run idle vCPU-seconds × memory ratio; flag as `confidence: low` |
+
+**ARM (Graviton) Lambda:** if `operation` contains `"arm64"`, map to
+Cloud Run on ARM or Cloud Run Functions 2nd gen (which bills the same
+SKU). No multiplier adjustment needed; rate is the same as x86 for
+Cloud Run Functions.
+
+**Memory-to-vCPU conversion for Cloud Run (if mapping to standard Cloud Run,
+not Functions):**
+Cloud Run bills vCPU and memory separately. Lambda GB-seconds conflate
+them. Split as:
+- vCPU-seconds = GB-seconds × (lambda_vcpu_fraction) — Lambda allocates
+  vCPUs proportionally to memory; at 1 GB → 0.5 vCPU (approx), 2 GB → 1 vCPU.
+  For the projection, default to 0.5 vCPU per 1 GB memory unless the
+  bill shows a specific function configuration.
+- memory GiB-seconds = GB-seconds × 0.931 (GB → GiB)
+
+If this split produces an A-branch back-check failure, fall back to
+mapping Lambda GB-seconds → Cloud Run GiB-seconds at `unit_multiplier=1.0`
+(treating GiB ≈ GB) and note the approximation.
+
+---
+
+### ARM (Graviton) routing decision tree
+
+When `aws_li_catalog.instance_arch = 'arm64'` (set by Phase 1 from the
+lookup table), follow this decision tree for the GCP family:
+
+```
+Is the target region available?
+  ├─ C4A (Axion, ARM) available in region?
+  │    └─ YES → map to C4A (best ARM-native match, GCP Axion)
+  │    └─ NO  ↓
+  ├─ T2A (Tau ARM) available in region?
+  │    └─ YES → map to T2A (general-purpose ARM)
+  │    └─ NO  ↓
+  └─ Fall back to N2D (AMD x86) — note architecture change in projection_note
+```
+
+C4A regions (as of 2025): `us-central1`, `us-east4`, `europe-west4`,
+`asia-southeast1`. T2A adds: `us-west1`, `europe-west1`, `asia-east1`,
+`asia-northeast1`, `southamerica-east1`.
+
+Write the architecture choice into `projection_note` on every Graviton
+row. Never silently fall back to N2 (Intel x86) from an ARM instance
+without a note.
+
+---
+
+### Data Transfer / Egress matrix
+
+Data-transfer rows (`DataTransfer` product or `Bandwidth` usage_type) need
+the destination dimension — it determines which GCP egress tier applies.
+
+| AWS transfer sub-type (from `operation`) | GCP SKU family | Notes |
+|---|---|---|
+| `"regional data transfer"` / inter-AZ | Compute Engine inter-zone egress (`InterzoneEgress`) | ~$0.01/GB; same-region cross-zone |
+| `"inter-region"` within same continent | Compute Engine inter-region egress (`InterregionEgress`) | Rate varies by region pair |
+| `"internet"` outbound to internet | Compute Engine internet egress (`InternetEgress`) | Tiered; first 1 TB/month cheaper |
+| CloudFront → internet | Cloud CDN egress | Map if CDN row is separate; else treat as internet egress |
+| `"Direct Connect"` / `"VPN"` | Cloud Interconnect / Cloud VPN | Separate SKUs; `passthrough` if Interconnect port cost isn't in bill |
+| Cross-region `S3` replication | Cloud Storage multi-region replication fee | No direct SKU; `passthrough` with note |
+| `"EKS NAT Gateway"` / NAT Gateway processed bytes | Cloud NAT processed bytes | `unit_multiplier = 1.0` (GB → GB) |
+| Transfer within same AZ (free on AWS) | No GCP charge for same-zone | `strategy='ignore'` |
+
+For internet egress: AWS and GCP both apply tiered pricing. Phase 4's
+blended-rate computation handles this — just map to the correct SKU
+and let Phase 4 compute the right rate from the actual GB volume.
 
 ## Finding SKUs — use the helper
 
@@ -397,6 +593,92 @@ unscoped first to see which service file owns it.
 | `"reserved instance applied"` row | Real workload at RI-amortized rate, not a discount line | Phase 1 already classified this `is_workload=TRUE`, `pricing_model='Committed'`; compare GCP CUD, not OD in outliers |
 | Windows OS premium | Customer may BYOL or pay GCP marketplace; depends on posture | Default to including Windows DC SKU; flag in `projection_note` so customer can request BYOL adjustment |
 | AWS ARM (Graviton) → x86 | T2A is ARM, matches `c6g`/`m6g`/`r6g` shape | Map ARM-to-ARM, don't fall back to x86 N2 |
+
+### ECS / Fargate → Cloud Run
+
+Fargate bills on **vCPU-hours + GB-hours of memory**, separately from
+ECS task-definition count. The `Fargate` product shows two charge types
+in the bill: `vCPU` (per vCPU-second) and `Memory` (per GB-second).
+
+| Fargate charge | GCP target | unit_multiplier |
+|---|---|---|
+| `AWS Fargate vCPU Hours:perCPU` | Cloud Run — vCPU-seconds | `3600.0` (hrs → seconds); Cloud Run bills per vCPU-second |
+| `AWS Fargate GB Hours:perGB` | Cloud Run — memory GiB-seconds | `3600 × 0.931` (hrs → GiBy-seconds; 1 GB = 0.931 GiBy) |
+| `AWS Fargate Windows vCPU/GB` | Cloud Run (no Windows); use standard Linux rate | flag in `projection_note` |
+
+**ECS cluster fee:** ECS itself has no control-plane charge (unlike EKS).
+If you see a `Amazon Elastic Container Service` line with a small flat charge,
+check whether it's Fargate container insight or CloudWatch — map to the
+appropriate monitoring SKU or `passthrough` if no GCP equivalent.
+
+---
+
+### EKS → GKE
+
+EKS bills a **per-cluster, per-hour** control-plane fee (currently
+$0.10/hr in most regions). GKE's control plane also has a per-cluster fee.
+
+| EKS charge | GCP target | Notes |
+|---|---|---|
+| `Amazon Elastic Kubernetes Service:AmazonEKS` control-plane hours | GKE cluster management fee | `unit_multiplier = 1.0` (hr → hr); rate from GKE `ClusterManagement` SKU |
+| EC2 worker nodes under EKS | Compute Engine (standard instance mapping) | Map normally via compute partition; EKS doesn't add a per-node surcharge |
+| EKS Anywhere / Outposts | `passthrough` | No GCP equivalent for on-prem |
+
+---
+
+### MSK (Managed Streaming for Kafka) → Cloud Pub/Sub or Dataflow
+
+MSK bills on **broker instance-hours + storage + data-in**. There is no
+direct Kafka-as-a-service on GCP; the closest is Pub/Sub (if the workload
+is purely pub/sub patterns) or Cloud Dataflow (if ETL pipelines).
+
+| MSK charge | GCP target | Notes |
+|---|---|---|
+| Broker instance-hours (e.g. `kafka.m5.4xlarge`) | `passthrough` | Sizing for Pub/Sub or Dataflow requires workload analysis; no direct broker SKU on GCP |
+| MSK storage GB-month | `passthrough` alongside broker | Bundle with broker passthrough note |
+| MSK data-in GB | Cloud Pub/Sub message delivery | `unit_multiplier = 1.0`; Pub/Sub bills per-GB ingested; back-check ratio |
+
+Always note in `projection_note`: *"MSK broker hours: GCP equivalent requires
+workload sizing for Pub/Sub throughput tiers or Dataflow — passthrough."*
+
+---
+
+### OpenSearch / Elasticsearch → GCP (no direct equivalent)
+
+AWS OpenSearch Service has no first-party GCP equivalent. The closest is:
+- **BigQuery + Data Profiler** for analytics search patterns
+- **Vertex AI Search** for document search
+- **Elasticsearch on GCE** (self-hosted) — not a managed service
+
+For projection purposes: `passthrough` on all OpenSearch charges (instance
+hours, storage, UltraWarm) with a specific note:
+*"OpenSearch Service — no direct managed equivalent on GCP; carrying AWS
+cost forward. Customer would run self-hosted Elasticsearch on GCE or
+adopt Vertex AI Search depending on use case."*
+
+---
+
+### Fargate-on-EKS vs plain Fargate
+
+When the bill shows `Amazon Elastic Kubernetes Service` + `AWS Fargate`
+charges together, the customer runs Fargate pods in EKS. Map:
+- Fargate charges per the Fargate guide above.
+- EKS control-plane hours per the EKS guide above.
+These are separate line items; don't conflate them.
+
+---
+
+### AWS Glue → Cloud Dataflow / Cloud Data Fusion
+
+Glue bills on **DPU-hours** (Data Processing Units, each = 4 vCPU + 16 GB).
+
+| Glue charge | GCP target | unit_multiplier |
+|---|---|---|
+| Glue ETL job DPU-hours | Cloud Dataflow — vCPU-hours | `4.0` per DPU (1 DPU = 4 vCPUs); memory component → Dataflow memory GB-hours at `16.0` |
+| Glue crawler DPU-hours | Cloud Data Catalog + Dataflow | `passthrough` with note — crawlers don't have a direct analog |
+| Glue Data Catalog storage / requests | Cloud Data Catalog | No per-storage charge; `passthrough` or `ignore` depending on cost size |
+
+---
 
 ## Coverage check before returning to main
 

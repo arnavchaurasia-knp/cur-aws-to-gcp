@@ -52,4 +52,10 @@ GROUP BY m.gcp_service, c.gcp_region, m.gcp_sku_id;
 Unreachable → either the allow-list is short a service, or the
 mapping uses a different `displayName` than the catalog, or the SKU was completely removed by Google.
 
-Don't proceed to Phase 5 until this returns 0 rows (or you log the unmappable rows in your phase summary).
+**If this returns rows, do NOT go back to Phase 2 or re-map anything.** Phase 4 is read-only with respect to mappings. Instead:
+
+1. For each unreachable row: `UPDATE aws_li_to_gcp_li SET strategy = 'outlier_triage' WHERE aws_li_key = '<key>'`
+2. Write the keys and reason to `projection-audit/rate-fill-gaps.md`
+3. Proceed to Phase 5 — outlier triage owns resolution from here
+
+Phase 4 never modifies `aws_li_catalog` or re-invokes Phase 2 logic. Its only outputs are `gcp_sku_rates` rows and `rate-fill-gaps.md`.

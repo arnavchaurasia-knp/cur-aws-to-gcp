@@ -285,17 +285,19 @@ def main():
         SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
                resource_group, 'Commit1Yr', region, unit,
                rate_usd * 0.75, 'doc-percentage', 'https://cloud.google.com/sql/cud'
-        FROM gcp_sku_rates
-        WHERE gcp_service = 'Cloud SQL' AND pricing_type = 'OnDemand'
-          AND resource_group IN ('SQLGen2InstancesCPU','SQLInstancesCPU','SQLGen2InstancesRAM','SQLInstancesRAM','SQLGen2InstancesPD-SSD','SQLInstancesPD-SSD');
+        FROM gcp_sku_rates od
+        WHERE od.gcp_service = 'Cloud SQL' AND od.pricing_type = 'OnDemand'
+          AND od.resource_group IN ('SQLGen2InstancesCPU','SQLInstancesCPU','SQLGen2InstancesRAM','SQLInstancesRAM','SQLGen2InstancesPD-SSD','SQLInstancesPD-SSD')
+          AND NOT EXISTS (SELECT 1 FROM gcp_sku_rates r WHERE r.gcp_sku_id = od.gcp_sku_id AND r.region = od.region AND r.pricing_type = 'Commit1Yr');
 
         INSERT INTO gcp_sku_rates
         SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
                resource_group, 'Commit3Yr', region, unit,
                rate_usd * 0.48, 'doc-percentage', 'https://cloud.google.com/sql/cud'
-        FROM gcp_sku_rates
-        WHERE gcp_service = 'Cloud SQL' AND pricing_type = 'OnDemand'
-          AND resource_group IN ('SQLGen2InstancesCPU','SQLInstancesCPU','SQLGen2InstancesRAM','SQLInstancesRAM','SQLGen2InstancesPD-SSD','SQLInstancesPD-SSD');
+        FROM gcp_sku_rates od
+        WHERE od.gcp_service = 'Cloud SQL' AND od.pricing_type = 'OnDemand'
+          AND od.resource_group IN ('SQLGen2InstancesCPU','SQLInstancesCPU','SQLGen2InstancesRAM','SQLInstancesRAM','SQLGen2InstancesPD-SSD','SQLInstancesPD-SSD')
+          AND NOT EXISTS (SELECT 1 FROM gcp_sku_rates r WHERE r.gcp_sku_id = od.gcp_sku_id AND r.region = od.region AND r.pricing_type = 'Commit3Yr');
 
         INSERT INTO gcp_sku_rates
         SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,

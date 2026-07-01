@@ -64,6 +64,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// apply_commitment_ignores.py + apply_static_mappings.py write their
 			// mapping files. agy is spawned ONLY for the three LLM groups.
 			PreLLMScripts: []string{
+				"scripts/prefetch_skus.py $DB",
 				"scripts/classify_mechanics.py $DB",
 				"scripts/apply_commitment_ignores.py $DB",
 				"scripts/apply_static_mappings.py $DB",

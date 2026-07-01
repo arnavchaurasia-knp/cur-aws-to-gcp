@@ -74,9 +74,10 @@ PER_REQUEST_MAP = [
 PER_REQUEST_DEFAULT = ("Cloud Run", "Requests", 1.0)
 
 
-DATA_DIR = os.path.join(os.environ.get("SKILL_DIR", ""), "data")
-# Cache file: projection-audit/resolved_skus.json — built once per job, reused on retry
-RESOLVED_SKUS_FILE = None  # set in main()
+SKILL_DIR = os.environ.get("SKILL_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR  = os.path.join(SKILL_DIR, "data")
+# Global SKU cache shared across all jobs — built once by prefetch_skus.py, appended on miss
+RESOLVED_SKUS_FILE = os.path.join(DATA_DIR, "resolved_skus.json")
 
 
 def _load_services():
@@ -130,15 +131,85 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region):
     return None
 
 
+def _gcp_token():
+    """Return (kind, value) auth token, or None."""
+    import subprocess
+    api_key = os.environ.get("GOOGLE_CLOUD_API_KEY") or os.environ.get("GCP_API_KEY")
+    if api_key:
+        return ("key", api_key)
+    try:
+        import urllib.request as _req
+        tok = subprocess.check_output(
+            ["gcloud", "auth", "print-access-token"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        if tok:
+            return ("bearer", tok)
+    except Exception:
+        pass
+    return None
+
+
+def _live_sku_fetch(gcp_service, desc_pattern, gcp_region):
+    """Last-resort live fetch from GCP Cloud Billing Catalog API. Append result to cache."""
+    import urllib.request, urllib.parse
+    services_file = os.path.join(DATA_DIR, "services.json")
+    if not os.path.exists(services_file):
+        return None
+    with open(services_file) as f:
+        svc_map = {s["displayName"]: s["serviceId"] for s in json.load(f)}
+    svc_id = svc_map.get(gcp_service)
+    if not svc_id:
+        return None
+
+    token_info = _gcp_token()
+    if not token_info:
+        return None
+
+    kind, value = token_info
+    page_token = ""
+    while True:
+        url = f"https://cloudbilling.googleapis.com/v1/services/{svc_id}/skus?pageSize=5000"
+        if page_token:
+            url += f"&pageToken={urllib.parse.quote(page_token)}"
+        if kind == "key":
+            url += f"&key={value}"
+            req = urllib.request.Request(url)
+        else:
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {value}"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+        except Exception as e:
+            print(f"  live fetch failed: {e}")
+            return None
+
+        for sku in data.get("skus", []):
+            if not re.search(desc_pattern, sku.get("description", ""), re.IGNORECASE):
+                continue
+            geo = sku.get("geoTaxonomy", {})
+            if geo.get("type") == "GLOBAL" or gcp_region in sku.get("serviceRegions", []):
+                return sku["skuId"]
+
+        page_token = data.get("nextPageToken", "")
+        if not page_token:
+            break
+    return None
+
+
 def resolve_sku(gcp_service, desc_pattern, gcp_region):
     """
-    Return the SKU ID for (service, description_pattern, region).
-    Results are cached in RESOLVED_SKUS_FILE so the catalog is scanned only once per
-    unique (service, desc_pattern, region) tuple across the entire job.
+    Return the GCP SKU ID for (service, desc_pattern, region).
+
+    Resolution order:
+      1. Global cache (data/resolved_skus.json) — no scan, instant
+      2. Bundled catalog (data/skus/*.json.gz) — scan once, cache result
+      3. Live GCP Billing API — only for genuinely new SKUs not in catalog
+         (requires GOOGLE_CLOUD_API_KEY env var or gcloud auth)
+
+    Cache is append-only: only new entries are written, existing entries never overwritten.
     """
-    global RESOLVED_SKUS_FILE
     cache = {}
-    if RESOLVED_SKUS_FILE and os.path.exists(RESOLVED_SKUS_FILE):
+    if os.path.exists(RESOLVED_SKUS_FILE):
         try:
             with open(RESOLVED_SKUS_FILE) as f:
                 cache = json.load(f)
@@ -147,23 +218,30 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region):
 
     key = f"{gcp_service}|{desc_pattern}|{gcp_region or ''}"
     if key in cache:
-        return cache[key]
+        return cache[key]  # cache hit — no scan needed
 
+    # Not in cache: try bundled catalog
     sku_id = lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region)
-    cache[key] = sku_id
 
-    if RESOLVED_SKUS_FILE:
-        try:
-            os.makedirs(os.path.dirname(RESOLVED_SKUS_FILE), exist_ok=True)
-            with open(RESOLVED_SKUS_FILE, "w") as f:
-                json.dump(cache, f, indent=2)
-        except Exception:
-            pass
+    if sku_id is None:
+        # Genuinely missing — trigger live fetch for this new SKU only
+        print(f"  SKU not in bundled catalog, trying live API: {gcp_service} / {desc_pattern!r}")
+        sku_id = _live_sku_fetch(gcp_service, desc_pattern, gcp_region)
 
     if sku_id:
         print(f"  resolved SKU: {gcp_service} / {desc_pattern!r} → {sku_id}")
     else:
-        print(f"  WARNING: no SKU found for {gcp_service} / {desc_pattern!r} in region {gcp_region}")
+        print(f"  WARNING: no SKU found for {gcp_service} / {desc_pattern!r} in {gcp_region}")
+
+    # Append-only write — never overwrite existing entries
+    cache[key] = sku_id
+    try:
+        os.makedirs(os.path.dirname(RESOLVED_SKUS_FILE), exist_ok=True)
+        with open(RESOLVED_SKUS_FILE, "w") as f:
+            json.dump(cache, f, indent=2)
+    except Exception:
+        pass
+
     return sku_id
 
 
@@ -250,17 +328,12 @@ def map_per_request(rows):
 
 
 def main():
-    global RESOLVED_SKUS_FILE
-
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <projection.duckdb>", file=sys.stderr)
         sys.exit(1)
 
     db_path = sys.argv[1]
-    # Cache resolved SKU IDs alongside the DB so retries reuse previous lookups
-    RESOLVED_SKUS_FILE = os.path.join(os.path.dirname(db_path), "resolved_skus.json")
     print(f"SKU cache: {RESOLVED_SKUS_FILE}")
-
     con = duckdb.connect(db_path)
 
     rows = con.execute("""

@@ -30,6 +30,14 @@ def main():
     now = datetime.datetime.utcnow()
     run_id = now.strftime("%Y%m%dT%H%M%SZ")
     
+    # Determine the GCP region from the DB (most common gcp_region in workload rows)
+    gcp_region_row = conn.execute("""
+        SELECT gcp_region, COUNT(*) AS n FROM gcp_projection
+        WHERE is_workload AND gcp_region IS NOT NULL
+        GROUP BY gcp_region ORDER BY n DESC LIMIT 1
+    """).fetchone()
+    gcp_region_display = gcp_region_row[0] if gcp_region_row else "see individual rows"
+
     html_content = f"""
     <html>
     <head>
@@ -43,11 +51,24 @@ def main():
             .right {{ text-align: right; }}
             .green {{ color: #0F9D58; font-weight: bold; }}
             .red {{ color: #D93025; font-weight: bold; }}
+            .assumptions {{ background: #f8f9fa; border-left: 3px solid #1A73E8; padding: 10px 16px; margin: 12px 0; font-size: 0.9em; }}
+            .assumptions ul {{ margin: 4px 0; padding-left: 20px; }}
         </style>
     </head>
     <body>
         <h1 class="header">AWS to GCP Cloud Cost Analysis</h1>
         <p><b>Customer:</b> {customer_name} &nbsp;&nbsp; <b>Analysis Date:</b> {now.strftime('%B %Y')}</p>
+        <div class="assumptions">
+          <b>Pricing assumptions:</b>
+          <ul>
+            <li>GCP region: <b>{gcp_region_display}</b></li>
+            <li>On-Demand pricing (no sustained use discount applied to base rates)</li>
+            <li>1-Year and 3-Year CUD columns show committed-use discount savings</li>
+            <li>License-included pricing (BYOL not assumed unless the AWS line item indicates it)</li>
+            <li>No Spot / Preemptible discounts applied</li>
+            <li>Passthrough rows (e.g. MSK, OpenSearch self-hosted) carry AWS cost as-is — manual sizing required</li>
+          </ul>
+        </div>
         
         <h2>Cost Summary</h2>
         <table>

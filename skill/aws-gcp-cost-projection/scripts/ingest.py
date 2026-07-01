@@ -314,12 +314,21 @@ def main():
             "a1.2xlarge": { "vcpus": 8, "ram_gb": 16.0, "arch": "arm64" }
         }
         
-        if "RDS" in product or "Aurora" in product:
+        if "RDS" in product or "Aurora" in product or "Relational Database" in product:
             m = re.search(r'(db\.[a-z0-9]+\.[a-z0-9]+)', op)
             if m: itype = m.group(1)
-        elif "ElastiCache" in product:
+        elif "ElastiCache" in product or "MemoryDB" in product:
             m = re.search(r'(cache\.[a-z0-9]+\.[a-z0-9]+)', op)
-            if m: itype = m.group(1)
+            if m:
+                itype = m.group(1)
+            else:
+                # Simplified CUR format: "T3 Medium Cache node-hour" → cache.t3.medium
+                m2 = re.search(r'([A-Z][0-9][A-Za-z0-9]*)\s+(Micro|Small|Medium|Large|XLarge|[0-9]+XLarge)\s+Cache',
+                               op, re.IGNORECASE)
+                if m2:
+                    fam  = m2.group(1).lower()   # e.g. "t3", "r6g"
+                    size = m2.group(2).lower()   # e.g. "medium", "xlarge"
+                    itype = f"cache.{fam}.{size}"
         elif "Elastic Compute Cloud" in product or "EC2" in product:
             m = re.search(r'(\S+)\s+Instance\s+Hour', op)
             if m:

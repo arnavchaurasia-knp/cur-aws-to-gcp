@@ -30,7 +30,7 @@ function TotalsCard({ run, fallback }: { run: RunResult | null; fallback: number
         </h3>
         <div className="flex justify-between items-center">
           <span className="text-gray-400">AWS Monthly Spend (pre-tax)</span>
-          <span className="text-[#00C2BB] font-semibold text-lg">
+          <span className="text-white font-semibold text-lg">
             {fallback != null ? `$${fallback.toLocaleString()}` : '—'}
           </span>
         </div>
@@ -51,12 +51,18 @@ function TotalsCard({ run, fallback }: { run: RunResult | null; fallback: number
       <div className="divide-y divide-white/5">
         {rows.map(r => {
           const pct = r.compare ? pctVsAws(r.value, run.aws_total) : null
+          
+          let valColorClass = 'text-white'
+          if (r.compare && pct) {
+            valColorClass = pct.positive ? 'text-emerald-400' : 'text-orange-400'
+          }
+
           return (
             <div key={r.label}
               className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-2.5 gap-1">
               <span className="text-gray-400 text-sm">{r.label}</span>
               <div className="flex items-baseline gap-3">
-                <span className={`font-semibold ${r.compare ? 'text-white' : 'text-[#00C2BB]'}`}>
+                <span className={`font-semibold ${valColorClass}`}>
                   {formatDollars(r.value)}
                 </span>
                 {pct && (
@@ -136,7 +142,7 @@ export function JobStatus({ user }: { user: UserInfo }) {
       setRefining(false)
     }
   }
-  useTitle(job ? `${job.prospect} · ${job.status}` : 'Loading')
+  useTitle(job ? `${job.prospect} · ${job.status.charAt(0).toUpperCase() + job.status.slice(1)}` : 'Loading')
 
   useEffect(() => { listJobs().then(setJobs) }, [])
 

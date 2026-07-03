@@ -65,10 +65,10 @@ export function AdminJobs({ user }: { user: UserInfo }) {
           </div>
           {jobs && (
             <div className="text-xs text-gray-400 flex gap-4">
-              <span>{totals.total} total</span>
-              <span className="text-[#00C2BB]">{totals.done} done</span>
-              <span className="text-[#00C2BB]">{totals.running} active</span>
-              <span className="text-orange-400">{totals.failed} failed</span>
+              <span>{totals.total} Total</span>
+              <span className="text-[#00C2BB]">{totals.done} Done</span>
+              <span className="text-[#00C2BB]">{totals.running} Active</span>
+              <span className="text-orange-400">{totals.failed} Failed</span>
             </div>
           )}
         </div>
@@ -112,7 +112,9 @@ export function AdminJobs({ user }: { user: UserInfo }) {
                     <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{fmtWhen(j.created_at)}</td>
                     <td className="px-4 py-3 text-gray-300">{j.owner}</td>
                     <td className="px-4 py-3 text-gray-200">{j.prospect}</td>
-                    <td className={`px-4 py-3 ${statusColor[j.status] ?? 'text-gray-400'}`}>{j.status}</td>
+                    <td className={`px-4 py-3 ${statusColor[j.status] ?? 'text-gray-400'}`}>
+                      {j.status.charAt(0).toUpperCase() + j.status.slice(1)}
+                    </td>
                     <td className="px-4 py-3 text-right text-gray-300 tabular-nums">{fmtMoney(j.aws_spend)}</td>
                   </tr>
                 ))}

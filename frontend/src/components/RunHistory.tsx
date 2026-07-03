@@ -69,7 +69,7 @@ export function RunHistory({ jobId, runs }: { jobId: string; runs: RunResult[] }
                       ? 'bg-[#645DF6]/20 text-[#645DF6]'
                       : 'bg-[#00C2BB]/20 text-[#00C2BB]'
                   }`}>
-                    {run.run_type}
+                    {run.run_type.charAt(0).toUpperCase() + run.run_type.slice(1)}
                   </span>
                   <span className="text-gray-400 text-xs truncate">
                     AWS {money(run.aws_total)} → GCP {money(run.gcp_od)}{' '}

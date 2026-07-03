@@ -18,7 +18,9 @@ export function JobList({ jobs }: { jobs: Job[] }) {
         <li key={j.id} className="flex justify-between items-center py-2 cursor-pointer hover:bg-white/5 px-1 rounded"
             onClick={() => nav(`/jobs/${j.id}`)}>
           <span className="text-gray-200">{j.prospect}</span>
-          <span className={statusColor[j.status] ?? 'text-gray-400'}>{j.status}</span>
+          <span className={statusColor[j.status] ?? 'text-gray-400'}>
+            {j.status.charAt(0).toUpperCase() + j.status.slice(1)}
+          </span>
         </li>
       ))}
     </ul>

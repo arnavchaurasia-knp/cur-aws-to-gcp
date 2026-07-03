@@ -100,6 +100,17 @@ def load_cud_pct():
     return _CUD_PCT_CACHE
 
 CUD_PCT = load_cud_pct()
+_CUD_DEFAULT = (0.70, 0.55)  # conservative fallback when service not in CUD_PCT
+
+
+def _cud_factors(svc):
+    """(1yr, 3yr) CUD multipliers for a service. Module-level so it is defined
+    before every call site — a nested def crashed the regional-SKU-repair
+    branch with a NameError when it ran before the def executed."""
+    if svc not in CUD_PCT:
+        print(f"[WARN] CUD_PCT has no entry for service '{svc}' — using conservative default {_CUD_DEFAULT}")
+        return _CUD_DEFAULT
+    return CUD_PCT[svc]
 
 # Deterministic AWS-instance -> GCP-family map (mirror of
 # data/instance-family-map.json). Pins family choice so the same instance maps
@@ -561,14 +572,6 @@ def main():
     # deterministically from the OD rate using GCP's published CUD percentages.
     # Only fires for sku_ids that have an OD rate but lack the commit row, so it
     # never overwrites a real aliased commit rate the model already loaded.
-    _CUD_DEFAULT = (0.70, 0.55)  # conservative fallback when service not in CUD_PCT
-
-    def _cud_factors(svc):
-        if svc not in CUD_PCT:
-            print(f"[WARN] CUD_PCT has no entry for service '{svc}' — using conservative default {_CUD_DEFAULT}")
-            return _CUD_DEFAULT
-        return CUD_PCT[svc]
-
     cud_synth = 0
     if not check_only:
         for svc, (p1, p3) in CUD_PCT.items():
@@ -620,10 +623,15 @@ def main():
     # ---------- GATES ------------------------------------------------------
     like = " OR ".join(["LOWER(c.product) LIKE ?"] * len(MAPPABLE_SERVICE_PATTERNS))
     params = [f"%{p}%" for p in MAPPABLE_SERVICE_PATTERNS]
+    # Accelerator instances (Inferentia/Trainium/GPU) are EC2 ("mappable") but have
+    # no CPU-VM equivalent, so their passthrough is a LEGITIMATE manual-review
+    # verdict, not a lazy passthrough — exempt them from this gate.
     bad_pt = con.execute(f"""
         SELECT c.product, COALESCE(c.operation,'') op, ROUND(c.aws_amortized_cost,2)
         FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING (aws_li_key)
         WHERE m.strategy='passthrough' AND c.aws_amortized_cost > 1 AND ({like})
+          AND COALESCE(m.gcp_service,'') NOT LIKE '%Accelerator%'
+          AND COALESCE(m.component,'') <> 'accelerator'
         ORDER BY c.aws_amortized_cost DESC
     """, params).fetchall()
     report["violations"]["passthrough_on_mappable_service"] = [

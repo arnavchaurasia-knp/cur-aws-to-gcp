@@ -14,6 +14,9 @@ so they are resolved here rather than by the LLM — deterministic and variance-
 import gzip, json, os, re, sys
 import duckdb
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from egress_rates import EGRESS_SKUS
+
 # ---------------------------------------------------------------------------
 # Lookup tables
 # ---------------------------------------------------------------------------
@@ -90,29 +93,25 @@ EBS_DEFAULT_DESC = "Balanced PD Capacity"
 # data_transfer: direction inferred from usage_type. Ingress is free on GCP → ignore.
 # Inter-zone / inter-region / internet egress each map to their egress SKU family.
 def _transfer_target(usage_type, operation):
-    """Classify AWS data-transfer direction → GCP egress SKU. Order matters.
+    """Classify AWS data-transfer direction. Returns (strategy, direction, note).
+    direction is a key into EGRESS_SKUS (or None for ingress). Order matters.
 
     Calibrated against real CUR usage types:
-      - '...-In-Bytes'                    → ingress, free on GCP        → ignore
-      - '<REG>-<REG>-AWS-Out-Bytes'       → inter-region egress (~$0.09/GB)
-      - '...Regional...' / intra-AZ       → inter-zone egress  (~$0.01/GB)
-      - 'Bandwidth' (aggregate, ~$0.01/GB in practice) → inter-zone egress
-      - other '...-Out-Bytes' to internet → internet egress (~$0.08-0.12/GB)
+      - '...-In-Bytes'                          → ingress, free on GCP → ignore
+      - '<REG>-<REG>-AWS-Out-Bytes'             → inter-region egress
+      - '...Regional...' / intra-AZ / Bandwidth → inter-zone egress
+      - other '...-Out-Bytes' to internet       → internet egress
     """
     ut = f"{usage_type or ''} {operation or ''}".lower()
     if re.search(r"in-bytes|datatransfer-in|\bin\b.*byte", ut):
-        return ("ignore", None, None, 0.0, "ingress is free on GCP")
+        return ("ignore", None, "ingress is free on GCP")
     # Region-to-region code pair (e.g. "aps1-apn1-aws-out-bytes") → inter-region.
     if re.search(r"\b[a-z]{2,4}\d?-[a-z]{2,4}\d?-aws-out", ut) or "inter-region" in ut or "interregion" in ut:
-        return ("map", "Compute Engine", "Network Inter Region Egress", 1.0, "inter-region egress")
-    if "regional" in ut or "intra" in ut or re.search(r"az.*az", ut):
-        return ("map", "Compute Engine", "Network Inter Zone Egress", 1.0, "inter-zone egress")
-    # 'Bandwidth' is an aggregate transfer line; observed rate profile (~$0.01/GB)
-    # is intra-region, so map to inter-zone rather than internet egress (which
-    # would over-project ~8x). A true internet line uses an explicit Out-Bytes.
-    if "bandwidth" in ut:
-        return ("map", "Compute Engine", "Network Inter Zone Egress", 1.0, "bandwidth (intra-region) egress")
-    return ("map", "Compute Engine", "Network Internet Egress", 1.0, "internet egress")
+        return ("map", "interregion", "inter-region egress")
+    # 'regional'/intra-AZ/Bandwidth = same-region cross-zone traffic → inter-zone.
+    if "regional" in ut or "intra" in ut or "bandwidth" in ut or re.search(r"az.*az", ut):
+        return ("map", "interzone", "inter-zone (same-region) egress")
+    return ("map", "internet", "internet egress")
 
 
 SKILL_DIR = os.environ.get("SKILL_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -349,11 +348,25 @@ def map_flat_hourly(rows):
     return out
 
 
+def _s3_request_target(operation):
+    """S3 request ops → Cloud Storage operations (NOT Cloud Run). PUT/COPY/POST/
+    LIST are Class A; GET and everything else are Class B."""
+    op = (operation or "").lower()
+    if re.search(r"put|copy|post|list", op):
+        return ("Cloud Storage", "Class A Operations", 1.0)
+    return ("Cloud Storage", "Class B Operations", 1.0)
+
+
 def map_per_request(rows):
     out = []
     for r in rows:
-        match = _match(r.get("usage_type"), r.get("product"), PER_REQUEST_MAP)
-        service, sku_name, mult = match if match else PER_REQUEST_DEFAULT
+        product = (r.get("product") or "").lower()
+        # S3 request charges map to Cloud Storage operations, not Cloud Run.
+        if "s3" in product or "simple storage" in product:
+            service, sku_name, mult = _s3_request_target(r.get("operation"))
+        else:
+            match = _match(r.get("usage_type"), r.get("product"), PER_REQUEST_MAP)
+            service, sku_name, mult = match if match else PER_REQUEST_DEFAULT
         out.append({
             "aws_li_key":       r["aws_li_key"],
             "gcp_service":      service,
@@ -415,26 +428,27 @@ def map_block_storage(rows):
 
 
 def map_data_transfer(rows):
-    """Classify transfer direction deterministically; ingress is free (ignore)."""
+    """Classify transfer direction deterministically and pin the canonical egress
+    SKU + rate (no fuzzy catalog matching — see egress_rates.py). Ingress → ignore."""
     out = []
     for r in rows:
-        strategy, service, sku_name, mult, note = _transfer_target(r.get("usage_type"), r.get("operation"))
-        gcp_region = r.get("gcp_region")
+        strategy, direction, note = _transfer_target(r.get("usage_type"), r.get("operation"))
         entry = {
             "aws_li_key":       r["aws_li_key"],
-            "gcp_service":      service,
-            "gcp_sku_name":     sku_name,
+            "gcp_service":      "Compute Engine",
             "component":        "transfer",
             "strategy":         strategy,
-            "unit_multiplier":  mult,
-            "gcp_region":       gcp_region,
+            "unit_multiplier":  1.0,
+            "gcp_region":       r.get("gcp_region"),
             "projection_note":  f"data_transfer: {note}",
             "mapping_confidence": 0.85,
         }
-        if strategy == "map" and service and sku_name:
-            sku_id = resolve_sku(service, sku_name, gcp_region)
-            if sku_id:
-                entry["gcp_sku_id"] = sku_id
+        if strategy == "map" and direction in EGRESS_SKUS:
+            sku_id, sku_name, _rate = EGRESS_SKUS[direction]
+            entry["gcp_sku_id"] = sku_id
+            entry["gcp_sku_name"] = sku_name
+        else:
+            entry["gcp_sku_name"] = None
         out.append(entry)
     return out
 

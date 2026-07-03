@@ -653,6 +653,23 @@ for ph in PHASES:
         # Spawn agy only for the LLM portion of this phase.
         run_agy(ph.get("prompt", ""), phase_label=ph.get("name", ""))
 
+    # If the LLM phase hit a quota/auth wall it produced NOTHING usable — stop
+    # cleanly with the real reason BEFORE post-LLM scripts run. Otherwise a
+    # post-script like merge_mappings.py fails with a misleading "missing mapping
+    # file" error that masks the true cause (quota exhausted).
+    qm_early = quota_blocked(start_pos)
+    if qm_early:
+        log("quota/auth block (%%s) during Phase %%d — stopping before post-LLM scripts" %% (qm_early, ph["num"]))
+        with open(os.path.join(JOB_DIR, "failure.txt"), "w") as f:
+            f.write("Gemini quota/auth limit reached (" + qm_early + ") during Phase "
+                    + str(ph["num"]) + " (" + ph["name"] + "). The model API returned a "
+                    "quota error, so the projection could not be completed. Re-run once the "
+                    "quota resets or switch to an account with available quota.")
+        phase_runs.append({"num": ph["num"], "name": ph["name"],
+                           "convs": get_new_convs(AGY_LOG, start_pos)})
+        measure_metrics(phase_runs)
+        sys.exit(0)
+
     # Deterministic post-LLM scripts always run (zero LLM tokens). For a script
     # phase these are the recompute/repair steps that must follow it (D4/O3):
     # rates are refilled and the autofixer repairs any deterministic violation

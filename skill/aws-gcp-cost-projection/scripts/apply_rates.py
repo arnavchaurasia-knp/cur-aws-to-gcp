@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 import duckdb
 import os
+import sys
 import json
 import gzip
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from projection_view import create_projection_view
+from egress_rates import EGRESS_SKUS
 
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
@@ -138,6 +143,119 @@ def _resolve_sku_for_row(gcp_service, gcp_sku_name, gcp_region, services, data_d
     return best_exact_id or best_any_id
 
 
+import re as _re_mod
+_ACCEL_RE = _re_mod.compile(r'\b(inf\d|trn\d|dl\d|p[2-5]|g[3-6]|vt\d)[a-z0-9]*\.')
+
+
+def enforce_accelerator_passthrough(conn):
+    """AI accelerators / GPUs (Inferentia, Trainium, GPU families) must NEVER be
+    priced as a CPU VM. Deterministically collapse any such row's mapping to a
+    single passthrough (manual-review) row — overriding whatever Phase 2/5 did.
+    UPDATE-only (no delete): keep the first component row as passthrough, set the
+    rest to ignore, so cost = AWS parity once (no break_down double-count)."""
+    rows = conn.execute("""
+        SELECT aws_li_key, COALESCE(operation,'')||' '||COALESCE(instance_type,'') sig
+        FROM aws_li_catalog WHERE is_workload
+    """).fetchall()
+    accel = [k for k, sig in rows
+             if "inferentia" in sig.lower() or "trainium" in sig.lower() or _ACCEL_RE.search(sig.lower())]
+    fixed = 0
+    for k in accel:
+        comps = conn.execute(
+            "SELECT rowid, strategy FROM aws_li_to_gcp_li WHERE aws_li_key = ? ORDER BY rowid", [k]
+        ).fetchall()
+        if not comps or all(s == "passthrough" for _, s in comps):
+            continue
+        keep = comps[0][0]
+        conn.execute("UPDATE aws_li_to_gcp_li SET strategy='ignore', unit_multiplier=0, "
+                     "projection_note='accelerator component folded into passthrough' "
+                     "WHERE aws_li_key=? AND rowid<>?", [k, keep])
+        conn.execute("UPDATE aws_li_to_gcp_li SET strategy='passthrough', "
+                     "gcp_service='Manual Review — Accelerator', gcp_sku_id=NULL, gcp_sku_name=NULL, "
+                     "unit_multiplier=NULL, mapping_confidence=0.3, component='accelerator', "
+                     "projection_note='AI accelerator (Inferentia/Trainium/GPU) — no CPU-VM equivalent; "
+                     "MANUAL REVIEW REQUIRED (GCP TPU/GPU or specialized service)' "
+                     "WHERE aws_li_key=? AND rowid=?", [k, keep])
+        fixed += 1
+    if fixed:
+        print(f"  Enforced accelerator passthrough on {fixed} row(s) (no CPU-VM mapping)")
+    return fixed
+
+
+_LICENSE_MARKER = "[license-premium-not-modeled]"
+
+
+def remap_elasticache_to_memorystore(conn):
+    """ElastiCache (cache) must map to Memorystore, not Cloud SQL. The LLM often
+    mis-picks Cloud SQL's 'Custom Core/RAM' SKUs; Memorystore for Memcached has
+    identically-named 'Custom Core/RAM' SKUs with the same vCPU+RAM break_down
+    model, so we relabel the service and clear the sku_id — apply_rates then
+    re-resolves the Memorystore SKU by the same name. Deterministic, no rate table."""
+    n = conn.execute("""
+        SELECT COUNT(*) FROM aws_li_to_gcp_li m JOIN aws_li_catalog cat USING (aws_li_key)
+        WHERE LOWER(cat.product) LIKE '%elasticache%' AND m.gcp_service = 'Cloud SQL'
+    """).fetchone()[0]
+    if not n:
+        return 0
+    conn.execute("""
+        UPDATE aws_li_to_gcp_li SET
+            gcp_service = 'Cloud Memorystore for Memcached',
+            gcp_sku_id = NULL,
+            projection_note = 'ElastiCache → Memorystore for Memcached (cache workload; not Cloud SQL)'
+        WHERE aws_li_key IN (
+            SELECT cat.aws_li_key FROM aws_li_catalog cat
+            WHERE LOWER(cat.product) LIKE '%elasticache%'
+        ) AND gcp_service = 'Cloud SQL'
+    """)
+    print(f"  Remapped {n} ElastiCache row(s) Cloud SQL → Memorystore for Memcached")
+    return n
+
+
+def flag_license_exposure(conn):
+    """Flag Windows / SQL Server / Oracle rows so a commercial-license bill is
+    never SILENTLY under-projected. GCP compute here is priced license-EXCLUSIVE
+    (no Windows/SQL Server premium modeled), so we cap confidence and stamp a
+    projection_note. Runs after the Phase-5 LLM (so it can't be clobbered) and
+    in Phase 4. Idempotent via the marker guard. Deterministic — no rate table."""
+    try:
+        rows = conn.execute(f"""
+            SELECT DISTINCT m.aws_li_key,
+                   COALESCE(cat.operating_system,'') os, COALESCE(cat.database_engine,'') eng
+            FROM aws_li_to_gcp_li m JOIN aws_li_catalog cat USING (aws_li_key)
+            WHERE cat.is_workload AND m.strategy IN ('map','break_down')
+              AND COALESCE(m.projection_note,'') NOT LIKE '%license-premium-not-modeled%'
+              AND (
+                LOWER(COALESCE(cat.operating_system,'')) LIKE '%windows%'
+                OR LOWER(COALESCE(cat.database_engine,'')) LIKE '%sql server%'
+                OR LOWER(COALESCE(cat.database_engine,'')) LIKE '%sqlserver%'
+                OR LOWER(COALESCE(cat.database_engine,'')) LIKE '%oracle%'
+                OR LOWER(COALESCE(cat.operation,'')) LIKE '%sql server%'
+                OR LOWER(COALESCE(cat.operation,'')) LIKE '%oracle%'
+                OR LOWER(COALESCE(cat.usage_type,'')) LIKE '%windows%'
+              )
+        """).fetchall()
+    except Exception as e:
+        print(f"  license-exposure flag skipped: {e}")
+        return 0
+
+    flagged = 0
+    for aws_li_key, os_, eng in rows:
+        lic = "Windows" if "windows" in os_.lower() else (eng or "commercial")
+        note = (f"{_LICENSE_MARKER} {lic} license premium NOT modeled — GCP compute is "
+                f"priced license-exclusive; add OS/DB licensing separately.")
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li
+            SET projection_note = CASE WHEN projection_note IS NULL OR projection_note=''
+                                       THEN ? ELSE projection_note || ' ' || ? END,
+                mapping_confidence = LEAST(COALESCE(mapping_confidence, 1.0), 0.5)
+            WHERE aws_li_key = ?
+        """, (note, note, aws_li_key))
+        flagged += 1
+    if flagged:
+        print(f"  Flagged {flagged} license-exposed row(s) (Windows/SQL Server/Oracle) — confidence capped, note stamped")
+    return flagged
+
+
 def main():
     if not os.path.exists(DB_PATH):
         print("Database not found.")
@@ -152,6 +270,13 @@ def main():
             services_data = json.load(f)
             for s in services_data:
                 services[s["displayName"]] = s["serviceId"]
+
+    # Deterministic mapping-correctness enforcement (runs before SKU resolution
+    # so corrected rows get the right rate). Both override the LLM's choices:
+    #   - accelerators (Inferentia/Trainium/GPU) → single passthrough, never CPU VM
+    #   - ElastiCache → Memorystore for Memcached, never Cloud SQL
+    enforce_accelerator_passthrough(conn)
+    remap_elasticache_to_memorystore(conn)
 
     # Auto-resolve NULL gcp_sku_id for mapped rows using catalog lookup rules.
     # This prevents Phase 5 from seeing NULL projected cost and wrongly setting passthrough.
@@ -382,6 +507,26 @@ def main():
         )
         ON CONFLICT DO NOTHING
     """)
+
+    # Inject canonical network-egress rates (deterministic, by direction) so the
+    # data_transfer mappings resolve to a stable, correct $/GB instead of a
+    # fuzzy catalog SKU whose rate swings 2x-8x run-to-run. 'global' region so
+    # the VIEW's COALESCE(regional, global) always finds them.
+    for _sku_id, _sku_name, _rate in EGRESS_SKUS.values():
+        conn.execute("""
+            INSERT INTO gcp_sku_rates VALUES
+            (?, 'Compute Engine', ?, 'Network', 'Egress', 'OnDemand', 'global', 'gibibyte', ?, 'canonical-egress', 'published GCP egress list')
+            ON CONFLICT DO NOTHING
+        """, (_sku_id, _sku_name, _rate))
+
+    # Flag commercial-license rows (Windows/SQL Server/Oracle) so they are never
+    # silently under-projected — confidence capped + note stamped.
+    flag_license_exposure(conn)
+
+    # Create the projection VIEW now that rates exist, so the Phase-4 gate
+    # (no_null_projected_cost) and the validator autofix can query it. Phase 5's
+    # detect_outliers.py re-creates it idempotently from the same shared SQL.
+    create_projection_view(conn)
 
     print("Rate fill complete.")
 

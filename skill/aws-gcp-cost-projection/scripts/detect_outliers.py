@@ -3,6 +3,9 @@ import duckdb
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from projection_view import create_projection_view
+
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 OUTLIERS_FILE = os.path.join(JOB_DIR, "outliers.md")
@@ -38,75 +41,8 @@ def main():
 
     conn = duckdb.connect(DB_PATH)
 
-    # 1. Build the projection view
-    conn.execute("""
-        CREATE OR REPLACE VIEW gcp_projection AS
-        WITH od_pick AS (
-          SELECT m.aws_li_key, m.gcp_sku_id,
-                 COALESCE(
-                   MAX(CASE WHEN r.region = c.gcp_region THEN r.rate_usd END),
-                   MAX(CASE WHEN r.region = 'global'     THEN r.rate_usd END)
-                 ) AS rate_usd
-          FROM   aws_li_to_gcp_li m
-          JOIN   aws_li_catalog   c USING (aws_li_key)
-          LEFT JOIN gcp_sku_rates r ON r.gcp_sku_id = m.gcp_sku_id
-                                    AND r.pricing_type = 'OnDemand'
-          GROUP BY m.aws_li_key, m.gcp_sku_id
-        ),
-        c1_pick AS (
-          SELECT m.aws_li_key, m.gcp_sku_id,
-                 COALESCE(
-                   MAX(CASE WHEN r.region = c.gcp_region THEN r.rate_usd END),
-                   MAX(CASE WHEN r.region = 'global'     THEN r.rate_usd END)
-                 ) AS rate_usd
-          FROM   aws_li_to_gcp_li m
-          JOIN   aws_li_catalog   c USING (aws_li_key)
-          LEFT JOIN gcp_sku_rates r ON r.gcp_sku_id = m.gcp_sku_id
-                                    AND r.pricing_type = 'Commit1Yr'
-          GROUP BY m.aws_li_key, m.gcp_sku_id
-        ),
-        c3_pick AS (
-          SELECT m.aws_li_key, m.gcp_sku_id,
-                 COALESCE(
-                   MAX(CASE WHEN r.region = c.gcp_region THEN r.rate_usd END),
-                   MAX(CASE WHEN r.region = 'global'     THEN r.rate_usd END)
-                 ) AS rate_usd
-          FROM   aws_li_to_gcp_li m
-          JOIN   aws_li_catalog   c USING (aws_li_key)
-          LEFT JOIN gcp_sku_rates r ON r.gcp_sku_id = m.gcp_sku_id
-                                    AND r.pricing_type = 'Commit3Yr'
-          GROUP BY m.aws_li_key, m.gcp_sku_id
-        )
-        SELECT  c.aws_li_key, c.product, c.aws_region, c.gcp_region,
-                c.line_item_type, c.pricing_model, c.is_workload,
-                c.total_usage, c.aws_amortized_cost,
-                m.strategy, m.gcp_service, m.gcp_sku_id, m.component,
-                m.unit_multiplier, m.projection_note,
-                -- unit_multiplier is COALESCEd to 1: a NULL multiplier must not
-                -- silently null out the whole cost (x*NULL=NULL) and vanish from
-                -- SUM(). rate_usd is deliberately NOT coalesced — a NULL rate is a
-                -- genuine coverage gap the gate must catch, not paper over.
-                CASE m.strategy
-                  WHEN 'ignore'      THEN 0
-                  WHEN 'passthrough' THEN c.aws_amortized_cost
-                  ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) * od.rate_usd
-                END AS gcp_projected_cost,
-                CASE m.strategy
-                  WHEN 'ignore'      THEN 0
-                  WHEN 'passthrough' THEN c.aws_amortized_cost
-                  ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) * COALESCE(c1.rate_usd, od.rate_usd)
-                END AS gcp_cost_1yr_cud,
-                CASE m.strategy
-                  WHEN 'ignore'      THEN 0
-                  WHEN 'passthrough' THEN c.aws_amortized_cost
-                  ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) * COALESCE(c3.rate_usd, od.rate_usd)
-                END AS gcp_cost_3yr_cud
-        FROM    aws_li_catalog c
-        LEFT JOIN aws_li_to_gcp_li m ON m.aws_li_key = c.aws_li_key
-        LEFT JOIN od_pick od ON od.aws_li_key = m.aws_li_key AND od.gcp_sku_id = m.gcp_sku_id
-        LEFT JOIN c1_pick c1 ON c1.aws_li_key = m.aws_li_key AND c1.gcp_sku_id = m.gcp_sku_id
-        LEFT JOIN c3_pick c3 ON c3.aws_li_key = m.aws_li_key AND c3.gcp_sku_id = m.gcp_sku_id;
-    """)
+    # 1. Build the projection view (shared definition — single source of truth)
+    create_projection_view(conn)
 
     with open(OUTLIERS_FILE, "w") as f:
         f.write("# Outlier Triage Report\n\n")

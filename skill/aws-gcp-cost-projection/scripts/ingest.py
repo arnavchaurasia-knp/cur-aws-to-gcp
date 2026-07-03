@@ -62,6 +62,154 @@ DESCRIPTIVE_REGION_MAP = {
     "global": "global"
 }
 
+
+def _fail(msg):
+    """Write a clean structural-failure reason and stop (watcher surfaces it)."""
+    with open(os.path.join(JOB_DIR, "failure.txt"), "w") as f:
+        f.write(msg)
+    print("INGEST FAILURE: " + msg)
+    sys.exit(0)
+
+
+def _load_excel(conn, path):
+    """Excel → aws_raw via the DuckDB excel extension (read_xlsx), then spatial
+    st_read as a fallback."""
+    for setup, query in (
+        ("INSTALL excel; LOAD excel;", f"SELECT * FROM read_xlsx('{path}', all_varchar=true)"),
+        ("INSTALL spatial; LOAD spatial;", f"SELECT * FROM st_read('{path}')"),
+    ):
+        try:
+            conn.execute(setup)
+            conn.execute(f"CREATE TABLE aws_raw AS {query}")
+            return
+        except Exception:
+            conn.execute("DROP TABLE IF EXISTS aws_raw")
+    _fail("Could not read the Excel file. Re-export the bill as CSV or Parquet and upload that.")
+
+
+# AWS region display-name fragments — used to tell a REGION sub-header apart from
+# a SERVICE sub-header in the flat text of an AWS estimated-bill PDF.
+_PDF_REGION_RE = re.compile(
+    r'^(asia pacific|us east|us west|eu |europe|canada|south america|middle east|'
+    r'africa|global|israel|sa[- ]east|ap[- ]|us[- ])', re.I)
+# A line-item row: "<description> <qty> <unit> USD <amount>". The unit keeps it
+# distinct from service/region subtotal lines ("<name> USD <amount>").
+_PDF_ITEM_RE = re.compile(
+    r'^(.*?)\s+([\d,]+(?:\.\d+)?)\s+([A-Za-z][A-Za-z0-9\-/]*)\s+USD\s+([\d,]+(?:\.\d+)?)\s*$')
+# A subtotal/header row: "<name> USD <amount>" with no usage qty/unit.
+_PDF_HDR_RE = re.compile(r'^(.+?)\s+USD\s+[\d,]+(?:\.\d+)?\s*$')
+
+
+def _load_pdf(conn, path):
+    """AWS estimated-bill PDF → aws_raw in the simplified-bill schema
+    (Service, Region, Custom Usage Type, Description, Usage Quantity, Cost).
+
+    Parses text lines (pdfplumber table detection fails on these border-less
+    PDFs), tracking the current Service / Region sub-headers and attaching them
+    to each line item. NOTE: amounts are GROSS (pre Savings-Plan/RI discount) and
+    a PDF reconciles less precisely than a CSV/Parquet CUR — good for a
+    directional projection, but CUR is preferred for the exact figure."""
+    try:
+        import pdfplumber
+    except Exception:
+        _fail("This is a PDF but the PDF text-extraction library isn't installed. "
+              "Export the AWS Cost & Usage Report as CSV or Parquet and upload that instead.")
+        return
+    import csv as _csv
+
+    items = []            # (service, region, description, qty, cost)
+    cur_service, cur_region = "", ""
+    try:
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                for raw in (page.extract_text() or "").split("\n"):
+                    ln = raw.strip()
+                    if not ln:
+                        continue
+                    m = _PDF_ITEM_RE.match(ln)
+                    if m:
+                        desc, qty, unit, amt = m.groups()
+                        # Skip Savings-Plan/RI "covered by" lines (parenthesized
+                        # amount) — they double-count usage already charged.
+                        if "covered by" in desc.lower() or desc.rstrip().endswith("("):
+                            continue
+                        items.append((cur_service, cur_region, "",
+                                      f"{desc.strip()} ({qty} {unit})",
+                                      qty.replace(",", ""), amt.replace(",", "")))
+                        continue
+                    h = _PDF_HDR_RE.match(ln)
+                    if h:
+                        name = h.group(1).strip()
+                        if _PDF_REGION_RE.match(name):
+                            cur_region = name
+                        elif len(name) > 3 and "total" not in name.lower():
+                            cur_service = name
+    except Exception as e:
+        _fail(f"Could not parse the PDF ({e}). Export the CUR as CSV/Parquet instead.")
+        return
+
+    if len(items) < 5:
+        _fail("Couldn't extract line items from this PDF (it may be summary-only). "
+              "Export the AWS Cost & Usage Report as CSV or Parquet for an accurate projection.")
+        return
+
+    tmp_csv = os.path.join(JOB_DIR, "input_from_pdf.csv")
+    with open(tmp_csv, "w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["Service", "Region", "Custom Usage Type", "Description", "Usage Quantity", "Cost ($)"])
+        w.writerows(items)
+    print(f"PDF: extracted {len(items)} line items → {tmp_csv}")
+    conn.execute(f"CREATE TABLE aws_raw AS SELECT * FROM read_csv_auto('{tmp_csv}', ALL_VARCHAR=TRUE, header=TRUE)")
+
+
+def _read_into_aws_raw(conn, path):
+    """Load one data file into aws_raw, dispatching by extension. DuckDB's
+    read_csv_auto transparently handles .gz / .zst and delimiter detection."""
+    p = path.lower()
+    if p.endswith(".parquet"):
+        conn.execute(f"CREATE TABLE aws_raw AS SELECT * FROM read_parquet('{path}')")
+    elif p.endswith((".json", ".jsonl", ".ndjson")):
+        conn.execute(f"CREATE TABLE aws_raw AS SELECT * FROM read_json_auto('{path}')")
+    elif p.endswith((".xlsx", ".xlsm", ".xls")):
+        _load_excel(conn, path)
+    elif p.endswith(".pdf"):
+        _load_pdf(conn, path)
+    else:  # .csv .tsv .txt and .gz/.zst variants of them
+        conn.execute(f"CREATE TABLE aws_raw AS SELECT * FROM read_csv_auto('{path}', ALL_VARCHAR=TRUE)")
+
+
+def load_raw(conn, input_file):
+    """Format-aware entry point. Handles CSV/TSV (+gzip/zstd), Parquet, JSON,
+    Excel, PDF, and ZIP archives containing any of those."""
+    if input_file.lower().endswith(".zip"):
+        import zipfile, tempfile
+        dest = tempfile.mkdtemp(prefix="cur_zip_")
+        try:
+            with zipfile.ZipFile(input_file) as z:
+                z.extractall(dest)
+        except Exception as e:
+            _fail(f"Could not open the ZIP archive ({e}).")
+            return
+        DATA_EXT = (".parquet", ".csv", ".tsv", ".txt", ".json", ".jsonl",
+                    ".ndjson", ".gz", ".zst", ".xlsx", ".xls")
+        cands = []
+        for root, _dirs, files in os.walk(dest):
+            for fn in files:
+                if fn.startswith(".") or fn.startswith("__MACOSX"):
+                    continue
+                if fn.lower().endswith(DATA_EXT):
+                    fp = os.path.join(root, fn)
+                    cands.append((os.path.getsize(fp), fp))
+        if not cands:
+            _fail("The ZIP archive contains no recognizable data file (CSV / Parquet / JSON / Excel).")
+            return
+        # Largest data file is the bill; manifests/metadata are small.
+        cands.sort(reverse=True)
+        _read_into_aws_raw(conn, cands[0][1])
+    else:
+        _read_into_aws_raw(conn, input_file)
+
+
 def main():
     if not os.path.exists(os.path.dirname(DB_PATH)):
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -75,16 +223,11 @@ def main():
             f.write("No input file found.")
         sys.exit(0)
     input_file = inputs[0]
-    
-    # Check if parquet or csv
-    is_parquet = input_file.endswith(".parquet")
-    
-    # 2. Load aws_raw
+
+    # 2. Load aws_raw — format-aware loader (CSV/TSV, gzip/zstd, Parquet, JSON,
+    #    Excel, PDF, and ZIP archives of any of those).
     conn.execute("DROP TABLE IF EXISTS aws_raw")
-    if is_parquet:
-        conn.execute(f"CREATE TABLE aws_raw AS SELECT * FROM read_parquet('{input_file}')")
-    else:
-        conn.execute(f"CREATE TABLE aws_raw AS SELECT * FROM read_csv_auto('{input_file}', ALL_VARCHAR=TRUE)")
+    load_raw(conn, input_file)
         
     cols = [c[1] for c in conn.execute("PRAGMA table_info(aws_raw)").fetchall()]
     

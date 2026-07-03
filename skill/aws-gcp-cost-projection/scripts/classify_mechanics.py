@@ -41,13 +41,27 @@ def _re(value: str | None, pattern: str) -> bool:
         return False
     return bool(re.search(pattern, value, re.IGNORECASE))
 
+# Accelerator / specialized-silicon families: AI inference/training chips
+# (Inferentia inf*, Trainium trn*, Habana dl*) and GPU families (p*, g*, vt*).
+# These must NOT be mapped to a general-purpose CPU VM (N2D) — that hides the
+# architectural change and mis-prices badly. They are routed to misc for a
+# passthrough + manual-review verdict instead.
+def _is_accelerator(row) -> bool:
+    txt = f"{row.get('instance_type') or ''} {row.get('operation') or ''}".lower()
+    if "inferentia" in txt or "trainium" in txt:
+        return True
+    return bool(re.search(r'\b(inf\d|trn\d|dl\d|p[2-5]|g[3-6]|vt\d)[a-z0-9]*\.', txt))
+
 RULES = [
     (
+        # NOTE: excludes accelerator/GPU instances — those fall through to misc
+        # and get a manual-review verdict rather than a wrong N2D CPU mapping.
         "compute_breakdown",
         lambda r: (
             (_ilike(r["product"], "Elastic Compute") or _ilike(r["product"], "EC2") or _ilike(r["product"], "Compute Cloud"))
             and (_re(r["usage_type"], r"BoxUsage|SpotUsage|ReservedInstances|running Linux") or _re(r["operation"], r"Instance Hour"))
             and r["unit"] in ("Hrs", "hours")
+            and not _is_accelerator(r)
         ),
     ),
     (
@@ -181,6 +195,25 @@ def _misc_reason(row: dict) -> str:
     product = row.get("product") or ""
     usage_type = row.get("usage_type") or ""
     unit = row.get("unit") or ""
+
+    # Accelerator / specialized silicon (Inferentia, Trainium, GPU) → NEVER a
+    # CPU VM. No like-for-like GCP equivalent (GCP uses TPUs / different GPUs),
+    # so this needs a human architecture decision. Passthrough at cost parity
+    # and flag for manual review — mapping to N2D would be actively misleading.
+    if _is_accelerator(row):
+        return json.dumps({
+            "why": f"AWS accelerator/GPU instance ({row.get('instance_type') or product!r}) — no CPU-VM equivalent",
+            "service_hint": "Accelerator / specialized silicon",
+            "recommended_strategy": "passthrough",
+            "manual_review": True,
+            "mapping_guidance": (
+                "This is an AI accelerator (Inferentia/Trainium) or GPU instance. Do NOT map "
+                "it to a general-purpose CPU VM (N2D) — that hides the architectural change. "
+                "Set strategy='passthrough' (cost parity) and mapping_confidence=0.3, and note "
+                "'requires manual review: GCP TPU/GPU or accelerator service — not a like-for-like "
+                "CPU mapping' in mapping-notes.md."
+            ),
+        })
 
     # No-managed-equivalent compute services → self-hosted GCE, sized to the
     # ACTUAL extracted footprint. Never fabricate replication or disk.

@@ -10,7 +10,7 @@ import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 
 export function Upload({ user }: { user: UserInfo }) {
-  useTitle('New estimation')
+  useTitle('New Estimation')
   const [prospect, setProspect] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [submitting, setSubmitting] = useState(false)

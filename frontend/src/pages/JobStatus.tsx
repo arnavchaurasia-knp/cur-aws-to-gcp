@@ -186,7 +186,7 @@ export function JobStatus({ user }: { user: UserInfo }) {
           <div className="bg-[#645DF6]/10 border border-[#645DF6]/30 rounded-lg p-4 text-sm">
             <div className="flex items-center gap-2 mb-2">
               <span className="w-2 h-2 rounded-full bg-[#00C2BB] animate-pulse" />
-              <strong className="text-[#00C2BB]">AI agent running</strong>
+              <strong className="text-[#00C2BB]">AI Agent Running</strong>
             </div>
             <p className="text-gray-300">An AI agent is analyzing your bill and mapping each AWS line item to its GCP equivalent. This typically takes 10–30 minutes.</p>
             <p className="text-gray-400 text-xs mt-1">We'll email you when it's ready — you can close this tab.</p>
@@ -296,7 +296,7 @@ export function JobStatus({ user }: { user: UserInfo }) {
           </div>
         )}
 
-          <Link to="/" className="text-xs text-[#645DF6] hover:underline">← New estimation</Link>
+          <Link to="/" className="text-xs text-[#645DF6] hover:underline">← New Estimation</Link>
         </main>
         <aside className="lg:border-l lg:border-white/10 lg:pl-8 flex flex-col gap-6">
           <div>

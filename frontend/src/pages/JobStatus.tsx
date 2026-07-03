@@ -82,12 +82,12 @@ function TotalsCard({ run, fallback }: { run: RunResult | null; fallback: number
 }
 
 const PHASE_LABELS: Record<number, string> = {
-  1: 'Loading and classifying your AWS bill',
-  2: 'Mapping AWS line items to GCP services',
-  3: 'Reviewing mappings for sanity',
-  4: 'Applying GCP pricing (on-demand + CUDs)',
-  5: 'Investigating anomalies',
-  6: 'Generating the HTML report',
+  1: 'Loading and Classifying Your AWS Bill',
+  2: 'Mapping AWS Line Items to GCP Services',
+  3: 'Reviewing Mappings for Sanity',
+  4: 'Applying GCP Pricing (On-Demand + CUDs)',
+  5: 'Investigating Anomalies',
+  6: 'Generating the HTML Report',
 }
 
 export function JobStatus({ user }: { user: UserInfo }) {

@@ -53,9 +53,6 @@ function TotalsCard({ run, fallback }: { run: RunResult | null; fallback: number
           const pct = r.compare ? pctVsAws(r.value, run.aws_total) : null
           
           let valColorClass = 'text-white'
-          if (r.compare && pct) {
-            valColorClass = pct.positive ? 'text-emerald-400' : 'text-orange-400'
-          }
 
           return (
             <div key={r.label}
@@ -235,7 +232,7 @@ export function JobStatus({ user }: { user: UserInfo }) {
               <button
                 onClick={() => setRefineOpen(true)}
                 className="text-sm text-[#645DF6] hover:text-[#7d77f8] hover:underline self-start">
-                Refine this report →
+                Refine This Report →
               </button>
             ) : (
               <div className="bg-white/[0.02] border border-white/10 rounded-lg p-5 space-y-3">

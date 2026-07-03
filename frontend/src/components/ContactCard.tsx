@@ -53,7 +53,7 @@ export function ContactCard() {
           onClick={() => setOpen(true)}
           className="w-full py-2 rounded-lg text-xs font-medium text-white
             bg-gradient-to-r from-[#645DF6] to-[#00C2BB] transition">
-          Contact us
+          Contact Us
         </button>
       </div>
 
@@ -105,7 +105,7 @@ export function ContactCard() {
                 className="px-5 py-2 rounded-lg text-sm font-medium text-white
                   bg-gradient-to-r from-[#645DF6] to-[#00C2BB]
                   disabled:opacity-40 disabled:cursor-not-allowed transition">
-                {submitting ? 'Sending…' : 'Submit request'}
+                {submitting ? 'Sending…' : 'Submit Request'}
               </button>
             </div>
           </div>

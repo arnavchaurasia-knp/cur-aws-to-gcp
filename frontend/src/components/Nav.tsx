@@ -16,10 +16,10 @@ export function Nav({ user }: { user: UserInfo }) {
       </Link>
       <div className="flex items-center gap-4 text-sm text-gray-400">
         {user.is_admin && (
-          <Link to="/admin" className="text-[#00C2BB] hover:underline">All reports</Link>
+          <Link to="/admin" className="text-[#00C2BB] hover:underline">All Reports</Link>
         )}
         <span className="hidden sm:inline">{user.email}</span>
-        <a href={logoutURL()} className="text-[#645DF6] hover:underline">Sign out</a>
+        <a href={logoutURL()} className="text-[#645DF6] hover:underline">Sign Out</a>
       </div>
     </nav>
   )

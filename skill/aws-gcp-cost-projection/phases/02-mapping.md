@@ -624,7 +624,9 @@ C4A regions (as of 2025): `us-central1`, `us-east4`, `europe-west4`,
 
 Write the architecture choice into `projection_note` on every Graviton
 row. Never silently fall back to N2 (Intel x86) from an ARM instance
-without a note.
+without a note. 
+
+For Managed Databases (RDS/Aurora) running on Graviton (ARM): since C4A is exclusive to Cloud SQL Enterprise Plus, you must select the Enterprise Plus edition and document the reason in the `projection_note` (e.g., *"C4A ARM compatibility requires Enterprise Plus"*).
 
 ---
 
@@ -748,36 +750,27 @@ $0.10/hr in most regions). GKE's control plane also has a per-cluster fee.
 | EKS Anywhere / Outposts | `passthrough` | No GCP equivalent for on-prem |
 
 ---
+### MSK (Kafka) & OpenSearch / Elasticsearch → self-hosted GCE (sized to real footprint)
 
-### MSK (Managed Streaming for Kafka) → Cloud Pub/Sub or Dataflow
+These have no managed GCP equivalent, so they run **self-hosted on Compute Engine**.
+The instance detail is in the CUR's `operation` field (e.g. `"broker hour for
+Kafka.t3.small"`, `"r6g.large.search instance hour"`), so the orchestrator has
+ALREADY extracted the real footprint into each manifest row:
+`instance_type`, `instance_vcpus`, `instance_ram_gb`, and `instance_count`
+(= instance-hours ÷ hours-in-month = the **actual** node count).
 
-MSK bills on **broker instance-hours + storage + data-in**. There is no
-direct Kafka-as-a-service on GCP; the closest is Pub/Sub (if the workload
-is purely pub/sub patterns) or Cloud Dataflow (if ETL pipelines).
+For each such instance/broker line:
+- `break_down` into `core` + `ram` components and map to Compute Engine exactly
+  like an EC2 instance, using the row's extracted `instance_vcpus` / `instance_ram_gb`.
+- Multiply by the row's `instance_count` — this is the real node count from the
+  bill. **Do NOT invent a replication factor (no "3× brokers") or a disk size.**
+- `projection_note`: *"<service> self-hosted on GCE: <count>× <machine> (from
+  <instance_type>, <vcpus>vCPU/<ram>GB)."*
 
-| MSK charge | GCP target | Notes |
-|---|---|---|
-| Broker instance-hours (e.g. `kafka.m5.4xlarge`) | `passthrough` | Sizing for Pub/Sub or Dataflow requires workload analysis; no direct broker SKU on GCP |
-| MSK storage GB-month | `passthrough` alongside broker | Bundle with broker passthrough note |
-| MSK data-in GB | Cloud Pub/Sub message delivery | `unit_multiplier = 1.0`; Pub/Sub bills per-GB ingested; back-check ratio |
-
-Always note in `projection_note`: *"MSK broker hours: GCP equivalent requires
-workload sizing for Pub/Sub throughput tiers or Dataflow — passthrough."*
-
----
-
-### OpenSearch / Elasticsearch → GCP (no direct equivalent)
-
-AWS OpenSearch Service has no first-party GCP equivalent. The closest is:
-- **BigQuery + Data Profiler** for analytics search patterns
-- **Vertex AI Search** for document search
-- **Elasticsearch on GCE** (self-hosted) — not a managed service
-
-For projection purposes: `passthrough` on all OpenSearch charges (instance
-hours, storage, UltraWarm) with a specific note:
-*"OpenSearch Service — no direct managed equivalent on GCP; carrying AWS
-cost forward. Customer would run self-hosted Elasticsearch on GCE or
-adopt Vertex AI Search depending on use case."*
+Storage sub-lines (`gp3`/`gp2` provisioned storage, `ESDomain` GB-Mo) map to
+Persistent Disk via the block_storage rules; transfer lines via data_transfer.
+Only if a row has NO extracted specs (opaque line, `instance_vcpus` null) fall
+back to `strategy='map'` at cost parity and flag it low-confidence for review.
 
 ---
 

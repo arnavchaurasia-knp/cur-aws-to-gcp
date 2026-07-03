@@ -14,6 +14,15 @@ def main():
 
     conn = duckdb.connect(DB_PATH)
 
+    # Guard: aws_li_to_gcp_li must exist (created by merge_mappings.py in Phase 2).
+    # If missing, Phase 2 post_llm_script failed — exit with clear message so the
+    # orchestrator can surface the real error instead of a confusing catalog exception.
+    tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+    if "aws_li_to_gcp_li" not in tables:
+        print("ERROR: aws_li_to_gcp_li table missing — Phase 2 merge_mappings.py did not complete.", file=sys.stderr)
+        conn.close()
+        sys.exit(1)
+
     # 1. Auto-correct unit_multipliers for break_down rows
     conn.execute("""
         UPDATE aws_li_to_gcp_li

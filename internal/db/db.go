@@ -28,10 +28,15 @@ CREATE TABLE IF NOT EXISTS jobs (
 );`
 
 func Open(path string) (*DB, error) {
-	conn, err := sql.Open("sqlite", path)
+	// WAL + a 5s busy_timeout so concurrent writers (the per-job watcher
+	// goroutines and the HTTP handlers) don't hit an instant SQLITE_BUSY. Without
+	// this a lost UpdateJobDone leaves a finished job stuck showing "running".
+	// Pin to a single connection so writes serialize cleanly through WAL.
+	conn, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		return nil, err
 	}
+	conn.SetMaxOpenConns(1)
 	if _, err := conn.Exec(schema); err != nil {
 		return nil, err
 	}

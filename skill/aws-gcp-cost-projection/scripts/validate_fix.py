@@ -638,11 +638,13 @@ def main():
               AND aws_amortized_cost <= 1 AND gcp_projected_cost > 10
             ORDER BY gcp_projected_cost DESC
         """).fetchall()
+        # $10 materiality floor: small rows can legitimately be $0 on GCP (free
+        # tier). Kept in sync with the Phase-5 over_and_under_projection gate.
         underproj = con.execute("""
             SELECT aws_li_key, ROUND(aws_amortized_cost,2)
             FROM gcp_projection
             WHERE is_workload AND strategy IN ('map','break_down')
-              AND aws_amortized_cost > 1
+              AND aws_amortized_cost > 10
               AND COALESCE(gcp_projected_cost,0) = 0
             ORDER BY aws_amortized_cost DESC
         """).fetchall()
@@ -668,9 +670,13 @@ def main():
 
     # GATE: storage/transfer over-projection. Storage and data-transfer have no
     # RI/SP/commitment discount on the AWS side, so aws_amortized_cost is ~list
-    # price. If GCP On-Demand is >2x that, it is a wrong-SKU or unit bug (the
-    # egress 8x, EBS 18x, gp2 3x classes), not a legitimate price difference.
-    # Compute is intentionally excluded — AWS RI/SP can make it genuinely >2x.
+    # price, and a large GCP multiple signals a wrong-SKU or unit bug.
+    # Thresholds differ by class:
+    #   - STORAGE: >2x (catches the gp2 3x / EBS 18x bugs).
+    #   - TRANSFER/EGRESS: >3x. GCP egress is genuinely ~2x AWS on many lanes
+    #     (inter-zone, cross-continent), so 2x is legitimate; only 3x+ is a bug
+    #     (the egress-8x unit error). Matches orchestrate.go's Phase-5 over-branch.
+    # Compute is excluded — AWS RI/SP can make it genuinely >2x.
     overproj = []
     if has_view:
         overproj = con.execute("""
@@ -680,12 +686,16 @@ def main():
             FROM gcp_projection
             WHERE is_workload AND strategy IN ('map','break_down')
               AND aws_amortized_cost > 20
-              AND gcp_projected_cost > aws_amortized_cost * 2.0
-              AND ( component = 'storage'
-                 OR LOWER(product) LIKE '%data transfer%'
-                 OR LOWER(product) LIKE '%storage%'
-                 OR LOWER(product) LIKE '%snapshot%'
-                 OR LOWER(product) LIKE '%egress%' )
+              AND (
+                    ( gcp_projected_cost > aws_amortized_cost * 2.0
+                      AND ( component = 'storage'
+                         OR LOWER(product) LIKE '%storage%'
+                         OR LOWER(product) LIKE '%snapshot%' ) )
+                 OR ( gcp_projected_cost > aws_amortized_cost * 3.0
+                      AND ( LOWER(product) LIKE '%data transfer%'
+                         OR LOWER(product) LIKE '%egress%'
+                         OR component = 'transfer' ) )
+                  )
             ORDER BY gcp_projected_cost - aws_amortized_cost DESC
         """).fetchall()
     report["violations"]["storage_transfer_over_projection"] = [

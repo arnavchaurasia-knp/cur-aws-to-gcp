@@ -46,6 +46,22 @@ REGION_MAP = {
     "us-gov-west-1": "us-west1"
 }
 
+DESCRIPTIVE_REGION_MAP = {
+    "asia pacific (singapore)": "asia-southeast1",
+    "asia pacific (tokyo)": "asia-northeast1",
+    "asia pacific (mumbai)": "asia-south1",
+    "us east (n. virginia)": "us-east4",
+    "us east (ohio)": "us-east4",
+    "us west (n. california)": "us-west2",
+    "us west (oregon)": "us-west1",
+    "europe (ireland)": "europe-west1",
+    "europe (london)": "europe-west2",
+    "europe (paris)": "europe-west9",
+    "europe (frankfurt)": "europe-west3",
+    "europe (stockholm)": "europe-north1",
+    "global": "global"
+}
+
 def main():
     if not os.path.exists(os.path.dirname(DB_PATH)):
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -208,9 +224,11 @@ def main():
     for row in catalog_rows:
         key = row[0]
         aws_r = row[1]
-        gcp_r = REGION_MAP.get(aws_r)
-        if gcp_r:
-            conn.execute("UPDATE aws_li_catalog SET gcp_region = ? WHERE aws_li_key = ?", (gcp_r, key))
+        # Unknown regions fall back to 'global' so the gcp_projection VIEW's
+        # COALESCE(regional_rate, global_rate) always finds a rate.
+        aws_r_clean = aws_r.strip().lower() if aws_r else ""
+        gcp_r = REGION_MAP.get(aws_r_clean) or DESCRIPTIVE_REGION_MAP.get(aws_r_clean, "global")
+        conn.execute("UPDATE aws_li_catalog SET gcp_region = ? WHERE aws_li_key = ?", (gcp_r, key))
             
     # 6. Reconcile - let orchestrate.go verification gate handle failure, but check
     # In raw CUR, sometimes totals have slight float differences, we'll ignore for script unless it's huge
@@ -305,30 +323,37 @@ def main():
                 deployment_option = ?, volume_type = ?, pricing_unit = ?
             WHERE aws_li_key = ?
         """, (lic, os_name, db_eng, deploy_opt, vol_t, p_unit, key))
-        # 7. Infer Instance Specs & Workload Class
         LEGACY_SPECS = {
             "c3.2xlarge": { "vcpus": 8, "ram_gb": 15.0, "arch": "x86_64" },
             "c4.xlarge": { "vcpus": 4, "ram_gb": 7.5, "arch": "x86_64" },
             "c4.2xlarge": { "vcpus": 8, "ram_gb": 15.0, "arch": "x86_64" },
             "c4.8xlarge": { "vcpus": 36, "ram_gb": 60.0, "arch": "x86_64" },
-            "a1.2xlarge": { "vcpus": 8, "ram_gb": 16.0, "arch": "arm64" }
+            "a1.2xlarge": { "vcpus": 8, "ram_gb": 16.0, "arch": "arm64" },
+            "c7g.2xlarge.search": { "vcpus": 8, "ram_gb": 16.0, "arch": "arm64" },
+            "kafka.t3.small": { "vcpus": 2, "ram_gb": 2.0, "arch": "x86_64" },
+            "db.t4g.xlarge": { "vcpus": 4, "ram_gb": 16.0, "arch": "arm64" }
         }
         
         if "RDS" in product or "Aurora" in product or "Relational Database" in product:
-            m = re.search(r'(db\.[a-z0-9]+\.[a-z0-9]+)', op)
-            if m: itype = m.group(1)
-        elif "ElastiCache" in product or "MemoryDB" in product:
-            m = re.search(r'(cache\.[a-z0-9]+\.[a-z0-9]+)', op)
+            m = re.search(r'(db\.[a-z0-9]+\.[a-z0-9]+)', op, re.IGNORECASE)
+            if m: itype = m.group(1).lower()
+        elif "ElastiCache" in product:
+            m = re.search(r'(cache\.[a-z0-9]+\.[a-z0-9]+)', op, re.IGNORECASE)
             if m:
-                itype = m.group(1)
+                itype = m.group(1).lower()
             else:
-                # Simplified CUR format: "T3 Medium Cache node-hour" → cache.t3.medium
                 m2 = re.search(r'([A-Z][0-9][A-Za-z0-9]*)\s+(Micro|Small|Medium|Large|XLarge|[0-9]+XLarge)\s+Cache',
                                op, re.IGNORECASE)
                 if m2:
-                    fam  = m2.group(1).lower()   # e.g. "t3", "r6g"
-                    size = m2.group(2).lower()   # e.g. "medium", "xlarge"
+                    fam  = m2.group(1).lower()
+                    size = m2.group(2).lower()
                     itype = f"cache.{fam}.{size}"
+        elif "OpenSearch" in product or "Elasticsearch" in product:
+            m = re.search(r'([a-z0-9]+\.[a-z0-9]+\.search)', op, re.IGNORECASE)
+            if m: itype = m.group(1).lower()
+        elif "Managed Streaming for Apache Kafka" in product or "MSK" in product:
+            m = re.search(r'(kafka\.[a-z0-9]+\.[a-z0-9]+)', op, re.IGNORECASE)
+            if m: itype = m.group(1).lower()
         elif "Elastic Compute Cloud" in product or "EC2" in product:
             m = re.search(r'(\S+)\s+Instance\s+Hour', op)
             if m:
@@ -338,12 +363,22 @@ def main():
                 if m: itype = m.group(1)
                 
         if not itype: continue
-        
-        table = rds_table if itype.startswith(("db.", "cache.")) else ec2_table
-        spec = table.get(itype)
+
+        # Managed services (OpenSearch/MSK) decorate a standard EC2 type with a
+        # service suffix/prefix — "c7g.2xlarge.search", "kafka.t3.small". Strip
+        # the decoration to the BASE EC2 type so the full 357-entry ec2 table
+        # resolves specs for ANY instance, not just a hardcoded few.
+        base_itype = itype
+        if base_itype.endswith(".search"):
+            base_itype = base_itype[: -len(".search")]
+        if base_itype.startswith("kafka."):
+            base_itype = base_itype[len("kafka.") :]
+
+        table = rds_table if base_itype.startswith(("db.", "cache.")) else ec2_table
+        spec = table.get(base_itype) or ec2_table.get(base_itype)
         if not spec:
-            # Fall back to legacy static spec lookup
-            spec = LEGACY_SPECS.get(itype)
+            # Fall back to legacy static spec lookup (decorated or base name)
+            spec = LEGACY_SPECS.get(itype) or LEGACY_SPECS.get(base_itype)
             
         if not spec:
             conn.execute("UPDATE aws_li_catalog SET instance_type = ? WHERE aws_li_key = ?", (itype, key))

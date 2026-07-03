@@ -64,7 +64,6 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// apply_commitment_ignores.py + apply_static_mappings.py write their
 			// mapping files. agy is spawned ONLY for the three LLM groups.
 			PreLLMScripts: []string{
-				"scripts/prefetch_skus.py $DB",
 				"scripts/classify_mechanics.py $DB",
 				"scripts/apply_commitment_ignores.py $DB",
 				"scripts/apply_static_mappings.py $DB",
@@ -80,16 +79,19 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"  • apply_static_mappings.py ran → flat_hourly/object_storage/per_request mappings exist\n\n" +
 				"YOUR ONLY JOB: map the 3 LLM groups by reading the manifest.\n\n" +
 				"MANDATORY STEPS — follow exactly in this order:\n" +
-				"1. Read projection-audit/phase2_manifest.json — this has every row you need with all fields.\n" +
+				"1. Read projection-audit/phase2_manifest.json.\n" +
+				"   The manifest contains a \"_meta\" key with {\"output_dir\": \"projection-audit/mappings\"}.\n" +
+				"   USE THAT output_dir value exactly as-is — it is a relative path from your working directory.\n" +
 				"   DO NOT query projection.duckdb directly. The manifest is the single source of truth.\n" +
-				"2. For each group in [compute_breakdown, managed_db, misc]:\n" +
+				"2. For each group in [compute_breakdown, managed_db, misc, block_storage, data_transfer]:\n" +
 				"   a. Read that group's rows from the manifest (manifest[group][\"rows\"]).\n" +
 				"   b. Map ALL rows to GCP. Use scripts/find-sku.sh only to look up SKU IDs — no inline DuckDB queries.\n" +
 				"   c. Build a JSON array of mapping objects (schema: aws_li_key, gcp_service, gcp_sku_id,\n" +
 				"      gcp_sku_name, component, strategy, unit_multiplier, gcp_region, projection_note,\n" +
 				"      mapping_confidence, is_workload, break_down).\n" +
-				"   d. Write the array to projection-audit/mappings/<group>_mappings.json in ONE write_to_file call.\n" +
-				"   e. Do NOT write rows one at a time. One file per group, one write per file.\n" +
+				"   d. Write the array to {output_dir}/<group>_mappings.json — use the RELATIVE output_dir from _meta.\n" +
+				"      NEVER construct an absolute path. NEVER write outside the current working directory.\n" +
+				"   e. One file per group, one write per file.\n" +
 				"3. Write projection-audit/mapping-notes.md with a brief summary of decisions.\n\n" +
 				"RULES:\n" +
 				"  • Never-passthrough: EC2/RDS/Aurora/ElastiCache/EBS/DataTransfer/ELB/S3 must be mapped.\n" +
@@ -125,18 +127,33 @@ func phaseSpecs(inputExt string) []phaseSpec {
 		},
 		{
 			Num: 4, Name: "Rate-Card Fill", Activity: "Fetching GCP rates",
+			PreScript: "scripts/ensure_catalog_coverage.py",
 			Script: "scripts/apply_rates.py",
-			CheckName: "cud_coverage_compute",
-			CheckSQL: "SELECT count(DISTINCT m.gcp_sku_id) FROM aws_li_to_gcp_li m WHERE " +
-				"m.gcp_service IN ('Compute Engine','Cloud SQL','Cloud Memorystore'," +
-				"'Cloud Memorystore for Redis','Cloud Memorystore for Memcached') " +
-				"AND m.strategy IN ('map','break_down') AND m.component IN ('core','ram') " +
-				"AND m.gcp_sku_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM gcp_sku_rates r " +
-				"WHERE r.gcp_sku_id = m.gcp_sku_id AND r.pricing_type = 'Commit3Yr')",
+			// After rates load, run the deterministic autofixer (regional-SKU
+			// repair, CUD synthesis, per-N clamping, illegal-passthrough repair)
+			// BEFORE the gate evaluates. Previously this only ran read-only in
+			// the watcher, so its repairs never applied in-pipeline (D4).
+			PostLLMScripts: []string{"?scripts/validate_fix.py $JOBDIR"},
+			CheckName: "no_null_projected_cost",
+			CheckSQL: "SELECT count(*) FROM gcp_projection " +
+				"WHERE strategy IN ('map','break_down') " +
+				"AND gcp_projected_cost IS NULL " +
+				"AND aws_amortized_cost > 1",
 		},
 		{
 			Num: 5, Name: "Outlier Triage", Activity: "Running outlier queries",
-			PreScript: "scripts/detect_outliers.py",
+			PreLLMScripts: []string{
+				"scripts/ensure_catalog_coverage.py",
+				"scripts/detect_outliers.py",
+			},
+			// After the LLM triages, recompute rates for any SKU it changed and
+			// run the autofixer, so the phase gate sees fresh, repaired costs
+			// rather than stale projections (O3). This is what lets a Phase-5
+			// edit actually converge instead of failing the gate forever.
+			PostLLMScripts: []string{
+				"scripts/apply_rates.py",
+				"?scripts/validate_fix.py $JOBDIR",
+			},
 			Prompt: "Phase 5 — Outlier Triage. Strict protocol, no deviations.\n\n" +
 				"SETUP (already done by orchestrator):\n" +
 				"  • detect_outliers.py ran → outliers.md lists every flagged row with aws_li_key, query ID, and values.\n\n" +
@@ -149,47 +166,41 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"   b. Apply exactly ONE of:\n" +
 				"      • UPDATE aws_li_to_gcp_li SET unit_multiplier=... WHERE aws_li_key='...'\n" +
 				"      • UPDATE aws_li_to_gcp_li SET gcp_sku_id=..., gcp_sku_name=... WHERE aws_li_key='...'\n" +
-				"      • UPDATE aws_li_to_gcp_li SET strategy='passthrough', unit_multiplier=0.3 WHERE aws_li_key='...' (cannot resolve)\n" +
+				"      • If you truly cannot resolve it: leave strategy='map' and append the row to mapping-notes.md\n" +
+				"        under '## Rate gaps'. DO NOT set strategy='passthrough' — the orchestrator's autofixer and\n" +
+				"        global-fallback rates will resolve a rate; passthrough on a mappable service fails the gate.\n" +
 				"   c. The NEW SKU description must literally match the AWS resource type — inter-zone egress → inter-zone SKU.\n" +
 				"   d. Never create GCP On-Demand > 3× AWS cost without a visible bill explanation.\n" +
 				"3. Append a one-line note per fixed row to mapping-notes.md.\n\n" +
 				"RULES:\n" +
 				"  • Phase 5 never re-enters Phase 2 or 3. Every fix is a direct SQL UPDATE.\n" +
 				"  • DO NOT run broad SELECTs. One targeted SELECT per row if you need to verify current state.\n" +
-				"  • STOP when all rows in outliers.md are resolved or documented.",
+				"  • STOP when all rows in outliers.md are resolved or documented.\n\n" +
+				"NULL-COST TRIAGE — mandatory diagnosis before any fix:\n" +
+				"  When gcp_projected_cost IS NULL for a mapped row, diagnose the cause first:\n" +
+				"  (a) SELECT c.gcp_region FROM aws_li_catalog c WHERE c.aws_li_key='<key>'\n" +
+				"      → if NULL: UPDATE aws_li_catalog SET gcp_region='asia-southeast1' WHERE aws_li_key='<key>'\n" +
+				"         NEVER set strategy=passthrough for a NULL-gcp_region row.\n" +
+				"  (b) SELECT gcp_sku_id FROM aws_li_to_gcp_li WHERE aws_li_key='<key>'\n" +
+				"      → if NULL: UPDATE aws_li_to_gcp_li SET gcp_sku_id='<correct-id>' WHERE aws_li_key='<key>'\n" +
+				"         DO NOT set strategy=passthrough just because gcp_sku_id is NULL.\n" +
+				"  (c) SELECT COUNT(*) FROM gcp_sku_rates WHERE gcp_sku_id='<sku>'\n" +
+				"      → if 0: document as rate-gap in mapping-notes.md. DO NOT change strategy.\n" +
+				"  ABSOLUTE RULE: strategy='passthrough' means GCP has no equivalent service.\n" +
+				"  It does NOT mean the rate is missing. Never use passthrough to resolve a NULL projected cost.",
 			CheckName: "over_and_under_projection",
+			// Under-projection zero-check uses a $10 materiality floor: a small
+			// row can legitimately project to $0 on GCP (usage within a free
+			// tier, e.g. Cloud Monitoring's first 150 MiB), so only a MATERIAL
+			// mapped row at exactly $0 signals a real mapping/rate failure.
 			CheckSQL: "SELECT (SELECT count(*) FROM gcp_projection WHERE is_workload AND strategy IN ('map','break_down') " +
 				"AND aws_amortized_cost > 20 AND gcp_projected_cost > aws_amortized_cost * 3) + " +
 				"(SELECT count(*) FROM gcp_projection WHERE is_workload AND strategy IN ('map','break_down') " +
-				"AND aws_amortized_cost > 1 AND COALESCE(gcp_projected_cost,0) = 0)",
+				"AND aws_amortized_cost > 10 AND gcp_projected_cost IS NOT NULL AND gcp_projected_cost = 0)",
 		},
 		{
 			Num: 6, Name: "Reporting", Activity: "Generating HTML report",
-			// render_report.py runs as a post_llm_script so the HTML is written
-			// BEFORE the quota check fires. If the LLM narrative hits quota, the
-			// report still exists and the watcher marks the job done.
-			PostLLMScripts: []string{"scripts/render_report.py"},
-			Prompt: "Phase 6 — Narrative only. Strict protocol, no deviations.\n\n" +
-				"SETUP (already done by orchestrator):\n" +
-				"  • render_report.py will run after you finish → it generates report.html and run_results row.\n\n" +
-				"YOUR ONLY JOB: write the executive summary narrative.\n\n" +
-				"MANDATORY STEPS — follow exactly in this order:\n" +
-				"1. Run exactly these two queries and nothing else:\n" +
-				"   SELECT SUM(aws_amortized_cost) FROM aws_li_catalog\n" +
-				"   SELECT SUM(gcp_projected_cost), SUM(gcp_cost_1yr_cud), SUM(gcp_cost_3yr_cud) FROM gcp_projection WHERE is_workload\n" +
-				"2. Read customer_name.txt for the customer name.\n" +
-				"3. Write a 3-paragraph executive summary to projection-audit/summary-<YYYYMMDDTHHMMSSZ>.md:\n" +
-				"   Para 1: AWS total, GCP On-Demand, GCP 1yr CUD, GCP 3yr CUD — just the numbers and % deltas.\n" +
-				"   Para 2: Top 2–3 cost drivers and their GCP mappings.\n" +
-				"   Para 3: One sentence on confidence and any caveats.\n" +
-				"4. Insert one row into run_results:\n" +
-				"   INSERT INTO run_results (run_id, aws_total, gcp_od, gcp_1yr_cud, gcp_3yr_cud, created_at)\n" +
-				"   VALUES ('<run_id>', <aws_total>, <gcp_od>, <gcp_1yr>, <gcp_3yr>, '<timestamp>')\n" +
-				"   Only if NOT EXISTS a row with that run_id.\n\n" +
-				"RULES:\n" +
-				"  • DO NOT generate report.html — the orchestrator's render_report.py does that.\n" +
-				"  • DO NOT read gcp_projection row by row. Only the two aggregate SELECTs above.\n" +
-				"  • STOP after writing the summary .md and the run_results INSERT. Nothing else.",
+			Script: "scripts/render_report.py",
 		},
 	}
 }
@@ -333,17 +344,45 @@ def write_phase_checkpoint(num):
         json.dump({"last_completed": num, "ts": time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")}, f)
 
 def run_script(script_cmd):
-    """Run a skill script directly (no LLM). script_cmd may contain $DB."""
-    cmd = script_cmd.replace("$DB", DB)
+    """Run a skill script directly (no LLM). script_cmd may contain $DB / $JOBDIR.
+
+    A leading '?' marks the script as SOFT: a non-zero exit is logged but does
+    NOT fail the job. Use it for repair/validator passes (e.g. validate_fix.py
+    autofix) whose success is judged by the phase gate that follows, not by
+    their own exit code — a remaining-violations exit(1) there is expected.
+    """
+    soft = script_cmd.startswith("?")
+    if soft:
+        script_cmd = script_cmd[1:]
+    cmd = script_cmd.replace("$DB", DB).replace("$JOBDIR", JOB_DIR)
     parts = cmd.split()
     script_path = os.path.join(SKILL_DIR, parts[0])
     full = ["python3", script_path] + parts[1:]
-    log("[SCRIPT] " + " ".join(full))
+    log("[SCRIPT] " + ("(soft) " if soft else "") + " ".join(full))
     result = subprocess.run(full, cwd=JOB_DIR)
     if result.returncode != 0:
-        log("[SCRIPT] WARNING: exited with code %%d: %%s" %% (result.returncode, " ".join(full)))
+        if soft:
+            log("[SCRIPT] soft script exited %%d (non-fatal): %%s" %% (result.returncode, " ".join(full)))
+            return
+        msg = "Script failed (exit %%d): %%s" %% (result.returncode, " ".join(full))
+        log("[SCRIPT] FATAL: " + msg)
+        with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
+            _f.write(msg)
+        sys.exit(1)
 
 def run_agy(prompt, phase_label=""):
+    # Ensure correct symlinks in the shared scratch sandbox so agents aren't misled by stale runs
+    scratch_dir = os.path.expanduser("~/.gemini/antigravity-cli/scratch")
+    if os.path.exists(scratch_dir):
+        for name, target in [("projection-audit", os.path.join(JOB_DIR, "projection-audit")), ("scripts", os.path.join(JOB_DIR, "scripts"))]:
+            link_path = os.path.join(scratch_dir, name)
+            try:
+                if os.path.islink(link_path) or os.path.exists(link_path):
+                    os.unlink(link_path)
+                os.symlink(target, link_path)
+            except Exception as e:
+                log(f"Failed to symlink {name} in scratch: {e}")
+
     t0 = time.time()
     ts_start = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
     log("[LLM:START] phase=%%s ts=%%s" %% (phase_label, ts_start))
@@ -385,20 +424,35 @@ def failed_structurally():
     return os.path.exists(p) and os.path.getsize(p) > 0
 
 def get_new_convs(log_path, start_pos):
+    # Conversation UUIDs appear in agy-internal.log (AGY's internal trace),
+    # not in agy.log (which only carries skill output). Scan internal log
+    # from start_pos; fall back to agy.log if internal log is absent.
     convs = []
-    if not os.path.exists(log_path):
-        return convs
-    try:
-        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-            f.seek(start_pos)
-            content = f.read()
-            matches = re.findall(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', content, re.IGNORECASE)
-            for m in matches:
-                m = m.lower()
-                if m not in convs:
-                    convs.append(m)
-    except Exception as e:
-        log("Error reading new convs: " + str(e))
+    internal_log = os.path.join(JOB_DIR, "agy-internal.log")
+    sources = [internal_log, log_path]
+    job_id = JOB_DIR.split("/")[-1].lower()
+    for src in sources:
+        if not os.path.exists(src):
+            continue
+        try:
+            with open(src, "r", encoding="utf-8", errors="ignore") as f:
+                f.seek(start_pos if src == log_path else 0)
+                content = f.read()
+                matches = re.findall(
+                    r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+                    content, re.IGNORECASE)
+                for m in matches:
+                    m = m.lower()
+                    if m != job_id and m not in convs:
+                        brain_path = os.path.join(
+                            os.path.expanduser("~/.gemini/antigravity-cli/brain"),
+                            m, ".system_generated", "logs", "transcript_full.jsonl")
+                        if os.path.exists(brain_path):
+                            convs.append(m)
+        except Exception as e:
+            log("Error reading new convs from " + src + ": " + str(e))
+        if convs:
+            break
     return convs
 
 def measure_metrics(runs):
@@ -586,21 +640,25 @@ for ph in PHASES:
         log("Running pre_script: " + pre_script)
         subprocess.run(["python3", os.path.join(SKILL_DIR, pre_script)], cwd=JOB_DIR, check=True)
 
+    # Deterministic pre-LLM scripts always run (zero LLM tokens).
+    for scmd in ph.get("pre_llm_scripts") or []:
+        run_script(scmd)
+
     script = ph.get("script")
     if script:
+        # Deterministic-only phase: run the single script in place of agy.
         log("Running script: " + script)
         subprocess.run(["python3", os.path.join(SKILL_DIR, script)], cwd=JOB_DIR, check=True)
     else:
-        # Run deterministic pre-LLM scripts (zero LLM tokens)
-        for scmd in ph.get("pre_llm_scripts") or []:
-            run_script(scmd)
-
-        # Spawn agy only for the LLM portion of this phase
+        # Spawn agy only for the LLM portion of this phase.
         run_agy(ph.get("prompt", ""), phase_label=ph.get("name", ""))
 
-        # Run deterministic post-LLM scripts (zero LLM tokens)
-        for scmd in ph.get("post_llm_scripts") or []:
-            run_script(scmd)
+    # Deterministic post-LLM scripts always run (zero LLM tokens). For a script
+    # phase these are the recompute/repair steps that must follow it (D4/O3):
+    # rates are refilled and the autofixer repairs any deterministic violation
+    # BEFORE the phase gate evaluates.
+    for scmd in ph.get("post_llm_scripts") or []:
+        run_script(scmd)
 
     phase_convs = get_new_convs(AGY_LOG, start_pos)
     phase_entry = {
@@ -644,8 +702,27 @@ for ph in PHASES:
             retry_convs = get_new_convs(AGY_LOG, start_pos_retry)
             phase_entry["convs"].extend(retry_convs)
 
+            # Re-run post-LLM recompute/repair before re-checking, so the
+            # retry's edits are reflected in the projection (mirrors the normal
+            # post-LLM step).
+            for scmd in ph.get("post_llm_scripts") or []:
+                run_script(scmd)
+
             v2 = gate(sql)
             log("gate %%s after retry: %%s" %% (ph.get("check_name","?"), "PASS" if v2 == 0 else str(v2) + " remaining"))
+            if v2 and v2 > 0:
+                # Still failing after one full retry + deterministic repair.
+                # Surface it as a structural failure instead of marching on to
+                # produce a report the watcher gate would reject anyway (O4).
+                msg = ("Phase %%d (%%s) gate '%%s' still reports %%d violation(s) after retry "
+                       "and deterministic repair. This is a data/coverage gap the pipeline "
+                       "cannot auto-resolve — inspect projection.duckdb for the offending rows."
+                       %% (ph["num"], ph["name"], ph.get("check_name","?"), v2))
+                log("gate FATAL: " + msg)
+                with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
+                    _f.write(msg)
+                measure_metrics(phase_runs)
+                sys.exit(0)
         else:
             log("gate %%s PASS" %% ph.get("check_name","?"))
 

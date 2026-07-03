@@ -47,7 +47,10 @@ def load_mappings(mappings_dir: str) -> tuple[list[dict], list[str]]:
     expected_groups: list[str] = []
     if os.path.exists(manifest_path):
         manifest = json.load(open(manifest_path))
-        expected_groups = [g for g, meta in manifest.items() if meta.get("needs_llm", True)]
+        expected_groups = [
+            g for g, meta in manifest.items()
+            if not g.startswith("_") and isinstance(meta, dict) and meta.get("needs_llm", True)
+        ]
 
     all_rows: list[dict] = []
     missing: list[str] = []

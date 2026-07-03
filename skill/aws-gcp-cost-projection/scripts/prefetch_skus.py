@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-prefetch_skus.py — Pre-fetch GCP SKU IDs and AWS instance pricing at job start.
+prefetch_skus.py — ONE-TIME setup: pre-fetch all GCP SKU IDs and AWS instance pricing
+into the skill's global cache (data/resolved_skus.json, data/aws_instance_prices.json).
 
-Runs once before Phase 2 (as a pre_llm_script). Builds/appends to:
-  projection-audit/resolved_skus.json  — {lookup_key: sku_id} for flat_hourly lookups
-  projection-audit/aws_instance_prices.json — {instance_type: {od_hourly, 1yr_hourly}} for enrichment
+Run manually once after installing or updating the skill:
+    SKILL_DIR=/path/to/skill python3 scripts/prefetch_skus.py [--region asia-southeast1] [--force]
 
-GCP fetch: queries the Cloud Billing Catalog API for each relevant service × region.
-  Auth: tries GOOGLE_CLOUD_API_KEY env var, then `gcloud auth print-access-token`.
-  Falls back silently to bundled catalog if auth is unavailable.
+Options:
+    --region REGION   GCP region to fetch SKUs for (default: asia-southeast1)
+    --force           Re-fetch even if this region is already in the cache
 
-AWS fetch: queries the public AWS Pricing API (no auth) for EC2 + RDS instance pricing
-  in the job's AWS region. Appends any instance types not already in the static JSON.
-
-Usage:
-    python3 prefetch_skus.py <projection.duckdb>
+After this runs, resolve_sku() in apply_static_mappings.py uses the cache for instant
+lookups and only calls the live API when it encounters a genuinely new SKU not in the cache.
+Do NOT add this script to pre_llm_scripts — it does not run per job.
 """
 
 import gzip, json, os, re, subprocess, sys, urllib.request, urllib.parse
@@ -312,108 +310,64 @@ def fetch_aws_rds_prices(aws_region, db_instance_types):
 # ---------------------------------------------------------------------------
 
 def main():
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <projection.duckdb>", file=sys.stderr)
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(description="One-time GCP/AWS SKU prefetch into global cache")
+    parser.add_argument("--region", default="asia-southeast1",
+                        help="GCP region to fetch SKUs for (default: asia-southeast1)")
+    parser.add_argument("--aws-region", default="ap-southeast-1",
+                        help="AWS region for instance pricing (default: ap-southeast-1)")
+    parser.add_argument("--force", action="store_true",
+                        help="Re-fetch even if region already in cache")
+    args = parser.parse_args()
 
-    db_path = sys.argv[1]
-    if not os.path.exists(db_path):
-        print(f"DB not found: {db_path} — skipping prefetch", file=sys.stderr)
-        sys.exit(0)
+    gcp_region = args.region
+    aws_region = args.aws_region
+    services_needed = CORE_GCP_SERVICES[:]
 
-    conn = duckdb.connect(db_path, read_only=True)
-
-    # Determine GCP region + AWS region from catalog
-    row = conn.execute("""
-        SELECT gcp_region, aws_region, COUNT(*) AS n
-        FROM aws_li_catalog
-        WHERE is_workload AND gcp_region IS NOT NULL
-        GROUP BY gcp_region, aws_region
-        ORDER BY n DESC LIMIT 1
-    """).fetchone()
-
-    if not row:
-        print("No workload rows in catalog — skipping prefetch")
-        conn.close()
-        sys.exit(0)
-
-    gcp_region, aws_region, _ = row
-    print(f"Prefetching SKUs for gcp_region={gcp_region}, aws_region={aws_region}")
-
-    # Which GCP services does this bill actually need?
-    svc_rows = conn.execute("""
-        SELECT DISTINCT gcp_service FROM aws_li_to_gcp_li
-        WHERE gcp_service IS NOT NULL
-    """).fetchall()
-    billed_services = {r[0] for r in svc_rows}
-
-    # Always include core services; add any billed services not already there
-    services_needed = list(set(CORE_GCP_SERVICES) | billed_services)
-
-    # Instance types referenced in the bill (EC2)
-    ec2_types = [r[0] for r in conn.execute("""
-        SELECT DISTINCT instance_type FROM aws_li_catalog
-        WHERE instance_type IS NOT NULL
-          AND mechanic_group = 'compute_breakdown'
-    """).fetchall()]
-
-    # DB instance types referenced in the bill
-    db_types_raw = [r[0] for r in conn.execute("""
-        SELECT DISTINCT operation FROM aws_li_catalog
-        WHERE mechanic_group = 'managed_db'
-    """).fetchall()]
-    db_types = []
-    for op in db_types_raw:
-        m = re.search(r'(db\.[a-z0-9]+\.[a-z0-9]+)', op or "")
-        if m:
-            db_types.append(m.group(1))
-
-    conn.close()
+    print(f"One-time SKU prefetch: gcp={gcp_region}, aws={aws_region}")
+    print(f"Cache files: {RESOLVED_SKUS_FILE}")
+    print(f"             {AWS_PRICES_FILE}")
 
     # ------------------------------------------------------------------
-    # 1. GCP SKUs
+    # 1. GCP SKUs for all core services × region
     # ------------------------------------------------------------------
     print("\n[1/3] GCP SKU prefetch")
-
-    # Check if this region is already fully cached — skip if so
     existing_cache = _load_json(RESOLVED_SKUS_FILE, {})
-    region_key_sample = f"gcp|Compute Engine|"
-    already_has_region = any(
-        k.startswith(region_key_sample) and k.endswith(f"|{gcp_region}")
+    region_cached = any(
+        k.startswith("gcp|Compute Engine|") and k.endswith(f"|{gcp_region}")
         for k in existing_cache
     )
-    if already_has_region:
-        print(f"  Region {gcp_region} already in cache — skipping GCP fetch")
+    if region_cached and not args.force:
+        print(f"  Region {gcp_region} already in cache — use --force to re-fetch")
         added_gcp = 0
     else:
         token_info = _gcp_token()
-        if token_info:
-            print(f"  Auth: {token_info[0]}")
-        else:
-            print("  Auth: none — using bundled catalog only")
+        print(f"  Auth: {token_info[0] if token_info else 'none — bundled catalog only'}")
         gcp_entries = fetch_gcp_skus_for_region(gcp_region, services_needed, token_info)
         added_gcp = _append_json(RESOLVED_SKUS_FILE, gcp_entries)
-        print(f"  → {len(gcp_entries)} region-matched SKUs, {added_gcp} new entries added to cache")
+        print(f"  → {len(gcp_entries)} region-matched SKUs, {added_gcp} new entries cached")
 
     # ------------------------------------------------------------------
-    # 2. AWS EC2 instance prices
+    # 2. AWS EC2 On-Demand prices for common instance families
     # ------------------------------------------------------------------
     print("\n[2/3] AWS EC2 instance price prefetch")
-    if ec2_types:
-        fetch_aws_instance_prices(aws_region, ec2_types)
-    else:
-        print("  No EC2 instance types in bill")
+    # Read what's already in the static ec2-instance-types.json
+    ec2_static = _load_json(os.path.join(DATA_DIR, "ec2-instance-types.json"), {})
+    # Fetch prices for all known instance types (fills aws_instance_prices.json)
+    ec2_types = [k for k in ec2_static if not k.startswith("_")]
+    fetch_aws_instance_prices(aws_region, ec2_types)
 
     # ------------------------------------------------------------------
-    # 3. AWS RDS instance prices
+    # 3. AWS RDS On-Demand prices for common DB instance types
     # ------------------------------------------------------------------
     print("\n[3/3] AWS RDS instance price prefetch")
-    if db_types:
-        fetch_aws_rds_prices(aws_region, db_types)
-    else:
-        print("  No RDS instance types in bill")
+    rds_static = _load_json(os.path.join(DATA_DIR, "rds-instance-types.json"), {})
+    rds_types = [k for k in rds_static if not k.startswith("_") and k.startswith("db.")]
+    fetch_aws_rds_prices(aws_region, rds_types)
 
-    print(f"\nPrefetch complete. Cache: {RESOLVED_SKUS_FILE}")
+    total_gcp = len(_load_json(RESOLVED_SKUS_FILE, {}))
+    total_aws = len(_load_json(AWS_PRICES_FILE, {}))
+    print(f"\nDone. Cache totals: {total_gcp} GCP SKUs, {total_aws} AWS prices")
 
 
 if __name__ == "__main__":

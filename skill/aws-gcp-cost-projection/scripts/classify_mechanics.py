@@ -51,15 +51,19 @@ RULES = [
         ),
     ),
     (
+        # managed_db owns BOTH the instance AND its storage/backup lines. Storage
+        # SKU selection for a managed DB is engine- and region-specific (a generic
+        # "SSD storage" pattern resolves to the wrong SKU — e.g. an IOPS SKU), so
+        # these rows need the managed_db LLM's context, not a static table. Only
+        # standalone EBS volumes go to block_storage (deterministic).
         "managed_db",
         lambda r: (
-            (_ilike(r["product"], "RDS")
-             or _ilike(r["product"], "Relational Database")
-             or _ilike(r["product"], "Aurora")
-             or _ilike(r["product"], "ElastiCache")
-             or _ilike(r["product"], "DocumentDB")
-             or _ilike(r["product"], "MemoryDB"))
-            and not _re(r["usage_type"], r"Storage|gp2|gp3|io1|io2")
+            _ilike(r["product"], "RDS")
+            or _ilike(r["product"], "Relational Database")
+            or _ilike(r["product"], "Aurora")
+            or _ilike(r["product"], "ElastiCache")
+            or _ilike(r["product"], "DocumentDB")
+            or _ilike(r["product"], "MemoryDB")
         ),
     ),
     (
@@ -162,11 +166,46 @@ _MISC_SERVICE_HINTS: list[tuple[str, str, list[str], list[str]]] = [
 ]
 
 
+# Services with no MANAGED GCP equivalent, mapped to self-hosted GCE. The
+# orchestrator extracts their real instance footprint (instance_type / vcpus /
+# ram / instance_count, derived from the CUR operation field + instance-hours),
+# so they are mapped 1:1 to their actual size — NOT a fabricated cluster.
+_SELF_HOST_ON_GCE = [
+    "OpenSearch", "Elasticsearch",
+    "Managed Streaming for Apache Kafka", "MSK", "Kafka",
+]
+
+
 def _misc_reason(row: dict) -> str:
     """Produce a structured reason dict for a misc-classified row."""
     product = row.get("product") or ""
     usage_type = row.get("usage_type") or ""
     unit = row.get("unit") or ""
+
+    # No-managed-equivalent compute services → self-hosted GCE, sized to the
+    # ACTUAL extracted footprint. Never fabricate replication or disk.
+    for frag in _SELF_HOST_ON_GCE:
+        if frag.lower() in product.lower() or frag.lower() in usage_type.lower():
+            has_specs = bool(row.get("instance_vcpus"))
+            return json.dumps({
+                "why": f"no managed GCP equivalent for product={product!r}; self-host on GCE",
+                "service_hint": f"{product} → self-hosted on Compute Engine",
+                "recommended_strategy": "break_down" if has_specs else "map",
+                "extracted_footprint": {
+                    "instance_type": row.get("instance_type"),
+                    "instance_vcpus": row.get("instance_vcpus"),
+                    "instance_ram_gb": row.get("instance_ram_gb"),
+                    "instance_count": row.get("instance_count"),
+                },
+                "mapping_guidance": (
+                    "Map to self-hosted Compute Engine using the EXTRACTED footprint above "
+                    "(instance_type/vcpus/ram × instance_count = the real node count from "
+                    "instance-hours). break_down into core+ram components exactly like an EC2 "
+                    "instance. instance_count IS the actual node count — do NOT invent a "
+                    "replication factor or disk size. Storage sub-lines map to Persistent Disk "
+                    "(block_storage); the instance line maps to GCE compute."
+                ),
+            })
 
     # Try to match a known service hint
     for fragment, service_label, available, missing in _MISC_SERVICE_HINTS:
@@ -231,7 +270,11 @@ def main():
             pricing_unit AS unit,
             line_item_type,
             pricing_model,
-            aws_amortized_cost
+            aws_amortized_cost,
+            instance_type,
+            instance_vcpus,
+            instance_ram_gb,
+            instance_count
         FROM aws_li_catalog
         """
     ).fetchall()
@@ -239,6 +282,7 @@ def main():
     col_names = [
         "aws_li_key", "product", "usage_type", "operation",
         "unit", "line_item_type", "pricing_model", "aws_amortized_cost",
+        "instance_type", "instance_vcpus", "instance_ram_gb", "instance_count",
     ]
 
     # --- Classify ---
@@ -341,8 +385,14 @@ def main():
             row["misc_annotation"] = json.loads(misc_reasons[row["aws_li_key"]])
         manifest[row["mechanic_group"]].append(row)
 
-    # Skip groups that need no LLM work — commitment_discount is always ignore
-    skip_groups = {"commitment_discount"}
+    # Groups resolved deterministically by apply_commitment_ignores.py /
+    # apply_static_mappings.py — the LLM must NOT re-touch them, or it could
+    # overwrite a stable deterministic mapping with a run-to-run-varying guess.
+    skip_groups = {
+        "commitment_discount",
+        "flat_hourly", "object_storage", "per_request",
+        "block_storage", "data_transfer",
+    }
     manifest_out = {
         g: {"rows": rows, "row_count": len(rows),
             "total_spend": sum(r.get("aws_amortized_cost") or 0 for r in rows),
@@ -350,7 +400,16 @@ def main():
         for g, rows in manifest.items()
     }
 
+    # Add output_dir so the LLM knows exactly where to write mapping files.
+    # Use a relative path — absolute paths cause the LLM to write outside the job dir.
+    manifest_out["_meta"] = {
+        "output_dir": "projection-audit/mappings",
+        "db_path": "projection-audit/projection.duckdb",
+    }
+
     manifest_path = os.path.join(os.path.dirname(db_path), "phase2_manifest.json")
+    # Also create the output dir now so the LLM doesn't have to
+    os.makedirs(os.path.join(os.path.dirname(db_path), "mappings"), exist_ok=True)
     with open(manifest_path, "w") as fh:
         json.dump(manifest_out, fh, indent=2, default=str)
     print(f"\nWrote {manifest_path}  ({len(manifest_out)} groups)")

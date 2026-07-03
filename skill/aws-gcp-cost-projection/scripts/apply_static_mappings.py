@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
 apply_static_mappings.py — Deterministic mappings for flat_hourly, object_storage,
-and per_request groups. Zero LLM tokens spent.
+per_request, block_storage, and data_transfer groups. Zero LLM tokens spent.
 
 Usage:
     python3 apply_static_mappings.py <projection.duckdb>
 
-Writes three files:
-    projection-audit/mappings/flat_hourly_mappings.json
-    projection-audit/mappings/object_storage_mappings.json
-    projection-audit/mappings/per_request_mappings.json
+Writes one <group>_mappings.json per handled group into projection-audit/mappings/.
+These groups map by fixed rules (volume type, storage class, transfer direction),
+so they are resolved here rather than by the LLM — deterministic and variance-free.
 """
 
 import gzip, json, os, re, sys
@@ -72,6 +71,48 @@ PER_REQUEST_MAP = [
     (r"Transcribe",            "Speech-to-Text", "STT Audio",                  1.0),
 ]
 PER_REQUEST_DEFAULT = ("Cloud Run", "Requests", 1.0)
+
+# block_storage: EBS volume_type → GCP Persistent Disk tier (desc_pattern searched
+# in the Compute Engine catalog). RDS/managed-db storage rows that landed here map
+# to Cloud SQL storage instead (branched on product in map_block_storage).
+EBS_VOLUME_MAP = {
+    "gp2": "Balanced PD Capacity",
+    "gp3": "Balanced PD Capacity",
+    "io1": "SSD backed PD Capacity",
+    "io2": "SSD backed PD Capacity",
+    "st1": "Storage PD Capacity",
+    "sc1": "Storage PD Capacity",
+    "standard": "Storage PD Capacity",
+    "magnetic": "Storage PD Capacity",
+}
+EBS_DEFAULT_DESC = "Balanced PD Capacity"
+
+# data_transfer: direction inferred from usage_type. Ingress is free on GCP → ignore.
+# Inter-zone / inter-region / internet egress each map to their egress SKU family.
+def _transfer_target(usage_type, operation):
+    """Classify AWS data-transfer direction → GCP egress SKU. Order matters.
+
+    Calibrated against real CUR usage types:
+      - '...-In-Bytes'                    → ingress, free on GCP        → ignore
+      - '<REG>-<REG>-AWS-Out-Bytes'       → inter-region egress (~$0.09/GB)
+      - '...Regional...' / intra-AZ       → inter-zone egress  (~$0.01/GB)
+      - 'Bandwidth' (aggregate, ~$0.01/GB in practice) → inter-zone egress
+      - other '...-Out-Bytes' to internet → internet egress (~$0.08-0.12/GB)
+    """
+    ut = f"{usage_type or ''} {operation or ''}".lower()
+    if re.search(r"in-bytes|datatransfer-in|\bin\b.*byte", ut):
+        return ("ignore", None, None, 0.0, "ingress is free on GCP")
+    # Region-to-region code pair (e.g. "aps1-apn1-aws-out-bytes") → inter-region.
+    if re.search(r"\b[a-z]{2,4}\d?-[a-z]{2,4}\d?-aws-out", ut) or "inter-region" in ut or "interregion" in ut:
+        return ("map", "Compute Engine", "Network Inter Region Egress", 1.0, "inter-region egress")
+    if "regional" in ut or "intra" in ut or re.search(r"az.*az", ut):
+        return ("map", "Compute Engine", "Network Inter Zone Egress", 1.0, "inter-zone egress")
+    # 'Bandwidth' is an aggregate transfer line; observed rate profile (~$0.01/GB)
+    # is intra-region, so map to inter-zone rather than internet egress (which
+    # would over-project ~8x). A true internet line uses an explicit Out-Bytes.
+    if "bandwidth" in ut:
+        return ("map", "Compute Engine", "Network Inter Zone Egress", 1.0, "bandwidth (intra-region) egress")
+    return ("map", "Compute Engine", "Network Internet Egress", 1.0, "internet egress")
 
 
 SKILL_DIR = os.environ.get("SKILL_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -327,6 +368,77 @@ def map_per_request(rows):
     return out
 
 
+def map_block_storage(rows):
+    """EBS volumes → Persistent Disk; RDS/managed-db storage → Cloud SQL storage."""
+    out = []
+    for r in rows:
+        product = (r.get("product") or "").lower()
+        ut = (r.get("usage_type") or "").lower()
+        vol = (r.get("volume_type") or "").lower().strip()
+        gcp_region = r.get("gcp_region")
+        is_managed_db = any(k in product for k in
+                            ("rds", "relational", "aurora", "documentdb", "memorydb", "elasticache"))
+
+        if is_managed_db:
+            service = "Cloud SQL"
+            if "backup" in ut or "backup" in (r.get("operation") or "").lower():
+                desc = "Backups"
+            elif vol in ("st1", "sc1", "standard", "magnetic"):
+                desc = "HDD storage"
+            else:
+                desc = "SSD storage"
+            note = f"managed-db storage ({vol or 'default'}) → Cloud SQL {desc}"
+        else:
+            service = "Compute Engine"
+            if "snapshot" in ut:
+                desc = "Storage PD Snapshot"
+            else:
+                desc = EBS_VOLUME_MAP.get(vol, EBS_DEFAULT_DESC)
+            note = f"EBS {vol or 'volume'} → {desc}"
+
+        sku_id = resolve_sku(service, desc, gcp_region)
+        entry = {
+            "aws_li_key":       r["aws_li_key"],
+            "gcp_service":      service,
+            "gcp_sku_name":     desc,
+            "component":        "storage",
+            "strategy":         "map",
+            "unit_multiplier":  1.0,
+            "gcp_region":       gcp_region,
+            "projection_note":  note,
+            "mapping_confidence": 0.90,
+        }
+        if sku_id:
+            entry["gcp_sku_id"] = sku_id
+        out.append(entry)
+    return out
+
+
+def map_data_transfer(rows):
+    """Classify transfer direction deterministically; ingress is free (ignore)."""
+    out = []
+    for r in rows:
+        strategy, service, sku_name, mult, note = _transfer_target(r.get("usage_type"), r.get("operation"))
+        gcp_region = r.get("gcp_region")
+        entry = {
+            "aws_li_key":       r["aws_li_key"],
+            "gcp_service":      service,
+            "gcp_sku_name":     sku_name,
+            "component":        "transfer",
+            "strategy":         strategy,
+            "unit_multiplier":  mult,
+            "gcp_region":       gcp_region,
+            "projection_note":  f"data_transfer: {note}",
+            "mapping_confidence": 0.85,
+        }
+        if strategy == "map" and service and sku_name:
+            sku_id = resolve_sku(service, sku_name, gcp_region)
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+        out.append(entry)
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <projection.duckdb>", file=sys.stderr)
@@ -338,15 +450,18 @@ def main():
 
     rows = con.execute("""
         SELECT aws_li_key, mechanic_group, product, usage_type, pricing_unit AS unit,
-               aws_amortized_cost, aws_region AS region, gcp_region, operation
+               aws_amortized_cost, aws_region AS region, gcp_region, operation, volume_type
         FROM aws_li_catalog
-        WHERE mechanic_group IN ('flat_hourly', 'object_storage', 'per_request')
+        WHERE mechanic_group IN
+              ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer')
     """).fetchall()
     con.close()
 
     cols = ["aws_li_key", "mechanic_group", "product", "usage_type", "unit",
-            "aws_amortized_cost", "region", "gcp_region", "operation"]
-    by_group: dict[str, list] = {"flat_hourly": [], "object_storage": [], "per_request": []}
+            "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type"]
+    by_group: dict[str, list] = {g: [] for g in
+                                 ("flat_hourly", "object_storage", "per_request",
+                                  "block_storage", "data_transfer")}
     for raw in rows:
         r = dict(zip(cols, raw))
         by_group[r["mechanic_group"]].append(r)
@@ -358,6 +473,8 @@ def main():
         "flat_hourly":    map_flat_hourly,
         "object_storage": map_object_storage,
         "per_request":    map_per_request,
+        "block_storage":  map_block_storage,
+        "data_transfer":  map_data_transfer,
     }
     for group, handler in handlers.items():
         mappings = handler(by_group[group])

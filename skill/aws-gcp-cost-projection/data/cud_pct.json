@@ -28,6 +28,22 @@
     "3yr_multiplier": 0.65,
     "note": "Redis/Memcached CUD"
   },
+  "Cloud Memorystore": {
+    "1yr_multiplier": 0.80,
+    "3yr_multiplier": 0.65
+  },
+  "Cloud Memorystore for Redis": {
+    "1yr_multiplier": 0.80,
+    "3yr_multiplier": 0.65
+  },
+  "Cloud Memorystore for Memcached": {
+    "1yr_multiplier": 0.80,
+    "3yr_multiplier": 0.65
+  },
+  "AlloyDB": {
+    "1yr_multiplier": 0.75,
+    "3yr_multiplier": 0.60
+  },
   "Cloud Run": {
     "1yr_multiplier": 0.83,
     "3yr_multiplier": 0.67,

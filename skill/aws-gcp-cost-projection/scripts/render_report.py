@@ -37,6 +37,31 @@ def main():
         GROUP BY gcp_region ORDER BY n DESC LIMIT 1
     """).fetchone()
     gcp_region_display = gcp_region_row[0] if gcp_region_row else "see individual rows"
+    
+    region_names = {
+        "asia-southeast1": "Singapore",
+        "asia-northeast1": "Tokyo",
+        "asia-south1": "Mumbai",
+        "us-east4": "N. Virginia",
+        "us-west1": "Oregon"
+    }
+    if gcp_region_display in region_names:
+        gcp_region_display = f"{gcp_region_display} ({region_names[gcp_region_display]})"
+
+    # Capacity calculations
+    aws_vcpu = conn.execute("SELECT SUM(instance_vcpus * instance_count) FROM aws_li_catalog WHERE is_workload AND instance_vcpus IS NOT NULL").fetchone()[0] or 0.0
+    aws_ram = conn.execute("SELECT SUM(instance_ram_gb * instance_count) FROM aws_li_catalog WHERE is_workload AND instance_ram_gb IS NOT NULL").fetchone()[0] or 0.0
+    gcp_vcpu = conn.execute("SELECT SUM(m.unit_multiplier * c.instance_count) FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING (aws_li_key) WHERE m.component = 'core' AND m.strategy IN ('map', 'break_down')").fetchone()[0] or 0.0
+    gcp_ram = conn.execute("SELECT SUM(m.unit_multiplier * c.instance_count) FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING (aws_li_key) WHERE m.component = 'ram' AND m.strategy IN ('map', 'break_down')").fetchone()[0] or 0.0
+
+    vcpu_status = "PASS" if gcp_vcpu >= aws_vcpu else "WARN"
+    ram_status = "PASS" if gcp_ram >= aws_ram else "WARN"
+    
+    # Confidence metrics
+    avg_conf = conn.execute("SELECT AVG(mapping_confidence) FROM aws_li_to_gcp_li").fetchone()[0] or 0.0
+    exact_cnt = conn.execute("SELECT COUNT(*) FROM aws_li_to_gcp_li WHERE mapping_confidence >= 0.9").fetchone()[0] or 0
+    near_cnt = conn.execute("SELECT COUNT(*) FROM aws_li_to_gcp_li WHERE mapping_confidence >= 0.7 AND mapping_confidence < 0.9").fetchone()[0] or 0
+    low_cnt = conn.execute("SELECT COUNT(*) FROM aws_li_to_gcp_li WHERE mapping_confidence < 0.7 OR strategy = 'passthrough'").fetchone()[0] or 0
 
     html_content = f"""
     <html>
@@ -51,6 +76,7 @@ def main():
             .right {{ text-align: right; }}
             .green {{ color: #0F9D58; font-weight: bold; }}
             .red {{ color: #D93025; font-weight: bold; }}
+            .orange {{ color: #E37400; font-weight: bold; }}
             .assumptions {{ background: #f8f9fa; border-left: 3px solid #1A73E8; padding: 10px 16px; margin: 12px 0; font-size: 0.9em; }}
             .assumptions ul {{ margin: 4px 0; padding-left: 20px; }}
         </style>
@@ -58,10 +84,11 @@ def main():
     <body>
         <h1 class="header">AWS to GCP Cloud Cost Analysis</h1>
         <p><b>Customer:</b> {customer_name} &nbsp;&nbsp; <b>Analysis Date:</b> {now.strftime('%B %Y')}</p>
+        
         <div class="assumptions">
           <b>Pricing assumptions:</b>
           <ul>
-            <li>GCP region: <b>{gcp_region_display}</b></li>
+            <li>Target pricing region: <b>{gcp_region_display}</b></li>
             <li>On-Demand pricing (no sustained use discount applied to base rates)</li>
             <li>1-Year and 3-Year CUD columns show committed-use discount savings</li>
             <li>License-included pricing (BYOL not assumed unless the AWS line item indicates it)</li>
@@ -70,6 +97,34 @@ def main():
           </ul>
         </div>
         
+        <h2>Mapping Confidence</h2>
+        <table>
+            <tr><th>Average Confidence</th><td><b>{avg_conf * 100:.1f}%</b></td></tr>
+            <tr><th>Mapping Breakdown</th><td>Exact Matches (&ge;90%): <b>{exact_cnt}</b> | Near Matches (70-90%): <b>{near_cnt}</b> | Manual Review / Low Confidence: <b>{low_cnt}</b></td></tr>
+        </table>
+
+        <h2>Capacity Reconciliation</h2>
+        <table>
+            <tr>
+                <th>Resource Type</th>
+                <th class="right">AWS Total Capacity</th>
+                <th class="right">GCP Recommended Capacity</th>
+                <th class="right">Status</th>
+            </tr>
+            <tr>
+                <td>vCPU (cores)</td>
+                <td class="right">{aws_vcpu:,.2f} vCPUs</td>
+                <td class="right">{gcp_vcpu:,.2f} vCPUs</td>
+                <td class="right {'green' if vcpu_status == 'PASS' else 'orange'}">{vcpu_status}</td>
+            </tr>
+            <tr>
+                <td>Memory (RAM)</td>
+                <td class="right">{aws_ram:,.2f} GB</td>
+                <td class="right">{gcp_ram:,.2f} GB</td>
+                <td class="right {'green' if ram_status == 'PASS' else 'orange'}">{ram_status}</td>
+            </tr>
+        </table>
+
         <h2>Cost Summary</h2>
         <table>
             <tr><th>AWS Total</th><td class="right">${aws_total:,.2f}</td></tr>
@@ -86,14 +141,19 @@ def main():
     
     rows = conn.execute("""
         SELECT 
-            c.product, c.operation, m.gcp_service,
-            m.projection_note,
+            c.product, 
+            c.operation, 
+            COALESCE(ANY_VALUE(m.gcp_service), 'N/A') as gcp_service,
+            COALESCE(STRING_AGG(DISTINCT m.projection_note, '; '), '') as projection_note,
             c.aws_amortized_cost,
-            p.gcp_projected_cost, p.gcp_cost_1yr_cud, p.gcp_cost_3yr_cud,
-            (c.aws_amortized_cost - p.gcp_projected_cost) AS diff
+            SUM(p.gcp_projected_cost) as gcp_projected_cost,
+            SUM(p.gcp_cost_1yr_cud) as gcp_cost_1yr_cud,
+            SUM(p.gcp_cost_3yr_cud) as gcp_cost_3yr_cud,
+            (c.aws_amortized_cost - SUM(p.gcp_projected_cost)) AS diff
         FROM aws_li_catalog c
         LEFT JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
-        LEFT JOIN gcp_projection p ON c.aws_li_key = p.aws_li_key
+        LEFT JOIN gcp_projection p ON c.aws_li_key = p.aws_li_key AND p.component = m.component
+        GROUP BY c.aws_li_key, c.product, c.operation, c.aws_amortized_cost
         ORDER BY c.aws_amortized_cost DESC
     """).fetchall()
     
@@ -152,25 +212,43 @@ def main():
 
     # Ensure run_results has a row so the frontend TotalsCard works even when
     # the Phase 6 LLM narrative agent is skipped or hits quota.
+    # Schema must match duckdb.go RunResult exactly — all columns required.
     try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS run_results (
-                run_id       TEXT PRIMARY KEY,
-                aws_total    DOUBLE,
-                gcp_od       DOUBLE,
-                gcp_1yr_cud  DOUBLE,
-                gcp_3yr_cud  DOUBLE,
-                ts_utc       TEXT
+                run_id        TEXT PRIMARY KEY,
+                ts_utc        TEXT,
+                run_type      TEXT,
+                instruction   TEXT,
+                aws_total     DOUBLE,
+                gcp_od        DOUBLE,
+                gcp_1yr_cud   DOUBLE,
+                gcp_3yr_cud   DOUBLE,
+                report_html   TEXT,
+                report_md     TEXT,
+                summary_md    TEXT,
+                mapped_rows   INTEGER,
+                passthroughs  INTEGER,
+                confidence    TEXT
             )
         """)
         existing = conn.execute(
             "SELECT 1 FROM run_results WHERE run_id = ?", [run_id]
         ).fetchone()
         if not existing:
+            mapped_rows = conn.execute(
+                "SELECT COUNT(*) FROM aws_li_to_gcp_li"
+            ).fetchone()[0] or 0
+            passthroughs = conn.execute(
+                "SELECT COUNT(*) FROM aws_li_to_gcp_li WHERE strategy='passthrough'"
+            ).fetchone()[0] or 0
             conn.execute(
-                "INSERT INTO run_results (run_id, aws_total, gcp_od, gcp_1yr_cud, gcp_3yr_cud, ts_utc) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                [run_id, aws_total, gcp_od, gcp_1yr, gcp_3yr, now.strftime("%Y-%m-%dT%H:%M:%SZ")]
+                "INSERT INTO run_results "
+                "(run_id, ts_utc, run_type, instruction, aws_total, gcp_od, gcp_1yr_cud, gcp_3yr_cud, "
+                " report_html, report_md, summary_md, mapped_rows, passthroughs, confidence) "
+                "VALUES (?, ?, 'initial', NULL, ?, ?, ?, ?, 'projection-audit/report.html', NULL, NULL, ?, ?, NULL)",
+                [run_id, now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                 aws_total, gcp_od, gcp_1yr, gcp_3yr, mapped_rows, passthroughs]
             )
             conn.commit()
             print(f"Inserted run_results row for {run_id}")

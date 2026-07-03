@@ -167,17 +167,47 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		// a varying agent cannot skip it and ship a flawed report as "done".
 		if ok, summary := runValidatorGate(jobDir); !ok {
 			log.Printf("watcher %s: validation gate FAILED:\n%s", jobID, summary)
-			if err := w.db.UpdateJobFailed(jobID, "validation gate failed — report withheld:\n"+summary); err != nil {
-				log.Printf("watcher %s: UpdateJobFailed (validation): %v", jobID, err)
+			if allowRetry && job.Attempts < maxAttempts {
+				// Partial retry: phases 1–4 data is good; only Phase 5 produced bad mappings.
+				// Reset checkpoint to phase 4 so the spawner re-runs Phase 5 + 6.
+				// Also clear the stale run_results row and report file so resolveReportPath
+				// returns "" on the next finalize call (otherwise it finds the bad report again).
+				dbPath := filepath.Join(jobDir, "projection-audit", "projection.duckdb")
+				_ = exec.Command("python3", "-c",
+					"import duckdb; c=duckdb.connect('"+dbPath+"'); c.execute('DELETE FROM run_results'); c.close()",
+				).Run()
+				for _, g := range []string{
+					filepath.Join(jobDir, "projection-audit", "report*.html"),
+					filepath.Join(jobDir, "report*.html"),
+				} {
+					if ms, err := filepath.Glob(g); err == nil {
+						for _, m := range ms {
+							_ = os.Remove(m)
+						}
+					}
+				}
+				_ = os.WriteFile(
+					filepath.Join(jobDir, "phase_checkpoint.json"),
+					[]byte(`{"last_completed":4}`), 0o644,
+				)
+				log.Printf("watcher %s: reset to phase 5 retry (attempt %d/%d)", jobID, job.Attempts+1, maxAttempts)
+				// Fall through to the checkpoint retry path below.
+			} else {
+				if err := w.db.UpdateJobFailed(jobID, "validation gate failed after retries:\n"+summary); err != nil {
+					log.Printf("watcher %s: UpdateJobFailed (validation): %v", jobID, err)
+				}
+				go notify.SendJobFailed(w.notify.Email, job.Owner, job.Owner, job.Prospect)
+				go notify.PostJobFailed(w.notify.SlackURL, job.Prospect, job.Owner, jobID)
+				return
 			}
+		} else {
+			if err := w.db.UpdateJobDone(jobID, spend); err != nil {
+				log.Printf("watcher %s: UpdateJobDone: %v", jobID, err)
+			}
+			go notify.SendJobReady(w.notify.Email, job.Owner, job.Owner, job.Prospect, jobID)
+			go notify.PostJobSuccess(w.notify.SlackURL, job.Prospect, job.Owner, jobID, spend)
 			return
 		}
-		if err := w.db.UpdateJobDone(jobID, spend); err != nil {
-			log.Printf("watcher %s: UpdateJobDone: %v", jobID, err)
-		}
-		go notify.SendJobReady(w.notify.Email, job.Owner, job.Owner, job.Prospect, jobID)
-		go notify.PostJobSuccess(w.notify.SlackURL, job.Prospect, job.Owner, jobID, spend)
-		return
 	}
 
 	// No report produced. Check for explicit failure signals before retrying.
@@ -280,12 +310,18 @@ func readFailureReason(jobDir string) string {
 // the watcher can fail fast without burning retry attempts on a quota error.
 // quotaMarkers must be specific enough to not match benign log lines.
 // "quota" alone is too broad — it matches log lines like "API quota usage: 0/60".
+// Kept in sync with QUOTA_MARKERS in orchestrate.go so an auth failure
+// (PERMISSION_DENIED / UNAUTHENTICATED) is treated as fail-fast here too,
+// instead of being mislabeled "exited without report" and burning all retries.
 var quotaMarkers = []string{
 	"RESOURCE_EXHAUSTED",
 	"Individual quota reached",
 	"quota exhausted",
 	"rate limit exceeded",
 	"Too Many Requests",
+	"model unreachable",
+	"PERMISSION_DENIED",
+	"UNAUTHENTICATED",
 }
 
 func quotaExhausted(jobDir string, logOffset int64) bool {

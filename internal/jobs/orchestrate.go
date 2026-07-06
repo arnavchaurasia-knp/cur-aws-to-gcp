@@ -300,10 +300,11 @@ func duckdbBin() string {
 // DuckDB gate, and retries a phase once (with offending rows named) if its gate
 // fails. agy stdout/stderr append to agy.log; agy internals go to agy-internal.log.
 const orchestratorTemplate = `#!/usr/bin/env python3
-import base64, json, os, subprocess, sys, threading, time, re, glob, hashlib, shutil
+import base64, json, os, subprocess, sys, threading, time, re, glob, hashlib, shutil, traceback
 from collections import defaultdict
 
 JOB_DIR   = os.getcwd()
+JOB_ID    = os.path.basename(JOB_DIR)
 AGY       = os.environ.get("AGY_BIN", "agy")
 MODEL     = os.environ.get("AGY_MODEL", "gemini-3.5-flash")
 DUCKDB    = os.environ.get("DUCKDB_BIN", "duckdb")
@@ -657,10 +658,17 @@ def measure_metrics(runs):
 
 phase_runs = []
 
-for ph in PHASES:
+# CRITICAL_PHASES are load-bearing: without ingested + mapped data a report is
+# meaningless, so an unexpected crash there is fatal. Every later phase only
+# refines the projection, so a crash there is logged and skipped — the report
+# is still generated from whatever is in the DB (affected rows fall back to
+# their passthrough / best-effort values). See the driver loop below.
+CRITICAL_PHASES = {1, 2}
+
+def run_phase(ph):
     if ph["num"] < START_PHASE or ph["num"] > END_PHASE:
         log("Skipping Phase %%d (%%s)" %% (ph["num"], ph["name"]))
-        continue
+        return
 
     write_progress(ph["num"], ph["name"], ph["activity"])
     log("=== Phase %%d (%%s) ===" %% (ph["num"], ph["name"]))
@@ -811,6 +819,31 @@ for ph in PHASES:
 
     # Record this phase as successfully completed so a retry can resume here.
     write_phase_checkpoint(ph["num"])
+
+
+for ph in PHASES:
+    try:
+        run_phase(ph)
+    except SystemExit:
+        # Intentional graceful stop (quota exhausted, unresolved gate, structural
+        # failure). Preserve it — these are the pipeline's quality gates.
+        raise
+    except Exception as e:
+        # Any OTHER exception is an unexpected bug in this phase. Never let it
+        # abort the whole run with a raw traceback and no report.
+        tb = traceback.format_exc()
+        if ph["num"] in CRITICAL_PHASES:
+            msg = ("Phase %%d (%%s) crashed: %%s. This phase is required for a "
+                   "meaningful projection, so the run cannot continue." %% (ph["num"], ph["name"], e))
+            log("FATAL: " + msg)
+            log(tb)
+            with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
+                _f.write(msg)
+            measure_metrics(phase_runs)
+            sys.exit(0)
+        log("WARNING: Phase %%d (%%s) crashed but is non-critical: %%s — skipping it so "
+            "the report is still generated." %% (ph["num"], ph["name"], e))
+        log(tb)
 
 try:
     measure_metrics(phase_runs)

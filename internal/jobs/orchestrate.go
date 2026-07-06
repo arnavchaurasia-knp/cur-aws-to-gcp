@@ -393,30 +393,36 @@ def run_script(script_cmd):
         sys.exit(1)
 
 def run_agy(prompt, phase_label=""):
-    # Point the scratch sandbox at THIS job's directories using a per-job
-    # scratch subdirectory so concurrent jobs don't race on shared symlinks.
-    # Each job gets ~/.gemini/antigravity-cli/scratch/<JOB_ID>/ which is
-    # isolated from every other running job.
+    # agy resolves the agent's RELATIVE file writes (e.g. the mapping agent
+    # writing "projection-audit/mappings/<group>_mappings.json") into ITS OWN
+    # scratch dir, not this job's cwd. So we point scratch/projection-audit and
+    # scratch/scripts at THIS job's real directories — that is what makes the
+    # agent's writes land where merge_mappings.py and the other scripts read
+    # them. The links MUST sit at the flat scratch/<name> path because that is
+    # exactly where agy writes; a per-job scratch/<JOB_ID>/<name> subdir is
+    # never consulted by agy and leaves the agent's files orphaned.
+    #
+    # Shared (not per-job) path: run only one job's agy phases at a time. The
+    # links are refreshed at the start of every run_agy call, so a sequential
+    # retry always repoints them at the current job before agy runs.
     base_scratch = os.path.expanduser("~/.gemini/antigravity-cli/scratch")
-    job_scratch = os.path.join(base_scratch, JOB_ID)
     if os.path.exists(base_scratch):
-        try:
-            os.makedirs(job_scratch, exist_ok=True)
-            for name, target in [("projection-audit", os.path.join(JOB_DIR, "projection-audit")),
-                                  ("scripts", os.path.join(JOB_DIR, "scripts"))]:
-                link_path = os.path.join(job_scratch, name)
-                # Atomic replacement: write to a tmp name then rename so a
-                # concurrent call never sees a missing link.
-                tmp_path = link_path + ".tmp"
-                try:
-                    if os.path.islink(tmp_path) or os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-                    os.symlink(target, tmp_path)
-                    os.replace(tmp_path, link_path)
-                except Exception as e:
-                    log(f"Failed to symlink {name} in scratch: {e}")
-        except Exception as e:
-            log(f"Failed to set up job scratch dir: {e}")
+        for name, target in [("projection-audit", os.path.join(JOB_DIR, "projection-audit")),
+                              ("scripts", os.path.join(JOB_DIR, "scripts"))]:
+            link_path = os.path.join(base_scratch, name)
+            try:
+                # Clear whatever is there first: a stale symlink from a previous
+                # job, or a REAL dir agy created on a run where the link was
+                # missing (its contents are orphaned copies of this job's files).
+                if os.path.islink(link_path):
+                    os.unlink(link_path)
+                elif os.path.isdir(link_path):
+                    shutil.rmtree(link_path)
+                elif os.path.exists(link_path):
+                    os.unlink(link_path)
+                os.symlink(target, link_path)
+            except Exception as e:
+                log(f"Failed to point scratch/{name} at job dir: {e}")
 
     t0 = time.time()
     ts_start = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")

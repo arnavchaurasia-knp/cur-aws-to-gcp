@@ -1,258 +1,264 @@
-# 🚀 CUR AWS to GCP
+# 🌩️ CUR AWS to GCP
 
-Convert AWS Cost and Usage Reports (CUR) into GCP cost projections with an intelligent mapping engine.
+> **Convert AWS Cost and Usage Reports into GCP Cost Projections**
 
-![Python](https://img.shields.io/badge/Python-63.9%25-3776ab?style=flat-square)
-![Go](https://img.shields.io/badge/Go-24.2%25-00ADD8?style=flat-square)
-![TypeScript](https://img.shields.io/badge/TypeScript-7.8%25-3178c6?style=flat-square)
-![Shell](https://img.shields.io/badge/Shell-3.8%25-4EAA25?style=flat-square)
+Transform your AWS billing data into actionable GCP cost insights with an intelligent 6-phase mapping pipeline.
 
 ---
 
-## 📋 Overview
+## 🎯 What This Does
 
-This project provides a comprehensive solution for **analyzing AWS billing data and projecting costs on Google Cloud Platform (GCP)**. It combines a powerful backend service written in Go with an intelligent Python-based skill engine for cost mapping and analysis.
+This project bridges AWS and GCP by analyzing your AWS Cost and Usage Reports (CUR) and projecting what those workloads would cost on Google Cloud Platform. It combines:
 
-### Key Features
-
-✨ **AWS CUR Analysis** - Upload and parse AWS Cost and Usage Reports  
-🎯 **GCP Cost Projection** - Intelligent mapping of AWS services to GCP equivalents  
-📊 **Cost Comparison** - Visual comparison and cost projection reports  
-🔄 **Multi-Phase Pipeline** - Sophisticated 6-phase processing pipeline  
-🎨 **Interactive UI** - React + TypeScript frontend for easy interaction  
-⚡ **Scalable Architecture** - Go backend with Python skill engine for extensibility  
+- 🔍 **Intelligent Service Mapping** — Automatically translates AWS services to GCP equivalents
+- 📊 **Cost Projection Engine** — Applies current GCP pricing to your actual AWS consumption
+- 🎨 **Interactive Web UI** — Upload bills and explore projections in real-time
+- ⚡ **Production-Ready** — Deployed and operational on GCP VMs
 
 ---
 
-## 🏗️ Project Structure
+## 📊 Tech Stack
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                                                             │
+│   Python (62.7%)        Go (24.2%)      TypeScript (8.4%)  │
+│   ████████████████▌     ███████▌        ██▌                │
+│   Mapping Logic         REST API         React UI          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| Component | Language | Role |
+|-----------|----------|------|
+| **Backend Server** | Go (24.2%) | REST API, Job Orchestration, GCP Integration |
+| **Mapping Engine** | Python (62.7%) | Cost projection, service translation, analytics |
+| **Frontend App** | TypeScript + React (8.4%) | Bill upload UI, results dashboard |
+| **Data** | JSON/Shell (5.4%) | GCP Catalog, deployment scripts |
+
+---
+
+## 🏗️ Repository Structure
 
 ```
 cur-aws-to-gcp/
-├── backend/                    # Go service (24.2%)
+│
+├── 📁 backend/                          [Go • 24.2%]
+│   ├── cmd/
+│   │   └── server/                      # Main entry point
 │   ├── internal/
-│   │   ├── jobs/              # Job spawner and scheduling
-│   │   └── handlers/          # API handlers
+│   │   ├── jobs/
+│   │   │   └── spawner.go              # Orchestrates skill execution
+│   │   └── handlers/                    # HTTP API endpoints
 │   └── main.go
 │
-├── skill/                      # Python skill engine (63.9%)
+├── 📁 skill/                            [Python • 62.7%]
 │   └── aws-gcp-cost-projection/
-│       ├── SKILL.md           # Skill documentation
-│       ├── phases/            # 6-phase pipeline
-│       │   ├── 01-ingest.md   # PDF ingestion
-│       │   ├── 02-map.md      # Service mapping
-│       │   ├── 03-review.md   # Review phase
-│       │   ├── 04-rate-fill.md # Rate filling
-│       │   ├── 05-outlier.md  # Outlier detection
-│       │   └── 06-report.md   # Report generation
-│       ├── scripts/           # Utilities
-│       ├── reference/         # Schemas & recipes
-│       └── data/              # GCP Cloud Billing Catalog
+│       ├── SKILL.md                     # Skill documentation
+│       │
+│       ├── 📊 phases/                   # 6-Phase Processing Pipeline
+│       │   ├── 01-ingest.md            # Parse AWS CUR PDFs
+│       │   ├── 02-map.md               # Map services to GCP
+│       │   ├── 03-review.md            # Validate data
+│       │   ├── 04-rate-fill.md         # Apply GCP pricing
+│       │   ├── 05-outlier.md           # Detect anomalies
+│       │   └── 06-report.md            # Generate report
+│       │
+│       ├── scripts/                     # Utilities
+│       │   ├── find-sku.sh             # Locate GCP SKUs
+│       │   └── refresh-catalog.sh      # Update pricing
+│       │
+│       ├── reference/                   # Schemas & recipes
+│       │   └── pdf-ingestion.md        # PDF parsing guide
+│       │
+│       └── data/                        # GCP Billing Catalog
+│           ├── services.json            # Service definitions
+│           └── skus/                    # SKU data (compressed)
 │
-├── frontend/                   # React + TypeScript (7.8%)
+├── 📁 frontend/                         [TypeScript • 8.4%]
 │   ├── src/
-│   ├── vite.config.ts
-│   └── package.json
+│   │   ├── components/                  # React components
+│   │   ├── pages/                       # Page routes
+│   │   └── App.tsx                      # Main app
+│   ├── vite.config.ts                   # Build config
+│   └── package.json                     # Dependencies
 │
-└── README.md
+└── README.md (← you are here)
 ```
 
 ---
 
-## 🔄 Processing Pipeline
+## 🔄 How It Works: The 6-Phase Pipeline
 
-The core of this project is a **6-phase intelligent pipeline** that transforms AWS billing data into accurate GCP cost projections:
+When you upload an AWS bill, it flows through this intelligent pipeline:
 
 ```
-┌─────────────┐     ┌────────┐     ┌────────┐     ┌──────────┐     ┌──────────┐     ┌────────┐
-│   INGEST    │ --> │  MAP   │ --> │ REVIEW │ --> │RATE-FILL │ --> │ OUTLIER  │ --> │ REPORT │
-│  (PDF/CSV)  │     │Services│     │  Data  │     │ GCP Rates│     │Detection │     │  Gen   │
-└─────────────┘     └────────┘     └────────┘     └──────────┘     └──────────┘     └────────┘
+┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
+│  INGEST  │ → │   MAP    │ → │  REVIEW  │ → │RATE-FILL │ → │ OUTLIER  │ → │  REPORT  │
+│ PDF/CSV  │    │ Services │    │  Data    │    │GCP Rates │    │Detection │    │Generation│
+└──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
 ```
 
-**Phase Details:**
-- **Phase 1 - Ingest**: Parse AWS CUR PDFs/CSVs and extract billing data
-- **Phase 2 - Map**: Intelligently map AWS services to GCP equivalents
-- **Phase 3 - Review**: Validate and review mapped data for accuracy
-- **Phase 4 - Rate Fill**: Apply current GCP pricing catalog
-- **Phase 5 - Outlier**: Detect and flag anomalies in cost projections
-- **Phase 6 - Report**: Generate comprehensive cost comparison reports
+| Phase | What Happens |
+|-------|--------------|
+| **1️⃣ Ingest** | Extract billing data from AWS CUR PDFs or CSV files |
+| **2️⃣ Map** | Intelligently match AWS services to GCP equivalents |
+| **3️⃣ Review** | Validate and verify mapped data for accuracy |
+| **4️⃣ Rate-Fill** | Apply current GCP pricing from Cloud Billing Catalog |
+| **5️⃣ Outlier** | Detect and flag unusual cost patterns |
+| **6️⃣ Report** | Generate side-by-side cost comparison reports |
 
 ---
 
-## 💻 Tech Stack
-
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Backend** | Go | REST API, job orchestration, GCP Cloud Billing integration |
-| **Skill Engine** | Python | Cost mapping logic, service translation, rate calculations |
-| **Frontend** | React + TypeScript + Vite | Interactive UI for bill uploads and report viewing |
-| **Data** | JSON (GCP Catalog) | Pre-bundled GCP pricing and service catalog |
-
----
-
-## 🚀 Getting Started
+## 🚀 Quick Start
 
 ### Prerequisites
 
-Install these before cloning:
+```bash
+# Core tools (all required)
+Go 1.21+           # Backend: https://go.dev/dl/
+Node.js 18+        # Frontend: https://nodejs.org
+Python 3.9+        # Skill engine: https://python.org
 
-| Tool | Install | Why |
-|------|---------|-----|
-| Go 1.21+ | https://go.dev/dl/ | Backend server |
-| Node.js 18+ | https://nodejs.org | Frontend dev server |
-| Python 3.9+ | https://python.org | Skill pipeline scripts |
-| `agy` (Antigravity CLI) | Internal — see team docs | Runs the AI skill |
-| `duckdb` | `brew install duckdb` | Skill pipeline DB |
-| `jq` | `brew install jq` | Skill pipeline JSON |
-| `gzip` | pre-installed on macOS | Skill data decompression |
+# CLI tools
+brew install duckdb jq    # Skill dependencies
+which agy                 # Antigravity CLI (internal tool)
+gzip                      # Pre-installed on macOS
+```
 
 ### Environment Setup
 
 ```bash
-# 1. Copy the example env file
+# 1. Copy environment template
 cp .env.example .env
 
-# 2. Edit .env:
-#    - Set SESSION_SECRET:  openssl rand -base64 32
-#    - Set APP_BASE_URL:    http://localhost:8080  (for local dev)
-#    - Set DEV_AUTH_BYPASS=true  (skips Google OAuth for local dev)
-#    - Set ANTIGRAVITY_API_KEY   (your agy API key — inherited by the skill process)
-#    - Set ALLOWED_DOMAINS if your email domain is not facets.cloud or google.com
+# 2. Edit .env with your values
+SESSION_SECRET=<output of: openssl rand -base64 32>
+APP_BASE_URL=http://localhost:8080
+DEV_AUTH_BYPASS=true
+ANTIGRAVITY_API_KEY=<your agy key>
 ```
 
-### Backend
+### Start the Backend
 
 ```bash
-# From repo root
 go mod download
 go run ./cmd/server
+# ✅ Server runs on http://localhost:8080
+# On first start, it validates that agy, duckdb, and jq are installed
 ```
 
-The server starts on port 8080 (or `$PORT`). On first start it runs preflight checks — if `agy`, `duckdb`, or `jq` are missing you'll see a clear error message.
-
-### Frontend
+### Start the Frontend
 
 ```bash
 cd frontend
 npm install
-npm run dev   # starts on http://localhost:5173, proxies /api → localhost:8080
+npm run dev
+# ✅ Frontend runs on http://localhost:5173
+# Automatically proxies /api requests to localhost:8080
 ```
 
-### Skill Setup (local dev)
+### Skill Pipeline
 
-The skill is already in the repo at `skill/aws-gcp-cost-projection/`. The server resolves it from the current working directory automatically — no extra install step needed when running from the repo root.
-
-For production VM deploys, see `scripts/server-deploy.sh`.
+The skill is self-contained at `skill/aws-gcp-cost-projection/`. The backend automatically discovers and uses it — no extra setup needed for local development.
 
 ---
 
-## 🔧 Core Components
+## 🔧 Architecture
 
-### Backend (Go)
-
-- **REST API** - Handles bill uploads and report requests
-- **Job Spawner** (`internal/jobs/spawner.go`) - Orchestrates skill execution
-- **Request Handlers** - Manages incoming requests and responses
-- **GCP Integration** - Connects with GCP Cloud Billing API
-
-### Skill Engine (Python)
-
-Located in `skill/aws-gcp-cost-projection/`, the skill is the **source of truth** for mapping logic:
-- **Phase Scripts** - Each phase is documented in Markdown
-- **Data Catalog** - Pre-bundled GCP services and SKUs
-- **Utilities** - `find-sku.sh`, `refresh-catalog.sh`, allow-list management
-
-### Frontend (React + TypeScript)
-
-- **Bill Upload** - Drag-and-drop AWS CUR upload interface
-- **Results Dashboard** - View projections and comparisons
-- **Report Generation** - Export detailed cost analysis
+```
+┌────────────────────────────────────────────────┐
+│          React UI (TypeScript + Vite)          │
+│     • Bill Upload  • Results Dashboard        │
+│     • Report Viewer  • Cost Comparison         │
+└──────────────────┬─────────────────────────────┘
+                   │ HTTP/REST (port 5173 → 8080)
+┌──────────────────▼─────────────────────────────┐
+│              Go REST API (port 8080)           │
+│     • /api/upload      Upload bills            │
+│     • /api/status      Check job status        │
+│     • /api/report      Fetch results           │
+└──────────────────┬─────────────────────────────┘
+                   │ Spawns as subprocess
+┌──────────────────▼─────────────────────────────┐
+│        Python Skill Engine (6-Phase)           │
+│     • Parse PDFs  • Map services               │
+│     • Apply rates • Generate reports           │
+└──────────────────┬─────────────────────────────┘
+                   │ Integrates with
+┌──────────────────▼─────────────────────────────┐
+│      GCP Cloud Billing API + Catalog           │
+│     • Current pricing  • Service definitions   │
+└────────────────────────────────────────────────┘
+```
 
 ---
 
-## 📝 Deploying Changes
+## 📚 Key Files & Docs
 
-### Skill Updates
+| File | Purpose |
+|------|---------|
+| **[skill/aws-gcp-cost-projection/SKILL.md](skill/aws-gcp-cost-projection/SKILL.md)** | Complete skill specification |
+| **[skill/aws-gcp-cost-projection/phases/](skill/aws-gcp-cost-projection/phases/)** | Detailed documentation for each phase |
+| **[skill/aws-gcp-cost-projection/reference/pdf-ingestion.md](skill/aws-gcp-cost-projection/reference/pdf-ingestion.md)** | Guide to PDF parsing and schema |
+| **[skill/README.md](skill/README.md)** | Skill deployment and iteration guide |
+| **[frontend/README.md](frontend/README.md)** | React/TypeScript setup details |
+
+---
+
+## 📤 Deploying Changes
+
+### Skill Updates → Production VM
+
+After editing skill files, sync them to the GCP VM:
 
 ```bash
-# From repo root, push skill changes to GCP VM
 gcloud compute scp --recurse --zone=asia-south1-a \
   skill/aws-gcp-cost-projection/phases \
   skill/aws-gcp-cost-projection/reference \
   cur-web:~/.claude/skills/aws-gcp-cost-projection/
 ```
 
-### Catalog Updates
+*No restart required — the skill is read from disk on each job.*
+
+### GCP Catalog Updates
 
 ```bash
-# Update GCP pricing catalog
 cd skill/aws-gcp-cost-projection
 bash scripts/refresh-catalog.sh
-```
-
----
-
-## 📚 Documentation
-
-- **[SKILL.md](skill/aws-gcp-cost-projection/SKILL.md)** - Comprehensive skill documentation
-- **[Phase Docs](skill/aws-gcp-cost-projection/phases/)** - Detailed phase specifications
-- **[PDF Ingestion Recipe](skill/aws-gcp-cost-projection/reference/pdf-ingestion.md)** - Bill parsing guide
-- **[Frontend README](frontend/README.md)** - React/TypeScript setup details
-
----
-
-## 🔄 Architecture Diagram
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        Frontend (React)                      │
-│                  (Upload Bill, View Results)                 │
-└────────────────────┬────────────────────────────────────────┘
-                     │ HTTP/REST
-┌────────────────────▼────────────────────────────────────────┐
-│                    Backend (Go)                              │
-│              (API, Job Orchestration)                        │
-└────────────────────┬────────────────────────────────────────┘
-                     │ Spawns
-┌────────────────────▼────────────────────────────────────────┐
-│               Skill Engine (Python)                          │
-│          (6-Phase Mapping Pipeline)                          │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ Phase 1: Ingest → Phase 2: Map → Phase 3: Review  │   │
-│  │ Phase 4: Rate-Fill → Phase 5: Outlier → Phase 6   │   │
-│  └─────────────────────────────────────────────────────┘   │
-└────────────────────┬──────────────────────────────��─────────┘
-                     │
-┌────────────────────▼────────────────────────────────────────┐
-│                  GCP Resources                               │
-│        (Cloud Billing API, Pricing Catalog)                 │
-└─────────────────────────────────────────────────────────────┘
+# Re-syncs the data/ directory with latest pricing
 ```
 
 ---
 
 ## 🤝 Contributing
 
-Contributions are welcome! When making changes:
-
-1. **Backend Changes** - Update `internal/` and test with the skill engine
-2. **Skill Changes** - Modify `skill/aws-gcp-cost-projection/` and redeploy using `gcloud compute scp`
-3. **Frontend Changes** - Update React components and rebuild
-4. **Catalog Changes** - Use `refresh-catalog.sh` to regenerate pricing data
+1. **Backend changes** → Edit `cmd/` or `internal/`, test locally
+2. **Skill changes** → Modify `skill/aws-gcp-cost-projection/phases/`, then deploy
+3. **Frontend changes** → Update `frontend/src/`, build and test
+4. **Catalog changes** → Run `refresh-catalog.sh`, commit updated data
 
 ---
 
-## 📄 License
+## 📋 Project Info
 
-This project is open source and available under the [MIT License](LICENSE).
-
----
-
-## 📧 Support & Questions
-
-For issues, questions, or suggestions, please open an issue on GitHub or contact the maintainers.
+- **Owner:** [arnavchaurasia-knp](https://github.com/arnavchaurasia-knp)
+- **License:** MIT
+- **Status:** Active & Deployed ✅
+- **Repo:** [arnavchaurasia-knp/cur-aws-to-gcp](https://github.com/arnavchaurasia-knp/cur-aws-to-gcp)
 
 ---
 
-**Built with ❤️ to bridge AWS and GCP cost analysis**
+## 💬 Support
+
+Found a bug or have a question? [Open an issue](https://github.com/arnavchaurasia-knp/cur-aws-to-gcp/issues) on GitHub.
+
+---
+
+<div align="center">
+
+**Built with ❤️ to make cloud cost migration analysis simple**
+
+[⬆ Back to top](#-cur-aws-to-gcp)
+
+</div>

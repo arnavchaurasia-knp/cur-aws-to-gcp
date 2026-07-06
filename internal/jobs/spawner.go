@@ -6,6 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+
+	"github.com/facets/cur-web/internal/config"
+	"github.com/facets/cur-web/internal/skill"
 )
 
 type SpawnerConfig struct {
@@ -109,19 +112,9 @@ func (s *Spawner) StartRefine(jobDir, _, instruction string) (int, error) {
 func (s *Spawner) baseFlags() []string {
 	model := s.cfg.AGYModel
 	if model == "" {
-		model = "gemini-3.5-flash"
+		model = config.DefaultAGYModel
 	}
-	return []string{"--dangerously-skip-permissions", "--model", model, "--print-timeout", "45m"}
-}
-
-// conversationFlag returns the --conversation flag pair when id is non-empty,
-// so the spawned agy session is created/resumed with the job's known UUID
-// (matching the DB session_id). Empty id → no flag, and agy assigns its own.
-func conversationFlag(id string) []string {
-	if id == "" {
-		return nil
-	}
-	return []string{"--conversation", id}
+	return []string{"--dangerously-skip-permissions", "--model", model, "--print-timeout", config.AGYPrintTimeout()}
 }
 
 // startDetached is the shared spawn machinery: Setsid for true detachment,
@@ -138,10 +131,16 @@ func (s *Spawner) startDetached(jobDir string, args []string) (int, error) {
 	// sees them. The shared scratch also leaks artifacts between the two AGY repos.
 	args = append(args, "--add-dir", jobDir)
 
-	exec.Command("git", "init", jobDir).Run()
+	if err := exec.Command("git", "init", jobDir).Run(); err != nil {
+		return 0, fmt.Errorf("git init failed: %w", err)
+	}
 	skillDir := s.resolveSkillDir()
-	exec.Command("cp", "-r", filepath.Join(skillDir, "phases"), jobDir).Run()
-	exec.Command("cp", "-r", filepath.Join(skillDir, "scripts"), jobDir).Run()
+	if err := exec.Command("cp", "-r", filepath.Join(skillDir, "phases"), jobDir).Run(); err != nil {
+		return 0, fmt.Errorf("copy phases failed: %w", err)
+	}
+	if err := exec.Command("cp", "-r", filepath.Join(skillDir, "scripts"), jobDir).Run(); err != nil {
+		return 0, fmt.Errorf("copy scripts failed: %w", err)
+	}
 
 	cmd := exec.Command(s.agyBin(), args...)
 	cmd.Dir = jobDir
@@ -164,6 +163,7 @@ func (s *Spawner) startDetached(jobDir string, args []string) (int, error) {
 	}
 	pid := cmd.Process.Pid
 	cmd.Process.Release()
+	logFile.Close() // child inherited the fd; close parent's copy to avoid leak
 	return pid, nil
 }
 
@@ -175,17 +175,7 @@ func (s *Spawner) agyBin() string {
 }
 
 func (s *Spawner) resolveSkillDir() string {
-	if envDir := os.Getenv("SKILL_DIR"); envDir != "" {
-		return envDir
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		localDir := filepath.Join(cwd, "skill", "aws-gcp-cost-projection")
-		if stat, err := os.Stat(localDir); err == nil && stat.IsDir() {
-			return localDir
-		}
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".gemini", "antigravity-cli", "skills", "aws-gcp-cost-projection-gemini")
+	return skill.ResolveDir()
 }
 
 // skillEnv returns os.Environ() plus SKILL_DIR pointing to the installed skill.

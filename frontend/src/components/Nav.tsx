@@ -4,9 +4,16 @@ import { logoutURL } from '../api/auth'
 import { Link } from 'react-router-dom'
 
 export function Nav({ user }: { user: UserInfo }) {
+  function handleSignOut(e: React.MouseEvent) {
+    e.preventDefault()
+    fetch(logoutURL(), { method: 'POST', credentials: 'same-origin' })
+      .finally(() => { window.location.href = '/' })
+  }
+
   return (
-    <nav className="flex items-center justify-between px-6 py-3 border-b border-white/10">
-      <Link to="/" className="flex items-center gap-3 hover:opacity-90 transition">
+    <nav className="flex items-center justify-between px-6 py-3 border-b border-white/10 anim-slide-down
+      backdrop-blur-sm bg-[#0a0a0f]/80 sticky top-0 z-30">
+      <Link to="/" className="flex items-center gap-3 transition-opacity duration-150 hover:opacity-85">
         <img src={facetsFIcon} alt="Facets" className="h-5" />
         <span className="hidden sm:inline text-white/30">|</span>
         <span className="text-sm font-semibold tracking-tight">
@@ -16,10 +23,10 @@ export function Nav({ user }: { user: UserInfo }) {
       </Link>
       <div className="flex items-center gap-4 text-sm text-gray-400">
         {user.is_admin && (
-          <Link to="/admin" className="text-[#00C2BB] hover:underline">All Reports</Link>
+          <Link to="/admin" className="nav-link text-[#00C2BB]">All Reports</Link>
         )}
         <span className="hidden sm:inline">{user.email}</span>
-        <a href={logoutURL()} className="text-[#645DF6] hover:underline">Sign Out</a>
+        <button onClick={handleSignOut} className="nav-link text-[#645DF6]">Sign Out</button>
       </div>
     </nav>
   )

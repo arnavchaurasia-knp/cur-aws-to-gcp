@@ -2,7 +2,7 @@ import ReactMarkdown from 'react-markdown'
 
 export function Summary({ markdown }: { markdown: string }) {
   return (
-    <div className="bg-white/[0.02] border border-white/10 rounded-lg p-5">
+    <div className="summary-card p-5">
       <h3 className="text-sm font-semibold text-[#00C2BB] uppercase tracking-wider mb-3">
         AI summary
       </h3>

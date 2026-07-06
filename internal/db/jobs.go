@@ -53,8 +53,13 @@ func (d *DB) IncrementJobAttempts(id string) error {
 }
 
 // ResetJobForRetry clears terminal state (status, error, aws_spend, attempts)
-// and assigns a fresh session_id. Used when a user manually retries a failed
-// job — wipes the slate without losing the row identity.
+// and assigns a fresh session_id. Used when a user manually retries a failed job.
+//
+// attempts is set to 1 (not 0) because this call itself is the first spawn —
+// Watch() will increment on each subsequent failure, so the job gets
+// (maxAttempts - 1) additional automatic retries. Fresh jobs start at 0, so
+// they get one more total attempt than manual retries; this asymmetry is
+// intentional (manual retry already had one run, fresh jobs have not).
 func (d *DB) ResetJobForRetry(id, sessionID string) error {
 	_, err := d.conn.Exec(
 		`UPDATE jobs

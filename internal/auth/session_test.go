@@ -11,7 +11,7 @@ import (
 )
 
 func TestSessionRoundTrip(t *testing.T) {
-	secret := "0102030405060708090a0b0c0d0e0f10"
+	secret := "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 	s := auth.NewSessionManager(secret, false)
 
 	sess := &auth.Session{Email: "rep@google.com", Name: "Rep User"}
@@ -27,7 +27,7 @@ func TestSessionRoundTrip(t *testing.T) {
 }
 
 func TestSessionGet_NoCookie(t *testing.T) {
-	s := auth.NewSessionManager("0102030405060708090a0b0c0d0e0f10", false)
+	s := auth.NewSessionManager("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=", false)
 	req, _ := http.NewRequest("GET", "/", nil)
 	_, err := s.Get(req)
 	assert.ErrorIs(t, err, auth.ErrNoSession)

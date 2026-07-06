@@ -13,7 +13,8 @@ function formatTs(iso: string): string {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi} UTC`
 }
 
-function money(n: number): string {
+function money(n: number | null | undefined): string {
+  if (n == null) return '—'
   return `$${Math.round(n).toLocaleString()}`
 }
 

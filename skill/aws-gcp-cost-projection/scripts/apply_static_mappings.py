@@ -60,20 +60,27 @@ FLAT_HOURLY_DEFAULT_SERVICE = "Compute Engine"
 FLAT_HOURLY_DEFAULT_DESC    = r"Other Hourly Charge"
 
 # per_request: product/usage_type → GCP service + SKU family + unit_multiplier
+# ORDER MATTERS — first match wins. Lambda GB-Second must precede generic Lambda
+# so compute-time rows get CPU Allocation Time, not invocation pricing.
 PER_REQUEST_MAP = [
-    (r"Lambda",                "Cloud Run",    "Cloud Run Requests",           1.0),
-    (r"AWSLambda",             "Cloud Run",    "Cloud Run CPU Allocation Time", 1.0),
-    (r"SQS|SimpleQueue",       "Pub/Sub",      "Message Delivery",             1.0),
-    (r"SNS|SimpleNotification","Pub/Sub",      "Message Delivery",             1.0),
-    (r"Kinesis",               "Pub/Sub",      "Message Delivery",             1.0),
-    (r"ApiGateway|API Gateway","Cloud Endpoints", "API Gateway Requests",      1.0),
-    (r"Rekognition",           "Cloud Vision", "Vision API Requests",          1.0),
-    (r"Comprehend",            "Natural Language API", "NL API Requests",      1.0),
-    (r"Translate",             "Cloud Translation", "Translation Characters",  1.0),
-    (r"Polly",                 "Text-to-Speech", "TTS Characters",             1.0),
-    (r"Transcribe",            "Speech-to-Text", "STT Audio",                  1.0),
+    (r"Lambda.*GB.Second|Lambda-GB-Second",
+                               "Cloud Run",       "Cloud Run CPU Allocation Time", 1.0),
+    (r"Lambda",                "Cloud Run",       "Cloud Run Requests",            1.0),
+    (r"SQS|SimpleQueue",       "Pub/Sub",         "Message Delivery",              1.0),
+    (r"SNS|SimpleNotification","Pub/Sub",         "Message Delivery",              1.0),
+    (r"Kinesis",               "Pub/Sub",         "Message Delivery",              1.0),
+    (r"ApiGateway|API Gateway","Cloud Endpoints", "API Gateway Requests",          1.0),
+    (r"StepFunctions|Step Functions",
+                               "Workflows",       "Workflow Steps",                1.0),
+    (r"EventBridge|EventBus",  "Eventarc",        "Eventarc Events",               1.0),
+    (r"CloudFront",            "Cloud CDN",       "Cache Egress",                  1.0),
+    (r"WAF",                   "Cloud Armor",     "Cloud Armor Requests",          1.0),
+    (r"Rekognition",           "Cloud Vision",    "Vision API Requests",           1.0),
+    (r"Comprehend",            "Natural Language API", "NL API Requests",          1.0),
+    (r"Translate",             "Cloud Translation",   "Translation Characters",    1.0),
+    (r"Polly",                 "Text-to-Speech",  "TTS Characters",                1.0),
+    (r"Transcribe",            "Speech-to-Text",  "STT Audio",                     1.0),
 ]
-PER_REQUEST_DEFAULT = ("Cloud Run", "Requests", 1.0)
 
 # block_storage: EBS volume_type → GCP Persistent Disk tier (desc_pattern searched
 # in the Compute Engine catalog). RDS/managed-db storage rows that landed here map
@@ -364,19 +371,32 @@ def map_per_request(rows):
         # S3 request charges map to Cloud Storage operations, not Cloud Run.
         if "s3" in product or "simple storage" in product:
             service, sku_name, mult = _s3_request_target(r.get("operation"))
+            strategy, confidence = "map", 0.85
+            note = f"per_request lookup → {sku_name}"
         else:
             match = _match(r.get("usage_type"), r.get("product"), PER_REQUEST_MAP)
-            service, sku_name, mult = match if match else PER_REQUEST_DEFAULT
+            if match:
+                service, sku_name, mult = match
+                strategy, confidence = "map", 0.85
+                note = f"per_request lookup → {sku_name}"
+            else:
+                # No known GCP equivalent — passthrough at cost parity rather than
+                # silently mapping to Cloud Run (which would be wrong for most unmatched
+                # services like GuardDuty, Security Hub, unrecognized ML services, etc.).
+                service, sku_name, mult = None, None, 1.0
+                strategy, confidence = "passthrough", 0.40
+                note = (f"per_request: no GCP equivalent found for "
+                        f"product={r.get('product')!r} — passthrough at cost parity")
         out.append({
-            "aws_li_key":       r["aws_li_key"],
-            "gcp_service":      service,
-            "gcp_sku_name":     sku_name,
-            "component":        "requests",
-            "strategy":         "map",
-            "unit_multiplier":  mult,
-            "gcp_region":       r.get("gcp_region"),
-            "projection_note":  f"per_request lookup → {sku_name}",
-            "mapping_confidence": 0.85,
+            "aws_li_key":         r["aws_li_key"],
+            "gcp_service":        service,
+            "gcp_sku_name":       sku_name,
+            "component":          "requests",
+            "strategy":           strategy,
+            "unit_multiplier":    mult,
+            "gcp_region":         r.get("gcp_region"),
+            "projection_note":    note,
+            "mapping_confidence": confidence,
         })
     return out
 

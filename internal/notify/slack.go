@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // PostJobSubmitted pings Slack the moment a CUR has been accepted by
@@ -43,7 +44,10 @@ func PostJobFailed(webhookURL, prospect, repEmail, jobID string) error {
 func PostContactInterest(webhookURL, name, email, message string) error {
 	text := fmt.Sprintf("📩 Contact request — *%s* (%s)", name, email)
 	if message != "" {
-		text += fmt.Sprintf("\n> %s", message)
+		// Prefix every line with > so multi-line messages render as a block
+		// quote in Slack, not just the first line.
+		quoted := "> " + strings.ReplaceAll(message, "\n", "\n> ")
+		text += "\n" + quoted
 	}
 	return postSlack(webhookURL, text)
 }

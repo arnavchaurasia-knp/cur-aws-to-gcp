@@ -61,10 +61,18 @@ func runDuckDB(dbPath, sql string) ([]byte, error) {
 // tableExists checks whether the named table is present in the main schema.
 // Used to distinguish "no run_results table yet" (legacy job) from a real
 // query error.
+var allowedTables = map[string]bool{
+	"run_results":   true,
+	"aws_li_catalog": true,
+}
+
 func tableExists(dbPath, table string) (bool, error) {
+	if !allowedTables[table] {
+		return false, fmt.Errorf("tableExists: unknown table %q", table)
+	}
 	out, err := runDuckDB(dbPath, fmt.Sprintf(
 		"SELECT 1 AS x FROM information_schema.tables WHERE table_schema='main' AND table_name='%s'",
-		strings.ReplaceAll(table, "'", "''"),
+		table,
 	))
 	if err != nil {
 		return false, err
@@ -197,13 +205,9 @@ func nullableInt(v any) *int {
 	if v == nil {
 		return nil
 	}
-	switch n := v.(type) {
-	case float64:
-		i := int(n)
-		return &i
-	case int:
-		return &n
-	case int64:
+	// DuckDB JSON output always produces float64 for numbers via json.Unmarshal.
+	// int and int64 cases are unreachable from that path and have been removed.
+	if n, ok := v.(float64); ok {
 		i := int(n)
 		return &i
 	}

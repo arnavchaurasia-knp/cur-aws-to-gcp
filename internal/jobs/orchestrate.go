@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
+
+	"github.com/facets/cur-web/internal/config"
 )
 
 // Phase-by-phase orchestration.
@@ -68,9 +71,16 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"scripts/apply_commitment_ignores.py $DB",
 				"scripts/apply_static_mappings.py $DB",
 			},
-			// merge_mappings.py merges all group files (LLM + static) into aws_li_to_gcp_li.
+			// Post-merge deterministic passes (zero LLM tokens):
+			//   1. merge_mappings.py  — bulk-INSERT all group files into aws_li_to_gcp_li
+			//   2. calibrate_confidence.py — apply service-specific confidence ceilings
+			//      (OpenSearch 70%, MSK 70%, RDS 72%, Windows 75%) and add architecture notes
+			//   3. reconcile_capacity.py — upsize any break_down rows where GCP vCPU/RAM
+			//      < AWS spec to enforce the never-underprovision guarantee
 			PostLLMScripts: []string{
 				"scripts/merge_mappings.py $DB projection-audit/mappings",
+				"scripts/calibrate_confidence.py $DB",
+				"scripts/reconcile_capacity.py $DB",
 			},
 			Prompt: "Phase 2 — LLM mapping only. Strict protocol, no deviations.\n\n" +
 				"SETUP (already done by orchestrator — DO NOT re-run):\n" +
@@ -237,6 +247,8 @@ func (s *Spawner) StartOrchestrated(jobDir, inputExt string) (int, error) {
 		"AGY_BIN="+s.agyBin(),
 		"AGY_MODEL="+s.geminiModel(),
 		"DUCKDB_BIN="+duckdbBin(),
+		"PRINT_TIMEOUT="+config.AGYPrintTimeout(),
+		"TOTAL_PHASES="+strconv.Itoa(config.TotalPhases),
 	)
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -254,13 +266,14 @@ func (s *Spawner) StartOrchestrated(jobDir, inputExt string) (int, error) {
 	}
 	pid := cmd.Process.Pid
 	cmd.Process.Release()
+	logFile.Close() // child inherited the fd; close parent's copy to avoid leak
 	return pid, nil
 }
 
 // geminiModel resolves the model alias with the same default as baseFlags.
 func (s *Spawner) geminiModel() string {
 	if s.cfg.AGYModel == "" {
-		return "gemini-3.5-flash"
+		return config.DefaultAGYModel
 	}
 	return s.cfg.AGYModel
 }
@@ -294,10 +307,14 @@ JOB_DIR   = os.getcwd()
 AGY       = os.environ.get("AGY_BIN", "agy")
 MODEL     = os.environ.get("AGY_MODEL", "gemini-3.5-flash")
 DUCKDB    = os.environ.get("DUCKDB_BIN", "duckdb")
+# PRINT_TIMEOUT and TOTAL_PHASES are injected by the Go spawner from the
+# single-source config constants; the literals here are dead fallbacks.
+PRINT_TIMEOUT = os.environ.get("PRINT_TIMEOUT", "45m")
+TOTAL_PHASES  = int(os.environ.get("TOTAL_PHASES", "6"))
 DB        = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 AGY_LOG   = os.path.join(JOB_DIR, "agy-internal.log")
 PHASES    = json.loads(base64.b64decode("%s").decode())
-END_PHASE = int(os.environ.get("END_PHASE", "6"))
+END_PHASE = int(os.environ.get("END_PHASE", str(TOTAL_PHASES)))
 SKILL_DIR = os.environ.get("SKILL_DIR", "")
 
 # Resume from checkpoint if a prior partial run wrote one; fall back to env/default.
@@ -310,11 +327,15 @@ try:
 except Exception:
     START_PHASE = int(os.environ.get("START_PHASE", "1"))
 
-# Quota / unrecoverable-auth markers. When agy hits these, every later call
-# 429s too, so marching through the rest of the phases just produces an empty
-# report. Detect and stop cleanly (failure.txt) instead — the watcher then
-# fails the job WITHOUT the destructive clean-slate retry.
-QUOTA_MARKERS = ("RESOURCE_EXHAUSTED", "Individual quota reached",
+# Permanent quota / unrecoverable-auth markers. RESOURCE_EXHAUSTED is
+# intentionally excluded — it also fires on transient RPM/TPM rate limits
+# (spiky phases like Phase 2 with multiple sub-agents). Treating a transient
+# rate limit as permanent quota would write failure.txt and skip retry.
+# Only markers that unambiguously mean "every future call will also fail" are
+# listed here: individual daily-quota exhaustion, auth failures, and model
+# unavailability. A transient RESOURCE_EXHAUSTED falls through to the normal
+# phase retry path, giving the job another chance once the rate window resets.
+QUOTA_MARKERS = ("Individual quota reached", "quota exhausted",
                  "model unreachable", "PERMISSION_DENIED", "UNAUTHENTICATED")
 
 def quota_blocked(start_pos=0):
@@ -371,17 +392,30 @@ def run_script(script_cmd):
         sys.exit(1)
 
 def run_agy(prompt, phase_label=""):
-    # Ensure correct symlinks in the shared scratch sandbox so agents aren't misled by stale runs
-    scratch_dir = os.path.expanduser("~/.gemini/antigravity-cli/scratch")
-    if os.path.exists(scratch_dir):
-        for name, target in [("projection-audit", os.path.join(JOB_DIR, "projection-audit")), ("scripts", os.path.join(JOB_DIR, "scripts"))]:
-            link_path = os.path.join(scratch_dir, name)
-            try:
-                if os.path.islink(link_path) or os.path.exists(link_path):
-                    os.unlink(link_path)
-                os.symlink(target, link_path)
-            except Exception as e:
-                log(f"Failed to symlink {name} in scratch: {e}")
+    # Point the scratch sandbox at THIS job's directories using a per-job
+    # scratch subdirectory so concurrent jobs don't race on shared symlinks.
+    # Each job gets ~/.gemini/antigravity-cli/scratch/<JOB_ID>/ which is
+    # isolated from every other running job.
+    base_scratch = os.path.expanduser("~/.gemini/antigravity-cli/scratch")
+    job_scratch = os.path.join(base_scratch, JOB_ID)
+    if os.path.exists(base_scratch):
+        try:
+            os.makedirs(job_scratch, exist_ok=True)
+            for name, target in [("projection-audit", os.path.join(JOB_DIR, "projection-audit")),
+                                  ("scripts", os.path.join(JOB_DIR, "scripts"))]:
+                link_path = os.path.join(job_scratch, name)
+                # Atomic replacement: write to a tmp name then rename so a
+                # concurrent call never sees a missing link.
+                tmp_path = link_path + ".tmp"
+                try:
+                    if os.path.islink(tmp_path) or os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                    os.symlink(target, tmp_path)
+                    os.replace(tmp_path, link_path)
+                except Exception as e:
+                    log(f"Failed to symlink {name} in scratch: {e}")
+        except Exception as e:
+            log(f"Failed to set up job scratch dir: {e}")
 
     t0 = time.time()
     ts_start = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
@@ -394,7 +428,7 @@ def run_agy(prompt, phase_label=""):
             log("heartbeat")
     hb = threading.Thread(target=beat, daemon=True); hb.start()
     args = [AGY, "--dangerously-skip-permissions", "--model", MODEL,
-            "--print-timeout", "45m",
+            "--print-timeout", PRINT_TIMEOUT,
             "--log-file", os.path.join(JOB_DIR, "agy-internal.log"),
             "--add-dir", JOB_DIR, "-p", prompt]
     try:
@@ -638,7 +672,16 @@ for ph in PHASES:
     pre_script = ph.get("pre_script")
     if pre_script:
         log("Running pre_script: " + pre_script)
-        subprocess.run(["python3", os.path.join(SKILL_DIR, pre_script)], cwd=JOB_DIR, check=True)
+        try:
+            subprocess.run(["python3", os.path.join(SKILL_DIR, pre_script)], cwd=JOB_DIR, check=True)
+        except subprocess.CalledProcessError as e:
+            msg = ("pre_script " + pre_script + " exited with code " + str(e.returncode)
+                   + " during Phase " + str(ph["num"]) + " (" + ph["name"] + "). Check agy.log for details.")
+            log("ERROR: " + msg)
+            with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
+                _f.write(msg)
+            measure_metrics(phase_runs)
+            sys.exit(0)
 
     # Deterministic pre-LLM scripts always run (zero LLM tokens).
     for scmd in ph.get("pre_llm_scripts") or []:
@@ -648,7 +691,16 @@ for ph in PHASES:
     if script:
         # Deterministic-only phase: run the single script in place of agy.
         log("Running script: " + script)
-        subprocess.run(["python3", os.path.join(SKILL_DIR, script)], cwd=JOB_DIR, check=True)
+        try:
+            subprocess.run(["python3", os.path.join(SKILL_DIR, script)], cwd=JOB_DIR, check=True)
+        except subprocess.CalledProcessError as e:
+            msg = ("script " + script + " exited with code " + str(e.returncode)
+                   + " during Phase " + str(ph["num"]) + " (" + ph["name"] + "). Check agy.log for details.")
+            log("ERROR: " + msg)
+            with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
+                _f.write(msg)
+            measure_metrics(phase_runs)
+            sys.exit(0)
     else:
         # Spawn agy only for the LLM portion of this phase.
         run_agy(ph.get("prompt", ""), phase_label=ph.get("name", ""))
@@ -718,6 +770,20 @@ for ph in PHASES:
 
             retry_convs = get_new_convs(AGY_LOG, start_pos_retry)
             phase_entry["convs"].extend(retry_convs)
+
+            # Check quota BEFORE post-LLM scripts: if the retry LLM call hit quota,
+            # post-scripts would run on stale/unchanged data and the gate would fail
+            # with a misleading error instead of surfacing the real cause.
+            qm_retry = quota_blocked(start_pos_retry)
+            if qm_retry:
+                log("quota/auth block (" + qm_retry + ") during retry of Phase " + str(ph["num"]) + " — stopping")
+                with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
+                    _f.write("Gemini quota/auth limit reached (" + qm_retry + ") during retry of Phase "
+                             + str(ph["num"]) + " (" + ph["name"] + "). The model API returned a "
+                             "quota error, so the projection could not be completed. Re-run once the "
+                             "quota resets or switch to an account with available quota.")
+                measure_metrics(phase_runs)
+                sys.exit(0)
 
             # Re-run post-LLM recompute/repair before re-checking, so the
             # retry's edits are reflected in the projection (mirrors the normal

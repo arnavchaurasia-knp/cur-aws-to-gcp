@@ -796,6 +796,65 @@ Glue bills on **DPU-hours** (Data Processing Units, each = 4 vCPU + 16 GB).
 
 ---
 
+---
+
+### GPU / Accelerator instance mapping
+
+When `workload_class = 'GPU'` in `aws_li_catalog`, use `strategy = 'break_down'` with components `core`, `ram`, **and** `accelerator`. Never map GPU instances to CPU-only families (N2D, N2, E2) — this is the single most common cause of large cost-projection errors.
+
+#### AWS GPU family → GCP family
+
+| AWS family | Accelerator | → GCP family | GCP GPU SKU keyword | Notes |
+|---|---|---|---|---|
+| p4d | 8× A100 40GB SXM | **A2** (a2-highgpu-8g) | `A2 Instance Core` | 96 vCPU, 1152 GB RAM |
+| p4de | 8× A100 80GB SXM | **A2 Ultra** (a2-ultragpu-8g) | `A2 Ultra Instance Core` | 96 vCPU, 1152 GB RAM |
+| p5, p5.48xlarge | 8× H100 80GB | **A3** (a3-highgpu-8g or a3-megagpu-8g) | `A3 Instance Core` | 192 vCPU, 2048 GB RAM |
+| p5e, p5en | 8× H200 141GB | **A3 Ultra** (a3-ultragpu-8g) | `A3 Ultra Instance Core` | 192 vCPU, 2048 GB RAM |
+| p3, p3dn | V100 16/32GB | **A2** (recommend migration path) | `A2 Instance Core` | V100 still on N1; A2 is recommended |
+| p2 | K80 | **N1 custom GPU** | `N1 Predefined Instance Core` | GCP K80 (`nvidia-tesla-k80`) on N1 |
+| g4dn | NVIDIA T4 16GB | **G2** (g2-standard-*) | `G2 Instance Core` | T4→L4 is recommended migration |
+| g5 | NVIDIA A10G 24GB | **G2** (g2-standard-*) | `G2 Instance Core` | GCP has no A10G; L4 is successor |
+| g6, gr6 | NVIDIA L4 24GB | **G2** (g2-standard-*) | `G2 Instance Core` | Direct L4 → G2 match |
+| g6e | NVIDIA L40S 48GB | **G2** (g2-standard-*) | `G2 Instance Core` | L40S also maps to G2 family |
+| g5g | T4G, Graviton2 | **T2A** (tau ARM) | `C4A Instance Core` / `T2A Instance Core` | ARM arch; use T2A/C4A |
+| g3, g3s | NVIDIA M60 (legacy) | **N1 custom GPU** | `N1 Predefined Instance Core` | Legacy; M60 on N1 |
+| g4ad | AMD Radeon V520 | **N1 custom GPU** | `N1 Predefined Instance Core` | GCP has no Radeon; use N1 |
+| inf1 | AWS Inferentia | **G2** (g2-standard-*) | `G2 Instance Core` | L4 is GCP inference GPU |
+| inf2 | AWS Inferentia2 | **G2** (g2-standard-*) | `G2 Instance Core` | Scale up: A2 for larger inf2.48xlarge |
+| trn1, trn1n | AWS Trainium | **A2** (a2-highgpu-*) | `A2 Instance Core` | Trainium training → A2 A100 |
+| trn2, trn2u | AWS Trainium2 | **A3** (a3-highgpu-8g) | `A3 Instance Core` | Trainium2 scale → A3 H100 |
+| dl1 | Habana Gaudi | **A2** (a2-highgpu-*) | `A2 Instance Core` | GCP has no Gaudi; A2 is closest |
+| f1, f2 | Xilinx FPGA | **N1 custom** (`passthrough` if no FPGA need) | — | GCP has no FPGA; if FPGA cost only, `passthrough` |
+
+#### GPU unit_multiplier for `accelerator` component
+
+For the `accelerator` component in a `break_down` row, look up the GPU SKU and use:
+```
+unit_multiplier = gpu_count  (number of GPUs per instance × instance_count)
+```
+The GPU SKU is priced per GPU-hour. Find it via:
+```bash
+scripts/find-sku.sh --service "Compute Engine" --region <gcp_region> --keyword "A2 GPU" --resource-group GPU
+# e.g. "NVIDIA Tesla A100 running in Americas" — one SKU per GPU model per region
+```
+
+#### Memory-optimized instance mapping
+
+| AWS family | GB/vCPU | → GCP family | GCP billing SKU |
+|---|---|---|---|
+| r5, r6i, r7i, r7iz | 8 GB/vCPU, Intel | **N2** (n2-highmem-*) | `N2 Predefined Instance Core/Ram` |
+| r5a, r6a, r7a | 8 GB/vCPU, AMD | **N2D** (n2d-highmem-*) | `N2D AMD Instance Core/Ram` |
+| r6g, r7g, r8g | 8 GB/vCPU, ARM | **T2A / C4A** | `C4A Instance Core/Ram` |
+| x1, x1e | 15–30 GB/vCPU | **M1** (m1-megamem or m1-ultramem) | `Memory Optimized Instance Core/Ram` |
+| x2idn, x2iedn, x2iezn | 16–32 GB/vCPU | **M3** (m3-megamem or m3-ultramem) | `Memory Optimized Instance Core/Ram` |
+| x2gd | 16 GB/vCPU, ARM | **T2A** | `C4A Instance Core/Ram` |
+| u-3tb1, u-6tb1 | 14–27 GB/vCPU, TB-scale | **M2** (m2-megamem or m2-ultramem) | `Memory Optimized Instance Core/Ram` + `Memory Optimized Upgrade Premium` |
+| z1d | 8 GB/vCPU, 4 GHz | **C2** (compute-optimized) | `Compute optimized Core/Ram` |
+
+**IMPORTANT — M-series SKU naming:** GCP billing SKUs for M1, M2, M3 all say `"Memory Optimized Instance Core running in [Region]"` — there is no "M1"/"M2"/"M3" literal in the description. The family is inferred from the machine type label in usage details. This is expected; the validator knows about it.
+
+**IMPORTANT — N2 vs N2D:** r-family Intel (r5, r6i, r7i) must map to `n2-highmem-*` (N2 Intel), not `n2d-highmem-*` (N2D AMD). The billing SKU is `N2 Predefined Instance Core` for N2 and `N2D AMD Instance Core` for N2D — the validator enforces this.
+
 ## Coverage check
 
 The orchestrator runs a deterministic gate after merge_mappings.py. You do not need to verify coverage yourself — write your three `_mappings.json` files and stop.

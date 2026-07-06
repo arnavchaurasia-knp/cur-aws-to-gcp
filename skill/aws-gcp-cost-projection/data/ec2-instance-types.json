@@ -2,397 +2,2513 @@
   "_note": "AWS EC2 instance type specifications. Use instance_type key to look up vcpus and ram_gb for unit_multiplier in break_down mappings. arch: 'x86_64' for Intel/AMD; 'arm64' for Graviton. chip: vendor/microarch. Refreshed: 2026-06-23.",
   "_source": "https://aws.amazon.com/ec2/instance-types/",
   "_usage": "In Phase 1 Step 7: parse instance_type from operation string, look up here, write instance_vcpus + instance_ram_gb + instance_arch into aws_li_catalog. In Phase 2: read c.instance_vcpus / c.instance_ram_gb directly instead of guessing.",
-
-  "t2.nano":        { "vcpus": 1,   "ram_gb": 0.5,    "arch": "x86_64", "chip": "Intel" },
-  "t2.micro":       { "vcpus": 1,   "ram_gb": 1.0,    "arch": "x86_64", "chip": "Intel" },
-  "t2.small":       { "vcpus": 1,   "ram_gb": 2.0,    "arch": "x86_64", "chip": "Intel" },
-  "t2.medium":      { "vcpus": 2,   "ram_gb": 4.0,    "arch": "x86_64", "chip": "Intel" },
-  "t2.large":       { "vcpus": 2,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "Intel" },
-  "t2.xlarge":      { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel" },
-  "t2.2xlarge":     { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel" },
-
-  "t3.nano":        { "vcpus": 2,   "ram_gb": 0.5,    "arch": "x86_64", "chip": "Intel" },
-  "t3.micro":       { "vcpus": 2,   "ram_gb": 1.0,    "arch": "x86_64", "chip": "Intel" },
-  "t3.small":       { "vcpus": 2,   "ram_gb": 2.0,    "arch": "x86_64", "chip": "Intel" },
-  "t3.medium":      { "vcpus": 2,   "ram_gb": 4.0,    "arch": "x86_64", "chip": "Intel" },
-  "t3.large":       { "vcpus": 2,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "Intel" },
-  "t3.xlarge":      { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel" },
-  "t3.2xlarge":     { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel" },
-
-  "t3a.nano":       { "vcpus": 2,   "ram_gb": 0.5,    "arch": "x86_64", "chip": "AMD" },
-  "t3a.micro":      { "vcpus": 2,   "ram_gb": 1.0,    "arch": "x86_64", "chip": "AMD" },
-  "t3a.small":      { "vcpus": 2,   "ram_gb": 2.0,    "arch": "x86_64", "chip": "AMD" },
-  "t3a.medium":     { "vcpus": 2,   "ram_gb": 4.0,    "arch": "x86_64", "chip": "AMD" },
-  "t3a.large":      { "vcpus": 2,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "AMD" },
-  "t3a.xlarge":     { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "AMD" },
-  "t3a.2xlarge":    { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "AMD" },
-
-  "t4g.nano":       { "vcpus": 2,   "ram_gb": 0.5,    "arch": "arm64",  "chip": "Graviton2" },
-  "t4g.micro":      { "vcpus": 2,   "ram_gb": 1.0,    "arch": "arm64",  "chip": "Graviton2" },
-  "t4g.small":      { "vcpus": 2,   "ram_gb": 2.0,    "arch": "arm64",  "chip": "Graviton2" },
-  "t4g.medium":     { "vcpus": 2,   "ram_gb": 4.0,    "arch": "arm64",  "chip": "Graviton2" },
-  "t4g.large":      { "vcpus": 2,   "ram_gb": 8.0,    "arch": "arm64",  "chip": "Graviton2" },
-  "t4g.xlarge":     { "vcpus": 4,   "ram_gb": 16.0,   "arch": "arm64",  "chip": "Graviton2" },
-  "t4g.2xlarge":    { "vcpus": 8,   "ram_gb": 32.0,   "arch": "arm64",  "chip": "Graviton2" },
-
-  "m5.large":       { "vcpus": 2,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "Intel" },
-  "m5.xlarge":      { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel" },
-  "m5.2xlarge":     { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel" },
-  "m5.4xlarge":     { "vcpus": 16,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "Intel" },
-  "m5.8xlarge":     { "vcpus": 32,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel" },
-  "m5.12xlarge":    { "vcpus": 48,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel" },
-  "m5.16xlarge":    { "vcpus": 64,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel" },
-  "m5.24xlarge":    { "vcpus": 96,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel" },
-  "m5.metal":       { "vcpus": 96,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel" },
-
-  "m5a.large":      { "vcpus": 2,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "AMD" },
-  "m5a.xlarge":     { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "AMD" },
-  "m5a.2xlarge":    { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "AMD" },
-  "m5a.4xlarge":    { "vcpus": 16,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "AMD" },
-  "m5a.8xlarge":    { "vcpus": 32,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "AMD" },
-  "m5a.12xlarge":   { "vcpus": 48,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "AMD" },
-  "m5a.16xlarge":   { "vcpus": 64,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "AMD" },
-  "m5a.24xlarge":   { "vcpus": 96,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "AMD" },
-
-  "m5n.large":      { "vcpus": 2,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "Intel" },
-  "m5n.xlarge":     { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel" },
-  "m5n.2xlarge":    { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel" },
-  "m5n.4xlarge":    { "vcpus": 16,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "Intel" },
-  "m5n.8xlarge":    { "vcpus": 32,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel" },
-  "m5n.12xlarge":   { "vcpus": 48,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel" },
-  "m5n.16xlarge":   { "vcpus": 64,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel" },
-  "m5n.24xlarge":   { "vcpus": 96,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel" },
-
-  "m6i.large":      { "vcpus": 2,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "Intel" },
-  "m6i.xlarge":     { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel" },
-  "m6i.2xlarge":    { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel" },
-  "m6i.4xlarge":    { "vcpus": 16,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "Intel" },
-  "m6i.8xlarge":    { "vcpus": 32,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel" },
-  "m6i.12xlarge":   { "vcpus": 48,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel" },
-  "m6i.16xlarge":   { "vcpus": 64,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel" },
-  "m6i.24xlarge":   { "vcpus": 96,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel" },
-  "m6i.32xlarge":   { "vcpus": 128, "ram_gb": 512.0,  "arch": "x86_64", "chip": "Intel" },
-  "m6i.metal":      { "vcpus": 128, "ram_gb": 512.0,  "arch": "x86_64", "chip": "Intel" },
-
-  "m6a.large":      { "vcpus": 2,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "AMD" },
-  "m6a.xlarge":     { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "AMD" },
-  "m6a.2xlarge":    { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "AMD" },
-  "m6a.4xlarge":    { "vcpus": 16,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "AMD" },
-  "m6a.8xlarge":    { "vcpus": 32,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "AMD" },
-  "m6a.12xlarge":   { "vcpus": 48,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "AMD" },
-  "m6a.16xlarge":   { "vcpus": 64,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "AMD" },
-  "m6a.24xlarge":   { "vcpus": 96,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "AMD" },
-  "m6a.32xlarge":   { "vcpus": 128, "ram_gb": 512.0,  "arch": "x86_64", "chip": "AMD" },
-  "m6a.48xlarge":   { "vcpus": 192, "ram_gb": 768.0,  "arch": "x86_64", "chip": "AMD" },
-  "m6a.metal":      { "vcpus": 192, "ram_gb": 768.0,  "arch": "x86_64", "chip": "AMD" },
-
-  "m6g.medium":     { "vcpus": 1,   "ram_gb": 4.0,    "arch": "arm64",  "chip": "Graviton2" },
-  "m6g.large":      { "vcpus": 2,   "ram_gb": 8.0,    "arch": "arm64",  "chip": "Graviton2" },
-  "m6g.xlarge":     { "vcpus": 4,   "ram_gb": 16.0,   "arch": "arm64",  "chip": "Graviton2" },
-  "m6g.2xlarge":    { "vcpus": 8,   "ram_gb": 32.0,   "arch": "arm64",  "chip": "Graviton2" },
-  "m6g.4xlarge":    { "vcpus": 16,  "ram_gb": 64.0,   "arch": "arm64",  "chip": "Graviton2" },
-  "m6g.8xlarge":    { "vcpus": 32,  "ram_gb": 128.0,  "arch": "arm64",  "chip": "Graviton2" },
-  "m6g.12xlarge":   { "vcpus": 48,  "ram_gb": 192.0,  "arch": "arm64",  "chip": "Graviton2" },
-  "m6g.16xlarge":   { "vcpus": 64,  "ram_gb": 256.0,  "arch": "arm64",  "chip": "Graviton2" },
-  "m6g.metal":      { "vcpus": 64,  "ram_gb": 256.0,  "arch": "arm64",  "chip": "Graviton2" },
-
-  "m7i.large":      { "vcpus": 2,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "m7i.xlarge":     { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "m7i.2xlarge":    { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "m7i.4xlarge":    { "vcpus": 16,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "m7i.8xlarge":    { "vcpus": 32,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "m7i.12xlarge":   { "vcpus": 48,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "m7i.16xlarge":   { "vcpus": 64,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "m7i.24xlarge":   { "vcpus": 96,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "m7i.48xlarge":   { "vcpus": 192, "ram_gb": 768.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "m7i.metal-24xl": { "vcpus": 96,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "m7i.metal-48xl": { "vcpus": 192, "ram_gb": 768.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-
-  "m7a.medium":     { "vcpus": 1,   "ram_gb": 4.0,    "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "m7a.large":      { "vcpus": 2,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "m7a.xlarge":     { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "m7a.2xlarge":    { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "m7a.4xlarge":    { "vcpus": 16,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "m7a.8xlarge":    { "vcpus": 32,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "m7a.12xlarge":   { "vcpus": 48,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "m7a.16xlarge":   { "vcpus": 64,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "m7a.24xlarge":   { "vcpus": 96,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "m7a.32xlarge":   { "vcpus": 128, "ram_gb": 512.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "m7a.48xlarge":   { "vcpus": 192, "ram_gb": 768.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "m7a.metal-48xl": { "vcpus": 192, "ram_gb": 768.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-
-  "m7g.medium":     { "vcpus": 1,   "ram_gb": 4.0,    "arch": "arm64",  "chip": "Graviton3" },
-  "m7g.large":      { "vcpus": 2,   "ram_gb": 8.0,    "arch": "arm64",  "chip": "Graviton3" },
-  "m7g.xlarge":     { "vcpus": 4,   "ram_gb": 16.0,   "arch": "arm64",  "chip": "Graviton3" },
-  "m7g.2xlarge":    { "vcpus": 8,   "ram_gb": 32.0,   "arch": "arm64",  "chip": "Graviton3" },
-  "m7g.4xlarge":    { "vcpus": 16,  "ram_gb": 64.0,   "arch": "arm64",  "chip": "Graviton3" },
-  "m7g.8xlarge":    { "vcpus": 32,  "ram_gb": 128.0,  "arch": "arm64",  "chip": "Graviton3" },
-  "m7g.12xlarge":   { "vcpus": 48,  "ram_gb": 192.0,  "arch": "arm64",  "chip": "Graviton3" },
-  "m7g.16xlarge":   { "vcpus": 64,  "ram_gb": 256.0,  "arch": "arm64",  "chip": "Graviton3" },
-  "m7g.metal":      { "vcpus": 64,  "ram_gb": 256.0,  "arch": "arm64",  "chip": "Graviton3" },
-
-  "c5.large":       { "vcpus": 2,   "ram_gb": 4.0,    "arch": "x86_64", "chip": "Intel" },
-  "c5.xlarge":      { "vcpus": 4,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "Intel" },
-  "c5.2xlarge":     { "vcpus": 8,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel" },
-  "c5.4xlarge":     { "vcpus": 16,  "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel" },
-  "c5.9xlarge":     { "vcpus": 36,  "ram_gb": 72.0,   "arch": "x86_64", "chip": "Intel" },
-  "c5.12xlarge":    { "vcpus": 48,  "ram_gb": 96.0,   "arch": "x86_64", "chip": "Intel" },
-  "c5.18xlarge":    { "vcpus": 72,  "ram_gb": 144.0,  "arch": "x86_64", "chip": "Intel" },
-  "c5.24xlarge":    { "vcpus": 96,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel" },
-  "c5.metal":       { "vcpus": 96,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel" },
-
-  "c5a.large":      { "vcpus": 2,   "ram_gb": 4.0,    "arch": "x86_64", "chip": "AMD" },
-  "c5a.xlarge":     { "vcpus": 4,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "AMD" },
-  "c5a.2xlarge":    { "vcpus": 8,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "AMD" },
-  "c5a.4xlarge":    { "vcpus": 16,  "ram_gb": 32.0,   "arch": "x86_64", "chip": "AMD" },
-  "c5a.8xlarge":    { "vcpus": 32,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "AMD" },
-  "c5a.12xlarge":   { "vcpus": 48,  "ram_gb": 96.0,   "arch": "x86_64", "chip": "AMD" },
-  "c5a.16xlarge":   { "vcpus": 64,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "AMD" },
-  "c5a.24xlarge":   { "vcpus": 96,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "AMD" },
-
-  "c5n.large":      { "vcpus": 2,   "ram_gb": 5.25,   "arch": "x86_64", "chip": "Intel" },
-  "c5n.xlarge":     { "vcpus": 4,   "ram_gb": 10.5,   "arch": "x86_64", "chip": "Intel" },
-  "c5n.2xlarge":    { "vcpus": 8,   "ram_gb": 21.0,   "arch": "x86_64", "chip": "Intel" },
-  "c5n.4xlarge":    { "vcpus": 16,  "ram_gb": 42.0,   "arch": "x86_64", "chip": "Intel" },
-  "c5n.9xlarge":    { "vcpus": 36,  "ram_gb": 96.0,   "arch": "x86_64", "chip": "Intel" },
-  "c5n.18xlarge":   { "vcpus": 72,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel" },
-  "c5n.metal":      { "vcpus": 72,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel" },
-
-  "c6i.large":      { "vcpus": 2,   "ram_gb": 4.0,    "arch": "x86_64", "chip": "Intel" },
-  "c6i.xlarge":     { "vcpus": 4,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "Intel" },
-  "c6i.2xlarge":    { "vcpus": 8,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel" },
-  "c6i.4xlarge":    { "vcpus": 16,  "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel" },
-  "c6i.8xlarge":    { "vcpus": 32,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "Intel" },
-  "c6i.12xlarge":   { "vcpus": 48,  "ram_gb": 96.0,   "arch": "x86_64", "chip": "Intel" },
-  "c6i.16xlarge":   { "vcpus": 64,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel" },
-  "c6i.24xlarge":   { "vcpus": 96,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel" },
-  "c6i.32xlarge":   { "vcpus": 128, "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel" },
-  "c6i.metal":      { "vcpus": 128, "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel" },
-
-  "c6a.large":      { "vcpus": 2,   "ram_gb": 4.0,    "arch": "x86_64", "chip": "AMD" },
-  "c6a.xlarge":     { "vcpus": 4,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "AMD" },
-  "c6a.2xlarge":    { "vcpus": 8,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "AMD" },
-  "c6a.4xlarge":    { "vcpus": 16,  "ram_gb": 32.0,   "arch": "x86_64", "chip": "AMD" },
-  "c6a.8xlarge":    { "vcpus": 32,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "AMD" },
-  "c6a.12xlarge":   { "vcpus": 48,  "ram_gb": 96.0,   "arch": "x86_64", "chip": "AMD" },
-  "c6a.16xlarge":   { "vcpus": 64,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "AMD" },
-  "c6a.24xlarge":   { "vcpus": 96,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "AMD" },
-  "c6a.32xlarge":   { "vcpus": 128, "ram_gb": 256.0,  "arch": "x86_64", "chip": "AMD" },
-  "c6a.48xlarge":   { "vcpus": 192, "ram_gb": 384.0,  "arch": "x86_64", "chip": "AMD" },
-  "c6a.metal":      { "vcpus": 192, "ram_gb": 384.0,  "arch": "x86_64", "chip": "AMD" },
-
-  "c6g.medium":     { "vcpus": 1,   "ram_gb": 2.0,    "arch": "arm64",  "chip": "Graviton2" },
-  "c6g.large":      { "vcpus": 2,   "ram_gb": 4.0,    "arch": "arm64",  "chip": "Graviton2" },
-  "c6g.xlarge":     { "vcpus": 4,   "ram_gb": 8.0,    "arch": "arm64",  "chip": "Graviton2" },
-  "c6g.2xlarge":    { "vcpus": 8,   "ram_gb": 16.0,   "arch": "arm64",  "chip": "Graviton2" },
-  "c6g.4xlarge":    { "vcpus": 16,  "ram_gb": 32.0,   "arch": "arm64",  "chip": "Graviton2" },
-  "c6g.8xlarge":    { "vcpus": 32,  "ram_gb": 64.0,   "arch": "arm64",  "chip": "Graviton2" },
-  "c6g.12xlarge":   { "vcpus": 48,  "ram_gb": 96.0,   "arch": "arm64",  "chip": "Graviton2" },
-  "c6g.16xlarge":   { "vcpus": 64,  "ram_gb": 128.0,  "arch": "arm64",  "chip": "Graviton2" },
-  "c6g.metal":      { "vcpus": 64,  "ram_gb": 128.0,  "arch": "arm64",  "chip": "Graviton2" },
-
-  "c7i.large":      { "vcpus": 2,   "ram_gb": 4.0,    "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "c7i.xlarge":     { "vcpus": 4,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "c7i.2xlarge":    { "vcpus": 8,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "c7i.4xlarge":    { "vcpus": 16,  "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "c7i.8xlarge":    { "vcpus": 32,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "c7i.12xlarge":   { "vcpus": 48,  "ram_gb": 96.0,   "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "c7i.16xlarge":   { "vcpus": 64,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "c7i.24xlarge":   { "vcpus": 96,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "c7i.48xlarge":   { "vcpus": 192, "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "c7i.metal-24xl": { "vcpus": 96,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "c7i.metal-48xl": { "vcpus": 192, "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-
-  "c7a.medium":     { "vcpus": 1,   "ram_gb": 2.0,    "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "c7a.large":      { "vcpus": 2,   "ram_gb": 4.0,    "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "c7a.xlarge":     { "vcpus": 4,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "c7a.2xlarge":    { "vcpus": 8,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "c7a.4xlarge":    { "vcpus": 16,  "ram_gb": 32.0,   "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "c7a.8xlarge":    { "vcpus": 32,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "c7a.12xlarge":   { "vcpus": 48,  "ram_gb": 96.0,   "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "c7a.16xlarge":   { "vcpus": 64,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "c7a.24xlarge":   { "vcpus": 96,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "c7a.32xlarge":   { "vcpus": 128, "ram_gb": 256.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "c7a.48xlarge":   { "vcpus": 192, "ram_gb": 384.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "c7a.metal-48xl": { "vcpus": 192, "ram_gb": 384.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-
-  "c7g.medium":     { "vcpus": 1,   "ram_gb": 2.0,    "arch": "arm64",  "chip": "Graviton3" },
-  "c7g.large":      { "vcpus": 2,   "ram_gb": 4.0,    "arch": "arm64",  "chip": "Graviton3" },
-  "c7g.xlarge":     { "vcpus": 4,   "ram_gb": 8.0,    "arch": "arm64",  "chip": "Graviton3" },
-  "c7g.2xlarge":    { "vcpus": 8,   "ram_gb": 16.0,   "arch": "arm64",  "chip": "Graviton3" },
-  "c7g.4xlarge":    { "vcpus": 16,  "ram_gb": 32.0,   "arch": "arm64",  "chip": "Graviton3" },
-  "c7g.8xlarge":    { "vcpus": 32,  "ram_gb": 64.0,   "arch": "arm64",  "chip": "Graviton3" },
-  "c7g.12xlarge":   { "vcpus": 48,  "ram_gb": 96.0,   "arch": "arm64",  "chip": "Graviton3" },
-  "c7g.16xlarge":   { "vcpus": 64,  "ram_gb": 128.0,  "arch": "arm64",  "chip": "Graviton3" },
-  "c7g.metal":      { "vcpus": 64,  "ram_gb": 128.0,  "arch": "arm64",  "chip": "Graviton3" },
-
-  "r5.large":       { "vcpus": 2,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel" },
-  "r5.xlarge":      { "vcpus": 4,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel" },
-  "r5.2xlarge":     { "vcpus": 8,   "ram_gb": 64.0,   "arch": "x86_64", "chip": "Intel" },
-  "r5.4xlarge":     { "vcpus": 16,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel" },
-  "r5.8xlarge":     { "vcpus": 32,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel" },
-  "r5.12xlarge":    { "vcpus": 48,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel" },
-  "r5.16xlarge":    { "vcpus": 64,  "ram_gb": 512.0,  "arch": "x86_64", "chip": "Intel" },
-  "r5.24xlarge":    { "vcpus": 96,  "ram_gb": 768.0,  "arch": "x86_64", "chip": "Intel" },
-  "r5.metal":       { "vcpus": 96,  "ram_gb": 768.0,  "arch": "x86_64", "chip": "Intel" },
-
-  "r5a.large":      { "vcpus": 2,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "AMD" },
-  "r5a.xlarge":     { "vcpus": 4,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "AMD" },
-  "r5a.2xlarge":    { "vcpus": 8,   "ram_gb": 64.0,   "arch": "x86_64", "chip": "AMD" },
-  "r5a.4xlarge":    { "vcpus": 16,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "AMD" },
-  "r5a.8xlarge":    { "vcpus": 32,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "AMD" },
-  "r5a.12xlarge":   { "vcpus": 48,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "AMD" },
-  "r5a.16xlarge":   { "vcpus": 64,  "ram_gb": 512.0,  "arch": "x86_64", "chip": "AMD" },
-  "r5a.24xlarge":   { "vcpus": 96,  "ram_gb": 768.0,  "arch": "x86_64", "chip": "AMD" },
-
-  "r6i.large":      { "vcpus": 2,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel" },
-  "r6i.xlarge":     { "vcpus": 4,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel" },
-  "r6i.2xlarge":    { "vcpus": 8,   "ram_gb": 64.0,   "arch": "x86_64", "chip": "Intel" },
-  "r6i.4xlarge":    { "vcpus": 16,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel" },
-  "r6i.8xlarge":    { "vcpus": 32,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel" },
-  "r6i.12xlarge":   { "vcpus": 48,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel" },
-  "r6i.16xlarge":   { "vcpus": 64,  "ram_gb": 512.0,  "arch": "x86_64", "chip": "Intel" },
-  "r6i.24xlarge":   { "vcpus": 96,  "ram_gb": 768.0,  "arch": "x86_64", "chip": "Intel" },
-  "r6i.32xlarge":   { "vcpus": 128, "ram_gb": 1024.0, "arch": "x86_64", "chip": "Intel" },
-  "r6i.metal":      { "vcpus": 128, "ram_gb": 1024.0, "arch": "x86_64", "chip": "Intel" },
-
-  "r6a.large":      { "vcpus": 2,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "AMD" },
-  "r6a.xlarge":     { "vcpus": 4,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "AMD" },
-  "r6a.2xlarge":    { "vcpus": 8,   "ram_gb": 64.0,   "arch": "x86_64", "chip": "AMD" },
-  "r6a.4xlarge":    { "vcpus": 16,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "AMD" },
-  "r6a.8xlarge":    { "vcpus": 32,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "AMD" },
-  "r6a.12xlarge":   { "vcpus": 48,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "AMD" },
-  "r6a.16xlarge":   { "vcpus": 64,  "ram_gb": 512.0,  "arch": "x86_64", "chip": "AMD" },
-  "r6a.24xlarge":   { "vcpus": 96,  "ram_gb": 768.0,  "arch": "x86_64", "chip": "AMD" },
-  "r6a.32xlarge":   { "vcpus": 128, "ram_gb": 1024.0, "arch": "x86_64", "chip": "AMD" },
-  "r6a.48xlarge":   { "vcpus": 192, "ram_gb": 1536.0, "arch": "x86_64", "chip": "AMD" },
-
-  "r6g.medium":     { "vcpus": 1,   "ram_gb": 8.0,    "arch": "arm64",  "chip": "Graviton2" },
-  "r6g.large":      { "vcpus": 2,   "ram_gb": 16.0,   "arch": "arm64",  "chip": "Graviton2" },
-  "r6g.xlarge":     { "vcpus": 4,   "ram_gb": 32.0,   "arch": "arm64",  "chip": "Graviton2" },
-  "r6g.2xlarge":    { "vcpus": 8,   "ram_gb": 64.0,   "arch": "arm64",  "chip": "Graviton2" },
-  "r6g.4xlarge":    { "vcpus": 16,  "ram_gb": 128.0,  "arch": "arm64",  "chip": "Graviton2" },
-  "r6g.8xlarge":    { "vcpus": 32,  "ram_gb": 256.0,  "arch": "arm64",  "chip": "Graviton2" },
-  "r6g.12xlarge":   { "vcpus": 48,  "ram_gb": 384.0,  "arch": "arm64",  "chip": "Graviton2" },
-  "r6g.16xlarge":   { "vcpus": 64,  "ram_gb": 512.0,  "arch": "arm64",  "chip": "Graviton2" },
-  "r6g.metal":      { "vcpus": 64,  "ram_gb": 512.0,  "arch": "arm64",  "chip": "Graviton2" },
-
-  "r7i.large":      { "vcpus": 2,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "r7i.xlarge":     { "vcpus": 4,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "r7i.2xlarge":    { "vcpus": 8,   "ram_gb": 64.0,   "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "r7i.4xlarge":    { "vcpus": 16,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "r7i.8xlarge":    { "vcpus": 32,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "r7i.12xlarge":   { "vcpus": 48,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "r7i.16xlarge":   { "vcpus": 64,  "ram_gb": 512.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "r7i.24xlarge":   { "vcpus": 96,  "ram_gb": 768.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "r7i.48xlarge":   { "vcpus": 192, "ram_gb": 1536.0, "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "r7i.metal-24xl": { "vcpus": 96,  "ram_gb": 768.0,  "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-  "r7i.metal-48xl": { "vcpus": 192, "ram_gb": 1536.0, "arch": "x86_64", "chip": "Intel Sapphire Rapids" },
-
-  "r7a.medium":     { "vcpus": 1,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "r7a.large":      { "vcpus": 2,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "r7a.xlarge":     { "vcpus": 4,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "r7a.2xlarge":    { "vcpus": 8,   "ram_gb": 64.0,   "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "r7a.4xlarge":    { "vcpus": 16,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "r7a.8xlarge":    { "vcpus": 32,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "r7a.12xlarge":   { "vcpus": 48,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "r7a.16xlarge":   { "vcpus": 64,  "ram_gb": 512.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "r7a.24xlarge":   { "vcpus": 96,  "ram_gb": 768.0,  "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "r7a.32xlarge":   { "vcpus": 128, "ram_gb": 1024.0, "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "r7a.48xlarge":   { "vcpus": 192, "ram_gb": 1536.0, "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-  "r7a.metal-48xl": { "vcpus": 192, "ram_gb": 1536.0, "arch": "x86_64", "chip": "AMD EPYC Genoa" },
-
-  "r7g.medium":     { "vcpus": 1,   "ram_gb": 8.0,    "arch": "arm64",  "chip": "Graviton3" },
-  "r7g.large":      { "vcpus": 2,   "ram_gb": 16.0,   "arch": "arm64",  "chip": "Graviton3" },
-  "r7g.xlarge":     { "vcpus": 4,   "ram_gb": 32.0,   "arch": "arm64",  "chip": "Graviton3" },
-  "r7g.2xlarge":    { "vcpus": 8,   "ram_gb": 64.0,   "arch": "arm64",  "chip": "Graviton3" },
-  "r7g.4xlarge":    { "vcpus": 16,  "ram_gb": 128.0,  "arch": "arm64",  "chip": "Graviton3" },
-  "r7g.8xlarge":    { "vcpus": 32,  "ram_gb": 256.0,  "arch": "arm64",  "chip": "Graviton3" },
-  "r7g.12xlarge":   { "vcpus": 48,  "ram_gb": 384.0,  "arch": "arm64",  "chip": "Graviton3" },
-  "r7g.16xlarge":   { "vcpus": 64,  "ram_gb": 512.0,  "arch": "arm64",  "chip": "Graviton3" },
-  "r7g.metal":      { "vcpus": 64,  "ram_gb": 512.0,  "arch": "arm64",  "chip": "Graviton3" },
-
-  "x1.16xlarge":    { "vcpus": 64,  "ram_gb": 976.0,  "arch": "x86_64", "chip": "Intel" },
-  "x1.32xlarge":    { "vcpus": 128, "ram_gb": 1952.0, "arch": "x86_64", "chip": "Intel" },
-  "x1e.xlarge":     { "vcpus": 4,   "ram_gb": 122.0,  "arch": "x86_64", "chip": "Intel" },
-  "x1e.2xlarge":    { "vcpus": 8,   "ram_gb": 244.0,  "arch": "x86_64", "chip": "Intel" },
-  "x1e.4xlarge":    { "vcpus": 16,  "ram_gb": 488.0,  "arch": "x86_64", "chip": "Intel" },
-  "x1e.8xlarge":    { "vcpus": 32,  "ram_gb": 976.0,  "arch": "x86_64", "chip": "Intel" },
-  "x1e.16xlarge":   { "vcpus": 64,  "ram_gb": 1952.0, "arch": "x86_64", "chip": "Intel" },
-  "x1e.32xlarge":   { "vcpus": 128, "ram_gb": 3904.0, "arch": "x86_64", "chip": "Intel" },
-  "x2idn.16xlarge": { "vcpus": 64,  "ram_gb": 1024.0, "arch": "x86_64", "chip": "Intel" },
-  "x2idn.24xlarge": { "vcpus": 96,  "ram_gb": 1536.0, "arch": "x86_64", "chip": "Intel" },
-  "x2idn.32xlarge": { "vcpus": 128, "ram_gb": 2048.0, "arch": "x86_64", "chip": "Intel" },
-  "x2iedn.xlarge":  { "vcpus": 4,   "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel" },
-  "x2iedn.2xlarge": { "vcpus": 8,   "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel" },
-  "x2iedn.4xlarge": { "vcpus": 16,  "ram_gb": 512.0,  "arch": "x86_64", "chip": "Intel" },
-  "x2iedn.8xlarge": { "vcpus": 32,  "ram_gb": 1024.0, "arch": "x86_64", "chip": "Intel" },
-  "x2iedn.16xlarge":{ "vcpus": 64,  "ram_gb": 2048.0, "arch": "x86_64", "chip": "Intel" },
-  "x2iedn.24xlarge":{ "vcpus": 96,  "ram_gb": 3072.0, "arch": "x86_64", "chip": "Intel" },
-  "x2iedn.32xlarge":{ "vcpus": 128, "ram_gb": 4096.0, "arch": "x86_64", "chip": "Intel" },
-  "x2iezn.2xlarge": { "vcpus": 8,   "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel" },
-  "x2iezn.4xlarge": { "vcpus": 16,  "ram_gb": 512.0,  "arch": "x86_64", "chip": "Intel" },
-  "x2iezn.6xlarge": { "vcpus": 24,  "ram_gb": 768.0,  "arch": "x86_64", "chip": "Intel" },
-  "x2iezn.8xlarge": { "vcpus": 32,  "ram_gb": 1024.0, "arch": "x86_64", "chip": "Intel" },
-  "x2iezn.12xlarge":{ "vcpus": 48,  "ram_gb": 1536.0, "arch": "x86_64", "chip": "Intel" },
-  "x2iezn.metal":   { "vcpus": 48,  "ram_gb": 1536.0, "arch": "x86_64", "chip": "Intel" },
-
-  "i3.large":       { "vcpus": 2,   "ram_gb": 15.25,  "arch": "x86_64", "chip": "Intel" },
-  "i3.xlarge":      { "vcpus": 4,   "ram_gb": 30.5,   "arch": "x86_64", "chip": "Intel" },
-  "i3.2xlarge":     { "vcpus": 8,   "ram_gb": 61.0,   "arch": "x86_64", "chip": "Intel" },
-  "i3.4xlarge":     { "vcpus": 16,  "ram_gb": 122.0,  "arch": "x86_64", "chip": "Intel" },
-  "i3.8xlarge":     { "vcpus": 32,  "ram_gb": 244.0,  "arch": "x86_64", "chip": "Intel" },
-  "i3.16xlarge":    { "vcpus": 64,  "ram_gb": 488.0,  "arch": "x86_64", "chip": "Intel" },
-  "i3.metal":       { "vcpus": 72,  "ram_gb": 512.0,  "arch": "x86_64", "chip": "Intel" },
-  "i3en.large":     { "vcpus": 2,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel" },
-  "i3en.xlarge":    { "vcpus": 4,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel" },
-  "i3en.2xlarge":   { "vcpus": 8,   "ram_gb": 64.0,   "arch": "x86_64", "chip": "Intel" },
-  "i3en.3xlarge":   { "vcpus": 12,  "ram_gb": 96.0,   "arch": "x86_64", "chip": "Intel" },
-  "i3en.6xlarge":   { "vcpus": 24,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel" },
-  "i3en.12xlarge":  { "vcpus": 48,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel" },
-  "i3en.24xlarge":  { "vcpus": 96,  "ram_gb": 768.0,  "arch": "x86_64", "chip": "Intel" },
-  "i3en.metal":     { "vcpus": 96,  "ram_gb": 768.0,  "arch": "x86_64", "chip": "Intel" },
-  "i4i.large":      { "vcpus": 2,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel" },
-  "i4i.xlarge":     { "vcpus": 4,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel" },
-  "i4i.2xlarge":    { "vcpus": 8,   "ram_gb": 64.0,   "arch": "x86_64", "chip": "Intel" },
-  "i4i.4xlarge":    { "vcpus": 16,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel" },
-  "i4i.8xlarge":    { "vcpus": 32,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel" },
-  "i4i.16xlarge":   { "vcpus": 64,  "ram_gb": 512.0,  "arch": "x86_64", "chip": "Intel" },
-  "i4i.32xlarge":   { "vcpus": 128, "ram_gb": 1024.0, "arch": "x86_64", "chip": "Intel" },
-  "i4i.metal":      { "vcpus": 128, "ram_gb": 1024.0, "arch": "x86_64", "chip": "Intel" },
-
-  "p3.2xlarge":     { "vcpus": 8,   "ram_gb": 61.0,   "arch": "x86_64", "chip": "Intel", "accelerator": "1x NVIDIA V100 16GB" },
-  "p3.8xlarge":     { "vcpus": 32,  "ram_gb": 244.0,  "arch": "x86_64", "chip": "Intel", "accelerator": "4x NVIDIA V100 16GB" },
-  "p3.16xlarge":    { "vcpus": 64,  "ram_gb": 488.0,  "arch": "x86_64", "chip": "Intel", "accelerator": "8x NVIDIA V100 16GB" },
-  "p3dn.24xlarge":  { "vcpus": 96,  "ram_gb": 768.0,  "arch": "x86_64", "chip": "Intel", "accelerator": "8x NVIDIA V100 32GB" },
-  "p4d.24xlarge":   { "vcpus": 96,  "ram_gb": 1152.0, "arch": "x86_64", "chip": "Intel", "accelerator": "8x NVIDIA A100 40GB" },
-  "p5.48xlarge":    { "vcpus": 192, "ram_gb": 2048.0, "arch": "x86_64", "chip": "Intel", "accelerator": "8x NVIDIA H100 80GB" },
-
-  "g4dn.xlarge":    { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel", "accelerator": "1x NVIDIA T4 16GB" },
-  "g4dn.2xlarge":   { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel", "accelerator": "1x NVIDIA T4 16GB" },
-  "g4dn.4xlarge":   { "vcpus": 16,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "Intel", "accelerator": "1x NVIDIA T4 16GB" },
-  "g4dn.8xlarge":   { "vcpus": 32,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel", "accelerator": "1x NVIDIA T4 16GB" },
-  "g4dn.12xlarge":  { "vcpus": 48,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel", "accelerator": "4x NVIDIA T4 16GB" },
-  "g4dn.16xlarge":  { "vcpus": 64,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "Intel", "accelerator": "1x NVIDIA T4 16GB" },
-  "g4dn.metal":     { "vcpus": 96,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel", "accelerator": "8x NVIDIA T4 16GB" },
-
-  "g5.xlarge":      { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "AMD", "accelerator": "1x NVIDIA A10G 24GB" },
-  "g5.2xlarge":     { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "AMD", "accelerator": "1x NVIDIA A10G 24GB" },
-  "g5.4xlarge":     { "vcpus": 16,  "ram_gb": 64.0,   "arch": "x86_64", "chip": "AMD", "accelerator": "1x NVIDIA A10G 24GB" },
-  "g5.8xlarge":     { "vcpus": 32,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "AMD", "accelerator": "1x NVIDIA A10G 24GB" },
-  "g5.12xlarge":    { "vcpus": 48,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "AMD", "accelerator": "4x NVIDIA A10G 24GB" },
-  "g5.16xlarge":    { "vcpus": 64,  "ram_gb": 256.0,  "arch": "x86_64", "chip": "AMD", "accelerator": "1x NVIDIA A10G 24GB" },
-  "g5.24xlarge":    { "vcpus": 96,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "AMD", "accelerator": "4x NVIDIA A10G 24GB" },
-  "g5.48xlarge":    { "vcpus": 192, "ram_gb": 768.0,  "arch": "x86_64", "chip": "AMD", "accelerator": "8x NVIDIA A10G 24GB" },
-
-  "trn1.2xlarge":   { "vcpus": 8,   "ram_gb": 32.0,   "arch": "x86_64", "chip": "Intel", "accelerator": "1x AWS Trainium" },
-  "trn1.32xlarge":  { "vcpus": 128, "ram_gb": 512.0,  "arch": "x86_64", "chip": "Intel", "accelerator": "16x AWS Trainium" },
-  "inf1.xlarge":    { "vcpus": 4,   "ram_gb": 8.0,    "arch": "x86_64", "chip": "Intel", "accelerator": "1x AWS Inferentia" },
-  "inf1.2xlarge":   { "vcpus": 8,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel", "accelerator": "1x AWS Inferentia" },
-  "inf1.6xlarge":   { "vcpus": 24,  "ram_gb": 48.0,   "arch": "x86_64", "chip": "Intel", "accelerator": "4x AWS Inferentia" },
-  "inf1.24xlarge":  { "vcpus": 96,  "ram_gb": 192.0,  "arch": "x86_64", "chip": "Intel", "accelerator": "16x AWS Inferentia" },
-  "inf2.xlarge":    { "vcpus": 4,   "ram_gb": 16.0,   "arch": "x86_64", "chip": "Intel", "accelerator": "1x AWS Inferentia2" },
-  "inf2.8xlarge":   { "vcpus": 32,  "ram_gb": 128.0,  "arch": "x86_64", "chip": "Intel", "accelerator": "1x AWS Inferentia2" },
-  "inf2.24xlarge":  { "vcpus": 96,  "ram_gb": 384.0,  "arch": "x86_64", "chip": "Intel", "accelerator": "6x AWS Inferentia2" },
-  "inf2.48xlarge":  { "vcpus": 192, "ram_gb": 768.0,  "arch": "x86_64", "chip": "Intel", "accelerator": "12x AWS Inferentia2" }
+  "c5.12xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 96.0,
+    "vcpus": 48
+  },
+  "c5.18xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 144.0,
+    "vcpus": 72
+  },
+  "c5.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 192.0,
+    "vcpus": 96
+  },
+  "c5.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 8
+  },
+  "c5.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 16
+  },
+  "c5.9xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 72.0,
+    "vcpus": 36
+  },
+  "c5.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 4.0,
+    "vcpus": 2
+  },
+  "c5.metal": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 192.0,
+    "vcpus": 96
+  },
+  "c5.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 8.0,
+    "vcpus": 4
+  },
+  "c5a.12xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 96.0,
+    "vcpus": 48
+  },
+  "c5a.16xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 128.0,
+    "vcpus": 64
+  },
+  "c5a.24xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 192.0,
+    "vcpus": 96
+  },
+  "c5a.2xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 16.0,
+    "vcpus": 8
+  },
+  "c5a.4xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 32.0,
+    "vcpus": 16
+  },
+  "c5a.8xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 64.0,
+    "vcpus": 32
+  },
+  "c5a.large": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 4.0,
+    "vcpus": 2
+  },
+  "c5a.xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 8.0,
+    "vcpus": 4
+  },
+  "c5n.18xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 192.0,
+    "vcpus": 72
+  },
+  "c5n.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 21.0,
+    "vcpus": 8
+  },
+  "c5n.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 42.0,
+    "vcpus": 16
+  },
+  "c5n.9xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 96.0,
+    "vcpus": 36
+  },
+  "c5n.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 5.25,
+    "vcpus": 2
+  },
+  "c5n.metal": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 192.0,
+    "vcpus": 72
+  },
+  "c5n.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 10.5,
+    "vcpus": 4
+  },
+  "c6a.12xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 96.0,
+    "vcpus": 48
+  },
+  "c6a.16xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 128.0,
+    "vcpus": 64
+  },
+  "c6a.24xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 192.0,
+    "vcpus": 96
+  },
+  "c6a.2xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 16.0,
+    "vcpus": 8
+  },
+  "c6a.32xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 256.0,
+    "vcpus": 128
+  },
+  "c6a.48xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 384.0,
+    "vcpus": 192
+  },
+  "c6a.4xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 32.0,
+    "vcpus": 16
+  },
+  "c6a.8xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 64.0,
+    "vcpus": 32
+  },
+  "c6a.large": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 4.0,
+    "vcpus": 2
+  },
+  "c6a.metal": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 384.0,
+    "vcpus": 192
+  },
+  "c6a.xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 8.0,
+    "vcpus": 4
+  },
+  "c6g.12xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 96.0,
+    "vcpus": 48
+  },
+  "c6g.16xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 128.0,
+    "vcpus": 64
+  },
+  "c6g.2xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 16.0,
+    "vcpus": 8
+  },
+  "c6g.4xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 32.0,
+    "vcpus": 16
+  },
+  "c6g.8xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 64.0,
+    "vcpus": 32
+  },
+  "c6g.large": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 4.0,
+    "vcpus": 2
+  },
+  "c6g.medium": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 2.0,
+    "vcpus": 1
+  },
+  "c6g.metal": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 128.0,
+    "vcpus": 64
+  },
+  "c6g.xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 8.0,
+    "vcpus": 4
+  },
+  "c6i.12xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 96.0,
+    "vcpus": 48
+  },
+  "c6i.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 128.0,
+    "vcpus": 64
+  },
+  "c6i.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 192.0,
+    "vcpus": 96
+  },
+  "c6i.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 8
+  },
+  "c6i.32xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 256.0,
+    "vcpus": 128
+  },
+  "c6i.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 16
+  },
+  "c6i.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 64.0,
+    "vcpus": 32
+  },
+  "c6i.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 4.0,
+    "vcpus": 2
+  },
+  "c6i.metal": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 256.0,
+    "vcpus": 128
+  },
+  "c6i.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 8.0,
+    "vcpus": 4
+  },
+  "c7a.12xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 96.0,
+    "vcpus": 48
+  },
+  "c7a.16xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 128.0,
+    "vcpus": 64
+  },
+  "c7a.24xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 192.0,
+    "vcpus": 96
+  },
+  "c7a.2xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 16.0,
+    "vcpus": 8
+  },
+  "c7a.32xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 256.0,
+    "vcpus": 128
+  },
+  "c7a.48xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 384.0,
+    "vcpus": 192
+  },
+  "c7a.4xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 32.0,
+    "vcpus": 16
+  },
+  "c7a.8xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 64.0,
+    "vcpus": 32
+  },
+  "c7a.large": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 4.0,
+    "vcpus": 2
+  },
+  "c7a.medium": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 2.0,
+    "vcpus": 1
+  },
+  "c7a.metal-48xl": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 384.0,
+    "vcpus": 192
+  },
+  "c7a.xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 8.0,
+    "vcpus": 4
+  },
+  "c7g.12xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 96.0,
+    "vcpus": 48
+  },
+  "c7g.16xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 128.0,
+    "vcpus": 64
+  },
+  "c7g.2xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 16.0,
+    "vcpus": 8
+  },
+  "c7g.4xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 32.0,
+    "vcpus": 16
+  },
+  "c7g.8xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 64.0,
+    "vcpus": 32
+  },
+  "c7g.large": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 4.0,
+    "vcpus": 2
+  },
+  "c7g.medium": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 2.0,
+    "vcpus": 1
+  },
+  "c7g.metal": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 128.0,
+    "vcpus": 64
+  },
+  "c7g.xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 8.0,
+    "vcpus": 4
+  },
+  "c7i.12xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 96.0,
+    "vcpus": 48
+  },
+  "c7i.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 128.0,
+    "vcpus": 64
+  },
+  "c7i.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 192.0,
+    "vcpus": 96
+  },
+  "c7i.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 16.0,
+    "vcpus": 8
+  },
+  "c7i.48xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 384.0,
+    "vcpus": 192
+  },
+  "c7i.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 32.0,
+    "vcpus": 16
+  },
+  "c7i.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 64.0,
+    "vcpus": 32
+  },
+  "c7i.large": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 4.0,
+    "vcpus": 2
+  },
+  "c7i.metal-24xl": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 192.0,
+    "vcpus": 96
+  },
+  "c7i.metal-48xl": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 384.0,
+    "vcpus": 192
+  },
+  "c7i.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 8.0,
+    "vcpus": 4
+  },
+  "dl1.24xlarge": {
+    "accelerator": "8x Habana Gaudi HL-205",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "f1.16xlarge": {
+    "accelerator": "8x Xilinx VU9P FPGA",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 976.0,
+    "vcpus": 64
+  },
+  "f1.2xlarge": {
+    "accelerator": "1x Xilinx VU9P FPGA",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 122.0,
+    "vcpus": 8
+  },
+  "f1.4xlarge": {
+    "accelerator": "2x Xilinx VU9P FPGA",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 244.0,
+    "vcpus": 16
+  },
+  "g3.16xlarge": {
+    "accelerator": "4x NVIDIA Tesla M60",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 488.0,
+    "vcpus": 64
+  },
+  "g3.4xlarge": {
+    "accelerator": "1x NVIDIA Tesla M60",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 122.0,
+    "vcpus": 16
+  },
+  "g3.8xlarge": {
+    "accelerator": "2x NVIDIA Tesla M60",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 244.0,
+    "vcpus": 32
+  },
+  "g3s.xlarge": {
+    "accelerator": "1x NVIDIA Tesla M60",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 30.5,
+    "vcpus": 4
+  },
+  "g4ad.16xlarge": {
+    "accelerator": "4x AMD Radeon Pro V520",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "g4ad.2xlarge": {
+    "accelerator": "1x AMD Radeon Pro V520",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "g4ad.4xlarge": {
+    "accelerator": "1x AMD Radeon Pro V520",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "g4ad.8xlarge": {
+    "accelerator": "2x AMD Radeon Pro V520",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "g4ad.xlarge": {
+    "accelerator": "1x AMD Radeon Pro V520",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "g4dn.12xlarge": {
+    "accelerator": "4x NVIDIA T4 16GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 192.0,
+    "vcpus": 48
+  },
+  "g4dn.16xlarge": {
+    "accelerator": "1x NVIDIA T4 16GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "g4dn.2xlarge": {
+    "accelerator": "1x NVIDIA T4 16GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "g4dn.4xlarge": {
+    "accelerator": "1x NVIDIA T4 16GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "g4dn.8xlarge": {
+    "accelerator": "1x NVIDIA T4 16GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "g4dn.metal": {
+    "accelerator": "8x NVIDIA T4 16GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "g4dn.xlarge": {
+    "accelerator": "1x NVIDIA T4 16GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "g5.12xlarge": {
+    "accelerator": "4x NVIDIA A10G 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 192.0,
+    "vcpus": 48
+  },
+  "g5.16xlarge": {
+    "accelerator": "1x NVIDIA A10G 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "g5.24xlarge": {
+    "accelerator": "4x NVIDIA A10G 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "g5.2xlarge": {
+    "accelerator": "1x NVIDIA A10G 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "g5.48xlarge": {
+    "accelerator": "8x NVIDIA A10G 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 768.0,
+    "vcpus": 192
+  },
+  "g5.4xlarge": {
+    "accelerator": "1x NVIDIA A10G 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "g5.8xlarge": {
+    "accelerator": "1x NVIDIA A10G 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "g5.xlarge": {
+    "accelerator": "1x NVIDIA A10G 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "g5g.16xlarge": {
+    "accelerator": "2x NVIDIA T4G",
+    "arch": "arm64",
+    "chip": "AWS Graviton2",
+    "ram_gb": 128.0,
+    "vcpus": 64
+  },
+  "g5g.2xlarge": {
+    "accelerator": "1x NVIDIA T4G",
+    "arch": "arm64",
+    "chip": "AWS Graviton2",
+    "ram_gb": 16.0,
+    "vcpus": 8
+  },
+  "g5g.4xlarge": {
+    "accelerator": "1x NVIDIA T4G",
+    "arch": "arm64",
+    "chip": "AWS Graviton2",
+    "ram_gb": 32.0,
+    "vcpus": 16
+  },
+  "g5g.8xlarge": {
+    "accelerator": "1x NVIDIA T4G",
+    "arch": "arm64",
+    "chip": "AWS Graviton2",
+    "ram_gb": 64.0,
+    "vcpus": 32
+  },
+  "g5g.metal": {
+    "accelerator": "2x NVIDIA T4G",
+    "arch": "arm64",
+    "chip": "AWS Graviton2",
+    "ram_gb": 128.0,
+    "vcpus": 64
+  },
+  "g5g.xlarge": {
+    "accelerator": "1x NVIDIA T4G",
+    "arch": "arm64",
+    "chip": "AWS Graviton2",
+    "ram_gb": 8.0,
+    "vcpus": 4
+  },
+  "g6.12xlarge": {
+    "accelerator": "4x NVIDIA L4 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 192.0,
+    "vcpus": 48
+  },
+  "g6.16xlarge": {
+    "accelerator": "1x NVIDIA L4 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "g6.24xlarge": {
+    "accelerator": "4x NVIDIA L4 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "g6.2xlarge": {
+    "accelerator": "1x NVIDIA L4 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "g6.48xlarge": {
+    "accelerator": "8x NVIDIA L4 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 768.0,
+    "vcpus": 192
+  },
+  "g6.4xlarge": {
+    "accelerator": "1x NVIDIA L4 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "g6.8xlarge": {
+    "accelerator": "1x NVIDIA L4 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "g6.xlarge": {
+    "accelerator": "1x NVIDIA L4 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "g6e.12xlarge": {
+    "accelerator": "4x NVIDIA L40S 48GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 384.0,
+    "vcpus": 48
+  },
+  "g6e.16xlarge": {
+    "accelerator": "1x NVIDIA L40S 48GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 512.0,
+    "vcpus": 64
+  },
+  "g6e.24xlarge": {
+    "accelerator": "4x NVIDIA L40S 48GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "g6e.2xlarge": {
+    "accelerator": "1x NVIDIA L40S 48GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 64.0,
+    "vcpus": 8
+  },
+  "g6e.48xlarge": {
+    "accelerator": "8x NVIDIA L40S 48GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 1536.0,
+    "vcpus": 192
+  },
+  "g6e.4xlarge": {
+    "accelerator": "1x NVIDIA L40S 48GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 128.0,
+    "vcpus": 16
+  },
+  "g6e.8xlarge": {
+    "accelerator": "1x NVIDIA L40S 48GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 256.0,
+    "vcpus": 32
+  },
+  "g6e.xlarge": {
+    "accelerator": "1x NVIDIA L40S 48GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 32.0,
+    "vcpus": 4
+  },
+  "gr6.4xlarge": {
+    "accelerator": "1x NVIDIA L4 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 128.0,
+    "vcpus": 16
+  },
+  "gr6.8xlarge": {
+    "accelerator": "1x NVIDIA L4 24GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 256.0,
+    "vcpus": 32
+  },
+  "i3.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 488.0,
+    "vcpus": 64
+  },
+  "i3.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 61.0,
+    "vcpus": 8
+  },
+  "i3.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 122.0,
+    "vcpus": 16
+  },
+  "i3.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 244.0,
+    "vcpus": 32
+  },
+  "i3.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 15.25,
+    "vcpus": 2
+  },
+  "i3.metal": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 512.0,
+    "vcpus": 72
+  },
+  "i3.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 30.5,
+    "vcpus": 4
+  },
+  "i3en.12xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 384.0,
+    "vcpus": 48
+  },
+  "i3en.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "i3en.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 64.0,
+    "vcpus": 8
+  },
+  "i3en.3xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 96.0,
+    "vcpus": 12
+  },
+  "i3en.6xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 192.0,
+    "vcpus": 24
+  },
+  "i3en.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 2
+  },
+  "i3en.metal": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "i3en.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 4
+  },
+  "i4i.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 512.0,
+    "vcpus": 64
+  },
+  "i4i.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 64.0,
+    "vcpus": 8
+  },
+  "i4i.32xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1024.0,
+    "vcpus": 128
+  },
+  "i4i.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 128.0,
+    "vcpus": 16
+  },
+  "i4i.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 256.0,
+    "vcpus": 32
+  },
+  "i4i.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 2
+  },
+  "i4i.metal": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1024.0,
+    "vcpus": 128
+  },
+  "i4i.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 4
+  },
+  "inf1.24xlarge": {
+    "accelerator": "16x AWS Inferentia",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 192.0,
+    "vcpus": 96
+  },
+  "inf1.2xlarge": {
+    "accelerator": "1x AWS Inferentia",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 8
+  },
+  "inf1.6xlarge": {
+    "accelerator": "4x AWS Inferentia",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 48.0,
+    "vcpus": 24
+  },
+  "inf1.xlarge": {
+    "accelerator": "1x AWS Inferentia",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 8.0,
+    "vcpus": 4
+  },
+  "inf2.24xlarge": {
+    "accelerator": "6x AWS Inferentia2",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "inf2.48xlarge": {
+    "accelerator": "12x AWS Inferentia2",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 768.0,
+    "vcpus": 192
+  },
+  "inf2.8xlarge": {
+    "accelerator": "1x AWS Inferentia2",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "inf2.xlarge": {
+    "accelerator": "1x AWS Inferentia2",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "m5.12xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 192.0,
+    "vcpus": 48
+  },
+  "m5.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "m5.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "m5.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "m5.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "m5.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "m5.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "m5.metal": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "m5.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "m5a.12xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 192.0,
+    "vcpus": 48
+  },
+  "m5a.16xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "m5a.24xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "m5a.2xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "m5a.4xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "m5a.8xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "m5a.large": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "m5a.xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "m5n.12xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 192.0,
+    "vcpus": 48
+  },
+  "m5n.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "m5n.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "m5n.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "m5n.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "m5n.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "m5n.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "m5n.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "m6a.12xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 192.0,
+    "vcpus": 48
+  },
+  "m6a.16xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "m6a.24xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "m6a.2xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "m6a.32xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 512.0,
+    "vcpus": 128
+  },
+  "m6a.48xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 768.0,
+    "vcpus": 192
+  },
+  "m6a.4xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "m6a.8xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "m6a.large": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "m6a.metal": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 768.0,
+    "vcpus": 192
+  },
+  "m6a.xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "m6g.12xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 192.0,
+    "vcpus": 48
+  },
+  "m6g.16xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "m6g.2xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "m6g.4xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "m6g.8xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "m6g.large": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "m6g.medium": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 4.0,
+    "vcpus": 1
+  },
+  "m6g.metal": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "m6g.xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "m6i.12xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 192.0,
+    "vcpus": 48
+  },
+  "m6i.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "m6i.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "m6i.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "m6i.32xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 512.0,
+    "vcpus": 128
+  },
+  "m6i.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "m6i.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "m6i.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "m6i.metal": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 512.0,
+    "vcpus": 128
+  },
+  "m6i.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "m7a.12xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 192.0,
+    "vcpus": 48
+  },
+  "m7a.16xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "m7a.24xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "m7a.2xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "m7a.32xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 512.0,
+    "vcpus": 128
+  },
+  "m7a.48xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 768.0,
+    "vcpus": 192
+  },
+  "m7a.4xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "m7a.8xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "m7a.large": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "m7a.medium": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 4.0,
+    "vcpus": 1
+  },
+  "m7a.metal-48xl": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 768.0,
+    "vcpus": 192
+  },
+  "m7a.xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "m7g.12xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 192.0,
+    "vcpus": 48
+  },
+  "m7g.16xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "m7g.2xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "m7g.4xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "m7g.8xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "m7g.large": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "m7g.medium": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 4.0,
+    "vcpus": 1
+  },
+  "m7g.metal": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "m7g.xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "m7i.12xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 192.0,
+    "vcpus": 48
+  },
+  "m7i.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 256.0,
+    "vcpus": 64
+  },
+  "m7i.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "m7i.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "m7i.48xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 768.0,
+    "vcpus": 192
+  },
+  "m7i.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 64.0,
+    "vcpus": 16
+  },
+  "m7i.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 128.0,
+    "vcpus": 32
+  },
+  "m7i.large": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "m7i.metal-24xl": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 384.0,
+    "vcpus": 96
+  },
+  "m7i.metal-48xl": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 768.0,
+    "vcpus": 192
+  },
+  "m7i.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "p2.16xlarge": {
+    "accelerator": "16x NVIDIA K80",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 732.0,
+    "vcpus": 64
+  },
+  "p2.8xlarge": {
+    "accelerator": "8x NVIDIA K80",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 488.0,
+    "vcpus": 32
+  },
+  "p2.xlarge": {
+    "accelerator": "1x NVIDIA K80",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 61.0,
+    "vcpus": 4
+  },
+  "p3.16xlarge": {
+    "accelerator": "8x NVIDIA V100 16GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 488.0,
+    "vcpus": 64
+  },
+  "p3.2xlarge": {
+    "accelerator": "1x NVIDIA V100 16GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 61.0,
+    "vcpus": 8
+  },
+  "p3.8xlarge": {
+    "accelerator": "4x NVIDIA V100 16GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 244.0,
+    "vcpus": 32
+  },
+  "p3dn.24xlarge": {
+    "accelerator": "8x NVIDIA V100 32GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "p4d.24xlarge": {
+    "accelerator": "8x NVIDIA A100 40GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1152.0,
+    "vcpus": 96
+  },
+  "p4de.24xlarge": {
+    "accelerator": "8x NVIDIA A100 80GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1152.0,
+    "vcpus": 96
+  },
+  "p5.48xlarge": {
+    "accelerator": "8x NVIDIA H100 80GB",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 2048.0,
+    "vcpus": 192
+  },
+  "p5.4xlarge": {
+    "accelerator": "1x NVIDIA H100 80GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 256.0,
+    "vcpus": 16
+  },
+  "p5e.48xlarge": {
+    "accelerator": "8x NVIDIA H200 141GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 2048.0,
+    "vcpus": 192
+  },
+  "p5en.48xlarge": {
+    "accelerator": "8x NVIDIA H200 141GB",
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 2048.0,
+    "vcpus": 192
+  },
+  "r5.12xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 384.0,
+    "vcpus": 48
+  },
+  "r5.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 512.0,
+    "vcpus": 64
+  },
+  "r5.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "r5.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 64.0,
+    "vcpus": 8
+  },
+  "r5.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 128.0,
+    "vcpus": 16
+  },
+  "r5.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 256.0,
+    "vcpus": 32
+  },
+  "r5.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 2
+  },
+  "r5.metal": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "r5.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 4
+  },
+  "r5a.12xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 384.0,
+    "vcpus": 48
+  },
+  "r5a.16xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 512.0,
+    "vcpus": 64
+  },
+  "r5a.24xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "r5a.2xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 64.0,
+    "vcpus": 8
+  },
+  "r5a.4xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 128.0,
+    "vcpus": 16
+  },
+  "r5a.8xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 256.0,
+    "vcpus": 32
+  },
+  "r5a.large": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 16.0,
+    "vcpus": 2
+  },
+  "r5a.xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 32.0,
+    "vcpus": 4
+  },
+  "r6a.12xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 384.0,
+    "vcpus": 48
+  },
+  "r6a.16xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 512.0,
+    "vcpus": 64
+  },
+  "r6a.24xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "r6a.2xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 64.0,
+    "vcpus": 8
+  },
+  "r6a.32xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 1024.0,
+    "vcpus": 128
+  },
+  "r6a.48xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 1536.0,
+    "vcpus": 192
+  },
+  "r6a.4xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 128.0,
+    "vcpus": 16
+  },
+  "r6a.8xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 256.0,
+    "vcpus": 32
+  },
+  "r6a.large": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 16.0,
+    "vcpus": 2
+  },
+  "r6a.xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 32.0,
+    "vcpus": 4
+  },
+  "r6g.12xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 384.0,
+    "vcpus": 48
+  },
+  "r6g.16xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 512.0,
+    "vcpus": 64
+  },
+  "r6g.2xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 64.0,
+    "vcpus": 8
+  },
+  "r6g.4xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 128.0,
+    "vcpus": 16
+  },
+  "r6g.8xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 256.0,
+    "vcpus": 32
+  },
+  "r6g.large": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 16.0,
+    "vcpus": 2
+  },
+  "r6g.medium": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 8.0,
+    "vcpus": 1
+  },
+  "r6g.metal": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 512.0,
+    "vcpus": 64
+  },
+  "r6g.xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 32.0,
+    "vcpus": 4
+  },
+  "r6i.12xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 384.0,
+    "vcpus": 48
+  },
+  "r6i.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 512.0,
+    "vcpus": 64
+  },
+  "r6i.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "r6i.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 64.0,
+    "vcpus": 8
+  },
+  "r6i.32xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1024.0,
+    "vcpus": 128
+  },
+  "r6i.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 128.0,
+    "vcpus": 16
+  },
+  "r6i.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 256.0,
+    "vcpus": 32
+  },
+  "r6i.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 2
+  },
+  "r6i.metal": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1024.0,
+    "vcpus": 128
+  },
+  "r6i.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 4
+  },
+  "r7a.12xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 384.0,
+    "vcpus": 48
+  },
+  "r7a.16xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 512.0,
+    "vcpus": 64
+  },
+  "r7a.24xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "r7a.2xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 64.0,
+    "vcpus": 8
+  },
+  "r7a.32xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 1024.0,
+    "vcpus": 128
+  },
+  "r7a.48xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 1536.0,
+    "vcpus": 192
+  },
+  "r7a.4xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 128.0,
+    "vcpus": 16
+  },
+  "r7a.8xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 256.0,
+    "vcpus": 32
+  },
+  "r7a.large": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 16.0,
+    "vcpus": 2
+  },
+  "r7a.medium": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 8.0,
+    "vcpus": 1
+  },
+  "r7a.metal-48xl": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 1536.0,
+    "vcpus": 192
+  },
+  "r7a.xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD EPYC Genoa",
+    "ram_gb": 32.0,
+    "vcpus": 4
+  },
+  "r7g.12xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 384.0,
+    "vcpus": 48
+  },
+  "r7g.16xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 512.0,
+    "vcpus": 64
+  },
+  "r7g.2xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 64.0,
+    "vcpus": 8
+  },
+  "r7g.4xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 128.0,
+    "vcpus": 16
+  },
+  "r7g.8xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 256.0,
+    "vcpus": 32
+  },
+  "r7g.large": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 16.0,
+    "vcpus": 2
+  },
+  "r7g.medium": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 8.0,
+    "vcpus": 1
+  },
+  "r7g.metal": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 512.0,
+    "vcpus": 64
+  },
+  "r7g.xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton3",
+    "ram_gb": 32.0,
+    "vcpus": 4
+  },
+  "r7i.12xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 384.0,
+    "vcpus": 48
+  },
+  "r7i.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 512.0,
+    "vcpus": 64
+  },
+  "r7i.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "r7i.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 64.0,
+    "vcpus": 8
+  },
+  "r7i.48xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 1536.0,
+    "vcpus": 192
+  },
+  "r7i.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 128.0,
+    "vcpus": 16
+  },
+  "r7i.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 256.0,
+    "vcpus": 32
+  },
+  "r7i.large": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 16.0,
+    "vcpus": 2
+  },
+  "r7i.metal-24xl": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 768.0,
+    "vcpus": 96
+  },
+  "r7i.metal-48xl": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 1536.0,
+    "vcpus": 192
+  },
+  "r7i.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel Sapphire Rapids",
+    "ram_gb": 32.0,
+    "vcpus": 4
+  },
+  "t2.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "t2.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "t2.medium": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 4.0,
+    "vcpus": 2
+  },
+  "t2.micro": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1.0,
+    "vcpus": 1
+  },
+  "t2.nano": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 0.5,
+    "vcpus": 1
+  },
+  "t2.small": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 2.0,
+    "vcpus": 1
+  },
+  "t2.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "t3.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "t3.large": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "t3.medium": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 4.0,
+    "vcpus": 2
+  },
+  "t3.micro": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1.0,
+    "vcpus": 2
+  },
+  "t3.nano": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 0.5,
+    "vcpus": 2
+  },
+  "t3.small": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 2.0,
+    "vcpus": 2
+  },
+  "t3.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "t3a.2xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "t3a.large": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "t3a.medium": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 4.0,
+    "vcpus": 2
+  },
+  "t3a.micro": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 1.0,
+    "vcpus": 2
+  },
+  "t3a.nano": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 0.5,
+    "vcpus": 2
+  },
+  "t3a.small": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 2.0,
+    "vcpus": 2
+  },
+  "t3a.xlarge": {
+    "arch": "x86_64",
+    "chip": "AMD",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "t4g.2xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "t4g.large": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 8.0,
+    "vcpus": 2
+  },
+  "t4g.medium": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 4.0,
+    "vcpus": 2
+  },
+  "t4g.micro": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 1.0,
+    "vcpus": 2
+  },
+  "t4g.nano": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 0.5,
+    "vcpus": 2
+  },
+  "t4g.small": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 2.0,
+    "vcpus": 2
+  },
+  "t4g.xlarge": {
+    "arch": "arm64",
+    "chip": "Graviton2",
+    "ram_gb": 16.0,
+    "vcpus": 4
+  },
+  "trn1.2xlarge": {
+    "accelerator": "1x AWS Trainium",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 32.0,
+    "vcpus": 8
+  },
+  "trn1.32xlarge": {
+    "accelerator": "16x AWS Trainium",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 512.0,
+    "vcpus": 128
+  },
+  "trn1n.32xlarge": {
+    "accelerator": "16x AWS Trainium",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 512.0,
+    "vcpus": 128
+  },
+  "trn2.3xlarge": {
+    "accelerator": "1x AWS Trainium2",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 128.0,
+    "vcpus": 12
+  },
+  "trn2.48xlarge": {
+    "accelerator": "16x AWS Trainium2",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 2048.0,
+    "vcpus": 192
+  },
+  "trn2u.48xlarge": {
+    "accelerator": "16x AWS Trainium2",
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 2048.0,
+    "vcpus": 192
+  },
+  "x1.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 976.0,
+    "vcpus": 64
+  },
+  "x1.32xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1952.0,
+    "vcpus": 128
+  },
+  "x1e.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1952.0,
+    "vcpus": 64
+  },
+  "x1e.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 244.0,
+    "vcpus": 8
+  },
+  "x1e.32xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 3904.0,
+    "vcpus": 128
+  },
+  "x1e.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 488.0,
+    "vcpus": 16
+  },
+  "x1e.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 976.0,
+    "vcpus": 32
+  },
+  "x1e.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 122.0,
+    "vcpus": 4
+  },
+  "x2idn.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1024.0,
+    "vcpus": 64
+  },
+  "x2idn.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1536.0,
+    "vcpus": 96
+  },
+  "x2idn.32xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 2048.0,
+    "vcpus": 128
+  },
+  "x2iedn.16xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 2048.0,
+    "vcpus": 64
+  },
+  "x2iedn.24xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 3072.0,
+    "vcpus": 96
+  },
+  "x2iedn.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 256.0,
+    "vcpus": 8
+  },
+  "x2iedn.32xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 4096.0,
+    "vcpus": 128
+  },
+  "x2iedn.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 512.0,
+    "vcpus": 16
+  },
+  "x2iedn.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1024.0,
+    "vcpus": 32
+  },
+  "x2iedn.xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 128.0,
+    "vcpus": 4
+  },
+  "x2iezn.12xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1536.0,
+    "vcpus": 48
+  },
+  "x2iezn.2xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 256.0,
+    "vcpus": 8
+  },
+  "x2iezn.4xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 512.0,
+    "vcpus": 16
+  },
+  "x2iezn.6xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 768.0,
+    "vcpus": 24
+  },
+  "x2iezn.8xlarge": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1024.0,
+    "vcpus": 32
+  },
+  "x2iezn.metal": {
+    "arch": "x86_64",
+    "chip": "Intel",
+    "ram_gb": 1536.0,
+    "vcpus": 48
+  }
 }

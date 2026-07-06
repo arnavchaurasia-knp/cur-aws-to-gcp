@@ -2,22 +2,25 @@ package jobs
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/facets/cur-web/internal/config"
 )
 
 // Progress is a snapshot of an in-flight agy session, derived from the
 // progress.json file the skill writes to the job directory at each phase
 // transition.
 type Progress struct {
-	Events       int    `json:"events"`
+	Events       int    `json:"events"`        // deprecated: always 0, kept for API contract stability
 	Phase        string `json:"phase"`         // last-known phase name (debug)
 	PhaseNumber  int    `json:"phase_number"`  // 1-6, written by the skill
 	LastActivity string `json:"last_activity"`
 	TranscriptOK bool   `json:"transcript_ok"` // true when progress.json exists
 }
 
-const totalPhases = 6
+const totalPhases = config.TotalPhases
 
 // progressFile is the file the skill writes into the job working directory.
 const progressFile = "progress.json"
@@ -46,7 +49,8 @@ func ReadProgress(jobDir, _ string) (*Progress, error) {
 				LastActivity: "Initializing agent...",
 			}, nil
 		}
-		return &Progress{}, err
+		slog.Error("ReadProgress: unexpected read error", "job_dir", jobDir, "err", err)
+		return &Progress{}, nil
 	}
 
 	var sp skillProgress

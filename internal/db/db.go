@@ -48,7 +48,8 @@ func Open(path string) (*DB, error) {
 		`ALTER TABLE jobs ADD COLUMN attempts INTEGER DEFAULT 1`,
 	} {
 		if _, err := conn.Exec(ddl); err != nil {
-			if !strings.Contains(err.Error(), "duplicate column") {
+			msg := err.Error()
+			if !strings.Contains(msg, "duplicate column") && !strings.Contains(msg, "already exists") {
 				return nil, err
 			}
 		}

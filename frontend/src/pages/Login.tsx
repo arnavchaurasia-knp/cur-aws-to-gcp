@@ -4,26 +4,34 @@ import { useTitle } from '../lib/useTitle'
 export function Login() {
   useTitle('Sign in')
   return (
-    <div className="min-h-screen bg-[#0a0a0f] text-white flex flex-col items-center justify-center px-6">
-      <div className="max-w-md w-full flex flex-col items-center gap-6 text-center">
-        <img src={facetsLogo} alt="Facets" className="h-8" />
-        <p className="text-[#645DF6] text-sm tracking-widest uppercase font-medium">
+    <div className="login-bg min-h-screen text-white flex flex-col items-center justify-center px-6 relative overflow-hidden">
+      {/* ambient orbs */}
+      <div className="login-orb absolute top-1/4 left-1/4 w-96 h-96 rounded-full pointer-events-none"
+           style={{ background: 'radial-gradient(circle, rgba(100,93,246,0.08) 0%, transparent 70%)' }} />
+      <div className="login-orb absolute bottom-1/4 right-1/4 w-80 h-80 rounded-full pointer-events-none"
+           style={{ background: 'radial-gradient(circle, rgba(0,194,187,0.07) 0%, transparent 70%)', animationDelay: '5s' }} />
+
+      <div className="max-w-md w-full flex flex-col items-center gap-6 text-center relative z-10">
+        <img src={facetsLogo} alt="Facets" className="h-8 anim-fade-in-up" />
+        <p className="text-[#645DF6] text-sm tracking-widest uppercase font-medium anim-fade-in-up delay-100">
           AI-powered AWS → GCP Cost Estimator
         </p>
-        <p className="text-sm text-gray-400 leading-relaxed">
+        <p className="text-sm text-gray-400 leading-relaxed anim-fade-in-up delay-175">
           Upload an AWS Cost &amp; Usage Report or Cost Explorer export. An AI agent classifies
           each line item, maps it to its GCP equivalent, applies on-demand and 1/3-year committed-use
           discounts, and produces a customer-shareable HTML report.
         </p>
-        <a
-          href="/api/auth/login"
-          className="flex items-center gap-3 bg-white text-gray-800 px-6 py-3 rounded-lg font-medium hover:bg-gray-100 transition mt-2"
+        <button
+          onClick={() => { window.location.assign('/api/auth/login') }}
+          className="flex items-center gap-3 bg-white text-gray-800 px-6 py-3 rounded-lg font-medium
+            hover:bg-gray-50 hover:scale-[1.02] active:scale-[0.99] shadow-lg shadow-black/30
+            transition-all duration-150 mt-2 anim-fade-in-up delay-250"
         >
           <GoogleIcon />
           Sign in with Google
-        </a>
-        <p className="text-xs text-gray-600">@google.com or @facets.cloud accounts only</p>
-        <p className="text-xs text-gray-600 leading-relaxed mt-4">
+        </button>
+        <p className="text-xs text-gray-600 anim-fade-in-up delay-325">@google.com or @facets.cloud accounts only</p>
+        <p className="text-xs text-gray-600 leading-relaxed mt-4 anim-fade-in-up delay-400">
           Outputs are AI-generated estimates and may vary — treat the report as
           directional and verify before sharing.
         </p>

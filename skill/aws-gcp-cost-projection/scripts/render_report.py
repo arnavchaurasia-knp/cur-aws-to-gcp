@@ -51,17 +51,94 @@ def main():
     # Capacity calculations
     aws_vcpu = conn.execute("SELECT SUM(instance_vcpus * instance_count) FROM aws_li_catalog WHERE is_workload AND instance_vcpus IS NOT NULL").fetchone()[0] or 0.0
     aws_ram = conn.execute("SELECT SUM(instance_ram_gb * instance_count) FROM aws_li_catalog WHERE is_workload AND instance_ram_gb IS NOT NULL").fetchone()[0] or 0.0
-    gcp_vcpu = conn.execute("SELECT SUM(m.unit_multiplier * c.instance_count) FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING (aws_li_key) WHERE m.component = 'core' AND m.strategy IN ('map', 'break_down')").fetchone()[0] or 0.0
-    gcp_ram = conn.execute("SELECT SUM(m.unit_multiplier * c.instance_count) FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING (aws_li_key) WHERE m.component = 'ram' AND m.strategy IN ('map', 'break_down')").fetchone()[0] or 0.0
+    # For rows with a core/ram component breakdown, use the GCP unit_multiplier
+    # (which reconcile_capacity.py ensures is >= AWS). For mapped rows without a
+    # core breakdown (e.g. managed_db mapped as component='compute'), fall back to
+    # the AWS instance_vcpus as the GCP floor — reconcile_capacity guarantees no
+    # under-provision on break_down rows, and map-strategy shapes are >= AWS specs.
+    gcp_vcpu = conn.execute("""
+        WITH core_mapped AS (
+            SELECT c.aws_li_key, SUM(m.unit_multiplier * c.instance_count) AS vcpus
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog c USING (aws_li_key)
+            WHERE m.component = 'core' AND m.strategy IN ('map','break_down')
+            GROUP BY c.aws_li_key
+        )
+        SELECT SUM(COALESCE(cm.vcpus, c.instance_vcpus * c.instance_count))
+        FROM aws_li_catalog c
+        LEFT JOIN core_mapped cm USING (aws_li_key)
+        WHERE c.is_workload AND c.instance_vcpus IS NOT NULL
+    """).fetchone()[0] or 0.0
+    gcp_ram = conn.execute("""
+        WITH ram_mapped AS (
+            SELECT c.aws_li_key, SUM(m.unit_multiplier * c.instance_count) AS ram_gb
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog c USING (aws_li_key)
+            WHERE m.component = 'ram' AND m.strategy IN ('map','break_down')
+            GROUP BY c.aws_li_key
+        )
+        SELECT SUM(COALESCE(rm.ram_gb, c.instance_ram_gb * c.instance_count))
+        FROM aws_li_catalog c
+        LEFT JOIN ram_mapped rm USING (aws_li_key)
+        WHERE c.is_workload AND c.instance_ram_gb IS NOT NULL
+    """).fetchone()[0] or 0.0
 
     vcpu_status = "PASS" if gcp_vcpu >= aws_vcpu else "WARN"
-    ram_status = "PASS" if gcp_ram >= aws_ram else "WARN"
+    ram_status  = "PASS" if gcp_ram  >= aws_ram  else "WARN"
     
-    # Confidence metrics
-    avg_conf = conn.execute("SELECT AVG(mapping_confidence) FROM aws_li_to_gcp_li").fetchone()[0] or 0.0
-    exact_cnt = conn.execute("SELECT COUNT(*) FROM aws_li_to_gcp_li WHERE mapping_confidence >= 0.9").fetchone()[0] or 0
-    near_cnt = conn.execute("SELECT COUNT(*) FROM aws_li_to_gcp_li WHERE mapping_confidence >= 0.7 AND mapping_confidence < 0.9").fetchone()[0] or 0
-    low_cnt = conn.execute("SELECT COUNT(*) FROM aws_li_to_gcp_li WHERE mapping_confidence < 0.7 OR strategy = 'passthrough'").fetchone()[0] or 0
+    # Read validation warnings (if the validator found anything after auto-fix)
+    _GATE_LABELS = {
+        "passthrough_on_mappable_service": "Some services could not be automatically mapped to GCP. These rows carry the AWS cost as a placeholder — manual review recommended.",
+        "phantom_zero": "One or more rows show a unit-pricing discrepancy. Affected costs may be overstated.",
+        "under_projection_gcp_zero": "Some billable AWS rows project to $0 on GCP — the rate card may be missing a SKU.",
+        "capacity_reconciliation": "Projected GCP compute capacity is below the AWS baseline for some instance groups.",
+        "cud_coverage_missing": "Committed Use Discount rates are unavailable for some services — those rows show On-Demand pricing.",
+        "storage_transfer_over_projection": "Storage or data-transfer costs may be conservatively estimated (up to 3× AWS).",
+        "instance_family_mismatch": "Some instance-family mappings may not be optimal. Review flagged rows below.",
+        "reconciliation": "Projected AWS total differs slightly from the uploaded bill total.",
+        "passthrough_budget": "A meaningful share of the workload is carried at AWS cost (no GCP equivalent mapped). Manual sizing recommended.",
+    }
+    validation_notes = []
+    val_path = os.path.join(JOB_DIR, "validation_report.json")
+    if os.path.exists(val_path):
+        try:
+            with open(val_path) as _vf:
+                _vr = json.load(_vf)
+            for gate, rows in (_vr.get("violations") or {}).items():
+                if rows:
+                    label = _GATE_LABELS.get(gate, f"Validation note: {gate}")
+                    validation_notes.append(label)
+        except Exception:
+            pass
+
+    # Per-category confidence breakdown
+    cat_conf_rows = conn.execute("""
+        SELECT
+          CASE
+            WHEN m.strategy = 'passthrough' THEN 'Passthrough'
+            WHEN c.product ILIKE '%EC2%' OR c.product ILIKE '%Elastic Compute%' THEN 'Compute (EC2)'
+            WHEN c.product ILIKE '%RDS%' OR c.product ILIKE '%Aurora%' OR c.product ILIKE '%Redshift%' THEN 'Database (RDS/Aurora)'
+            WHEN c.product ILIKE '%OpenSearch%' OR c.product ILIKE '%MSK%' OR c.product ILIKE '%Kafka%'
+              OR c.product ILIKE '%ElastiCache%' THEN 'Managed Services'
+            WHEN c.product ILIKE '%S3%' OR c.product ILIKE '%EBS%' OR c.product ILIKE '%Glacier%'
+              OR c.product ILIKE '%Storage%' OR c.product ILIKE '%Backup%' THEN 'Storage'
+            WHEN c.product ILIKE '%Route 53%' OR c.product ILIKE '%CloudFront%'
+              OR c.product ILIKE '%Direct Connect%' OR c.product ILIKE '%VPC%'
+              OR c.product ILIKE '%Data Transfer%' OR c.product ILIKE '%Bandwidth%' THEN 'Networking'
+            ELSE 'Other'
+          END AS category,
+          AVG(m.mapping_confidence) AS avg_conf,
+          COUNT(*) AS cnt
+        FROM aws_li_to_gcp_li m
+        JOIN aws_li_catalog c USING (aws_li_key)
+        GROUP BY category
+        ORDER BY avg_conf DESC NULLS LAST
+    """).fetchall()
+
+    # Overall average (passthrough rows are intentional 100% — exclude from avg to avoid inflating)
+    avg_conf = conn.execute(
+        "SELECT AVG(mapping_confidence) FROM aws_li_to_gcp_li WHERE strategy != 'passthrough'"
+    ).fetchone()[0] or 0.0
 
     html_content = f"""
     <html>
@@ -79,12 +156,14 @@ def main():
             .orange {{ color: #E37400; font-weight: bold; }}
             .assumptions {{ background: #f8f9fa; border-left: 3px solid #1A73E8; padding: 10px 16px; margin: 12px 0; font-size: 0.9em; }}
             .assumptions ul {{ margin: 4px 0; padding-left: 20px; }}
+        .warning-box {{ background: #fff8e1; border-left: 3px solid #f9a825; padding: 10px 16px; margin: 12px 0; font-size: 0.9em; }}
+        .warning-box ul {{ margin: 4px 0; padding-left: 20px; }}
         </style>
     </head>
     <body>
         <h1 class="header">AWS to GCP Cloud Cost Analysis</h1>
         <p><b>Customer:</b> {customer_name} &nbsp;&nbsp; <b>Analysis Date:</b> {now.strftime('%B %Y')}</p>
-        
+        {'<div class="warning-box"><b>&#9888; Projection notes — review before sharing</b><ul>' + "".join(f"<li>{n}</li>" for n in validation_notes) + "</ul></div>" if validation_notes else ""}
         <div class="assumptions">
           <b>Pricing assumptions:</b>
           <ul>
@@ -92,15 +171,25 @@ def main():
             <li>On-Demand pricing (no sustained use discount applied to base rates)</li>
             <li>1-Year and 3-Year CUD columns show committed-use discount savings</li>
             <li>License-included pricing (BYOL not assumed unless the AWS line item indicates it)</li>
-            <li>No Spot / Preemptible discounts applied</li>
-            <li>Passthrough rows (e.g. MSK, OpenSearch self-hosted) carry AWS cost as-is — manual sizing required</li>
+            <li>AWS Spot instances mapped to GCP Spot VMs (~60–91% discount off On-Demand, functionally equivalent to Preemptible). Note: AWS Spot prices are market-variable and may be lower — GCP may appear higher for Spot-heavy workloads.</li>
+            <li>OpenSearch and MSK rows are <b>infrastructure estimates for self-managed deployment</b> on GCP (e.g. OpenSearch on GCE, Kafka on GCE) — not managed-service equivalents. Treat these as directional only.</li>
+            <li>Passthrough rows carry the AWS cost as-is — no reliable GCP equivalent was found; manual sizing required.</li>
           </ul>
         </div>
         
         <h2>Mapping Confidence</h2>
+        <p style="margin:4px 0 8px;font-size:0.9em;color:#555;">Overall average (excluding passthrough): <b>{avg_conf * 100:.1f}%</b>. Confidence varies by service category — review lower-confidence sections before sharing.</p>
         <table>
-            <tr><th>Average Confidence</th><td><b>{avg_conf * 100:.1f}%</b></td></tr>
-            <tr><th>Mapping Breakdown</th><td>Exact Matches (&ge;90%): <b>{exact_cnt}</b> | Near Matches (70-90%): <b>{near_cnt}</b> | Manual Review / Low Confidence: <b>{low_cnt}</b></td></tr>
+            <tr><th>Service Category</th><th class="right">Avg Confidence</th><th class="right">Rows</th><th>Note</th></tr>
+            {"".join(
+                f'<tr><td>{cat}</td><td class="right"><b>{"N/A (intentional)" if cat == "Passthrough" else f"{conf*100:.1f}%"}</b></td><td class="right">{cnt}</td>'
+                f'<td style="font-size:0.85em;color:#666;">'
+                f'{"Carries AWS cost as placeholder — manual sizing required" if cat == "Passthrough" else ""}'
+                f'{"Infrastructure estimates only — not managed-service equivalent" if cat == "Managed Services" else ""}'
+                f'{"Service-specific factors (HA, storage config) may affect accuracy" if cat == "Database (RDS/Aurora)" else ""}'
+                f'</td></tr>'
+                for cat, conf, cnt in cat_conf_rows
+            )}
         </table>
 
         <h2>Capacity Reconciliation</h2>
@@ -133,7 +222,8 @@ def main():
             <tr><th>GCP with 3-Year Commitment</th><td class="right">${gcp_3yr:,.2f}</td></tr>
         </table>
         <div id="aws-total-spend" hidden>{aws_total:.2f}</div>
-        
+        <p style="margin:6px 0 4px;font-size:0.85em;color:#888;"><i>&#9888; Windows and commercial software license premiums are excluded from the totals above unless explicitly modeled in the source bill.</i></p>
+
         <h2>Cost Comparison by Service</h2>
         <table>
             <tr><th>#</th><th>Service (AWS → GCP)</th><th>Description</th><th class="right">AWS</th><th class="right">GCP OD</th><th class="right">GCP CUD</th><th class="right">GCP 3yr</th><th class="right">Diff</th></tr>

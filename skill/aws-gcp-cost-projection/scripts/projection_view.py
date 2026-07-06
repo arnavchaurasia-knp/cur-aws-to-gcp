@@ -21,7 +21,10 @@ WITH od_pick AS (
   FROM   aws_li_to_gcp_li m
   JOIN   aws_li_catalog   c USING (aws_li_key)
   LEFT JOIN gcp_sku_rates r ON r.gcp_sku_id = m.gcp_sku_id
-                            AND r.pricing_type = 'OnDemand'
+                            AND r.pricing_type = CASE
+                                WHEN c.pricing_model = 'Spot' THEN 'Preemptible'
+                                ELSE 'OnDemand'
+                              END
   GROUP BY m.aws_li_key, m.gcp_sku_id
 ),
 c1_pick AS (
@@ -65,12 +68,24 @@ SELECT  c.aws_li_key, c.product, c.aws_region, c.gcp_region,
         CASE m.strategy
           WHEN 'ignore'      THEN 0
           WHEN 'passthrough' THEN c.aws_amortized_cost
-          ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) * COALESCE(c1.rate_usd, od.rate_usd)
+          -- Spot/Preemptible VMs cannot be combined with CUDs on GCP.
+          -- Use the preemptible rate (od.rate_usd) for both CUD columns so the
+          -- invariant gcp_od >= gcp_1yr_cud >= gcp_3yr_cud always holds and
+          -- the report doesn't show CUD > OD for Spot rows.
+          ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) *
+               CASE WHEN c.pricing_model = 'Spot'
+                    THEN od.rate_usd
+                    ELSE COALESCE(c1.rate_usd, od.rate_usd)
+               END
         END AS gcp_cost_1yr_cud,
         CASE m.strategy
           WHEN 'ignore'      THEN 0
           WHEN 'passthrough' THEN c.aws_amortized_cost
-          ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) * COALESCE(c3.rate_usd, od.rate_usd)
+          ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) *
+               CASE WHEN c.pricing_model = 'Spot'
+                    THEN od.rate_usd
+                    ELSE COALESCE(c3.rate_usd, od.rate_usd)
+               END
         END AS gcp_cost_3yr_cud
 FROM    aws_li_catalog c
 LEFT JOIN aws_li_to_gcp_li m ON m.aws_li_key = c.aws_li_key

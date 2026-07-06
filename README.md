@@ -94,52 +94,55 @@ The core of this project is a **6-phase intelligent pipeline** that transforms A
 
 ### Prerequisites
 
-- Go 1.20+
-- Python 3.9+
-- Node.js 18+
-- GCP Cloud Billing Catalog access
+Install these before cloning:
 
-### Backend Setup
+| Tool | Install | Why |
+|------|---------|-----|
+| Go 1.21+ | https://go.dev/dl/ | Backend server |
+| Node.js 18+ | https://nodejs.org | Frontend dev server |
+| Python 3.9+ | https://python.org | Skill pipeline scripts |
+| `agy` (Antigravity CLI) | Internal — see team docs | Runs the AI skill |
+| `duckdb` | `brew install duckdb` | Skill pipeline DB |
+| `jq` | `brew install jq` | Skill pipeline JSON |
+| `gzip` | pre-installed on macOS | Skill data decompression |
+
+### Environment Setup
 
 ```bash
-# Navigate to backend directory
-cd backend
+# 1. Copy the example env file
+cp .env.example .env
 
-# Install dependencies
+# 2. Edit .env:
+#    - Set SESSION_SECRET:  openssl rand -base64 32
+#    - Set APP_BASE_URL:    http://localhost:8080  (for local dev)
+#    - Set DEV_AUTH_BYPASS=true  (skips Google OAuth for local dev)
+#    - Set ANTIGRAVITY_API_KEY   (your agy API key — inherited by the skill process)
+#    - Set ALLOWED_DOMAINS if your email domain is not facets.cloud or google.com
+```
+
+### Backend
+
+```bash
+# From repo root
 go mod download
-
-# Run the service
-go run main.go
+go run ./cmd/server
 ```
 
-### Skill Engine Setup
+The server starts on port 8080 (or `$PORT`). On first start it runs preflight checks — if `agy`, `duckdb`, or `jq` are missing you'll see a clear error message.
+
+### Frontend
 
 ```bash
-# Navigate to skill directory
-cd skill/aws-gcp-cost-projection
-
-# Review the skill documentation
-cat SKILL.md
-
-# Run preflight checks
-bash preflight.sh
-```
-
-### Frontend Setup
-
-```bash
-# Navigate to frontend directory
 cd frontend
-
-# Install dependencies
 npm install
-
-# Start development server
-npm run dev
-
-# Build for production
-npm run build
+npm run dev   # starts on http://localhost:5173, proxies /api → localhost:8080
 ```
+
+### Skill Setup (local dev)
+
+The skill is already in the repo at `skill/aws-gcp-cost-projection/`. The server resolves it from the current working directory automatically — no extra install step needed when running from the repo root.
+
+For production VM deploys, see `scripts/server-deploy.sh`.
 
 ---
 

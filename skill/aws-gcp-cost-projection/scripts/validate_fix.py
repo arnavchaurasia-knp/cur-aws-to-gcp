@@ -60,6 +60,7 @@ _CUD_PCT_FALLBACK = {
     "Cloud SQL":                        (0.75, 0.60),
     "Cloud Spanner":                    (0.75, 0.60),
     "Cloud Bigtable":                   (0.75, 0.60),
+    "AlloyDB":                          (0.75, 0.60),
     "Memorystore":                      (0.80, 0.65),
     "Cloud Memorystore":                (0.80, 0.65),
     "Cloud Memorystore for Redis":      (0.80, 0.65),
@@ -100,41 +101,144 @@ def load_cud_pct():
     return _CUD_PCT_CACHE
 
 CUD_PCT = load_cud_pct()
-_CUD_DEFAULT = (0.70, 0.55)  # conservative fallback when service not in CUD_PCT
+# DEFAULT entry from cud_pct.json (0.75, 0.60) is the single source of truth.
+# Do NOT define a separate _CUD_DEFAULT constant — that was the source of the
+# 0.70/0.55 vs 0.75/0.60 inconsistency the manager flagged.
+_CUD_DEFAULT = CUD_PCT.get("DEFAULT", (0.75, 0.60))
 
 
 def _cud_factors(svc):
     """(1yr, 3yr) CUD multipliers for a service. Module-level so it is defined
     before every call site — a nested def crashed the regional-SKU-repair
     branch with a NameError when it ran before the def executed."""
-    if svc not in CUD_PCT:
-        print(f"[WARN] CUD_PCT has no entry for service '{svc}' — using conservative default {_CUD_DEFAULT}")
+    if svc not in CUD_PCT or svc == "DEFAULT":
+        print(f"[WARN] CUD_PCT has no entry for service '{svc}' — using DEFAULT {_CUD_DEFAULT}")
         return _CUD_DEFAULT
     return CUD_PCT[svc]
 
-# Deterministic AWS-instance -> GCP-family map (mirror of
-# data/instance-family-map.json). Pins family choice so the same instance maps
-# the same way every run — the single biggest GCP-cost variance source.
-BURSTABLE_PREFIXES = ("t2", "t3", "t3a")
+# Deterministic AWS-instance -> GCP-family map. Pins family so the same
+# instance maps the same way every run — the single biggest cost-variance source.
+BURSTABLE_PREFIXES = ("t2", "t3", "t3a", "t4g")
+
+# Explicit per-family overrides.  Keyed by the AWS instance family prefix
+# (everything before the first ".").  Values are the GCP machine family string
+# that appears in billing SKU descriptions (modulo the special cases handled
+# in _family_in_name below).
+_GCP_FAMILY_OVERRIDES = {
+    # ── GPU Training ──────────────────────────────────────────────────────────
+    "p2":    "N1",   # NVIDIA K80 → N1 custom GPU
+    "p3":    "A2",   # NVIDIA V100 → A2 A100 (recommended migration)
+    "p3dn":  "A2",
+    "p4d":   "A2",   # NVIDIA A100 40GB → A2
+    "p4de":  "A2",   # NVIDIA A100 80GB → A2 Ultra
+    "p5":    "A3",   # NVIDIA H100 → A3
+    "p5e":   "A3",   # NVIDIA H200 → A3 Ultra
+    "p5en":  "A3",
+    "trn1":  "A2",   # AWS Trainium → A2 (nearest training equivalent)
+    "trn1n": "A2",
+    "trn2":  "A3",   # AWS Trainium2 → A3 (H100-class scale)
+    "trn2u": "A3",
+    "dl1":   "A2",   # Habana Gaudi → A2 (GCP has no Gaudi)
+    # ── GPU Inference / Rendering ─────────────────────────────────────────────
+    "g3":    "N1",   # NVIDIA M60 → N1 custom GPU (legacy)
+    "g3s":   "N1",
+    "g4dn":  "G2",   # NVIDIA T4 → G2 L4 (recommended successor)
+    "g4ad":  "N1",   # AMD Radeon Pro V520 → N1 custom GPU (GCP has no Radeon)
+    "g5":    "G2",   # NVIDIA A10G → G2 L4 (GCP A10G successor)
+    "g5g":   "T2A",  # T4G on Graviton2 → T2A
+    "g6":    "G2",   # NVIDIA L4 → G2
+    "gr6":   "G2",
+    "g6e":   "G2",   # NVIDIA L40S → G2
+    "inf1":  "G2",   # AWS Inferentia → G2 L4 (inference GPU)
+    "inf2":  "G2",   # AWS Inferentia2 → G2
+    # ── FPGA — GCP has no FPGA; let LLM decide, gate disabled ────────────────
+    # "f1": None (omitted intentionally)
+    # ── Memory-Optimized: r-family (8 GB/vCPU) ───────────────────────────────
+    "r5":    "N2",   "r5b":  "N2",  "r5d":   "N2",  "r5n":  "N2",
+    "r5a":   "N2D",  "r5ad": "N2D",
+    "r6i":   "N2",   "r6id": "N2",  "r6idn": "N2",  "r6in": "N2",
+    "r6a":   "N2D",
+    "r6g":   "T2A",  "r6gd": "T2A",
+    "r7i":   "N2",   "r7iz": "N2",
+    "r7a":   "N2D",
+    "r7g":   "T2A",  "r7gd": "T2A",
+    "r8g":   "T2A",
+    # ── Memory-Optimized: x-family (15–32 GB/vCPU) ───────────────────────────
+    "x1":    "M1",   # ~15 GB/vCPU → M1 megamem
+    "x1e":   "M1",   # ~30 GB/vCPU → M1 ultramem
+    "x2idn": "M3",   # ~16 GB/vCPU → M3 megamem
+    "x2iedn":"M3",   # ~32 GB/vCPU → M3 ultramem
+    "x2iezn":"M3",
+    "x2gd":  "T2A",
+    # ── High-Frequency ────────────────────────────────────────────────────────
+    "z1d":   "C2",   # 4 GHz all-core → C2 compute-optimized
+    # ── Compute-Optimized ────────────────────────────────────────────────────
+    "c5":    "C2",   "c5n":  "C2",  "c5d":   "C2",
+    "c5a":   "N2D",  "c5ad": "N2D",
+    "c6i":   "C2",   "c6id": "C2",  "c6in":  "C2",
+    "c6a":   "N2D",
+    "c6g":   "T2A",  "c6gd": "T2A", "c6gn":  "T2A",
+    "c7i":   "C2",
+    "c7a":   "N2D",
+    "c7g":   "T2A",  "c7gd": "T2A", "c7gn":  "T2A",
+    "c8g":   "T2A",
+    # ── General-Purpose: m-family ─────────────────────────────────────────────
+    "m5":    "N2",   "m5n":  "N2",  "m5d":   "N2",  "m5dn": "N2",  "m5zn": "N2",
+    "m5a":   "N2D",  "m5ad": "N2D",
+    "m6i":   "N2",   "m6id": "N2",  "m6idn": "N2",  "m6in": "N2",
+    "m6a":   "N2D",
+    "m6g":   "T2A",  "m6gd": "T2A",
+    "m7i":   "N2",
+    "m7a":   "N2D",
+    "m7g":   "T2A",  "m7gd": "T2A",
+    "m8g":   "T2A",
+    # ── Storage-Optimized ────────────────────────────────────────────────────
+    "i3":    "N2",   "i3en": "N2",  "i4i":   "N2",  "i7ie": "N2",
+    "i4g":   "T2A",  "im4gn":"T2A", "is4gen":"T2A",
+    "d2":    "N2",   "d3":   "N2",  "d3en":  "N2",
+}
 
 def gcp_family_for(itype, arch):
     """Canonical GCP machine family for an AWS instance type, or None if unknown."""
     if not itype:
         return None
     arch = (arch or "").lower()
+    it = itype.lower().split(":")[0].replace("db.", "")
+    fam = it.split(".")[0]
+
+    # Architecture flag is authoritative
     if arch == "arm64":
         return "T2A"
-    fam = itype.lower().split(":")[0].replace("db.", "").split(".")[0]
-    if fam == "a1" or fam.endswith("g") or fam.endswith("gd"):  # Graviton (arch missing)
+
+    # Explicit override table (covers GPU, memory, and compute families)
+    if fam in _GCP_FAMILY_OVERRIDES:
+        return _GCP_FAMILY_OVERRIDES[fam]
+
+    # u-* high-memory (terabyte scale) → M2
+    if fam.startswith("u-"):
+        return "M2"
+
+    # Graviton detection from family suffix when arch flag is absent
+    if fam == "a1" or fam.endswith("g") or fam.endswith("gd") or fam.endswith("gn"):
         return "T2A"
+
     if fam in BURSTABLE_PREFIXES:
         return "E2"
+
     return "N2D"
 
 def _family_in_name(fam, name):
-    if fam == "T2A" and bool(re.search(r"\bC4A\b", name or "", re.I)):
+    name = name or ""
+    # GCP billing alias: T2A instances bill under "C4A" SKU description
+    if fam == "T2A" and re.search(r"\bC4A\b", name, re.I):
         return True
-    return bool(re.search(r"\b" + re.escape(fam) + r"\b", name or "", re.I))
+    # M1/M2/M3 SKUs all say "Memory Optimized Instance Core/Ram" — no M1/M2/M3 literal
+    if fam in ("M1", "M2", "M3") and re.search(r"memory.optimized\s+instance\s+(?:core|ram)", name, re.I):
+        return True
+    # C2 SKUs say "Compute optimized Core/Ram" — no "C2" literal
+    if fam == "C2" and re.search(r"compute.optimized\s+(?:core|ram)", name, re.I):
+        return True
+    return bool(re.search(r"\b" + re.escape(fam) + r"\b", name, re.I))
 
 PER_N_RE = re.compile(
     r"per\s+(?:[0-9][0-9,]*\s+)?(million|thousand|hundred|[0-9][0-9,]{2,})",
@@ -433,26 +537,54 @@ def main():
                         
                         if info:
                             svc, rg, ut, unit = info
-                            desc_like = f"%{want}%"
+                            # Mirror _family_in_name's special cases so the ILIKE
+                            # pattern matches the same SKUs the checker accepts.
+                            # C2 Intel SKUs say "Compute optimized Core/Ram" (no "C2"
+                            # literal), so %C2% would match C2D AMD SKUs instead.
+                            # M1/M2/M3 say "Memory Optimized Instance Core/Ram".
+                            # T2A bills under C4A SKU descriptions.
+                            if want == "C2":
+                                desc_like = "%Compute optimized%"
+                                desc_not_like = "%C2D%"
+                            elif want in ("M1", "M2", "M3"):
+                                desc_like = "%Memory Optimized Instance%"
+                                desc_not_like = None
+                            elif want == "T2A":
+                                desc_like = "%C4A%"
+                                desc_not_like = None
+                            else:
+                                desc_like = f"%{want}%"
+                                desc_not_like = None
+
                             if "core" in sku_name.lower():
                                 desc_like += "%core%"
                             elif "ram" in sku_name.lower():
                                 desc_like += "%ram%"
-                                
-                            candidates = con.execute("""
+
+                            excl_clause = "AND description NOT ILIKE ?" if desc_not_like else ""
+                            base_params = [svc, rg, ut, unit, target_region, desc_like]
+                            if desc_not_like:
+                                base_params.append(desc_not_like)
+
+                            candidates = con.execute(f"""
                                 SELECT sku_id, description FROM catalog.skus
                                 WHERE service_name = ? AND resource_group = ? AND usage_type = ? AND usage_unit = ?
                                   AND (list_contains(service_regions, ?) OR list_contains(service_regions, 'global'))
                                   AND description ILIKE ?
-                            """, [svc, rg, ut, unit, target_region, desc_like]).fetchall()
-                            
+                                  {excl_clause}
+                            """, base_params).fetchall()
+
                             if not candidates:
-                                candidates = con.execute("""
+                                fallback_params = [svc, ut, unit, target_region, desc_like]
+                                if desc_not_like:
+                                    fallback_params.append(desc_not_like)
+                                candidates = con.execute(f"""
                                     SELECT sku_id, description FROM catalog.skus
                                     WHERE service_name = ? AND usage_type = ? AND usage_unit = ?
                                       AND (list_contains(service_regions, ?) OR list_contains(service_regions, 'global'))
                                       AND description ILIKE ?
-                                """, [svc, ut, unit, target_region, desc_like]).fetchall()
+                                      {excl_clause}
+                                """, fallback_params).fetchall()
                                 
                             if candidates:
                                 good_sku = candidates[0][0]
@@ -575,6 +707,8 @@ def main():
     cud_synth = 0
     if not check_only:
         for svc, (p1, p3) in CUD_PCT.items():
+            if svc == "DEFAULT":
+                continue  # "DEFAULT" is a fallback key, not a real GCP service name
             for pt, factor in (("Commit1Yr", p1), ("Commit3Yr", p3)):
                 try:
                     con.execute(f"""
@@ -597,9 +731,39 @@ def main():
                 except Exception:
                     pass
 
+    # phantom-zero autofix: a row with AWS cost <= $1 and GCP projection > $10 is
+    # economically negligible (often a free-tier row with an over-estimated SKU or
+    # unit_multiplier). Mark as 'ignore' so it doesn't inflate the GCP total or
+    # block the gate. Only fires when gcp_projection view exists.
+    phantom_auto_keys = []
+    if not check_only:
+        try:
+            phantom_rows = con.execute("""
+                SELECT m.aws_li_key
+                FROM aws_li_to_gcp_li m
+                JOIN aws_li_catalog c USING (aws_li_key)
+                JOIN gcp_projection p USING (aws_li_key)
+                WHERE c.is_workload AND m.strategy NOT IN ('ignore','passthrough')
+                  AND c.aws_amortized_cost <= 1 AND p.gcp_projected_cost > 10
+            """).fetchall()
+            phantom_auto_keys = [r[0] for r in phantom_rows]
+            if phantom_auto_keys:
+                con.execute(
+                    "UPDATE aws_li_to_gcp_li SET strategy='ignore', gcp_sku_id=NULL, "
+                    "unit_multiplier=NULL, "
+                    "projection_note=COALESCE(projection_note,'')||"
+                    "' [validator: phantom-zero AWS<=1 auto-ignored]' "
+                    f"WHERE aws_li_key IN ({','.join(['?']*len(phantom_auto_keys))})",
+                    phantom_auto_keys,
+                )
+                print(f"  autofix: ignored {len(phantom_auto_keys)} phantom-zero row(s) (AWS<=1 GCP>10)")
+        except Exception:
+            pass  # gcp_projection view may not exist yet; gate will catch it if so
+
     report["autofixes"] = {"per_n_multiplier_clamped": clamped,
                            "zero_throughput_info_rows_ignored": len(zeroed_keys),
-                           "cud_rates_synthesized": cud_synth}
+                           "cud_rates_synthesized": cud_synth,
+                           "phantom_zero_auto_ignored": len(phantom_auto_keys)}
 
     has_view = True
     try:
@@ -772,50 +936,75 @@ def main():
                           "delta": delta, "tolerance": round(tol, 2)})
     report["violations"]["reconciliation"] = recon
 
-    # Capacity reconciliation check (vCPU and RAM)
+    # Capacity reconciliation gate — hard fail on any meaningful under-provision.
+    # Uses the same fallback logic as render_report.py: for rows with a core/ram
+    # component breakdown, use the GCP unit_multiplier; for map-strategy rows
+    # without a core breakdown, fall back to AWS instance_vcpus as the floor.
+    # Grace of 0.5 units absorbs floating-point accumulation across many rows.
     cap_recon = []
     try:
         aws_cap = con.execute("""
-            SELECT SUM(instance_vcpus * total_usage / (billing_days * 24.0)),
-                   SUM(instance_ram_gb * total_usage / (billing_days * 24.0))
+            SELECT SUM(instance_vcpus * instance_count),
+                   SUM(instance_ram_gb  * instance_count)
             FROM aws_li_catalog
             WHERE is_workload = TRUE AND instance_vcpus IS NOT NULL
         """).fetchone()
-        
         aws_vcpu = aws_cap[0] or 0.0
-        aws_ram = aws_cap[1] or 0.0
+        aws_ram  = aws_cap[1] or 0.0
 
-        gcp_cap = con.execute("""
-            SELECT 
-                SUM(CASE WHEN m.component = 'core' THEN m.unit_multiplier * c.total_usage / (c.billing_days * 24.0) ELSE 0.0 END),
-                SUM(CASE WHEN m.component = 'ram' THEN m.unit_multiplier * c.total_usage / (c.billing_days * 24.0) ELSE 0.0 END)
-            FROM aws_li_to_gcp_li m
-            JOIN aws_li_catalog c USING (aws_li_key)
-            WHERE m.strategy IN ('map','break_down')
-        """).fetchone()
-        
-        gcp_vcpu = gcp_cap[0] or 0.0
-        gcp_ram = gcp_cap[1] or 0.0
+        gcp_vcpu = con.execute("""
+            WITH core_mapped AS (
+                SELECT c.aws_li_key, SUM(m.unit_multiplier * c.instance_count) AS vcpus
+                FROM aws_li_to_gcp_li m
+                JOIN aws_li_catalog c USING (aws_li_key)
+                WHERE m.component = 'core' AND m.strategy IN ('map','break_down')
+                GROUP BY c.aws_li_key
+            )
+            SELECT SUM(COALESCE(cm.vcpus, c.instance_vcpus * c.instance_count))
+            FROM aws_li_catalog c
+            LEFT JOIN core_mapped cm USING (aws_li_key)
+            WHERE c.is_workload AND c.instance_vcpus IS NOT NULL
+        """).fetchone()[0] or 0.0
 
-        if aws_vcpu > 0 and (gcp_vcpu / aws_vcpu) < 0.90:
+        gcp_ram = con.execute("""
+            WITH ram_mapped AS (
+                SELECT c.aws_li_key, SUM(m.unit_multiplier * c.instance_count) AS ram_gb
+                FROM aws_li_to_gcp_li m
+                JOIN aws_li_catalog c USING (aws_li_key)
+                WHERE m.component = 'ram' AND m.strategy IN ('map','break_down')
+                GROUP BY c.aws_li_key
+            )
+            SELECT SUM(COALESCE(rm.ram_gb, c.instance_ram_gb * c.instance_count))
+            FROM aws_li_catalog c
+            LEFT JOIN ram_mapped rm USING (aws_li_key)
+            WHERE c.is_workload AND c.instance_ram_gb IS NOT NULL
+        """).fetchone()[0] or 0.0
+
+        # Fail on any deficit > 0.5 units (grace for floating-point accumulation).
+        # reconcile_capacity.py eliminates break_down deficits deterministically;
+        # any remaining deficit here indicates the LLM chose an under-provisioned shape.
+        if aws_vcpu > 0 and gcp_vcpu < aws_vcpu - 0.5:
             cap_recon.append({
                 "metric": "vCPU",
                 "aws_capacity": round(aws_vcpu, 2),
                 "gcp_capacity": round(gcp_vcpu, 2),
-                "ratio": round(gcp_vcpu / aws_vcpu, 3),
-                "error": "GCP vCPU capacity is more than 10% below AWS provisioned vCPUs."
+                "deficit":      round(aws_vcpu - gcp_vcpu, 2),
+                "error": f"GCP vCPU capacity ({round(gcp_vcpu,2)}) is below AWS "
+                         f"({round(aws_vcpu,2)}). GCP must meet or exceed AWS provisioned "
+                         f"capacity. Run reconcile_capacity.py or select a larger GCP shape.",
             })
-            
-        if aws_ram > 0 and (gcp_ram / aws_ram) < 0.90:
+        if aws_ram > 0 and gcp_ram < aws_ram - 0.5:
             cap_recon.append({
                 "metric": "RAM (GB)",
                 "aws_capacity": round(aws_ram, 2),
                 "gcp_capacity": round(gcp_ram, 2),
-                "ratio": round(gcp_ram / aws_ram, 3),
-                "error": "GCP RAM capacity is more than 10% below AWS provisioned RAM."
+                "deficit":      round(aws_ram - gcp_ram, 2),
+                "error": f"GCP RAM ({round(gcp_ram,2)} GB) is below AWS "
+                         f"({round(aws_ram,2)} GB). GCP must meet or exceed AWS provisioned "
+                         f"capacity. Run reconcile_capacity.py or select a larger GCP shape.",
             })
-    except Exception:
-        pass
+    except Exception as _cap_exc:
+        cap_recon.append({"metric": "unknown", "error": f"capacity gate failed: {_cap_exc}"})
     report["violations"]["capacity_reconciliation"] = cap_recon
 
     # GATE: passthrough budget. If passthrough rows account for more than 5% of

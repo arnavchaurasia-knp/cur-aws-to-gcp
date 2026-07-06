@@ -20,5 +20,7 @@
   "Compute Engine|Network Inter Zone Egress|us-east4": null,
   "Compute Engine|Network Inter Region Egress|us-east4": null,
   "Compute Engine|Network Inter Region Egress|asia-south1": null,
-  "Compute Engine|Network Inter Zone Egress|asia-south1": null
+  "Compute Engine|Network Inter Zone Egress|asia-south1": null,
+  "Compute Engine|SSD backed PD Capacity|asia-southeast1": "6EF9-716A-B2AF",
+  "Compute Engine|Storage PD Capacity|asia-southeast1": "0572-568A-4FC4"
 }

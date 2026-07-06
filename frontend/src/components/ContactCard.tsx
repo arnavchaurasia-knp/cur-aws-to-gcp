@@ -31,7 +31,7 @@ export function ContactCard() {
 
   if (sent) {
     return (
-      <div className="bg-white/[0.02] border border-white/10 rounded-lg p-4">
+      <div className="bg-white/[0.02] border border-[#00C2BB]/30 rounded-lg p-4 anim-scale-in">
         <p className="text-xs uppercase tracking-wider text-[#00C2BB] mb-1">Request submitted</p>
         <p className="text-xs text-gray-400 leading-relaxed">
           Thanks for reaching out. Our team will review your request and get back to you shortly!
@@ -42,7 +42,7 @@ export function ContactCard() {
 
   return (
     <>
-      <div className="bg-white/[0.02] border border-white/10 rounded-lg p-4 space-y-3">
+      <div className="bg-white/[0.02] border border-white/10 rounded-lg p-4 space-y-3 card-lift">
         <div>
           <p className="text-xs uppercase tracking-wider text-[#645DF6] mb-1">Need help?</p>
           <p className="text-xs text-gray-400 leading-relaxed">
@@ -51,18 +51,17 @@ export function ContactCard() {
         </div>
         <button
           onClick={() => setOpen(true)}
-          className="w-full py-2 rounded-lg text-xs font-medium text-white
-            bg-gradient-to-r from-[#645DF6] to-[#00C2BB] transition">
+          className="btn-shimmer w-full py-2 rounded-lg text-xs font-medium text-white">
           Contact Us
         </button>
       </div>
 
       {open && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 anim-fade-in"
           onClick={() => !submitting && setOpen(false)}>
           <div
-            className="w-full max-w-xl bg-[#0a0a0f] border border-white/10 rounded-2xl shadow-2xl p-6 space-y-4"
+            className="w-full max-w-xl bg-[#0d0d14] border border-white/10 rounded-2xl shadow-2xl p-6 space-y-4 anim-scale-in"
             onClick={e => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -74,7 +73,7 @@ export function ContactCard() {
               </div>
               <button
                 onClick={() => !submitting && setOpen(false)}
-                className="text-gray-500 hover:text-gray-300 text-xl leading-none"
+                className="text-gray-500 hover:text-gray-200 text-xl leading-none transition-colors duration-150"
                 aria-label="Close">
                 ×
               </button>
@@ -85,8 +84,10 @@ export function ContactCard() {
               value={message}
               onChange={e => setMessage(e.target.value)}
               placeholder="What's the context? What kind of help would be most useful?"
+              maxLength={2000}
               rows={8}
-              className="w-full bg-white/5 border border-white/20 rounded-lg px-3 py-3 text-sm outline-none focus:border-[#645DF6] resize-y"
+              className="w-full bg-white/5 border border-white/20 rounded-lg px-3 py-3 text-sm outline-none
+                focus:border-[#645DF6] transition-colors duration-150 resize-y"
             />
 
             {error && <p className="text-xs text-orange-400">{error}</p>}
@@ -95,16 +96,15 @@ export function ContactCard() {
               <button
                 onClick={() => !submitting && setOpen(false)}
                 disabled={submitting}
-                className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 transition
+                className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors duration-150
                   disabled:opacity-40 disabled:cursor-not-allowed">
                 Cancel
               </button>
               <button
                 onClick={submit}
                 disabled={submitting}
-                className="px-5 py-2 rounded-lg text-sm font-medium text-white
-                  bg-gradient-to-r from-[#645DF6] to-[#00C2BB]
-                  disabled:opacity-40 disabled:cursor-not-allowed transition">
+                className="btn-shimmer px-5 py-2 rounded-lg text-sm font-medium text-white
+                  disabled:opacity-40 disabled:cursor-not-allowed">
                 {submitting ? 'Sending…' : 'Submit Request'}
               </button>
             </div>

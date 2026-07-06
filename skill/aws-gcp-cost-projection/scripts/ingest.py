@@ -99,6 +99,22 @@ _PDF_ITEM_RE = re.compile(
 # A subtotal/header row: "<name> USD <amount>" with no usage qty/unit.
 _PDF_HDR_RE = re.compile(r'^(.+?)\s+USD\s+[\d,]+(?:\.\d+)?\s*$')
 
+# AWS PDFs group EBS storage/IOPS lines under the EC2 billing section, so the
+# cur_service header ends up wrong (e.g. "T3ACPUCredits"). Override it when the
+# description clearly describes block-storage pricing.
+_PDF_STORAGE_DESC_RE = re.compile(
+    r'(gp[23]|io[12]|sc1|st1|magnetic)\s*(provisioned|storage|-storage)|'
+    r'GB-month\s*(of\s*)?.*storage|snapshot\s*data\s*stored|'
+    r'IOPS-month|MiBps-month|throughput.*month',
+    re.IGNORECASE)
+
+def _pdf_canonical_service(cur_service, desc):
+    """Return the correct AWS service name for a PDF line item.
+    EBS storage/IOPS descriptions bleed into the EC2 section header — remap them."""
+    if _PDF_STORAGE_DESC_RE.search(desc):
+        return "Amazon Elastic Block Store"
+    return cur_service
+
 
 def _load_pdf(conn, path):
     """AWS estimated-bill PDF → aws_raw in the simplified-bill schema
@@ -133,7 +149,8 @@ def _load_pdf(conn, path):
                         # amount) — they double-count usage already charged.
                         if "covered by" in desc.lower() or desc.rstrip().endswith("("):
                             continue
-                        items.append((cur_service, cur_region, "",
+                        svc = _pdf_canonical_service(cur_service, desc.strip())
+                        items.append((svc, cur_region, "",
                                       f"{desc.strip()} ({qty} {unit})",
                                       qty.replace(",", ""), amt.replace(",", "")))
                         continue
@@ -235,14 +252,15 @@ def main():
     
     # Normalize col names to make queries easier
     col_map = {}
-    for c in cols:
-        col_map[c.lower().replace("/", "_").replace(" ", "_")] = c
+    for c_name in cols:
+        col_map[c_name.lower().replace("/", "_").replace(" ", "_")] = c_name
         
     # Helper to find exact col name
     def c(names):
         for n in names:
-            if n.lower() in col_map:
-                return f'"{col_map[n.lower()]}"'
+            clean_n = n.lower().replace("/", "_").replace(" ", "_")
+            if clean_n in col_map:
+                return f'"{col_map[clean_n]}"'
         return "NULL"
         
     # 3. Create schema tables
@@ -275,7 +293,8 @@ def main():
             deployment_option VARCHAR,
             volume_type VARCHAR,
             pricing_unit VARCHAR,
-            workload_class VARCHAR
+            workload_class VARCHAR,
+            billing_format VARCHAR
         )
     """)
 
@@ -289,74 +308,101 @@ def main():
     # Build SQL to group and classify
     if is_raw_cur:
         sql = f"""
+            WITH _raw_flat AS (
+                SELECT
+                    COALESCE({c(['lineitem/productcode', 'productcode'])}, '') as product,
+                    COALESCE({c(['lineitem/usagetype', 'usagetype'])}, '') as usage_type,
+                    COALESCE({c(['lineitem/operation', 'operation'])}, '') as operation,
+                    COALESCE({c(['product/region', 'region'])}, '') as aws_region,
+                    COALESCE({c(['pricing/term', 'term'])}, 'OnDemand') as pricing_model,
+                    COALESCE({c(['lineitem/lineitemtype', 'lineitemtype'])}, '') as line_item_type,
+                    CASE 
+                        WHEN {c(['lineitem/lineitemtype', 'lineitemtype'])} IN ('Tax','RIFee','SavingsPlanUpfrontFee','SavingsPlanRecurringFee','SavingsPlanNegation','SavingsPlanCoveredUsage','Refund','Credit','EdpDiscount','PrivateRateDiscount','BundledDiscount') THEN FALSE
+                        WHEN {c(['lineitem/lineitemtype', 'lineitemtype'])} IN ('Usage','DiscountedUsage') THEN TRUE
+                        ELSE FALSE
+                    END as is_workload,
+                    CAST(COALESCE({c(['lineitem/usageamount', 'usageamount'])}, '0') AS DOUBLE) as row_usage,
+                    CAST(COALESCE({cost_col}, '0') AS DOUBLE) as row_cost,
+                    COALESCE({c(['product/licensemodel', 'licensemodel'])}, '') as license_model,
+                    COALESCE({c(['product/operatingsystem', 'operatingsystem'])}, '') as operating_system,
+                    COALESCE({c(['product/databaseengine', 'databaseengine'])}, '') as database_engine,
+                    COALESCE({c(['product/deploymentoption', 'deploymentoption'])}, '') as deployment_option,
+                    COALESCE({c(['product/volumetype', 'volumetype'])}, '') as volume_type,
+                    COALESCE({c(['pricing/unit', 'unit'])}, '') as pricing_unit
+                FROM aws_raw
+                WHERE {c(['lineitem/lineitemtype', 'lineitemtype'])} != 'Tax'
+            )
             INSERT INTO aws_li_catalog (
                 aws_li_key, product, usage_type, operation, aws_region, gcp_region, 
                 pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost,
                 license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit
             )
             SELECT 
-                md5(COALESCE({c(['lineitem/productcode', 'productcode'])}, '') || COALESCE({c(['lineitem/usagetype', 'usagetype'])}, '') || COALESCE({c(['lineitem/operation', 'operation'])}, '') || COALESCE({c(['product/region', 'region'])}, '') || COALESCE({c(['pricing/term', 'term'])}, '') || COALESCE({c(['lineitem/lineitemtype', 'lineitemtype'])}, '') || CAST(
-                    CASE 
-                        WHEN {c(['lineitem/lineitemtype', 'lineitemtype'])} IN ('Tax','RIFee','SavingsPlanUpfrontFee','SavingsPlanRecurringFee','SavingsPlanNegation','SavingsPlanCoveredUsage','Refund','Credit','EdpDiscount','PrivateRateDiscount','BundledDiscount') THEN FALSE
-                        WHEN {c(['lineitem/lineitemtype', 'lineitemtype'])} IN ('Usage','DiscountedUsage') THEN TRUE
-                        ELSE FALSE
-                    END AS BOOLEAN)
-                ) as key,
-                COALESCE({c(['lineitem/productcode', 'productcode'])}, '') as product,
-                COALESCE({c(['lineitem/usagetype', 'usagetype'])}, '') as usage_type,
-                COALESCE({c(['lineitem/operation', 'operation'])}, '') as operation,
-                COALESCE({c(['product/region', 'region'])}, '') as aws_region,
-                NULL as gcp_region, -- Will map later
-                COALESCE({c(['pricing/term', 'term'])}, 'OnDemand') as pricing_model,
-                COALESCE({c(['lineitem/lineitemtype', 'lineitemtype'])}, '') as line_item_type,
-                CASE 
-                    WHEN {c(['lineitem/lineitemtype', 'lineitemtype'])} IN ('Tax','RIFee','SavingsPlanUpfrontFee','SavingsPlanRecurringFee','SavingsPlanNegation','SavingsPlanCoveredUsage','Refund','Credit','EdpDiscount','PrivateRateDiscount','BundledDiscount') THEN FALSE
-                    WHEN {c(['lineitem/lineitemtype', 'lineitemtype'])} IN ('Usage','DiscountedUsage') THEN TRUE
-                    ELSE FALSE
-                END as is_workload,
-                SUM(CAST(COALESCE({c(['lineitem/usageamount', 'usageamount'])}, '0') AS DOUBLE)) as total_usage,
-                SUM(CAST(COALESCE({cost_col}, '0') AS DOUBLE)) as aws_amortized_cost,
-                COALESCE({c(['product/licensemodel', 'licensemodel'])}, '') as license_model,
-                COALESCE({c(['product/operatingsystem', 'operatingsystem'])}, '') as operating_system,
-                COALESCE({c(['product/databaseengine', 'databaseengine'])}, '') as database_engine,
-                COALESCE({c(['product/deploymentoption', 'deploymentoption'])}, '') as deployment_option,
-                COALESCE({c(['product/volumetype', 'volumetype'])}, '') as volume_type,
-                COALESCE({c(['pricing/unit', 'unit'])}, '') as pricing_unit
-            FROM aws_raw
-            WHERE {c(['lineitem/lineitemtype', 'lineitemtype'])} != 'Tax'
+                md5(product || usage_type || operation || aws_region || pricing_model || line_item_type || CAST(is_workload AS VARCHAR) || license_model || operating_system || database_engine || deployment_option || volume_type || pricing_unit) as key,
+                product, usage_type, operation, aws_region, NULL as gcp_region, pricing_model, line_item_type, is_workload,
+                SUM(row_usage) as total_usage,
+                SUM(row_cost) as aws_amortized_cost,
+                license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit
+            FROM _raw_flat
             GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload,
                      license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit
         """
     else:
+        # CTE pre-computes all CASE expressions from raw columns so the outer
+        # GROUP BY only sees already-derived aliases — avoids DuckDB strict-mode
+        # "column must appear in GROUP BY" errors on unaggregated column refs.
         sql = f"""
+            WITH _flat AS (
+                SELECT
+                    COALESCE({c(['service'])}, '')          AS product,
+                    COALESCE({c(['custom_usage_type'])}, '') AS usage_type,
+                    COALESCE({c(['description'])}, '')       AS operation,
+                    COALESCE({c(['region'])}, '')             AS aws_region,
+                    CASE
+                        WHEN {c(['service'])} ILIKE '%Spot%' OR {c(['description'])} ILIKE '%Spot Instance%' THEN 'Spot'
+                        WHEN {c(['description'])} ILIKE '%reserved instance applied%' THEN 'Committed'
+                        ELSE 'OnDemand'
+                    END AS pricing_model,
+                    CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%'
+                         THEN 'DiscountedUsage' ELSE 'Usage' END AS line_item_type,
+                    CASE
+                        WHEN {c(['description'])} ILIKE '%covered by Compute Savings Plans%'
+                          OR {c(['description'])} ILIKE '%covered by EC2 Instance Savings Plans%'
+                          OR {c(['description'])} ILIKE '%covered by Reserved Instances%'
+                          OR {c(['description'])} ILIKE '%committed%upfront%'
+                          OR {c(['description'])} ILIKE '%No upfront fee%'
+                          OR {c(['description'])} ILIKE '%Recurring monthly fee%'
+                          OR {c(['description'])} ILIKE '%EDP Discount%'
+                          OR {c(['description'])} ILIKE '%Private Pricing Discount%'
+                          OR {c(['description'])} ILIKE '%Refund%'
+                          OR {c(['description'])} ILIKE '%Credit%' THEN FALSE
+                        ELSE TRUE
+                    END AS is_workload,
+                    CAST(REPLACE(COALESCE({c(['usage_quantity'])}, '0'), ',', '') AS DOUBLE) AS row_usage,
+                    CAST(REPLACE(COALESCE({cost_col}, '0'), ',', '')              AS DOUBLE) AS row_cost,
+                    CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%'
+                         THEN 'AWS rate is RI-amortized; compare GCP CUD, not OD' ELSE NULL END AS projection_note
+                FROM aws_raw
+                WHERE {c(['service'])} != 'Tax'
+                  AND {c(['service'])} NOT ILIKE '%Tax%'
+                  AND {c(['description'])} NOT ILIKE '%Tax%'
+                  AND COALESCE({c(['service'])}, '') != ''
+                  AND NOT regexp_matches(COALESCE({c(['description'])}, ''), '^Amazon [A-Za-z0-9 ]+\\([0-9]+ [A-Za-z]+\\)$')
+            )
             INSERT INTO aws_li_catalog (aws_li_key, product, usage_type, operation, aws_region, gcp_region, pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost, projection_note)
-            SELECT 
-                md5(COALESCE({c(['service'])}, '') || COALESCE({c(['custom_usage_type'])}, '') || COALESCE({c(['description'])}, '') || COALESCE({c(['region'])}, '') || 
-                    CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%' THEN 'Committed' ELSE 'OnDemand' END || 
-                    CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%' THEN 'DiscountedUsage' ELSE 'Usage' END || 
-                    CAST(
-                        CASE 
-                            WHEN {c(['description'])} ILIKE '%covered by Compute Savings Plans%' OR {c(['description'])} ILIKE '%covered by EC2 Instance Savings Plans%' OR {c(['description'])} ILIKE '%covered by Reserved Instances%' OR {c(['description'])} ILIKE '%committed%upfront%' OR {c(['description'])} ILIKE '%No upfront fee%' OR {c(['description'])} ILIKE '%Recurring monthly fee%' OR {c(['description'])} ILIKE '%EDP Discount%' OR {c(['description'])} ILIKE '%Private Pricing Discount%' OR {c(['description'])} ILIKE '%Refund%' OR {c(['description'])} ILIKE '%Credit%' THEN FALSE
-                            ELSE TRUE
-                        END AS BOOLEAN
-                    )
-                ) as key,
-                COALESCE({c(['service'])}, '') as product,
-                COALESCE({c(['custom_usage_type'])}, '') as usage_type,
-                COALESCE({c(['description'])}, '') as operation,
-                COALESCE({c(['region'])}, '') as aws_region,
-                NULL as gcp_region, -- Will map later
-                CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%' THEN 'Committed' ELSE 'OnDemand' END as pricing_model,
-                CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%' THEN 'DiscountedUsage' ELSE 'Usage' END as line_item_type,
-                CASE 
-                    WHEN {c(['description'])} ILIKE '%covered by Compute Savings Plans%' OR {c(['description'])} ILIKE '%covered by EC2 Instance Savings Plans%' OR {c(['description'])} ILIKE '%covered by Reserved Instances%' OR {c(['description'])} ILIKE '%committed%upfront%' OR {c(['description'])} ILIKE '%No upfront fee%' OR {c(['description'])} ILIKE '%Recurring monthly fee%' OR {c(['description'])} ILIKE '%EDP Discount%' OR {c(['description'])} ILIKE '%Private Pricing Discount%' OR {c(['description'])} ILIKE '%Refund%' OR {c(['description'])} ILIKE '%Credit%' THEN FALSE
-                    ELSE TRUE
-                END as is_workload,
-                SUM(CAST(REPLACE(COALESCE({c(['usage_quantity'])}, '0'), ',', '') AS DOUBLE)) as total_usage,
-                SUM(CAST(REPLACE(COALESCE({cost_col}, '0'), ',', '') AS DOUBLE)) as aws_amortized_cost,
-                CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%' THEN 'AWS rate is RI-amortized; compare GCP CUD, not OD' ELSE NULL END as projection_note
-            FROM aws_raw
-            WHERE {c(['service'])} != 'Tax' AND {c(['service'])} NOT ILIKE '%Tax%' AND {c(['description'])} NOT ILIKE '%Tax%' AND COALESCE({c(['service'])}, '') != ''
+            SELECT
+                md5(product || usage_type || operation || aws_region ||
+                    CASE WHEN operation ILIKE '%reserved instance applied%' THEN 'Committed' ELSE 'OnDemand' END ||
+                    line_item_type ||
+                    CAST(is_workload AS VARCHAR)
+                ) AS aws_li_key,
+                product, usage_type, operation, aws_region,
+                NULL AS gcp_region,
+                pricing_model, line_item_type, is_workload,
+                SUM(row_usage)  AS total_usage,
+                SUM(row_cost)   AS aws_amortized_cost,
+                projection_note
+            FROM _flat
             GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload, projection_note
         """
         
@@ -531,9 +577,11 @@ def main():
         it = itype.lower()
         ram = spec.get("ram_gb", 0)
         w_class = "General-Purpose"
-        
+
         if ram > 1536 or it.startswith(("u-", "hpc-")):
             w_class = "Outlier"
+        elif it.startswith(("inf", "trn", "dl1", "dl2", "f1", "f2", "vt1")):
+            w_class = "GPU"
         elif it.startswith(("g", "p")) and not it.startswith(("gd", "pd", "gp", "gl")):
             if len(it) > 1 and it[1].isdigit():
                 w_class = "GPU"
@@ -555,6 +603,12 @@ def main():
                 billing_days = ?, instance_count = ?, aws_effective_unit_rate = ?, workload_class = ?
             WHERE aws_li_key = ?
         """, (itype, spec.get("vcpus"), spec.get("ram_gb"), spec.get("arch"), b_days, instance_count, rate, w_class, key))
+
+    # Stamp billing_format on every row so downstream scripts know what
+    # information was available without re-detecting it from column presence.
+    fmt = "raw_cur" if is_raw_cur else "flat_csv"
+    conn.execute("UPDATE aws_li_catalog SET billing_format = ?", (fmt,))
+    print(f"Ingest complete. billing_format={fmt!r}")
 
 if __name__ == "__main__":
     main()

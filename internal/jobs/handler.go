@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/facets/cur-web/internal/metrics"
 
 	"github.com/facets/cur-web/internal/auth"
 	"github.com/facets/cur-web/internal/db"
@@ -47,8 +51,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
 	r.ParseMultipartForm(200 << 20) // 200 MB
 	prospect := r.FormValue("prospect_name")
-	if prospect == "" {
-		http.Error(w, `{"error":"prospect_name required"}`, http.StatusBadRequest)
+	if len(prospect) == 0 || len(prospect) > 500 {
+		http.Error(w, `{"error":"prospect_name must be 1-500 characters"}`, http.StatusBadRequest)
 		return
 	}
 	file, header, err := r.FormFile("file")
@@ -58,27 +62,54 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
+	// Preserve the original extension so ingest.py can dispatch by file type.
+	// No extension whitelist — ingest.py handles format detection and writes
+	// failure.txt with a user-friendly message if it can't parse the file.
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if ext == "" {
+		ext = ".bin"
+	}
 	jobID := uuid.New().String()
-	ext := filepath.Ext(header.Filename)
 	jobDir := filepath.Join(h.jobsDir, jobID)
-	os.MkdirAll(jobDir, 0755)
+	if err := os.MkdirAll(jobDir, 0755); err != nil {
+		slog.Error("MkdirAll failed", "job_id", jobID, "err", err)
+		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+		return
+	}
 
 	dst, err := os.Create(filepath.Join(jobDir, "input"+ext))
 	if err != nil {
 		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
 		return
 	}
-	io.Copy(dst, file)
+	if _, err := io.Copy(dst, file); err != nil {
+		dst.Close()
+		http.Error(w, `{"error":"file write failed"}`, http.StatusInternalServerError)
+		return
+	}
 	dst.Close()
 
 	// Persist the user-entered prospect name as the deterministic customer name
 	// for the report. Phase 6 reads this instead of guessing from the bill
 	// (which produced wrong labels like an AWS account ID or a discount line).
-	_ = os.WriteFile(filepath.Join(jobDir, "customer_name.txt"), []byte(prospect), 0644)
+	if err := os.WriteFile(filepath.Join(jobDir, "customer_name.txt"), []byte(prospect), 0644); err != nil {
+		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+		return
+	}
 
-	h.db.CreateJob(jobID, sess.Email, prospect, ext, jobID)
+	if err := h.db.CreateJob(jobID, sess.Email, prospect, ext, jobID); err != nil {
+		slog.Error("CreateJob failed", "job_id", jobID, "err", err)
+		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+		return
+	}
+	metrics.JobsSubmitted.Add(1)
+	slog.Info("job submitted", "job_id", jobID, "prospect", prospect, "user", sess.Email, "ext", ext)
 
-	go notify.PostJobSubmitted(h.notify.SlackURL, prospect, sess.Email, jobID)
+	go func() {
+		if err := notify.PostJobSubmitted(h.notify.SlackURL, prospect, sess.Email, jobID); err != nil {
+			slog.Warn("PostJobSubmitted failed", "job_id", jobID, "err", err)
+		}
+	}()
 	go h.runJob(jobID, jobDir, ext, sess)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -91,8 +122,16 @@ func (h *Handler) runJob(jobID, jobDir, ext string, sess *auth.Session) {
 	pid, err := h.spawner.Start(jobDir, ext, jobID)
 	if err != nil {
 		h.db.UpdateJobFailed(jobID, "spawn failed: "+err.Error())
-		go notify.SendJobFailed(h.notify.Email, sess.Email, sess.Name, "")
-		go notify.PostJobFailed(h.notify.SlackURL, "", sess.Email, jobID)
+		go func() {
+			if err := notify.SendJobFailed(h.notify.Email, sess.Email, sess.Name, ""); err != nil {
+				slog.Warn("SendJobFailed failed", "job_id", jobID, "err", err)
+			}
+		}()
+		go func() {
+			if err := notify.PostJobFailed(h.notify.SlackURL, "", sess.Email, jobID); err != nil {
+				slog.Warn("PostJobFailed failed", "job_id", jobID, "err", err)
+			}
+		}()
 		return
 	}
 	h.db.UpdateJobPID(jobID, pid)
@@ -117,8 +156,12 @@ func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 	job, err := h.db.GetJob(id)
-	if err != nil || !h.canAccess(sess, job) {
+	if err != nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.canAccess(sess, job) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -129,8 +172,12 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 	job, err := h.db.GetJob(id)
-	if err != nil || !h.canAccess(sess, job) {
+	if err != nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.canAccess(sess, job) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
 	if job.Status != "failed" {
@@ -143,7 +190,10 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 	// structural error. The orchestrator reads phase_checkpoint.json at startup
 	// and resumes from the next unfinished phase — no manual START_PHASE injection
 	// needed and no racy os.Setenv.
-	os.Remove(filepath.Join(jobDir, "failure.txt"))
+	if err := os.Remove(filepath.Join(jobDir, "failure.txt")); err != nil && !os.IsNotExist(err) {
+		http.Error(w, `{"error":"could not clear failure state; retry aborted"}`, http.StatusInternalServerError)
+		return
+	}
 
 	newSession := uuid.New().String()
 	if err := h.db.ResetJobForRetry(id, newSession); err != nil {
@@ -154,10 +204,14 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 	pid, err := h.spawner.Start(jobDir, job.InputExt, newSession)
 	if err != nil {
 		h.db.UpdateJobFailed(id, "retry spawn failed: "+err.Error())
-		http.Error(w, `{"error":"spawn failed: `+err.Error()+`"}`, http.StatusInternalServerError)
+		// Issue 2: err.Error() can contain quotes/newlines — don't embed in JSON string
+		http.Error(w, `{"error":"spawn failed"}`, http.StatusInternalServerError)
 		return
 	}
-	h.db.UpdateJobPID(id, pid)
+	if err := h.db.UpdateJobPID(id, pid); err != nil {
+		slog.Error("UpdateJobPID failed after Retry", "job_id", id, "pid", pid, "err", err)
+	}
+	h.db.UpdateJobRunning(id)
 	go h.watcher.Watch(id, pid)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -169,8 +223,12 @@ func (h *Handler) Refine(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 	job, err := h.db.GetJob(id)
-	if err != nil || !h.canAccess(sess, job) {
+	if err != nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.canAccess(sess, job) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
 	if job.Status != "done" {
@@ -188,19 +246,28 @@ func (h *Handler) Refine(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
 	}
-	if len(body.Instruction) < 3 {
-		http.Error(w, `{"error":"instruction must be at least 3 characters"}`, http.StatusBadRequest)
+	if len(body.Instruction) < 3 || len(body.Instruction) > 10000 {
+		http.Error(w, `{"error":"instruction must be 3-10000 characters"}`, http.StatusBadRequest)
 		return
 	}
 
 	jobDir := filepath.Join(h.jobsDir, id)
-	pid, err := h.spawner.StartRefine(jobDir, job.SessionID, body.Instruction)
-	if err != nil {
-		http.Error(w, `{"error":"spawn failed: `+err.Error()+`"}`, http.StatusInternalServerError)
+	// Issue 8: set running BEFORE spawning so any concurrent poll sees 'running'
+	if err := h.db.UpdateJobRunning(id); err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
-	h.db.UpdateJobPID(id, pid)
-	h.db.UpdateJobRunning(id)
+	pid, err := h.spawner.StartRefine(jobDir, job.SessionID, body.Instruction)
+	if err != nil {
+		h.db.UpdateJobFailed(id, "refine spawn failed: "+err.Error())
+		// Issue 2: err.Error() can contain quotes/newlines — don't embed in JSON string
+		http.Error(w, `{"error":"spawn failed"}`, http.StatusInternalServerError)
+		return
+	}
+	// Issue 4: check and log UpdateJobPID errors; non-fatal since watcher still fires
+	if err := h.db.UpdateJobPID(id, pid); err != nil {
+		slog.Error("UpdateJobPID failed after StartRefine", "job_id", id, "pid", pid, "err", err)
+	}
 	go h.watcher.WatchOnce(id, pid)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -212,8 +279,12 @@ func (h *Handler) Progress(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 	job, err := h.db.GetJob(id)
-	if err != nil || !h.canAccess(sess, job) {
+	if err != nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.canAccess(sess, job) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
 	jobDir := filepath.Join(h.jobsDir, id)
@@ -226,8 +297,12 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 	job, err := h.db.GetJob(id)
-	if err != nil || !h.canAccess(sess, job) {
+	if err != nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.canAccess(sess, job) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
 	if job.Status != "done" {
@@ -244,9 +319,16 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filename := fmt.Sprintf("%s-gcp-estimate.html", job.Prospect)
+	safeProspect := strings.Map(func(r rune) rune {
+		switch r {
+		case '"', '/', '\\', '\r', '\n', '\t':
+			return '_'
+		}
+		return r
+	}, job.Prospect)
+	filename := fmt.Sprintf("%s-gcp-estimate.html", safeProspect)
 	if runIDForFilename != "" {
-		filename = fmt.Sprintf("%s-gcp-estimate-%s.html", job.Prospect, runIDForFilename)
+		filename = fmt.Sprintf("%s-gcp-estimate-%s.html", safeProspect, runIDForFilename)
 	}
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	w.Header().Set("Content-Type", "text/html")
@@ -280,6 +362,9 @@ func resolveReportPath(jobDir, runIDParam string) (string, string) {
 
 	if pick != nil && pick.ReportHTML != nil && *pick.ReportHTML != "" {
 		p := filepath.Join(jobDir, *pick.ReportHTML)
+		if clean := filepath.Clean(p); !strings.HasPrefix(clean, jobDir+string(filepath.Separator)) {
+			return "", ""
+		}
 		if _, err := os.Stat(p); err == nil {
 			return p, pick.RunID
 		}
@@ -308,14 +393,20 @@ func (h *Handler) Runs(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 	job, err := h.db.GetJob(id)
-	if err != nil || !h.canAccess(sess, job) {
+	if err != nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.canAccess(sess, job) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
 	dbPath := filepath.Join(h.jobsDir, id, "projection-audit", "projection.duckdb")
 	runs, err := QueryRunResults(dbPath)
 	if err != nil {
-		http.Error(w, `{"error":"runs query failed: `+err.Error()+`"}`, http.StatusInternalServerError)
+		// Issue 6: err.Error() includes full filesystem path — log server-side only
+		slog.Error("runs query failed", "job_id", id, "err", err)
+		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
 		return
 	}
 	if runs == nil {
@@ -332,15 +423,21 @@ func (h *Handler) Summary(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 	job, err := h.db.GetJob(id)
-	if err != nil || !h.canAccess(sess, job) {
+	if err != nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.canAccess(sess, job) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
 	jobDir := filepath.Join(h.jobsDir, id)
 	dbPath := filepath.Join(jobDir, "projection-audit", "projection.duckdb")
 	runs, err := QueryRunResults(dbPath)
 	if err != nil {
-		http.Error(w, `{"error":"runs query failed: `+err.Error()+`"}`, http.StatusInternalServerError)
+		// Issue 6: err.Error() includes full filesystem path — log server-side only
+		slog.Error("summary runs query failed", "job_id", id, "err", err)
+		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
 		return
 	}
 	runIDParam := r.URL.Query().Get("run_id")
@@ -360,6 +457,10 @@ func (h *Handler) Summary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := filepath.Join(jobDir, *pick.SummaryMD)
+	if clean := filepath.Clean(p); !strings.HasPrefix(clean, jobDir+string(filepath.Separator)) {
+		http.Error(w, `{"error":"invalid path"}`, http.StatusForbidden)
+		return
+	}
 	if _, err := os.Stat(p); err != nil {
 		http.Error(w, `{"error":"summary file missing"}`, http.StatusNotFound)
 		return

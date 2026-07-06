@@ -486,6 +486,22 @@ def main():
             ON CONFLICT DO NOTHING
         """)
 
+    # Preemptible rate synthesis for Compute Engine CPU/RAM SKUs.
+    # GCP Preemptible (and Spot VM) price ≈ 22% of On-Demand in most regions.
+    # Synthesised here so the gcp_projection VIEW can select the correct rate for
+    # rows where pricing_model = 'Spot'.
+    conn.execute("""
+        INSERT INTO gcp_sku_rates
+        SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
+               resource_group, 'Preemptible', region, unit,
+               rate_usd * 0.22, 'preemptible-factor',
+               'https://cloud.google.com/compute/docs/instances/preemptible'
+        FROM gcp_sku_rates
+        WHERE gcp_service = 'Compute Engine' AND pricing_type = 'OnDemand'
+          AND resource_group IN ('CPU', 'RAM', 'GPU')
+        ON CONFLICT DO NOTHING
+    """)
+
     # Global fallback: for every SKU that has regional rates but no 'global' row,
     # synthesize a 'global' row by averaging the regional rates. This makes the
     # gcp_projection VIEW resilient to NULL gcp_region in aws_li_catalog — the

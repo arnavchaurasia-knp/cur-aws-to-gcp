@@ -85,7 +85,7 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "Elastic Block")
             or _re(r["usage_type"], r"EBS:Volume|EBS:Snapshot|gp2|gp3|io1|io2|sc1|st1")
-            or (_re(r["usage_type"], r"Storage") and not _ilike(r["product"], "S3") and not _ilike(r["product"], "Simple Storage"))
+            or (_re(r["usage_type"], r"Storage") and not _ilike(r["product"], "S3") and not _ilike(r["product"], "Simple Storage") and not _ilike(r["product"], "DynamoDB"))
             or _re(r["operation"], r"GP3-Storage|Provisioned GP3 storage")
         ),
     ),
@@ -106,10 +106,21 @@ RULES = [
         ),
     ),
     (
+        # Architecturally complex services (Cognito, DynamoDB, SES, GuardDuty,
+        # Security Hub) are excluded here — they fall through to misc so the LLM
+        # gets a personalized prompt per service rather than a static SKU lookup.
         "per_request",
         lambda r: (
-            r["unit"] in ("Requests", "Lambda-GB-Second", "Count")
-            or _re(r["usage_type"], r"Requests|Invocations")
+            (
+                r["unit"] in ("Requests", "Lambda-GB-Second", "Count")
+                or _re(r["usage_type"], r"Requests|Invocations")
+            )
+            and not any(
+                _ilike(r["product"], p) for p in (
+                    "Cognito", "DynamoDB", "Simple Email",
+                    "GuardDuty", "Security Hub",
+                )
+            )
         ),
     ),
     (
@@ -177,8 +188,26 @@ _MISC_SERVICE_HINTS: list[tuple[str, str, list[str], list[str]]] = [
                                                  ["node_count", "cluster_mode"]),
     ("EMR",             "Amazon EMR",           ["usage_type", "operation", "unit", "region"],
                                                  ["node_count", "instance_type"]),
+    # --- Architecturally complex / no-equivalent services ---
+    # These fall through the per_request classify rule intentionally.
+    ("Cognito",         "Amazon Cognito",       ["usage_type", "operation", "unit", "region"],
+                                                 ["mau_count", "federation_type", "advanced_security_enabled"]),
+    ("DynamoDB",        "Amazon DynamoDB",      ["usage_type", "operation", "unit", "region"],
+                                                 ["rcu", "wcu", "table_mode", "consistency_type"]),
+    ("Simple Email",    "Amazon SES",           ["usage_type", "operation", "unit", "region"],
+                                                 []),
+    ("GuardDuty",       "Amazon GuardDuty",     ["usage_type", "unit", "region"],
+                                                 ["data_source_types", "finding_volume"]),
+    ("Security Hub",    "AWS Security Hub",     ["usage_type", "unit", "region"],
+                                                 ["finding_count", "integrations_enabled"]),
 ]
 
+
+# Services with no GCP equivalent — strategy is always passthrough regardless
+# of information_completeness. Checked in _misc_reason() before the sizing logic.
+_PASSTHROUGH_SERVICES = frozenset(
+    ["Simple Email", "SES", "GuardDuty", "Security Hub"]
+)
 
 # Services with no MANAGED GCP equivalent, mapped to self-hosted GCE. The
 # orchestrator extracts their real instance footprint (instance_type / vcpus /
@@ -188,6 +217,40 @@ _SELF_HOST_ON_GCE = [
     "OpenSearch", "Elasticsearch",
     "Managed Streaming for Apache Kafka", "MSK", "Kafka",
 ]
+
+
+# Sizing-marker patterns that indicate we can derive a meaningful GCP mapping
+# from the operation/description field even without CUR-level detail.
+_SIZING_RE = re.compile(
+    r'\b[a-z][0-9][a-z]?\.[0-9]*x?large\b'        # instance type (m6g.2xlarge)
+    r'|\b\d+(\.\d+)?\s*(DPU|vCPU|GB|TB|PB)\b'     # explicit sizing unit
+    r'|\b\d+\s*(node|worker|broker|shard|cluster)\b',   # cluster sizing
+    re.IGNORECASE
+)
+
+# Services where an incorrect size estimate is worse than passthrough.
+# When information_completeness='minimal', these get strategy='passthrough'.
+_SIZING_SENSITIVE = frozenset(
+    ["EKS", "ECS", "Fargate", "EMR", "Redshift", "Glue", "Athena", "Kinesis"]
+)
+
+
+def _info_completeness(row: dict) -> str:
+    """Return 'full', 'partial', or 'minimal' based on available sizing data.
+
+    full    — instance_type/vcpus present, or usage_type has CUR-style granularity
+    partial — operation or usage_type contains a concrete sizing marker
+    minimal — only product name + cost; no sizing signal present
+    """
+    if row.get("instance_type") or row.get("instance_vcpus"):
+        return "full"
+    ut = row.get("usage_type") or ""
+    if len(ut) > 10:  # CUR: "APS3-BoxUsage:m6g.2xlarge"; flat CSV: "" or "EC2"
+        return "full"
+    combined = f"{ut} {row.get('operation') or ''}"
+    if _SIZING_RE.search(combined):
+        return "partial"
+    return "minimal"
 
 
 def _misc_reason(row: dict) -> str:
@@ -240,26 +303,90 @@ def _misc_reason(row: dict) -> str:
                 ),
             })
 
+    completeness = _info_completeness(row)
+    actually_available = [
+        f for f in ("instance_type", "instance_vcpus", "instance_ram_gb",
+                    "usage_type", "operation", "unit")
+        if row.get(f)
+    ]
+
     # Try to match a known service hint
-    for fragment, service_label, available, missing in _MISC_SERVICE_HINTS:
+    for fragment, service_label, _, missing in _MISC_SERVICE_HINTS:
         if fragment.lower() in product.lower() or fragment.lower() in usage_type.lower():
+            passthrough_only = fragment in _PASSTHROUGH_SERVICES
+            sizing_sensitive = fragment in _SIZING_SENSITIVE
+
+            if passthrough_only:
+                rec_strategy = "passthrough"
+                guidance = (
+                    f"{service_label} has no GCP managed equivalent — passthrough at cost "
+                    f"parity. Set mapping_confidence=0.3 and note in mapping-notes.md that "
+                    f"no GCP comparison is possible for this service."
+                )
+            elif fragment == "Cognito":
+                rec_strategy = "map"
+                guidance = (
+                    "Map Amazon Cognito to GCP Identity Platform. IMPORTANT: Cognito is "
+                    "MAU-priced (Monthly Active Users) but CUR bills it per authentication "
+                    "request — you cannot derive MAU count directly. Estimate: "
+                    "total_usage (request count) ÷ 20 ≈ MAU (assuming 20 auth events/user/mo). "
+                    "Identity Platform pricing: $0.0055/MAU above 10k free tier. "
+                    "Document the MAU estimation assumption and set mapping_confidence=0.45."
+                )
+            elif fragment == "DynamoDB":
+                rec_strategy = "map"
+                guidance = (
+                    "Map Amazon DynamoDB to one of: Firestore (document/key-value, ops-based "
+                    "pricing), Bigtable (high-throughput wide-column, node-based pricing), or "
+                    "Spanner (strongly consistent relational, node-based). "
+                    "Decision rule — check operation field: "
+                    "'GetItem/PutItem/Query/Scan' → Firestore (most common); "
+                    "'BatchWrite/high-volume analytical' → Bigtable; "
+                    "'Transactional/ACID' → Spanner. "
+                    "RCU maps to Firestore read ops (1 RCU ≈ 1 document read); "
+                    "WCU maps to Firestore write ops (1 WCU ≈ 1 document write). "
+                    "Fields rcu/wcu/table_mode are NOT in CUR — infer from total_usage and unit. "
+                    "Set mapping_confidence=0.5 and document the target service choice."
+                )
+            elif sizing_sensitive and completeness == "minimal":
+                rec_strategy = "passthrough"
+                guidance = (
+                    f"{service_label}: sizing fields ({missing}) are absent and no sizing "
+                    f"markers found in operation/usage_type — passthrough at cost parity is "
+                    f"safer than fabricating a cluster size. Set mapping_confidence=0.3 and "
+                    f"note the assumption in mapping-notes.md."
+                )
+            elif sizing_sensitive and completeness == "partial":
+                rec_strategy = "map"
+                guidance = (
+                    f"Map {service_label} to its GCP equivalent using the sizing signal in "
+                    f"operation/usage_type. Fields {missing} are not available — document "
+                    f"any cluster-size assumptions and set mapping_confidence ≤ 0.5."
+                )
+            else:
+                rec_strategy = "map"
+                guidance = (
+                    f"Map {service_label} to its GCP equivalent. "
+                    f"Fields {missing} are not in CUR — use service defaults and document assumptions."
+                )
             return json.dumps({
                 "why": f"no mechanic rule matched; product={product!r}",
                 "service_hint": service_label,
-                "available_from_cur": available,
+                "information_completeness": completeness,
+                "actually_available": actually_available,
                 "not_available_cur_only": missing,
-                "mapping_guidance": (
-                    f"Map {service_label} to its GCP equivalent. "
-                    f"Fields {missing} are not in CUR — use service defaults and document assumptions."
-                ),
+                "recommended_strategy": rec_strategy,
+                "mapping_guidance": guidance,
             })
 
     # Unknown service — provide generic annotation
     return json.dumps({
         "why": f"unrecognized product={product!r} usage_type={usage_type!r} unit={unit!r}",
         "service_hint": None,
-        "available_from_cur": ["usage_type", "operation", "unit", "region", "aws_amortized_cost"],
+        "information_completeness": completeness,
+        "actually_available": actually_available,
         "not_available_cur_only": [],
+        "recommended_strategy": "passthrough" if completeness == "minimal" else "map",
         "mapping_guidance": (
             "Service is unrecognized. Map by spend share: if aws_amortized_cost < $10/mo "
             "set strategy='passthrough'. Otherwise find the closest GCP equivalent by product "
@@ -293,8 +420,10 @@ def main():
         print("Added column mechanic_group to aws_li_catalog.")
 
     # --- Load rows ---
+    # billing_format may be absent in DBs ingested before this column was added
+    bf_expr = "billing_format" if "billing_format" in existing_cols else "NULL AS billing_format"
     rows = con.execute(
-        """
+        f"""
         SELECT
             aws_li_key,
             product,
@@ -307,7 +436,8 @@ def main():
             instance_type,
             instance_vcpus,
             instance_ram_gb,
-            instance_count
+            instance_count,
+            {bf_expr}
         FROM aws_li_catalog
         """
     ).fetchall()
@@ -316,6 +446,7 @@ def main():
         "aws_li_key", "product", "usage_type", "operation",
         "unit", "line_item_type", "pricing_model", "aws_amortized_cost",
         "instance_type", "instance_vcpus", "instance_ram_gb", "instance_count",
+        "billing_format",
     ]
 
     # --- Classify ---

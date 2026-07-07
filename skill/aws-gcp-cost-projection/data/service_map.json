@@ -11,8 +11,8 @@
   },
 
   "rules": [
-    {"match": "cloudtrail",                 "category": "Monitoring/Logging", "gcp_service": "Cloud Logging",        "mode": "review", "confidence": 95, "reason": "Audit/API logging; priced per log volume ingested — needs sizing."},
-    {"match": "cloudwatch",                  "category": "Monitoring",         "gcp_service": "Cloud Monitoring + Logging", "mode": "review", "confidence": 78, "reason": "Multi-component (metrics + logs + alarms + dashboards). Single-SKU mapping under-projected badly (~0.07x); passthrough baseline until component pricer built."},
+    {"match": "cloudtrail",                 "category": "Monitoring/Logging", "gcp_service": "Cloud Logging",        "mode": "keep", "confidence": 95, "reason": "Audit/API logging; priced per log volume ingested — needs sizing."},
+    {"match": "cloudwatch",                  "category": "Monitoring",         "gcp_service": "Cloud Monitoring + Logging", "mode": "keep", "confidence": 78, "reason": "Multi-component (metrics + logs + alarms + dashboards). Single-SKU mapping under-projected badly (~0.07x); passthrough baseline until component pricer built."},
     {"match": "natgateway",                  "category": "Networking",         "gcp_service": "Cloud NAT",            "mode": "review", "confidence": 82, "reason": "Multi-component (gateway-hours + data-processed $/GB). Single-component mapping under-projected (~0.5x); passthrough baseline until component pricer built."},
     {"match": "nat gateway",                 "category": "Networking",         "gcp_service": "Cloud NAT",            "mode": "review", "confidence": 82, "reason": "Cloud NAT: gateway-hours + data processed."},
     {"match": "config",                      "category": "Governance",         "gcp_service": "Manual Review",        "mode": "review", "confidence": 70, "reason": "AWS Config has no 1:1 GCP equivalent (partial: Asset Inventory)."},
@@ -29,8 +29,8 @@
     {"match": "quicksight",                  "category": "BI",                 "gcp_service": "Looker",               "mode": "review", "confidence": 80, "reason": "BI -> Looker / Looker Studio Pro (per-user); needs seat sizing."},
 
     {"match": "elastic kubernetes",          "category": "Containers",         "gcp_service": "Google Kubernetes Engine", "mode": "review", "confidence": 88, "reason": "EKS cluster management fee ($0.10/hr/cluster) -> GKE Standard cluster fee ($0.10/hr). Underlying EC2 node costs appear as separate EC2 line items."},
-    {"match": "elastic container service",  "category": "Containers",         "gcp_service": "Cloud Run",            "mode": "review", "confidence": 72, "reason": "ECS Fargate tasks -> Cloud Run (serverless containers). ECS on EC2 nodes are billed as EC2 — those appear as separate EC2 line items."},
-    {"match": "fargate",                     "category": "Containers",         "gcp_service": "Cloud Run",            "mode": "review", "confidence": 75, "reason": "Fargate vCPU/memory hours -> Cloud Run CPU/memory. Pricing model differs (request-based vs task-based) — directional estimate."},
+    {"match": "elastic container service",  "category": "Containers",         "gcp_service": "GKE Autopilot",            "mode": "review", "confidence": 72, "reason": "ECS Fargate tasks -> GKE Autopilot pod capacity. ECS on EC2 nodes are billed as EC2 — those appear as separate EC2 line items."},
+    {"match": "fargate",                     "category": "Containers",         "gcp_service": "GKE Autopilot",            "mode": "review", "confidence": 75, "reason": "Fargate vCPU/memory hours -> GKE Autopilot pod CPU/memory resources (directional estimate)."},
 
     {"match": "lambda",                      "category": "Serverless",         "gcp_service": "Cloud Run",            "mode": "review", "confidence": 85, "reason": "FaaS -> Cloud Run / Cloud Functions (per request + vCPU-sec)."},
 

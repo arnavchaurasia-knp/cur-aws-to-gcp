@@ -639,6 +639,41 @@ def map_non_workload(rows):
     return out
 
 
+def map_cloudwatch(rows):
+    out = []
+    for r in rows:
+        ut = (r.get("usage_type") or "").lower()
+        op = (r.get("operation") or "").lower()
+        gcp_region = r.get("gcp_region")
+        
+        if "log" in ut or "log" in op or "ingestion" in ut or "ingestion" in op:
+            gcp_service = "Cloud Logging"
+            desc = "Log Storage cost"
+            note = "CloudWatch Logs -> Cloud Logging Storage volume"
+            comp = "logs"
+        else:
+            gcp_service = "Cloud Monitoring"
+            desc = "Monitoring API Requests"
+            note = "CloudWatch Metrics -> Cloud Monitoring API Requests"
+            comp = "metrics"
+            
+        sku_id = resolve_sku(gcp_service, desc, gcp_region)
+        entry = {
+            "aws_li_key":         r["aws_li_key"],
+            "gcp_service":        gcp_service,
+            "gcp_sku_id":         sku_id,
+            "gcp_sku_name":       desc,
+            "component":          comp,
+            "strategy":           "map" if sku_id else "passthrough",
+            "unit_multiplier":    1.0,
+            "gcp_region":         gcp_region,
+            "projection_note":    note,
+            "mapping_confidence": 0.9,
+        }
+        out.append(entry)
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <projection.duckdb>", file=sys.stderr)
@@ -650,18 +685,19 @@ def main():
 
     rows = con.execute("""
         SELECT aws_li_key, mechanic_group, product, usage_type, pricing_unit AS unit,
-               aws_amortized_cost, aws_region AS region, gcp_region, operation, volume_type
+               aws_amortized_cost, aws_region AS region, gcp_region, operation, volume_type,
+               total_usage
         FROM aws_li_catalog
         WHERE mechanic_group IN
-              ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer', 'non_workload')
+              ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer', 'non_workload', 'cloudwatch')
     """).fetchall()
     con.close()
 
     cols = ["aws_li_key", "mechanic_group", "product", "usage_type", "unit",
-            "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type"]
+            "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type", "total_usage"]
     by_group: dict[str, list] = {g: [] for g in
                                  ("flat_hourly", "object_storage", "per_request",
-                                  "block_storage", "data_transfer", "non_workload")}
+                                  "block_storage", "data_transfer", "non_workload", "cloudwatch")}
     for raw in rows:
         r = dict(zip(cols, raw))
         by_group[r["mechanic_group"]].append(r)
@@ -676,6 +712,7 @@ def main():
         "block_storage":  map_block_storage,
         "data_transfer":  map_data_transfer,
         "non_workload":   map_non_workload,
+        "cloudwatch":     map_cloudwatch,
     }
     for group, handler in handlers.items():
         mappings = handler(by_group[group])

@@ -70,6 +70,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"scripts/classify_mechanics.py $DB",
 				"scripts/apply_commitment_ignores.py $DB",
 				"scripts/apply_static_mappings.py $DB",
+				"scripts/family_mapper.py $DB",
 			},
 			// Post-merge deterministic passes (zero LLM tokens):
 			//   1. merge_mappings.py  — bulk-INSERT all group files into aws_li_to_gcp_li
@@ -88,6 +89,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"scripts/fix_storage_misroute.py $DB",
 				"scripts/calibrate_confidence.py $DB",
 				"scripts/reconcile_capacity.py $DB",
+				"scripts/verify_golden_mappings.py $DB",
 			},
 			Prompt: "Phase 2 — LLM mapping only. Strict protocol, no deviations.\n\n" +
 				"SETUP (already done by orchestrator — DO NOT re-run):\n" +

@@ -161,7 +161,7 @@ func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.canAccess(sess, job) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -398,7 +398,7 @@ func (h *Handler) Runs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.canAccess(sess, job) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 	dbPath := filepath.Join(h.jobsDir, id, "projection-audit", "projection.duckdb")

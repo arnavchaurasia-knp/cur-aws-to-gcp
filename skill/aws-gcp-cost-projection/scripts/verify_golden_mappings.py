@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+import sys
+import duckdb
+
+def main():
+    db_path = sys.argv[1] if len(sys.argv) > 1 else "projection-audit/projection.duckdb"
+    conn = duckdb.connect(db_path)
+    
+    print(f"Running golden mappings regression assertions on {db_path}...")
+    
+    # 1. Fetch VM mappings
+    vm_rows = conn.execute("""
+        SELECT c.instance_type, m.gcp_service, m.gcp_sku_name
+        FROM aws_li_to_gcp_li m
+        JOIN aws_li_catalog c USING(aws_li_key)
+        WHERE c.instance_type IS NOT NULL
+    """).fetchall()
+    
+    assertions = {
+        "t3.large": {"service": "Compute Engine", "sku_desc": "E2 Instance"},
+        "t4g.large": {"service": "Compute Engine", "sku_desc": "T2A Instance"},
+        "g5.2xlarge": {"service": "Compute Engine", "sku_desc": "G2 Instance"},
+        "p4d.24xlarge": {"service": "Compute Engine", "sku_desc": "A2 Instance"},
+        "db.r6i.large": {"service": "Cloud SQL", "sku_desc": "SQLGen2Instances"}
+    }
+    
+    failures = 0
+    passed = 0
+    
+    for itype, gcp_svc, sku_name in vm_rows:
+        itype_lower = itype.lower()
+        if itype_lower.startswith("db."):
+            # All db. instances must map to Cloud SQL SQLGen2Instances
+            spec = assertions["db.r6i.large"]
+            sku_ok = spec["sku_desc"].lower() in (sku_name or "").lower()
+            svc_ok = spec["service"].lower() in (gcp_svc or "").lower()
+            if not (sku_ok and svc_ok):
+                print(f"❌ FAIL: DB instance {itype} mapped to {gcp_svc} / {sku_name} (expected {spec['service']} / {spec['sku_desc']})")
+                failures += 1
+            else:
+                passed += 1
+        else:
+            for ref_itype, spec in assertions.items():
+                if ref_itype.startswith("db."):
+                    continue
+                if ref_itype in itype_lower:
+                    sku_ok = spec["sku_desc"].lower() in (sku_name or "").lower()
+                    svc_ok = spec["service"].lower() in (gcp_svc or "").lower()
+                    if not (sku_ok and svc_ok):
+                        print(f"❌ FAIL: VM instance {itype} mapped to {gcp_svc} / {sku_name} (expected {spec['service']} / {spec['sku_desc']})")
+                        failures += 1
+                    else:
+                        passed += 1
+
+    # 2. Check CloudWatch
+    cw_rows = conn.execute("""
+        SELECT c.usage_type, c.operation, m.gcp_service, m.gcp_sku_name
+        FROM aws_li_to_gcp_li m
+        JOIN aws_li_catalog c USING(aws_li_key)
+        WHERE c.product LIKE '%CloudWatch%'
+    """).fetchall()
+    
+    for ut, op, svc, sku_name in cw_rows:
+        ut_lower = (ut or "").lower()
+        op_lower = (op or "").lower()
+        if "log" in ut_lower or "log" in op_lower or "ingestion" in ut_lower or "ingestion" in op_lower:
+            # logs
+            if svc != "Cloud Logging" or "Log Storage" not in (sku_name or ""):
+                print(f"❌ FAIL: CloudWatch Log row {ut}/{op} mapped to {svc} / {sku_name} (expected Cloud Logging / Log Storage)")
+                failures += 1
+            else:
+                passed += 1
+        else:
+            # metrics
+            if svc != "Cloud Monitoring" or "Monitoring API" not in (sku_name or ""):
+                print(f"❌ FAIL: CloudWatch Metric row {ut}/{op} mapped to {svc} / {sku_name} (expected Cloud Monitoring / Monitoring API)")
+                failures += 1
+            else:
+                passed += 1
+                
+    print(f"Golden assertions completed. Passed: {passed}, Failed: {failures}")
+    if failures > 0:
+        sys.exit(1)
+    print("✅ All golden regression assertions passed!")
+
+if __name__ == "__main__":
+    main()

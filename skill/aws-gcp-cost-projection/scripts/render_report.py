@@ -14,6 +14,32 @@ def main():
 
     conn = duckdb.connect(DB_PATH)
     
+    # Calculate mapping coverage by mechanic_group
+    try:
+        coverage_rows = conn.execute("""
+            SELECT 
+                c.mechanic_group,
+                SUM(CASE WHEN m.strategy != 'passthrough' THEN c.aws_amortized_cost ELSE 0 END) AS mapped_spend,
+                SUM(c.aws_amortized_cost) AS total_spend
+            FROM aws_li_catalog c
+            LEFT JOIN aws_li_to_gcp_li m USING (aws_li_key)
+            GROUP BY c.mechanic_group
+        """).fetchall()
+        
+        coverage = {}
+        for group, mapped, total in coverage_rows:
+            if not group:
+                continue
+            pct = (mapped / total * 100.0) if total else 100.0
+            coverage[group] = round(pct, 1)
+            
+        coverage_path = os.path.join(JOB_DIR, "projection-audit", "mapping_coverage.json")
+        with open(coverage_path, "w") as f:
+            json.dump(coverage, f, indent=2)
+        print(f"Coverage KPI report written: {coverage_path}")
+    except Exception as e:
+        print(f"Failed to generate coverage report: {e}")
+    
     # 1. Calculate sums deterministically
     aws_workload = conn.execute("SELECT SUM(aws_amortized_cost) FROM aws_li_catalog WHERE is_workload").fetchone()[0] or 0.0
     aws_non_workload = conn.execute("SELECT SUM(aws_amortized_cost) FROM aws_li_catalog WHERE NOT is_workload").fetchone()[0] or 0.0

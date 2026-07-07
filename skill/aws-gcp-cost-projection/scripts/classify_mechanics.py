@@ -59,6 +59,13 @@ def _has_instance_type(text: str | None) -> bool:
 
 RULES = [
     (
+        "cloudwatch",
+        lambda r: (
+            _ilike(r["product"], "CloudWatch")
+            or _ilike(r["product"], "AmazonCloudWatch")
+        ),
+    ),
+    (
         "non_workload",
         lambda r: (
             _ilike(r["product"], "Marketplace")
@@ -610,7 +617,7 @@ def main():
     skip_groups = {
         "commitment_discount",
         "flat_hourly", "object_storage", "per_request",
-        "block_storage", "data_transfer", "non_workload",
+        "block_storage", "data_transfer", "non_workload", "cloudwatch",
     }
     manifest_out = {
         g: {"rows": rows, "row_count": len(rows),

@@ -108,7 +108,7 @@ SELECT
   TIMESTAMP '%s' AS ts_utc,
   'initial' AS run_type,
   NULL AS instruction,
-  COALESCE((SELECT SUM(aws_amortized_cost) FROM aws_li_catalog WHERE is_workload), 0) AS aws_total,
+  COALESCE((SELECT SUM(aws_amortized_cost) FROM aws_li_catalog), 0) AS aws_total,
   COALESCE((SELECT SUM(gcp_projected_cost) FROM gcp_projection WHERE is_workload), 0) AS gcp_od,
   COALESCE((SELECT SUM(gcp_cost_1yr_cud) FROM gcp_projection WHERE is_workload), 0) AS gcp_1yr_cud,
   COALESCE((SELECT SUM(gcp_cost_3yr_cud) FROM gcp_projection WHERE is_workload), 0) AS gcp_3yr_cud,

@@ -141,14 +141,15 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "DataTransfer")
             or _ilike(r["product"], "Data Transfer")
-            or _re(r["usage_type"], r"DataTransfer|Data Transfer|NatGateway-Bytes")
+            or _re(r["usage_type"], r"DataTransfer|Data Transfer|NatGateway-Bytes|TransitGateway-Bytes|LCUUsage|LoadBalancer-Bytes")
+            or _re(r["operation"], r"TransitGateway-Bytes")
         ),
     ),
     (
         "flat_hourly",
         lambda r: (
-            (_re(r["usage_type"], r"LoadBalancerUsage|NatGateway-Hours|ElasticIP|IPAddress")
-             or _re(r["operation"], r"LoadBalancer|public IPv4 address"))
+            (_re(r["usage_type"], r"LoadBalancerUsage|NatGateway-Hours|ElasticIP|IPAddress|TransitGateway-Hours")
+             or _re(r["operation"], r"LoadBalancer|public IPv4 address|TransitGateway-Hours|Transit Gateway"))
             and r["unit"] in ("Hrs", "hours")
         ),
     ),

@@ -298,11 +298,45 @@ following this checklist. Skim every row against every rule:
     - If `license_model = 'License Included'`, map to GCP license-included SKUs.
 8. **Workload Class Specific Routing Rules.**
     Read the `workload_class` column in `aws_li_catalog` and apply strict family gates:
-    - **Burstable:** Map exclusively to GCP shared-core shapes (`e2-micro`, `e2-small`, `e2-medium`).
-    - **ARM:** Map exclusively to Tau (`T2A`) or Axion (`C4A`) shapes. Disallow Intel/AMD GCE templates.
+    - **Burstable:** Map burstable x86 instances (`t2`, `t3`, `t3a`) to GCP **E2** (`e2-micro`, `e2-small`, `e2-medium` or custom/predefined E2). Map burstable ARM instances (`t4g`) strictly to **Tau T2A** (`t2a-standard-*`).
+    - **ARM:** Map general-purpose/memory-optimized ARM workloads (`m6g`, `r6g`, etc.) strictly to **Tau T2A** (Tau ARM) to align with cost/performance parity. Only map to **C4A** (Axion) for highly-intensive compute workloads, and fall back to N2D only if ARM is unavailable in the target region.
     - **Memory-Optimized:** Enforce RAM-to-vCPU ratio $\ge 8:1$ (e.g. `n2-highmem-4` or custom shapes with $\ge 8:1$ memory ratio).
     - **GPU:** Map to `g2` (L4) or `a2` (A100) shapes, matching physical GPU counts and RAM exactly.
     - **Outlier:** If `workload_class = 'Outlier'` (e.g., bare-metal `u-` or `hpc-` instances), mark the row with `strategy = 'outlier_triage'`, assign no default SKU, and write its details to `outlier_instances.md`. Do not apply standard 60/40 heuristics.
+
+### Strict Instance Family Mappings
+
+When selecting a GCP machine family for AWS compute instances, adhere to this mapping directive:
+
+| AWS Family | CPU Type / Arch | Target GCP Family | GCP SKU / Description Pattern |
+|---|---|---|---|
+| **t2, t3, t3a** | Burstable, x86 | **E2** | `E2 Instance Core/Ram` |
+| **t4g** | Burstable, ARM | **T2A** | `T2A Instance Core/Ram` |
+| **c5, c5a** | Compute-optimized, x86 | **N2D** | `N2D AMD Instance Core/Ram` |
+| **c6i, c7i** | Compute-optimized, Intel | **C3 / C4** | `C3/C4 Dedicated Core/Ram` |
+| **c6a, c7a** | Compute-optimized, AMD | **C3D / N2D** | `C3D/N2D AMD Instance Core/Ram` |
+| **r5, r5a** | Memory-optimized, x86 | **N2 / N2D** | `N2/N2D AMD Instance Core/Ram` |
+| **r6i, r7i** | Memory-optimized, Intel | **N4 / N2** | `N4/N2 Predefined Instance Core/Ram` |
+| **r6a, r7a** | Memory-optimized, AMD | **N2D / C3D** | `N2D/C3D AMD Instance Core/Ram` |
+| **r6g, r7g, r8g** | Memory-optimized, ARM | **T2A** | `T2A Instance Core/Ram` |
+| **m5, m5a, m6i, m6a** | General-purpose, x86 | **N2D** | `N2D AMD Instance Core/Ram` |
+| **m6g, m7g** | General-purpose, ARM | **T2A** | `T2A Instance Core/Ram` |
+
+### Database Mapping (RDS/Aurora)
+
+When mapping `managed_db` rows (RDS/Aurora), follow these rules to ensure a robust deployment match:
+1. **Engine to GCP Service:**
+   - **MySQL / PostgreSQL / SQL Server** -> **Cloud SQL** (use `SQLGen2InstancesCPU` / `SQLGen2InstancesRAM` / `SQLGen2InstancesPD-SSD` resource groups).
+   - **Aurora PostgreSQL / RDS PostgreSQL** (when high performance/availability is required) -> **AlloyDB** (use `AlloyDB` resource group).
+   - **ElastiCache Redis / Valkey** -> **Cloud Memorystore for Redis**.
+   - **ElastiCache Memcached** -> **Cloud Memorystore for Memcached**.
+2. **HA Architecture Mapping:**
+   - Check the `deployment_option` or the AWS description/operation for `Multi-AZ` or `HA`.
+   - **Multi-AZ** -> Map to GCP **Regional** (HA) SKUs (e.g. `SQLGen2InstancesCPU (Regional)`).
+   - **Single-AZ** -> Map to GCP **Zonal** SKUs.
+3. **Storage & IOPS Sizing:**
+   - Database storage rows must be mapped to Cloud SQL storage (e.g., `SQLGen2InstancesPD-SSD` or regional equivalent).
+   - For high-IOPS databases (e.g., matching AWS `io1`/`io2` or high provisioned IOPS), ensure the GCP Persistent Disk or Cloud SQL Storage tier is sized to meet or exceed the provisioned IOPS.
 9. **Strict Region Descriptor Matching.**
     For standard network egress/data transfer and storage SKUs, the SKU description must match the target row's region display name (e.g. Mumbai -> `... from Mumbai`, Northern Virginia -> `... from Northern Virginia`). NEVER map to a Singapore SKU for egress originating in Mumbai or Virginia; the validation gates will instantly fail.
 10. **Pick concrete `gcp_sku_id` after evaluating alternatives.** For

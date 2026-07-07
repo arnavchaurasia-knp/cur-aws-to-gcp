@@ -175,10 +175,9 @@ def enforce_accelerator_passthrough(conn):
                      "projection_note='accelerator component folded into passthrough' "
                      "WHERE aws_li_key=? AND rowid<>?", [k, keep])
         conn.execute("UPDATE aws_li_to_gcp_li SET strategy='passthrough', "
-                     "gcp_service='Manual Review — Accelerator', gcp_sku_id=NULL, gcp_sku_name=NULL, "
+                     "gcp_service='Manual Sizing Required', gcp_sku_id=NULL, gcp_sku_name=NULL, "
                      "unit_multiplier=NULL, mapping_confidence=0.3, component='accelerator', "
-                     "projection_note='AI accelerator (Inferentia/Trainium/GPU) — no CPU-VM equivalent; "
-                     "MANUAL REVIEW REQUIRED (GCP TPU/GPU or specialized service)' "
+                     "projection_note='AI accelerator (Inferentia/Trainium/GPU) — Manual sizing required (A3/A2/G2/L4/H100/etc.)' "
                      "WHERE aws_li_key=? AND rowid=?", [k, keep])
         fixed += 1
     if fixed:

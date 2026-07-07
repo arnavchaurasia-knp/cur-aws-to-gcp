@@ -58,6 +58,8 @@ FLAT_HOURLY_MAP = [
      "Cloud Load Balancing", r"Classic Load Balancer Forwarding Rule Minimum", 1.0),
     (r"NatGateway-Hours|NatGateway",
      "Cloud NAT", r"NAT Gateway Uptime", 1.0),
+    (r"TransitGateway-Hours|TransitGateway|TGW",
+     "Networking", r"Network Connectivity Center Spoke Hours VPC Network Spoke", 1.0),
     # VPC in-use public IPv4 (simplified CUR) or ElasticIP / EIP (raw CUR)
     (r"In-use public IPv4|public IPv4 address|ElasticIP|EIP",
      "Compute Engine", r"External IP Charge on a Standard VM", 1.0),
@@ -98,8 +100,8 @@ PER_REQUEST_MAP = [
 EBS_VOLUME_MAP = {
     "gp2": "Balanced PD Capacity",
     "gp3": "Balanced PD Capacity",
-    "io1": "SSD backed PD Capacity",
-    "io2": "SSD backed PD Capacity",
+    "io1": "Extreme PD Capacity",
+    "io2": "Extreme PD Capacity",
     "st1": "Storage PD Capacity",
     "sc1": "Storage PD Capacity",
     "standard": "Storage PD Capacity",
@@ -455,25 +457,38 @@ def map_block_storage(rows):
         # them per-GB against a capacity SKU produced nonsense rows; drop them
         # with an explicit note instead.
         if re.search(r"iops-mo|provisioned iops|mibps|throughput", blob):
+            is_managed_db = any(k in product for k in
+                                ("rds", "relational", "aurora", "documentdb", "memorydb", "elasticache"))
             gp3_like = "gp3" in blob or "gp2" in blob
-            out.append({
-                "aws_li_key":       r["aws_li_key"],
-                "gcp_service":      "Compute Engine",
-                "gcp_sku_name":     None,
-                "component":        "storage",
-                # gp3 perf is bundled into pd-balanced → ignore. io1/io2-style
-                # provisioned IOPS maps to pd-extreme IOPS (a real charge) →
-                # passthrough at parity until a per-IOPS pricer exists.
-                "strategy":         "ignore" if gp3_like else "passthrough",
-                "unit_multiplier":  1.0,
-                "gcp_region":       gcp_region,
-                "projection_note":  ("EBS gp3 provisioned IOPS/throughput fee — included "
-                                     "in GCP pd-balanced capacity price, no separate charge"
-                                     if gp3_like else
-                                     "EBS provisioned IOPS/throughput fee — maps to PD "
-                                     "Extreme provisioned IOPS; passthrough at cost parity"),
-                "mapping_confidence": 0.85 if gp3_like else 0.50,
-            })
+            
+            if is_managed_db:
+                out.append({
+                    "aws_li_key":       r["aws_li_key"],
+                    "gcp_service":      "Cloud SQL",
+                    "gcp_sku_name":     None,
+                    "component":        "storage",
+                    "strategy":         "ignore",
+                    "unit_multiplier":  1.0,
+                    "gcp_region":       gcp_region,
+                    "projection_note":  "RDS Provisioned IOPS/throughput fee — performance scaling is included in Cloud SQL storage tier",
+                    "mapping_confidence": 0.90,
+                })
+            else:
+                out.append({
+                    "aws_li_key":       r["aws_li_key"],
+                    "gcp_service":      "Compute Engine",
+                    "gcp_sku_name":     "Extreme PD IOPS",
+                    "component":        "storage",
+                    "strategy":         "ignore" if gp3_like else "passthrough",
+                    "unit_multiplier":  1.0,
+                    "gcp_region":       gcp_region,
+                    "projection_note":  ("EBS gp3 provisioned IOPS/throughput fee — included "
+                                         "in GCP pd-balanced capacity price, no separate charge"
+                                         if gp3_like else
+                                         "EBS provisioned IOPS/throughput fee — maps to PD "
+                                         "Extreme provisioned IOPS; passthrough at cost parity"),
+                    "mapping_confidence": 0.85 if gp3_like else 0.60,
+                })
             continue
         is_managed_db = any(k in product for k in
                             ("rds", "relational", "aurora", "documentdb", "memorydb", "elasticache"))
@@ -518,6 +533,61 @@ def map_data_transfer(rows):
     SKU + rate (no fuzzy catalog matching — see egress_rates.py). Ingress → ignore."""
     out = []
     for r in rows:
+        ut = f"{r.get('usage_type') or ''} {r.get('operation') or ''}".lower()
+        if "natgateway-bytes" in ut:
+            service = "Cloud NAT"
+            desc_pattern = "Networking Cloud Nat Data Processing"
+            sku_id = resolve_sku(service, desc_pattern, r.get("gcp_region"))
+            entry = {
+                "aws_li_key":       r["aws_li_key"],
+                "gcp_service":      service,
+                "gcp_sku_name":     "Networking Cloud Nat Data Processing",
+                "component":        "transfer",
+                "strategy":         "map",
+                "unit_multiplier":  1.0,
+                "gcp_region":       r.get("gcp_region"),
+                "projection_note":  "NAT Gateway processed bytes → Cloud NAT Data Processing",
+                "mapping_confidence": 0.90,
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+            out.append(entry)
+            continue
+            
+        if "transitgateway-bytes" in ut or "tgw-bytes" in ut:
+            out.append({
+                "aws_li_key":       r["aws_li_key"],
+                "gcp_service":      "VPC Network",
+                "gcp_sku_name":     None,
+                "component":        "transfer",
+                "strategy":         "ignore",
+                "unit_multiplier":  1.0,
+                "gcp_region":       r.get("gcp_region"),
+                "projection_note":  "Transit Gateway data processing fee — VPC network spoke traffic has no transit fee on GCP; only standard egress applies",
+                "mapping_confidence": 0.90,
+            })
+            continue
+
+        if "lcu" in ut or "loadbalancer-bytes" in ut:
+            service = "Networking"
+            desc_pattern = "Regional External Application Load Balancer Outbound Data Processing"
+            sku_id = resolve_sku(service, desc_pattern, r.get("gcp_region"))
+            entry = {
+                "aws_li_key":       r["aws_li_key"],
+                "gcp_service":      service,
+                "gcp_sku_name":     "Regional External Application Load Balancer Outbound Data Processing",
+                "component":        "transfer",
+                "strategy":         "map",
+                "unit_multiplier":  1.0,
+                "gcp_region":       r.get("gcp_region"),
+                "projection_note":  "Load Balancer Capacity Units (LCU) → Regional External ALB Outbound Data Processing",
+                "mapping_confidence": 0.90,
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+            out.append(entry)
+            continue
+
         strategy, direction, note = _transfer_target(r.get("usage_type"), r.get("operation"))
         entry = {
             "aws_li_key":       r["aws_li_key"],

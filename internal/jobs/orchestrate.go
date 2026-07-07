@@ -79,6 +79,13 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			//      < AWS spec to enforce the never-underprovision guarantee
 			PostLLMScripts: []string{
 				"scripts/merge_mappings.py $DB projection-audit/mappings",
+				// Service Classification Engine: force the canonical GCP target per
+				// data/service_map.json so mappings are deterministic, not per-row
+				// LLM guesses (CloudTrail->Cloud Logging, EMR->Dataproc, etc.).
+				"scripts/service_classifier.py $DB",
+				// Generic backstop: reroute any OTHER non-object-storage service the
+				// LLM dropped onto Cloud Storage to passthrough + manual-review flag.
+				"scripts/fix_storage_misroute.py $DB",
 				"scripts/calibrate_confidence.py $DB",
 				"scripts/reconcile_capacity.py $DB",
 			},
@@ -163,6 +170,14 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			PostLLMScripts: []string{
 				"scripts/apply_rates.py",
 				"?scripts/validate_fix.py $JOBDIR",
+				// Re-apply the classifier + storage backstop in case Phase-3/5
+				// re-mapped a row, then the final safety gate.
+				"scripts/service_classifier.py $DB",
+				"scripts/fix_storage_misroute.py $DB",
+				// HARD gate: fail the job with named rows if any implausible blowup
+				// remains (single row >50x, >$10k from <$100, inflated
+				// non-storage->GCS, or whole-bill >2x).
+				"scripts/outlier_gate.py $DB",
 			},
 			Prompt: "Phase 5 — Outlier Triage. Strict protocol, no deviations.\n\n" +
 				"SETUP (already done by orchestrator):\n" +

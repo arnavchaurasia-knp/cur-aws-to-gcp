@@ -46,6 +46,8 @@ _DATA_DIR = os.path.join(
 )
 
 _BUILTIN_CANDIDATE_FAMILIES = {
+    # x86_64 general/compute-optimized (≤4 GB/vCPU): N2D AMD.
+    # Best price-performance for c/m-family workloads on GCP. ~30% cheaper than N2.
     "N2D": {
         "family": "n2d",
         "architecture": "x86_64",
@@ -55,6 +57,33 @@ _BUILTIN_CANDIDATE_FAMILIES = {
         "local_nvme": False,
         "network_tier": "high",
     },
+    # x86_64 memory-optimized (8 GB/vCPU): N2 Intel.
+    # Used for AWS r5/r6i/r6a/r7i/r7a families. N2D only offers 4 GB/vCPU —
+    # sizing an r5.2xlarge (64 GB) as N2D would double vCPUs to 16 and inflate
+    # cost. N2 standard is 8 GB/vCPU and available in all major GCP regions.
+    "N2": {
+        "family": "n2",
+        "architecture": "x86_64",
+        "min_vcpu": 2,
+        "max_vcpu": 128,
+        "ram_per_vcpu": 8,
+        "local_nvme": False,
+        "network_tier": "high",
+    },
+    # x86_64 ultra-memory (16 GB/vCPU): M3 Intel.
+    # Used for AWS x1e/x2i families (16 GB/vCPU). Available in major regions
+    # including asia-south1 (Mumbai). M1/M2 are legacy; M3 is current gen.
+    "M3": {
+        "family": "m3",
+        "architecture": "x86_64",
+        "min_vcpu": 4,
+        "max_vcpu": 128,
+        "ram_per_vcpu": 16,
+        "local_nvme": False,
+        "network_tier": "high",
+    },
+    # x86_64 burstable/cost-optimized: E2.
+    # AWS t2/t3/t3a equivalent. Capped at 32 vCPU; standard network.
     "E2": {
         "family": "e2",
         "architecture": "x86_64",
@@ -65,6 +94,30 @@ _BUILTIN_CANDIDATE_FAMILIES = {
         "network_tier": "standard",
         "burstable": True,
     },
+    # arm64 (Graviton): C4A Axion — preferred over T2A.
+    # Available in 28 regions including asia-south1 (Mumbai). T2A is only 5
+    # regions. C4A is the GCP-intended Graviton analogue; standard shape is
+    # 4 GB/vCPU (c4a-standard), highmem is 8 GB/vCPU (c4a-highmem).
+    "C4A": {
+        "family": "c4a",
+        "architecture": "arm64",
+        "min_vcpu": 1,
+        "max_vcpu": 72,
+        "ram_per_vcpu": 4,
+        "local_nvme": False,
+        "network_tier": "high",
+    },
+    # arm64 highmem (8 GB/vCPU): C4A highmem — for Graviton r-family (r6g/r7g).
+    "C4A_HIGHMEM": {
+        "family": "c4a",
+        "architecture": "arm64",
+        "min_vcpu": 1,
+        "max_vcpu": 72,
+        "ram_per_vcpu": 8,
+        "local_nvme": False,
+        "network_tier": "high",
+    },
+    # arm64 fallback for regions where C4A is unavailable (5 regions only).
     "T2A": {
         "family": "t2a",
         "architecture": "arm64",
@@ -466,16 +519,34 @@ def resolve_compute_family(
     except (FileNotFoundError, OSError):
         family_map = {}
 
-    # Determine base GCP family from family-map, falling back to simple rules
-    base_family = family_map.get(instance_type)
+    # Determine base GCP family from family-map, falling back to ratio rules.
+    # instance-family-map.json is the authoritative source; the fallback here
+    # mirrors its logic but also uses the actual RAM/vCPU ratio so memory-
+    # optimized workloads (r-family, 8+ GB/vCPU) land on N2/C4A-highmem rather
+    # than N2D (4 GB/vCPU), which would double vCPUs and inflate cost.
+    base_family = family_map.get("examples", {}).get(instance_type) or family_map.get(instance_type)
     if not base_family:
         prefix = instance_type.split(".")[0]
+        # arm64 rules from instance-family-map.json
+        arm64_preferred = family_map.get("rules", {}).get("arm64_preferred", "C4A")
         if arch == "arm64":
-            base_family = "T2A"
-        elif any(prefix.startswith(b) for b in ("t2", "t3", "t4")):
+            ram_per_vcpu = ram_gb / max(vcpu, 1)
+            # r6g/r7g Graviton: 8 GB/vCPU → C4A highmem
+            if ram_per_vcpu >= 7:
+                base_family = "C4A_HIGHMEM"
+            else:
+                base_family = arm64_preferred  # C4A standard (4 GB/vCPU)
+        elif any(prefix.startswith(b) for b in ("t2", "t3", "t3a")):
             base_family = "E2"
         else:
-            base_family = "N2D"
+            # Choose x86 family by RAM/vCPU ratio to avoid over-provisioning
+            ram_per_vcpu = ram_gb / max(vcpu, 1)
+            if ram_per_vcpu >= 12:
+                base_family = "M3"    # x1e/x2i ≥16 GB/vCPU → M3 ultramem
+            elif ram_per_vcpu >= 6:
+                base_family = "N2"    # r5/r6i/r7i 8 GB/vCPU → N2 standard
+            else:
+                base_family = "N2D"   # c/m family ≤4 GB/vCPU → N2D (best price)
 
     # ── Build a minimal profile dict ─────────────────────────────────────
     profile = {
@@ -507,7 +578,9 @@ def resolve_compute_family(
     # Build a minimal catalog entry from the built-in family definitions so the
     # pipeline has something to score even without a full YAML catalog.
     builtin_families = _BUILTIN_CANDIDATE_FAMILIES
-    family_key = base_family.upper() if base_family.upper() in builtin_families else "N2D"
+    family_key = base_family.upper() if base_family and base_family.upper() in builtin_families else (
+        "C4A" if arch == "arm64" else "N2D"
+    )
     fdef = builtin_families[family_key]
 
     synthetic_candidate = Candidate(

@@ -21,19 +21,29 @@ from egress_rates import EGRESS_SKUS
 # Lookup tables
 # ---------------------------------------------------------------------------
 
-# object_storage: S3 storage class → GCS storage class SKU family
+# object_storage: S3 storage class → GCS storage class SKU family.
+# SKU names must use current GCS catalog vocabulary ("Standard Storage <region>").
+# The legacy name "Regional Storage" word-matched an Archive Storage SKU
+# ($0.0015/GB vs Standard's $0.023/GB — a 15x underprojection on bill3).
 S3_CLASS_MAP = {
-    "standard":              ("Cloud Storage",  "Regional Storage",          1.0),
-    "intelligent":           ("Cloud Storage",  "Regional Storage",          1.0),
+    "standard":              ("Cloud Storage",  "Standard Storage",          1.0),
+    "intelligent":           ("Cloud Storage",  "Standard Storage",          1.0),
     "standardia":            ("Cloud Storage",  "Nearline Storage",          1.0),
     "standard-ia":           ("Cloud Storage",  "Nearline Storage",          1.0),
     "onezone-ia":            ("Cloud Storage",  "Nearline Storage",          1.0),
+    "archive instant":       ("Cloud Storage",  "Nearline Storage",          1.0),
     "glacier instant":       ("Cloud Storage",  "Coldline Storage",          1.0),
     "glacier flexible":      ("Cloud Storage",  "Coldline Storage",          1.0),
     "glacier deep archive":  ("Cloud Storage",  "Archive Storage",           1.0),
-    "reducedredundancy":     ("Cloud Storage",  "Regional Storage",          1.0),
+    "reducedredundancy":     ("Cloud Storage",  "Standard Storage",          1.0),
 }
-S3_CLASS_DEFAULT = ("Cloud Storage", "Regional Storage", 1.0)
+S3_CLASS_DEFAULT = ("Cloud Storage", "Standard Storage", 1.0)
+
+# S3 fees with no GCS equivalent (Intelligent-Tiering per-object monitoring,
+# early-delete penalties). Priced as storage they project 2-3x high; carry the
+# AWS cost as an honest passthrough instead.
+S3_NO_EQUIVALENT_RE = re.compile(
+    r"per 1,?000 objects|monitoring and automation|early.?delete", re.IGNORECASE)
 
 # flat_hourly: usage_type/product/operation fragment → (GCP service, SKU description pattern, unit_multiplier)
 # SKU IDs are resolved at runtime from the bundled GCP catalog — no hardcoding.
@@ -303,11 +313,32 @@ def _match(usage_type, product, table, operation=None):
 def map_object_storage(rows):
     out = []
     for r in rows:
-        usage_type = (r.get("usage_type") or "").lower()
+        # Detect the storage class from all available text — PDF/summary bills
+        # leave usage_type blank but name the class in the operation/description
+        # ("Glacier Deep Archive", "Standard-IA", ...). Without this the class
+        # always fell back to Standard.
+        blob = (f"{r.get('usage_type') or ''} {r.get('operation') or ''} "
+                f"{r.get('product') or ''}").lower()
+        if S3_NO_EQUIVALENT_RE.search(blob):
+            out.append({
+                "aws_li_key":       r["aws_li_key"],
+                "gcp_service":      "Cloud Storage",
+                "gcp_sku_name":     None,
+                "component":        "storage",
+                "strategy":         "passthrough",
+                "unit_multiplier":  1.0,
+                "gcp_region":       r.get("gcp_region"),
+                "projection_note":  ("S3 fee with no GCS equivalent (per-object "
+                                     "monitoring / early delete) — passthrough at cost parity"),
+                "mapping_confidence": 0.40,
+            })
+            continue
         service, sku_name, mult = S3_CLASS_DEFAULT
-        for key, val in S3_CLASS_MAP.items():
-            if key in usage_type:
-                service, sku_name, mult = val
+        # Longest key first so "standard-ia" / "glacier deep archive" win over
+        # the bare "standard" substring (which they contain).
+        for key in sorted(S3_CLASS_MAP, key=len, reverse=True):
+            if key in blob:
+                service, sku_name, mult = S3_CLASS_MAP[key]
                 break
         out.append({
             "aws_li_key":       r["aws_li_key"],
@@ -407,14 +438,49 @@ def map_block_storage(rows):
     for r in rows:
         product = (r.get("product") or "").lower()
         ut = (r.get("usage_type") or "").lower()
+        op = (r.get("operation") or "").lower()
         vol = (r.get("volume_type") or "").lower().strip()
         gcp_region = r.get("gcp_region")
+        # PDF/summary bills leave the product/volumetype column blank, so fall
+        # back to inferring the volume type and snapshot flag from the free text
+        # (usage_type + operation + product description).
+        blob = f"{ut} {op} {product}"
+        if not vol:
+            mvol = re.search(r'\b(gp3|gp2|io2|io1|st1|sc1|standard|magnetic)\b', blob)
+            if mvol:
+                vol = mvol.group(1)
+        is_snapshot = ("snapshot" in ut) or ("snapshot" in op) or ("snapshot" in blob)
+        # gp3/io2 provisioned-IOPS and throughput (MiBps) fees have no separate
+        # GCP charge — pd-balanced bundles performance with capacity. Pricing
+        # them per-GB against a capacity SKU produced nonsense rows; drop them
+        # with an explicit note instead.
+        if re.search(r"iops-mo|provisioned iops|mibps|throughput", blob):
+            gp3_like = "gp3" in blob or "gp2" in blob
+            out.append({
+                "aws_li_key":       r["aws_li_key"],
+                "gcp_service":      "Compute Engine",
+                "gcp_sku_name":     None,
+                "component":        "storage",
+                # gp3 perf is bundled into pd-balanced → ignore. io1/io2-style
+                # provisioned IOPS maps to pd-extreme IOPS (a real charge) →
+                # passthrough at parity until a per-IOPS pricer exists.
+                "strategy":         "ignore" if gp3_like else "passthrough",
+                "unit_multiplier":  1.0,
+                "gcp_region":       gcp_region,
+                "projection_note":  ("EBS gp3 provisioned IOPS/throughput fee — included "
+                                     "in GCP pd-balanced capacity price, no separate charge"
+                                     if gp3_like else
+                                     "EBS provisioned IOPS/throughput fee — maps to PD "
+                                     "Extreme provisioned IOPS; passthrough at cost parity"),
+                "mapping_confidence": 0.85 if gp3_like else 0.50,
+            })
+            continue
         is_managed_db = any(k in product for k in
                             ("rds", "relational", "aurora", "documentdb", "memorydb", "elasticache"))
 
         if is_managed_db:
             service = "Cloud SQL"
-            if "backup" in ut or "backup" in (r.get("operation") or "").lower():
+            if "backup" in ut or "backup" in op:
                 desc = "Backups"
             elif vol in ("st1", "sc1", "standard", "magnetic"):
                 desc = "HDD storage"
@@ -423,11 +489,11 @@ def map_block_storage(rows):
             note = f"managed-db storage ({vol or 'default'}) → Cloud SQL {desc}"
         else:
             service = "Compute Engine"
-            if "snapshot" in ut:
+            if is_snapshot:
                 desc = "Storage PD Snapshot"
             else:
                 desc = EBS_VOLUME_MAP.get(vol, EBS_DEFAULT_DESC)
-            note = f"EBS {vol or 'volume'} → {desc}"
+            note = f"EBS {vol or 'volume'}{' snapshot' if is_snapshot else ''} → {desc}"
 
         sku_id = resolve_sku(service, desc, gcp_region)
         entry = {
@@ -473,6 +539,36 @@ def map_data_transfer(rows):
     return out
 
 
+def map_non_workload(rows):
+    out = []
+    for r in rows:
+        product = (r.get("product") or "").lower()
+        desc = (r.get("operation") or "").lower()
+        if "marketplace" in product or "marketplace" in desc:
+            gcp_service = "AWS Marketplace (Passthrough)"
+            note = "AWS Marketplace subscription — passthrough at cost parity; not core workload"
+        elif "support" in product or "support" in desc:
+            gcp_service = "AWS Support (Passthrough)"
+            note = "AWS Support plan — passthrough at cost parity; not core workload"
+        else:
+            gcp_service = "AWS Non-Workload (Passthrough)"
+            note = "AWS Non-workload item — passthrough at cost parity"
+            
+        out.append({
+            "aws_li_key":         r["aws_li_key"],
+            "gcp_service":        gcp_service,
+            "gcp_sku_id":         None,
+            "gcp_sku_name":       None,
+            "component":          "passthrough",
+            "strategy":           "passthrough",
+            "unit_multiplier":    1.0,
+            "gcp_region":         r.get("gcp_region"),
+            "projection_note":    note,
+            "mapping_confidence": 1.0,
+        })
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <projection.duckdb>", file=sys.stderr)
@@ -487,7 +583,7 @@ def main():
                aws_amortized_cost, aws_region AS region, gcp_region, operation, volume_type
         FROM aws_li_catalog
         WHERE mechanic_group IN
-              ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer')
+              ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer', 'non_workload')
     """).fetchall()
     con.close()
 
@@ -495,7 +591,7 @@ def main():
             "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type"]
     by_group: dict[str, list] = {g: [] for g in
                                  ("flat_hourly", "object_storage", "per_request",
-                                  "block_storage", "data_transfer")}
+                                  "block_storage", "data_transfer", "non_workload")}
     for raw in rows:
         r = dict(zip(cols, raw))
         by_group[r["mechanic_group"]].append(r)
@@ -509,6 +605,7 @@ def main():
         "per_request":    map_per_request,
         "block_storage":  map_block_storage,
         "data_transfer":  map_data_transfer,
+        "non_workload":   map_non_workload,
     }
     for group, handler in handlers.items():
         mappings = handler(by_group[group])

@@ -1,0 +1,84 @@
+{
+  "_meta": {
+    "purpose": "Canonical AWS-service -> GCP-service classification (the 'logical construct'). Single source of truth used by service_classifier.py to force the correct GCP target and eliminate LLM label variance. Grounded in Google's official 'Google Cloud for AWS professionals' service comparison. Curate this file to add/adjust services.",
+    "mode_semantics": {
+      "keep": "Pipeline already prices this well deterministically — classifier only STAMPS metadata (category/reason), never changes pricing or the mapped SKU.",
+      "review": "Correct GCP target is known but precise GCP pricing needs per-service modelling. Classifier FORCES gcp_service=target + strategy=passthrough (carry AWS cost, no invented figure) + manual-review flag. Honest baseline until a deterministic pricer is built.",
+      "ignore": "Not a real workload cost on GCP (burstable CPU credits, billing fees, taxes, support, refunds). Classifier FORCES strategy='ignore' -> $0. GCP has no equivalent charge."
+    },
+    "match": "Case-insensitive substring against the AWS product name with the leading 'Amazon '/'AWS ' stripped. First match wins, so order specific -> general.",
+    "field_order_note": "Downstream row metadata stored as: category, gcp_service, confidence, rule='service_map_v1', reason (in projection_note)."
+  },
+
+  "rules": [
+    {"match": "cloudtrail",                 "category": "Monitoring/Logging", "gcp_service": "Cloud Logging",        "mode": "review", "confidence": 95, "reason": "Audit/API logging; priced per log volume ingested — needs sizing."},
+    {"match": "cloudwatch",                  "category": "Monitoring",         "gcp_service": "Cloud Monitoring + Logging", "mode": "review", "confidence": 78, "reason": "Multi-component (metrics + logs + alarms + dashboards). Single-SKU mapping under-projected badly (~0.07x); passthrough baseline until component pricer built."},
+    {"match": "natgateway",                  "category": "Networking",         "gcp_service": "Cloud NAT",            "mode": "review", "confidence": 82, "reason": "Multi-component (gateway-hours + data-processed $/GB). Single-component mapping under-projected (~0.5x); passthrough baseline until component pricer built."},
+    {"match": "nat gateway",                 "category": "Networking",         "gcp_service": "Cloud NAT",            "mode": "review", "confidence": 82, "reason": "Cloud NAT: gateway-hours + data processed."},
+    {"match": "config",                      "category": "Governance",         "gcp_service": "Manual Review",        "mode": "review", "confidence": 70, "reason": "AWS Config has no 1:1 GCP equivalent (partial: Asset Inventory)."},
+
+    {"match": "elastic mapreduce",           "category": "Analytics",          "gcp_service": "Dataproc",             "mode": "review", "confidence": 92, "reason": "Managed Hadoop/Spark -> Dataproc; size by cluster node hours."},
+    {"match": "glue",                        "category": "ETL",                "gcp_service": "Dataflow",             "mode": "review", "confidence": 85, "reason": "Serverless ETL -> Dataflow (or Cloud Data Fusion)."},
+    {"match": "athena",                      "category": "Analytics",          "gcp_service": "BigQuery",             "mode": "review", "confidence": 88, "reason": "Serverless query -> BigQuery on-demand (per TB scanned)."},
+    {"match": "redshift",                    "category": "Analytics",          "gcp_service": "BigQuery",             "mode": "review", "confidence": 88, "reason": "Data warehouse -> BigQuery (or BigQuery editions/Dataproc)."},
+    {"match": "kinesis",                     "category": "Streaming",          "gcp_service": "Pub/Sub",              "mode": "review", "confidence": 85, "reason": "Streaming -> Pub/Sub (or Managed Kafka for KDS-heavy)."},
+    {"match": "managed streaming",           "category": "Streaming",          "gcp_service": "Managed Service for Kafka", "mode": "review", "confidence": 82, "reason": "MSK -> Managed Kafka; size by broker vCPU/RAM/storage."},
+    {"match": "msk",                         "category": "Streaming",          "gcp_service": "Managed Service for Kafka", "mode": "review", "confidence": 82, "reason": "MSK -> Managed Kafka."},
+    {"match": "opensearch",                  "category": "Search",             "gcp_service": "Manual Review",        "mode": "review", "confidence": 65, "reason": "No managed GCP equivalent; self-host on GCE/GKE — needs sizing."},
+    {"match": "elasticsearch",               "category": "Search",             "gcp_service": "Manual Review",        "mode": "review", "confidence": 65, "reason": "No managed GCP equivalent."},
+    {"match": "quicksight",                  "category": "BI",                 "gcp_service": "Looker",               "mode": "review", "confidence": 80, "reason": "BI -> Looker / Looker Studio Pro (per-user); needs seat sizing."},
+
+    {"match": "elastic kubernetes",          "category": "Containers",         "gcp_service": "Google Kubernetes Engine", "mode": "review", "confidence": 88, "reason": "EKS cluster management fee ($0.10/hr/cluster) -> GKE Standard cluster fee ($0.10/hr). Underlying EC2 node costs appear as separate EC2 line items."},
+    {"match": "elastic container service",  "category": "Containers",         "gcp_service": "Cloud Run",            "mode": "review", "confidence": 72, "reason": "ECS Fargate tasks -> Cloud Run (serverless containers). ECS on EC2 nodes are billed as EC2 — those appear as separate EC2 line items."},
+    {"match": "fargate",                     "category": "Containers",         "gcp_service": "Cloud Run",            "mode": "review", "confidence": 75, "reason": "Fargate vCPU/memory hours -> Cloud Run CPU/memory. Pricing model differs (request-based vs task-based) — directional estimate."},
+
+    {"match": "lambda",                      "category": "Serverless",         "gcp_service": "Cloud Run",            "mode": "review", "confidence": 85, "reason": "FaaS -> Cloud Run / Cloud Functions (per request + vCPU-sec)."},
+
+    {"match": "elasticache",                 "category": "Cache",              "gcp_service": "Memorystore",          "mode": "review", "confidence": 78, "reason": "Redis/Memcached -> Memorystore; size by node GB + tier. Verify cluster mode: ElastiCache Redis Cluster mode maps to Memorystore Redis Cluster (different SKU, 30-40% higher). Confidence reduced from 88 to 78 until cluster topology is confirmed."},
+    {"match": "dynamodb accelerator",        "category": "Cache",              "gcp_service": "Memorystore",          "mode": "review", "confidence": 80, "reason": "DAX -> Memorystore for Redis."},
+    {"match": "dax",                         "category": "Cache",              "gcp_service": "Memorystore",          "mode": "review", "confidence": 80, "reason": "DAX -> Memorystore for Redis."},
+
+    {"match": "dynamodb",                    "category": "NoSQL DB",           "gcp_service": "Firestore",            "mode": "review", "confidence": 50, "reason": "Key-value/doc -> Firestore (simple access patterns) or Bigtable (GSI-heavy / analytical). Target is workload-dependent; GSI-heavy DynamoDB requires re-architecture on GCP. Confidence capped at 50%."},
+    {"match": "neptune",                     "category": "Graph DB",           "gcp_service": "Manual Review",        "mode": "review", "confidence": 60, "reason": "Graph DB; no managed GCP equivalent — self-host or Spanner Graph."},
+    {"match": "documentdb",                  "category": "Document DB",        "gcp_service": "Firestore",            "mode": "review", "confidence": 62, "reason": "Mongo-compatible; no managed GCP equivalent (MongoDB Atlas / Firestore)."},
+
+    {"match": "database migration",          "category": "Migration",          "gcp_service": "Database Migration Service", "mode": "review", "confidence": 88, "reason": "DMS -> Database Migration Service."},
+
+    {"match": "simple notification",         "category": "Messaging",          "gcp_service": "Pub/Sub",              "mode": "review", "confidence": 88, "reason": "SNS -> Pub/Sub."},
+    {"match": "simple queue",                "category": "Messaging",          "gcp_service": "Pub/Sub",              "mode": "review", "confidence": 88, "reason": "SQS -> Pub/Sub."},
+    {"match": "simple email",                "category": "Email",              "gcp_service": "Manual Review",        "mode": "review", "confidence": 60, "reason": "SES has no native GCP equivalent (3rd-party/Workspace)."},
+
+    {"match": "elastic file system",         "category": "File Storage",       "gcp_service": "Filestore",            "mode": "review", "confidence": 85, "reason": "NFS file storage -> Filestore; price per provisioned GB + tier."},
+
+    {"match": "directory service",           "category": "Identity",           "gcp_service": "Managed Microsoft AD", "mode": "review", "confidence": 80, "reason": "AWS Managed AD -> Managed Service for Microsoft AD."},
+    {"match": "cost explorer",               "category": "Billing",            "gcp_service": "Cloud Billing",        "mode": "review", "confidence": 90, "reason": "Native billing/reporting is free in GCP — likely $0."},
+
+    {"match": "key management",              "category": "Security",           "gcp_service": "Cloud KMS",            "mode": "review", "confidence": 88, "reason": "KMS -> Cloud KMS (per key-version + operations)."},
+    {"match": "secrets manager",             "category": "Security",           "gcp_service": "Secret Manager",       "mode": "review", "confidence": 88, "reason": "-> Secret Manager (per secret-version + access)."},
+    {"match": "guardduty",                   "category": "Security",           "gcp_service": "Security Command Center", "mode": "review", "confidence": 70, "reason": "Threat detection -> SCC Premium (different pricing model)."},
+
+    {"match": "vpcendpoint",                 "category": "Networking",         "gcp_service": "Private Service Connect", "mode": "review", "confidence": 78, "reason": "VPC Endpoint -> Private Service Connect (per endpoint + data)."},
+    {"match": "transitgateway",              "category": "Networking",         "gcp_service": "Network Connectivity Center", "mode": "review", "confidence": 72, "reason": "Transit Gateway -> NCC hub (per attachment + data)."},
+    {"match": "vpnconnection",               "category": "Networking",         "gcp_service": "Cloud VPN",            "mode": "review", "confidence": 82, "reason": "VPN -> Cloud VPN (per tunnel-hour + egress)."},
+    {"match": "vpn",                         "category": "Networking",         "gcp_service": "Cloud VPN",            "mode": "review", "confidence": 78, "reason": "VPN -> Cloud VPN."},
+    {"match": "route 53 resolver",           "category": "Networking",         "gcp_service": "Cloud DNS (forwarding/policies)", "mode": "review", "confidence": 70, "reason": "Resolver endpoints (DNS resolution/forwarding) != authoritative managed zone; needs Cloud DNS policies / hybrid DNS — architecture review."},
+    {"match": "resolver endpoint",           "category": "Networking",         "gcp_service": "Cloud DNS (forwarding/policies)", "mode": "review", "confidence": 70, "reason": "Route 53 Resolver endpoint -> Cloud DNS forwarding, not a managed zone."},
+    {"match": "public ipv4",                 "category": "Networking",         "gcp_service": "External IP",          "mode": "review", "confidence": 85, "reason": "Public IPv4 -> External IP charge (per IP-hour)."},
+    {"match": "virtual private cloud",       "category": "Networking",         "gcp_service": "VPC Network",          "mode": "review", "confidence": 70, "reason": "Generic VPC networking -> VPC (most sub-features free; verify component)."},
+
+    {"match": "mediaconvert",                "category": "Media",              "gcp_service": "Transcoder API",       "mode": "review", "confidence": 70, "reason": "Elemental MediaConvert -> Transcoder API (per output minute)."},
+    {"match": "medialive",                   "category": "Media",              "gcp_service": "Manual Review",        "mode": "review", "confidence": 55, "reason": "Live video; no clean GCP equivalent."},
+    {"match": "end user messaging",          "category": "Messaging",          "gcp_service": "Manual Review",        "mode": "review", "confidence": 55, "reason": "SMS/Pinpoint; no native GCP equivalent (3rd-party)."},
+    {"match": "pinpoint",                    "category": "Messaging",          "gcp_service": "Manual Review",        "mode": "review", "confidence": 55, "reason": "Pinpoint; no native GCP equivalent."},
+
+    {"comment": "--- ignore ($0): not a workload cost on GCP ---"},
+    {"match": "cpucredit",                   "category": "Compute (credits)",  "gcp_service": "N/A (no charge)",      "mode": "ignore", "confidence": 90, "reason": "Burstable CPU credits; GCP E2/shared-core has no credit charge."},
+    {"match": "ocblatefee",                  "category": "Billing/Fee",        "gcp_service": "N/A",                  "mode": "ignore", "confidence": 95, "reason": "Late-payment fee; not a cloud resource cost."},
+    {"match": "late fee",                    "category": "Billing/Fee",        "gcp_service": "N/A",                  "mode": "ignore", "confidence": 95, "reason": "Fee; not a resource cost."},
+    {"match": "premium support",             "category": "Support",            "gcp_service": "N/A",                  "mode": "ignore", "confidence": 90, "reason": "Support plan; priced separately on GCP, not a per-SKU cost."},
+    {"match": "tax",                         "category": "Tax",                "gcp_service": "N/A",                  "mode": "ignore", "confidence": 90, "reason": "Tax line; not a resource cost."},
+    {"match": "refund",                      "category": "Billing/Fee",        "gcp_service": "N/A",                  "mode": "ignore", "confidence": 90, "reason": "Refund/credit adjustment; not a resource cost."},
+    {"match": "enterprise discount program", "category": "Discount",           "gcp_service": "N/A (AWS-only)",       "mode": "ignore", "confidence": 95, "reason": "AWS negotiated discount; nets AWS total down. GCP has no equivalent — GCP side stays at list ($0 offset)."},
+    {"match": "edp discount",                "category": "Discount",           "gcp_service": "N/A (AWS-only)",       "mode": "ignore", "confidence": 95, "reason": "AWS EDP discount; AWS-only, not a GCP cost."}
+  ]
+}

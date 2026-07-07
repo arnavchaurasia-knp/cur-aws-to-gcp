@@ -99,6 +99,14 @@ _PDF_ITEM_RE = re.compile(
 # A subtotal/header row: "<name> USD <amount>" with no usage qty/unit.
 _PDF_HDR_RE = re.compile(r'^(.+?)\s+USD\s+[\d,]+(?:\.\d+)?\s*$')
 
+# The PDF prints its own post-discount subtotal(s) as "Total pre-tax USD <amt>"
+# (one per billing entity). Summing line items gives a GROSS figure (net of the
+# PRC rate but gross of the Enterprise Discount Program + credits, which appear
+# as parenthetical lines the item pattern can't sum) — ~27% high. We read the
+# stated pre-tax total and book the gap as a single reconciliation row rather
+# than parsing the EDP lines (which recap at several granularities → double-count).
+_PDF_PRETAX_RE = re.compile(r'total\s+pre-?tax\s+USD\s+([\d,]+\.\d{2})', re.I)
+
 # AWS PDFs group EBS storage/IOPS lines under the EC2 billing section, so the
 # cur_service header ends up wrong (e.g. "T3ACPUCredits"). Override it when the
 # description clearly describes block-storage pricing.
@@ -108,9 +116,20 @@ _PDF_STORAGE_DESC_RE = re.compile(
     r'IOPS-month|MiBps-month|throughput.*month',
     re.IGNORECASE)
 
+# S3 object-storage class terms. These lines ("… Intelligent-Tiering Archive …
+# GB-month of storage") ALSO match the EBS storage regex below and were wrongly
+# relabeled "Amazon Elastic Block Store" — there is no EBS Intelligent-Tiering /
+# Glacier. They are S3.
+_PDF_S3_CLASS_RE = re.compile(
+    r'intelligent[- ]?tiering|glacier|standard[- ]?ia|one[- ]?zone[- ]?ia|'
+    r'deep archive|reduced\s*redundancy', re.IGNORECASE)
+
 def _pdf_canonical_service(cur_service, desc):
     """Return the correct AWS service name for a PDF line item.
-    EBS storage/IOPS descriptions bleed into the EC2 section header — remap them."""
+    EBS storage/IOPS descriptions bleed into the EC2 section header — remap them,
+    but S3 storage-class lines must NOT be caught by that (they are object storage)."""
+    if _PDF_S3_CLASS_RE.search(desc):
+        return "Amazon Simple Storage Service"
     if _PDF_STORAGE_DESC_RE.search(desc):
         return "Amazon Elastic Block Store"
     return cur_service
@@ -135,12 +154,20 @@ def _load_pdf(conn, path):
 
     items = []            # (service, region, description, qty, cost)
     cur_service, cur_region = "", ""
+    stated_pretax = 0.0   # sum of the PDF's own "Total pre-tax USD X" lines
     try:
         with pdfplumber.open(path) as pdf:
             for page in pdf.pages:
                 for raw in (page.extract_text() or "").split("\n"):
                     ln = raw.strip()
                     if not ln:
+                        continue
+                    # The PDF states its own post-discount pre-tax total(s). We
+                    # trust that instead of parsing the parenthetical EDP/credit
+                    # lines (which recap at several granularities and double-count).
+                    tot = _PDF_PRETAX_RE.search(ln)
+                    if tot:
+                        stated_pretax += float(tot.group(1).replace(",", ""))
                         continue
                     m = _PDF_ITEM_RE.match(ln)
                     if m:
@@ -169,6 +196,20 @@ def _load_pdf(conn, path):
         _fail("Couldn't extract line items from this PDF (it may be summary-only). "
               "Export the AWS Cost & Usage Report as CSV or Parquet for an accurate projection.")
         return
+
+    # Reconcile the gross line-item sum down to the bill's own stated pre-tax
+    # total via a single Enterprise Discount Program row (classified is_workload
+    # =FALSE, ignore on GCP — GCP doesn't inherit AWS's negotiated discount).
+    # Only when the gap is material (>2%), so clean bills are untouched.
+    gross = sum(float(it[5]) for it in items)
+    if stated_pretax > 0 and gross - stated_pretax > 0.02 * gross:
+        adj = round(stated_pretax - gross, 2)
+        items.append(("Enterprise Discount Program", "", "",
+                      f"Enterprise Discount Program & credits "
+                      f"(reconcile gross USD {gross:,.2f} to stated pre-tax USD {stated_pretax:,.2f})",
+                      "0", f"{adj}"))
+        print(f"PDF: reconciled gross ${gross:,.2f} -> stated pre-tax ${stated_pretax:,.2f} "
+              f"(discount adjustment ${adj:,.2f})")
 
     tmp_csv = os.path.join(JOB_DIR, "input_from_pdf.csv")
     with open(tmp_csv, "w", newline="", encoding="utf-8") as fh:
@@ -318,6 +359,11 @@ def main():
                     COALESCE({c(['lineitem/lineitemtype', 'lineitemtype'])}, '') as line_item_type,
                     CASE 
                         WHEN {c(['lineitem/lineitemtype', 'lineitemtype'])} IN ('Tax','RIFee','SavingsPlanUpfrontFee','SavingsPlanRecurringFee','SavingsPlanNegation','SavingsPlanCoveredUsage','Refund','Credit','EdpDiscount','PrivateRateDiscount','BundledDiscount') THEN FALSE
+                        WHEN {c(['lineitem/productcode', 'productcode'])} IN ('AWSMarketplace', 'AWSSupport', 'Support')
+                          OR {c(['lineitem/productcode', 'productcode'])} ILIKE '%Marketplace%'
+                          OR {c(['lineitem/productcode', 'productcode'])} ILIKE '%AWSMP%'
+                          OR {c(['lineitem/productcode', 'productcode'])} ILIKE '%Support%'
+                          OR {c(['lineitem/lineitemtype', 'lineitemtype'])} ILIKE '%Marketplace%' THEN FALSE
                         WHEN {c(['lineitem/lineitemtype', 'lineitemtype'])} IN ('Usage','DiscountedUsage') THEN TRUE
                         ELSE FALSE
                     END as is_workload,
@@ -373,9 +419,19 @@ def main():
                           OR {c(['description'])} ILIKE '%No upfront fee%'
                           OR {c(['description'])} ILIKE '%Recurring monthly fee%'
                           OR {c(['description'])} ILIKE '%EDP Discount%'
+                          OR {c(['description'])} ILIKE '%Enterprise Discount Program%'
+                          OR {c(['service'])} ILIKE '%Enterprise Discount Program%'
                           OR {c(['description'])} ILIKE '%Private Pricing Discount%'
+                          OR {c(['description'])} ILIKE '%Private Rate%'
+                          OR {c(['description'])} ILIKE '%Solution Provider%'
+                          OR {c(['description'])} ILIKE '%Bundled Discount%'
                           OR {c(['description'])} ILIKE '%Refund%'
-                          OR {c(['description'])} ILIKE '%Credit%' THEN FALSE
+                          OR {c(['description'])} ILIKE '%Credit%'
+                          OR {c(['service'])} ILIKE '%Marketplace%'
+                          OR {c(['service'])} ILIKE '%AWSMP%'
+                          OR {c(['service'])} ILIKE '%Support%'
+                          OR {c(['description'])} ILIKE '%Marketplace%'
+                          OR {c(['description'])} ILIKE '%AWS Support%' THEN FALSE
                         ELSE TRUE
                     END AS is_workload,
                     CAST(REPLACE(COALESCE({c(['usage_quantity'])}, '0'), ',', '') AS DOUBLE) AS row_usage,

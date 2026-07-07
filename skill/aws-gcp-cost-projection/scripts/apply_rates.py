@@ -108,8 +108,8 @@ def _resolve_sku_for_row(gcp_service, gcp_sku_name, gcp_region, services, data_d
     if not gcp_sku_name:
         return None
 
-    best_exact_score, best_exact_id = -1, None
-    best_any_score,   best_any_id   = -1, None
+    best_exact_score, best_exact_id = (-1, 0), None
+    best_any_score,   best_any_id   = (-1, 0), None
 
     for s in all_skus:
         if s.get("category", {}).get("usageType") != "OnDemand":
@@ -131,14 +131,18 @@ def _resolve_sku_for_row(gcp_service, gcp_sku_name, gcp_region, services, data_d
             continue
         sku = s["skuId"]
         regions = s.get("serviceRegions", [])
-        # Tie-break on lexically-smallest skuId so an equal-score tie always
-        # resolves the same way regardless of catalog ordering — a resolved SKU
-        # must never change run-to-run for the same input.
+        # Composite rank: (word-overlap score, -extra words, lexically-smallest
+        # skuId). Penalizing extra description words makes the TIGHTEST match
+        # win a tie — "Balanced PD Capacity in Mumbai" beats "Regional Balanced
+        # PD Capacity in Mumbai" and "Storage PD Snapshot in Asia" (a pricier
+        # replicated/multi-region variant the caller never asked for). The
+        # skuId tiebreak keeps resolution deterministic across catalog order.
+        rank = (score, -len(desc.split()))
         if gcp_region and gcp_region in regions:
-            if score > best_exact_score or (score == best_exact_score and (best_exact_id is None or sku < best_exact_id)):
-                best_exact_score, best_exact_id = score, sku
-        if score > best_any_score or (score == best_any_score and (best_any_id is None or sku < best_any_id)):
-            best_any_score, best_any_id = score, sku
+            if rank > best_exact_score or (rank == best_exact_score and (best_exact_id is None or sku < best_exact_id)):
+                best_exact_score, best_exact_id = rank, sku
+        if rank > best_any_score or (rank == best_any_score and (best_any_id is None or sku < best_any_id)):
+            best_any_score, best_any_id = rank, sku
 
     return best_exact_id or best_any_id
 
@@ -211,6 +215,84 @@ def remap_elasticache_to_memorystore(conn):
     return n
 
 
+def fix_managed_db_storage_rows(conn, data_dir):
+    """Aurora/RDS 'Storage and I/O' rows are billed in GB-Mo, not Hrs. The LLM
+    maps them to vCPU/RAM SKUs (correct for instance rows), which multiplies
+    millions of GB against $/vCPU-hr and blows the total by 10,000x.
+
+    Detect any managed-DB row where pricing_unit is not hours and the current
+    SKU is a vCPU/RAM SKU, then remap to the correct Cloud SQL SSD Storage SKU.
+    This is the same class of fix as enforce_accelerator_passthrough — a unit
+    mismatch the LLM cannot reliably avoid."""
+    import json, os
+
+    # Load SKU resolver (needed to look up the right storage SKU per region)
+    services_path = os.path.join(data_dir, "services.json")
+    try:
+        services = json.load(open(services_path))
+        if isinstance(services, list):
+            services = {s["displayName"]: s["serviceId"] for s in services}
+    except Exception:
+        services = {}
+
+    rows = conn.execute("""
+        SELECT m.aws_li_key, m.gcp_service, m.gcp_sku_name, c.gcp_region,
+               c.pricing_unit, c.product
+        FROM aws_li_to_gcp_li m
+        JOIN aws_li_catalog c USING (aws_li_key)
+        WHERE m.strategy = 'map'
+          AND m.gcp_service = 'Cloud SQL'
+          AND (m.gcp_sku_name ILIKE '%vCPU%' OR m.gcp_sku_name ILIKE '% RAM%'
+               OR m.gcp_sku_name ILIKE '%Core%')
+          AND (c.pricing_unit NOT IN ('Hrs', 'hours', 'Hour')
+               OR c.pricing_unit IS NULL)
+          AND (c.product ILIKE '%Aurora%' OR c.product ILIKE '%RDS%'
+               OR c.product ILIKE '%Relational%')
+    """).fetchall()
+
+    if not rows:
+        return 0
+
+    fixed = 0
+    for key, svc, sku_name, gcp_region, pricing_unit, product in rows:
+        # Determine storage engine from product name for SKU precision
+        if "postgresql" in (product or "").lower() or "aurora" in (product or "").lower():
+            storage_sku = "Cloud SQL for PostgreSQL: Zonal - SSD storage"
+        elif "mysql" in (product or "").lower():
+            storage_sku = "Cloud SQL for MySQL: Zonal - SSD storage"
+        else:
+            storage_sku = "Cloud SQL: Zonal - SSD storage"
+
+        new_sku_id = _resolve_sku_for_row("Cloud SQL", storage_sku, gcp_region, services, data_dir)
+        if not new_sku_id:
+            # Fallback: passthrough rather than keep the wrong vCPU SKU
+            conn.execute("""
+                UPDATE aws_li_to_gcp_li SET
+                    strategy = 'passthrough',
+                    gcp_sku_id = NULL, gcp_sku_name = NULL,
+                    mapping_confidence = 0.6,
+                    projection_note = 'Aurora/RDS Storage+IO row — unit mismatch with vCPU SKU; '
+                                      'passthrough at cost parity until Cloud SQL storage SKU resolved'
+                WHERE aws_li_key = ?
+            """, [key])
+        else:
+            conn.execute("""
+                UPDATE aws_li_to_gcp_li SET
+                    gcp_sku_id = ?,
+                    gcp_sku_name = ?,
+                    mapping_confidence = 0.85,
+                    projection_note = ?
+                WHERE aws_li_key = ?
+            """, [new_sku_id, storage_sku,
+                  f"Aurora/RDS Storage+IO → {storage_sku} (unit-mismatch fix: was vCPU SKU)",
+                  key])
+        fixed += 1
+
+    if fixed:
+        print(f"  Fixed {fixed} managed-DB storage row(s) mis-mapped to vCPU SKUs")
+    return fixed
+
+
 def flag_license_exposure(conn):
     """Flag Windows / SQL Server / Oracle rows so a commercial-license bill is
     never SILENTLY under-projected. GCP compute here is priced license-EXCLUSIVE
@@ -277,6 +359,7 @@ def main():
     #   - ElastiCache → Memorystore for Memcached, never Cloud SQL
     enforce_accelerator_passthrough(conn)
     remap_elasticache_to_memorystore(conn)
+    fix_managed_db_storage_rows(conn, DATA_DIR)
 
     # Auto-resolve NULL gcp_sku_id for mapped rows using catalog lookup rules.
     # This prevents Phase 5 from seeing NULL projected cost and wrongly setting passthrough.
@@ -451,9 +534,12 @@ def main():
     _CUD_GROUPS = [
         ("Compute Engine", "('CPU','RAM','GPU')",
          "https://cloud.google.com/compute/docs/instances/signing-up-committed-use-discounts"),
-        ("Cloud SQL", "('SQLGen2InstancesCPU','SQLInstancesCPU','SQLGen2InstancesRAM',"
-                      "'SQLInstancesRAM','SQLGen2InstancesPD-SSD','SQLInstancesPD-SSD')",
-         "https://cloud.google.com/sql/cud"),
+        # rg_list=None: apply CUD to ALL Cloud SQL OnDemand SKUs rather than
+        # filtering by resource_group. CUR/PDF bills for RDS come in as
+        # instance-hour charges — the resource_group column is blank — so the
+        # old resource_group IN (...) clause never matched and Cloud SQL rows
+        # always showed OD=1yr=3yr (no discount applied at all).
+        ("Cloud SQL", None, "https://cloud.google.com/sql/cud"),
         ("AlloyDB", None, "https://cloud.google.com/alloydb/pricing"),
         ("Cloud Memorystore for Memcached", None,
          "https://cloud.google.com/memorystore/docs/memcached/committed-use-discounts"),

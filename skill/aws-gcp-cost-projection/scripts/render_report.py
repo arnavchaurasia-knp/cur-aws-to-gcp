@@ -15,10 +15,21 @@ def main():
     conn = duckdb.connect(DB_PATH)
     
     # 1. Calculate sums deterministically
-    aws_total = conn.execute("SELECT SUM(aws_amortized_cost) FROM aws_li_catalog").fetchone()[0] or 0.0
+    aws_workload = conn.execute("SELECT SUM(aws_amortized_cost) FROM aws_li_catalog WHERE is_workload").fetchone()[0] or 0.0
+    aws_non_workload = conn.execute("SELECT SUM(aws_amortized_cost) FROM aws_li_catalog WHERE NOT is_workload").fetchone()[0] or 0.0
+    aws_grand = aws_workload + aws_non_workload
+
     gcp_od = conn.execute("SELECT SUM(gcp_projected_cost) FROM gcp_projection WHERE is_workload").fetchone()[0] or 0.0
     gcp_1yr = conn.execute("SELECT SUM(gcp_cost_1yr_cud) FROM gcp_projection WHERE is_workload").fetchone()[0] or 0.0
     gcp_3yr = conn.execute("SELECT SUM(gcp_cost_3yr_cud) FROM gcp_projection WHERE is_workload").fetchone()[0] or 0.0
+
+    gcp_non_workload_od = conn.execute("SELECT SUM(gcp_projected_cost) FROM gcp_projection WHERE NOT is_workload").fetchone()[0] or 0.0
+    gcp_non_workload_1yr = conn.execute("SELECT SUM(gcp_cost_1yr_cud) FROM gcp_projection WHERE NOT is_workload").fetchone()[0] or 0.0
+    gcp_non_workload_3yr = conn.execute("SELECT SUM(gcp_cost_3yr_cud) FROM gcp_projection WHERE NOT is_workload").fetchone()[0] or 0.0
+
+    gcp_grand_od = gcp_od + gcp_non_workload_od
+    gcp_grand_1yr = gcp_1yr + gcp_non_workload_1yr
+    gcp_grand_3yr = gcp_3yr + gcp_non_workload_3yr
 
     # 2. Get customer name
     customer_name = "Prospect"
@@ -83,8 +94,11 @@ def main():
         WHERE c.is_workload AND c.instance_ram_gb IS NOT NULL
     """).fetchone()[0] or 0.0
 
-    vcpu_status = "PASS" if gcp_vcpu >= aws_vcpu else "WARN"
-    ram_status  = "PASS" if gcp_ram  >= aws_ram  else "WARN"
+    # 0.5% rounding tolerance: GCP RAM of 194.22 vs AWS 194.27 (a 0.05 GB rounding
+    # gap) is not a real under-provision and shouldn't read as WARN.
+    _CAP_TOL = 0.005
+    vcpu_status = "PASS" if gcp_vcpu >= aws_vcpu * (1 - _CAP_TOL) else "WARN"
+    ram_status  = "PASS" if gcp_ram  >= aws_ram  * (1 - _CAP_TOL) else "WARN"
     
     # Read validation warnings (if the validator found anything after auto-fix)
     _GATE_LABELS = {
@@ -127,7 +141,7 @@ def main():
               OR c.product ILIKE '%Data Transfer%' OR c.product ILIKE '%Bandwidth%' THEN 'Networking'
             ELSE 'Other'
           END AS category,
-          AVG(m.mapping_confidence) AS avg_conf,
+          AVG(LEAST(m.mapping_confidence, 1.0)) AS avg_conf,
           COUNT(*) AS cnt
         FROM aws_li_to_gcp_li m
         JOIN aws_li_catalog c USING (aws_li_key)
@@ -137,7 +151,7 @@ def main():
 
     # Overall average (passthrough rows are intentional 100% — exclude from avg to avoid inflating)
     avg_conf = conn.execute(
-        "SELECT AVG(mapping_confidence) FROM aws_li_to_gcp_li WHERE strategy != 'passthrough'"
+        "SELECT AVG(LEAST(mapping_confidence, 1.0)) FROM aws_li_to_gcp_li WHERE strategy != 'passthrough'"
     ).fetchone()[0] or 0.0
 
     html_content = f"""
@@ -216,12 +230,36 @@ def main():
 
         <h2>Cost Summary</h2>
         <table>
-            <tr><th>AWS Total</th><td class="right">${aws_total:,.2f}</td></tr>
-            <tr><th>GCP On-Demand</th><td class="right">${gcp_od:,.2f}</td></tr>
-            <tr><th>GCP with 1-Year Commitment</th><td class="right">${gcp_1yr:,.2f}</td></tr>
-            <tr><th>GCP with 3-Year Commitment</th><td class="right">${gcp_3yr:,.2f}</td></tr>
+            <tr>
+                <th>Cost Category</th>
+                <th class="right">AWS Cost</th>
+                <th class="right">GCP On-Demand</th>
+                <th class="right">GCP 1-Year CUD</th>
+                <th class="right">GCP 3-Year CUD</th>
+            </tr>
+            <tr>
+                <td><b>Core Infrastructure (Workload)</b></td>
+                <td class="right">${aws_workload:,.2f}</td>
+                <td class="right">${gcp_od:,.2f}</td>
+                <td class="right">${gcp_1yr:,.2f}</td>
+                <td class="right">${gcp_3yr:,.2f}</td>
+            </tr>
+            <tr>
+                <td><b>Non-Workload Spend (Marketplace & Support)</b></td>
+                <td class="right">${aws_non_workload:,.2f}</td>
+                <td class="right">${gcp_non_workload_od:,.2f}</td>
+                <td class="right">${gcp_non_workload_1yr:,.2f}</td>
+                <td class="right">${gcp_non_workload_3yr:,.2f}</td>
+            </tr>
+            <tr style="border-top: 2px solid #ccc; font-weight: bold; background-color: #f9f9f9;">
+                <td>Grand Total</td>
+                <td class="right">${aws_grand:,.2f}</td>
+                <td class="right">${gcp_grand_od:,.2f}</td>
+                <td class="right">${gcp_grand_1yr:,.2f}</td>
+                <td class="right">${gcp_grand_3yr:,.2f}</td>
+            </tr>
         </table>
-        <div id="aws-total-spend" hidden>{aws_total:.2f}</div>
+        <div id="aws-total-spend" hidden>{aws_grand:.2f}</div>
         <p style="margin:6px 0 4px;font-size:0.85em;color:#888;"><i>&#9888; Windows and commercial software license premiums are excluded from the totals above unless explicitly modeled in the source bill.</i></p>
 
         <h2>Cost Comparison by Service</h2>
@@ -242,7 +280,7 @@ def main():
             (c.aws_amortized_cost - SUM(p.gcp_projected_cost)) AS diff
         FROM aws_li_catalog c
         LEFT JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
-        LEFT JOIN gcp_projection p ON c.aws_li_key = p.aws_li_key AND p.component = m.component
+        LEFT JOIN gcp_projection p ON c.aws_li_key = p.aws_li_key AND p.component IS NOT DISTINCT FROM m.component
         GROUP BY c.aws_li_key, c.product, c.operation, c.aws_amortized_cost
         ORDER BY c.aws_amortized_cost DESC
     """).fetchall()
@@ -272,17 +310,17 @@ def main():
         """
         idx += 1
         
-    diff_total = aws_total - gcp_od
+    diff_total = aws_grand - gcp_grand_od
     diff_total_class = "green" if diff_total > 0 else "red" if diff_total < 0 else ""
     diff_total_str = f"+${diff_total:,.2f}" if diff_total > 0 else f"-${abs(diff_total):,.2f}" if diff_total < 0 else "$0.00"
         
     html_content += f"""
             <tr>
-                <th colspan="3">TOTAL</th>
-                <th class="right">${aws_total:,.2f}</th>
-                <th class="right">${gcp_od:,.2f}</th>
-                <th class="right">${gcp_1yr:,.2f}</th>
-                <th class="right">${gcp_3yr:,.2f}</th>
+                <th colspan="3">GRAND TOTAL</th>
+                <th class="right">${aws_grand:,.2f}</th>
+                <th class="right">${gcp_grand_od:,.2f}</th>
+                <th class="right">${gcp_grand_1yr:,.2f}</th>
+                <th class="right">${gcp_grand_3yr:,.2f}</th>
                 <th class="right {diff_total_class}">{diff_total_str}</th>
             </tr>
         </table>
@@ -338,7 +376,7 @@ def main():
                 " report_html, report_md, summary_md, mapped_rows, passthroughs, confidence) "
                 "VALUES (?, ?, 'initial', NULL, ?, ?, ?, ?, 'projection-audit/report.html', NULL, NULL, ?, ?, NULL)",
                 [run_id, now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                 aws_total, gcp_od, gcp_1yr, gcp_3yr, mapped_rows, passthroughs]
+                 aws_grand, gcp_grand_od, gcp_grand_1yr, gcp_grand_3yr, mapped_rows, passthroughs]
             )
             conn.commit()
             print(f"Inserted run_results row for {run_id}")

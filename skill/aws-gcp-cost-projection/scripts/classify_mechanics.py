@@ -52,32 +52,68 @@ def _is_accelerator(row) -> bool:
         return True
     return bool(re.search(r'\b(inf\d|trn\d|dl\d|p[2-5]|g[3-6]|vt\d)[a-z0-9]*\.', txt))
 
+def _has_instance_type(text: str | None) -> bool:
+    if not text:
+        return False
+    return bool(re.search(r'\b(?:db\.|cache\.|kafka\.)?[a-z]\d[a-z0-9]*\.[a-z0-9]+\b', text, re.IGNORECASE))
+
 RULES = [
+    (
+        "non_workload",
+        lambda r: (
+            _ilike(r["product"], "Marketplace")
+            or _ilike(r["product"], "Support")
+            or _ilike(r["product"], "AWS Support")
+            or _ilike(r["product"], "AWSMarketplace")
+            or _ilike(r["product"], "AWSSupport")
+            or _ilike(r["product"], "AWSMP")
+            or _ilike(r["operation"], "Marketplace")
+            or _ilike(r["operation"], "AWS Support")
+        ),
+    ),
     (
         # NOTE: excludes accelerator/GPU instances — those fall through to misc
         # and get a manual-review verdict rather than a wrong N2D CPU mapping.
         "compute_breakdown",
         lambda r: (
-            (_ilike(r["product"], "Elastic Compute") or _ilike(r["product"], "EC2") or _ilike(r["product"], "Compute Cloud"))
-            and (_re(r["usage_type"], r"BoxUsage|SpotUsage|ReservedInstances|running Linux") or _re(r["operation"], r"Instance Hour"))
+            (
+                _ilike(r["product"], "Elastic Compute")
+                or _ilike(r["product"], "EC2")
+                or _ilike(r["product"], "Compute Cloud")
+                or _has_instance_type(r["operation"])
+                or _has_instance_type(r["usage_type"])
+            )
+            and not (
+                _ilike(r["product"], "RDS")
+                or _ilike(r["product"], "Relational Database")
+                or _ilike(r["product"], "Aurora")
+                or _ilike(r["product"], "ElastiCache")
+                or _ilike(r["product"], "DocumentDB")
+                or _ilike(r["product"], "MemoryDB")
+            )
+            and (_re(r["usage_type"], r"BoxUsage|SpotUsage|ReservedInstances|running Linux") or _re(r["operation"], r"Instance Hour|hourly fee per Linux/UNIX"))
             and r["unit"] in ("Hrs", "hours")
             and not _is_accelerator(r)
         ),
     ),
     (
-        # managed_db owns BOTH the instance AND its storage/backup lines. Storage
-        # SKU selection for a managed DB is engine- and region-specific (a generic
-        # "SSD storage" pattern resolves to the wrong SKU — e.g. an IOPS SKU), so
-        # these rows need the managed_db LLM's context, not a static table. Only
-        # standalone EBS volumes go to block_storage (deterministic).
+        # managed_db handles INSTANCE rows (billing unit = Hrs/hours) for the LLM.
+        # Storage/IO/backup rows (unit = GB-Mo, None, or non-hourly) are routed to
+        # block_storage instead — map_block_storage handles managed-DB storage
+        # deterministically and picks the correct Cloud SQL storage SKU.
+        # Sending non-Hrs Aurora/RDS rows to the LLM caused it to assign vCPU SKUs
+        # to GB-Mo storage rows, inflating cost by 10,000x (millions of GB × $/hr).
         "managed_db",
         lambda r: (
-            _ilike(r["product"], "RDS")
-            or _ilike(r["product"], "Relational Database")
-            or _ilike(r["product"], "Aurora")
-            or _ilike(r["product"], "ElastiCache")
-            or _ilike(r["product"], "DocumentDB")
-            or _ilike(r["product"], "MemoryDB")
+            (
+                _ilike(r["product"], "RDS")
+                or _ilike(r["product"], "Relational Database")
+                or _ilike(r["product"], "Aurora")
+                or _ilike(r["product"], "ElastiCache")
+                or _ilike(r["product"], "DocumentDB")
+                or _ilike(r["product"], "MemoryDB")
+            )
+            and r.get("unit") in ("Hrs", "hours", "Hour", "hrs")
         ),
     ),
     (
@@ -87,6 +123,17 @@ RULES = [
             or _re(r["usage_type"], r"EBS:Volume|EBS:Snapshot|gp2|gp3|io1|io2|sc1|st1")
             or (_re(r["usage_type"], r"Storage") and not _ilike(r["product"], "S3") and not _ilike(r["product"], "Simple Storage") and not _ilike(r["product"], "DynamoDB"))
             or _re(r["operation"], r"GP3-Storage|Provisioned GP3 storage")
+            # Managed-DB storage/IO/backup rows (non-Hrs billing unit) — these fell
+            # through managed_db's Hrs filter and must be caught here for deterministic
+            # Cloud SQL storage SKU mapping rather than going to the LLM as misc.
+            or (
+                (
+                    _ilike(r["product"], "RDS") or _ilike(r["product"], "Relational Database")
+                    or _ilike(r["product"], "Aurora") or _ilike(r["product"], "ElastiCache")
+                    or _ilike(r["product"], "DocumentDB") or _ilike(r["product"], "MemoryDB")
+                )
+                and r.get("unit") not in ("Hrs", "hours", "Hour", "hrs")
+            )
         ),
     ),
     (
@@ -127,8 +174,15 @@ RULES = [
         "object_storage",
         lambda r: (
             (_ilike(r["product"], "S3") or _ilike(r["product"], "Simple Storage"))
-            and r["unit"] in ("GB-Mo", "GB Month", "GB-Month")
-            and _re(r["usage_type"], r"TimedStorage|ByteHrs")
+            # unit=GB-Mo reliably identifies a STORAGE row (requests/retrieval use
+            # count/GB units). The usage_type check is kept as an OR so CSV bills
+            # still match, but PDF bills (blank usage_type) route on unit alone —
+            # otherwise S3 storage falls to the LLM and gets invented multipliers.
+            and (
+                (r["unit"] in ("GB-Mo", "GB Month", "GB-Month")
+                 and not _re(r["operation"], r"Request|Retrieval|Data Returned|Select"))
+                or _re(r["usage_type"], r"TimedStorage|ByteHrs")
+            )
         ),
     ),
     (
@@ -555,7 +609,7 @@ def main():
     skip_groups = {
         "commitment_discount",
         "flat_hourly", "object_storage", "per_request",
-        "block_storage", "data_transfer",
+        "block_storage", "data_transfer", "non_workload",
     }
     manifest_out = {
         g: {"rows": rows, "row_count": len(rows),

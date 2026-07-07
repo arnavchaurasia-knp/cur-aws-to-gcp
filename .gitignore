@@ -43,3 +43,10 @@ NOTES.md
 # Temp
 /tmp/
 *.tmp
+
+# Extracted bill CSVs and scripts
+bill_line_items.csv
+bill_line_items_filtered.csv
+scripts/extract_bill_csv.py
+scripts/filter_bill_csv.py
+projection-audit/

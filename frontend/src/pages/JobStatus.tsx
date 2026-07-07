@@ -63,11 +63,7 @@ function TotalsCard({ run, fallback }: { run: RunResult | null; fallback: number
                   {formatDollars(r.value)}
                 </span>
                 {pct && (
-                  <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${
-                    pct.positive
-                      ? 'bg-emerald-400/15 text-emerald-400'
-                      : 'bg-orange-400/15 text-orange-400'
-                  }`}>
+                  <span className="text-xs font-medium px-1.5 py-0.5 rounded-full bg-white/5 text-gray-400">
                     {pct.label}
                   </span>
                 )}

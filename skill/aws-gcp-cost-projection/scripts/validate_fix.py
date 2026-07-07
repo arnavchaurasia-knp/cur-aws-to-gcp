@@ -920,6 +920,8 @@ def main():
     # reconciliation: catalog total vs the bill's stated grand total
     aws_total = con.execute(
         "SELECT ROUND(COALESCE(SUM(aws_amortized_cost),0),2) FROM aws_li_catalog").fetchone()[0]
+    aws_workload_total = con.execute(
+        "SELECT ROUND(COALESCE(SUM(aws_amortized_cost),0),2) FROM aws_li_catalog WHERE is_workload").fetchone()[0] or 0.0
     bill_total = extract_bill_total(jobdir)
     if bill_total is None:
         print("[WARN] bill_total not found in input — reconciliation skipped")
@@ -1023,13 +1025,13 @@ def main():
                    ROUND(COALESCE(SUM(gcp_cost_1yr_cud),0),2),
                    ROUND(COALESCE(SUM(gcp_cost_3yr_cud),0),2)
             FROM gcp_projection WHERE is_workload""").fetchone()
-    diff = None if gcp_od is None else round(aws_total - gcp_od, 2)
+    diff = None if gcp_od is None else round(aws_workload_total - gcp_od, 2)
     verdict = None
     if not has_view:
         verdict = "view missing — projection totals unavailable"
     elif diff is not None:
         verdict = "GCP cheaper" if diff > 0 else ("GCP more expensive" if diff < 0 else "~ equal")
-    report["totals"] = {"aws_total": aws_total, "gcp_od": gcp_od,
+    report["totals"] = {"aws_total": aws_total, "aws_workload_total": aws_workload_total, "gcp_od": gcp_od,
                         "gcp_1yr_cud": gcp_1yr, "gcp_3yr_cud": gcp_3yr,
                         "bill_total": bill_total,
                         "diff_aws_minus_gcp_od": diff, "verdict": verdict,
@@ -1049,7 +1051,7 @@ def main():
               f"zeroed {len(zeroed_keys)} $0 throughput row(s); "
               f"synthesized {cud_synth} CUD rate(s)")
     t = report["totals"]
-    print(f"  totals : AWS ${t['aws_total']}  GCP_OD ${t['gcp_od']}  "
+    print(f"  totals : AWS_Workload ${t['aws_workload_total']} (Grand ${t['aws_total']})  GCP_OD ${t['gcp_od']}  "
           f"1yr ${t['gcp_1yr_cud']}  3yr ${t['gcp_3yr_cud']}"
           + (f"  (bill ${t['bill_total']})" if t['bill_total'] is not None else ""))
     print(f"  verdict: diff(AWS-GCP_OD)=${t['diff_aws_minus_gcp_od']} -> {t['verdict']}")

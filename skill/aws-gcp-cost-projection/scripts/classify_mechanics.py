@@ -125,6 +125,26 @@ RULES = [
         ),
     ),
     (
+        # EFS → Filestore. Must come before block_storage because EFS rows have
+        # "Storage" in usage_type and would match the generic Storage rule.
+        "efs",
+        lambda r: (
+            _ilike(r["product"], "Elastic File System")
+            or _ilike(r["product"], "AmazonEFS")
+        ),
+    ),
+    (
+        # FSx variants → Filestore or passthrough. Must come before block_storage
+        # because FSx rows have "Storage" in usage_type and would otherwise match
+        # the generic block_storage storage rule.
+        "fsx",
+        lambda r: (
+            _ilike(r["product"], "FSx")
+            or _ilike(r["product"], "AmazonFSx")
+            or _ilike(r["product"], "Amazon FSx")
+        ),
+    ),
+    (
         "block_storage",
         lambda r: (
             _ilike(r["product"], "Elastic Block")
@@ -151,6 +171,16 @@ RULES = [
             or _ilike(r["product"], "Data Transfer")
             or _re(r["usage_type"], r"DataTransfer|Data Transfer|NatGateway-Bytes|TransitGateway-Bytes|LCUUsage|LoadBalancer-Bytes")
             or _re(r["operation"], r"TransitGateway-Bytes")
+        ),
+    ),
+    (
+        # X-Ray → Cloud Trace. Must come before per_request because X-Ray rows
+        # use unit=Count which the per_request rule also catches.
+        "xray",
+        lambda r: (
+            _ilike(r["product"], "X-Ray")
+            or _ilike(r["product"], "AmazonXRay")
+            or _ilike(r["product"], "XRay")
         ),
     ),
     (
@@ -235,31 +265,14 @@ RULES = [
         ),
     ),
     (
-        # EFS → Filestore. Catches storage and throughput rows.
-        "efs",
+        # EMR management fee rows — caught before misc so they get a deterministic
+        # Dataproc mapping rather than an LLM guess. The underlying EC2 cost for
+        # EMR worker nodes comes through compute_breakdown (different product line).
+        "emr",
         lambda r: (
-            _ilike(r["product"], "Elastic File System")
-            or _ilike(r["product"], "AmazonEFS")
-        ),
-    ),
-    (
-        # FSx variants → Filestore or passthrough. Must come before block_storage
-        # because FSx rows have "Storage" in usage_type and would otherwise match
-        # the generic block_storage storage rule.
-        "fsx",
-        lambda r: (
-            _ilike(r["product"], "FSx")
-            or _ilike(r["product"], "AmazonFSx")
-            or _ilike(r["product"], "Amazon FSx")
-        ),
-    ),
-    (
-        # X-Ray → Cloud Trace. Traces are priced per million after free tier.
-        "xray",
-        lambda r: (
-            _ilike(r["product"], "X-Ray")
-            or _ilike(r["product"], "AmazonXRay")
-            or _ilike(r["product"], "XRay")
+            _ilike(r["product"], "Elastic MapReduce")
+            or _ilike(r["product"], "AmazonEMR")
+            or _ilike(r["product"], "Amazon EMR")
         ),
     ),
     (
@@ -391,10 +404,9 @@ _SIZING_RE = re.compile(
 # Services where an incorrect size estimate is worse than passthrough.
 # When information_completeness='minimal', these get strategy='passthrough'.
 _SIZING_SENSITIVE = frozenset(
-    # Redshift, Athena, and Kinesis removed — they now have dedicated static mappers
-    # and never reach misc. EMR and Glue remain: node sizing varies too much for a
-    # simple slot table, and the LLM passthrough is more honest than a wrong fixed mapping.
-    ["EKS", "ECS", "Fargate", "EMR", "Glue"]
+    # Redshift, Athena, Kinesis, and EMR removed — they now have dedicated static mappers.
+    # Glue remains: DPU-based pricing maps poorly without explicit DPU count in CUR.
+    ["EKS", "ECS", "Fargate", "Glue"]
 )
 
 
@@ -719,7 +731,7 @@ def main():
         "commitment_discount",
         "flat_hourly", "object_storage", "per_request",
         "block_storage", "data_transfer", "non_workload", "cloudwatch",
-        "guardduty", "redshift", "athena", "kinesis", "efs", "xray", "fsx",
+        "guardduty", "redshift", "athena", "kinesis", "efs", "xray", "fsx", "emr",
     }
     manifest_out = {
         g: {"rows": rows, "row_count": len(rows),

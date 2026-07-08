@@ -32,9 +32,12 @@ S3_CLASS_MAP = {
     "standard-ia":           ("Cloud Storage",  "Nearline Storage",          1.0),
     "onezone-ia":            ("Cloud Storage",  "Nearline Storage",          1.0),
     "archive instant":       ("Cloud Storage",  "Nearline Storage",          1.0),
-    "glacier instant":       ("Cloud Storage",  "Coldline Storage",          1.0),
-    "glacier flexible":      ("Cloud Storage",  "Coldline Storage",          1.0),
-    "glacier deep archive":  ("Cloud Storage",  "Archive Storage",           1.0),
+    "glacier deep archive":    ("Cloud Storage",  "Archive Storage",           1.0),
+    "glacierdeeparchive":      ("Cloud Storage",  "Archive Storage",           1.0),
+    "glacier instant":         ("Cloud Storage",  "Coldline Storage",          1.0),
+    "glacierinstant":          ("Cloud Storage",  "Coldline Storage",          1.0),
+    "glacier flexible":        ("Cloud Storage",  "Coldline Storage",          1.0),
+    "glacierflexible":         ("Cloud Storage",  "Coldline Storage",          1.0),
     "reducedredundancy":     ("Cloud Storage",  "Standard Storage",          1.0),
 }
 S3_CLASS_DEFAULT = ("Cloud Storage", "Standard Storage", 1.0)
@@ -1178,6 +1181,114 @@ def map_xray(rows):
     return out
 
 
+# EMR instance type → vCPU count (management fee scales with vCPUs via Dataproc premium).
+# EC2 instance-hour cost is captured separately by compute_breakdown; only the EMR
+# management premium fee rows reach this mapper.
+_EMR_VCPU_MAP = {
+    "m5.xlarge": 4,    "m5.2xlarge": 8,    "m5.4xlarge": 16,  "m5.8xlarge": 32,
+    "m5.12xlarge": 48, "m5.16xlarge": 64,  "m5.24xlarge": 96,
+    "m5a.xlarge": 4,   "m5a.2xlarge": 8,   "m5a.4xlarge": 16, "m5a.8xlarge": 32,
+    "m6i.xlarge": 4,   "m6i.2xlarge": 8,   "m6i.4xlarge": 16, "m6i.8xlarge": 32,
+    "m6g.xlarge": 4,   "m6g.2xlarge": 8,   "m6g.4xlarge": 16, "m6g.8xlarge": 32,
+    "m6a.xlarge": 4,   "m6a.2xlarge": 8,   "m6a.4xlarge": 16, "m6a.8xlarge": 32,
+    "r5.xlarge": 4,    "r5.2xlarge": 8,    "r5.4xlarge": 16,  "r5.8xlarge": 32,
+    "r5.12xlarge": 48, "r5.16xlarge": 64,  "r5.24xlarge": 96,
+    "r6i.xlarge": 4,   "r6i.2xlarge": 8,   "r6i.4xlarge": 16, "r6i.8xlarge": 32,
+    "r6g.xlarge": 4,   "r6g.2xlarge": 8,   "r6g.4xlarge": 16, "r6g.8xlarge": 32,
+    "c5.xlarge": 4,    "c5.2xlarge": 8,    "c5.4xlarge": 16,  "c5.9xlarge": 36,  "c5.18xlarge": 72,
+    "c6i.xlarge": 4,   "c6i.2xlarge": 8,   "c6i.4xlarge": 16, "c6i.8xlarge": 32,
+    "c6g.xlarge": 4,   "c6g.2xlarge": 8,   "c6g.4xlarge": 16, "c6g.8xlarge": 32,
+    "i3.xlarge": 4,    "i3.2xlarge": 8,    "i3.4xlarge": 16,  "i3.8xlarge": 32,
+    "i3en.xlarge": 4,  "i3en.2xlarge": 8,  "i3en.3xlarge": 12,"i3en.6xlarge": 24,
+    "i3en.12xlarge": 48, "i3en.24xlarge": 96,
+    "p3.2xlarge": 8,   "p3.8xlarge": 32,   "p3.16xlarge": 64,
+    "g4dn.xlarge": 4,  "g4dn.2xlarge": 8,  "g4dn.4xlarge": 16,"g4dn.8xlarge": 32,
+}
+
+
+def _emr_vcpus(usage_type, instance_vcpus):
+    """Extract vCPU count for an EMR management fee row."""
+    if instance_vcpus:
+        try:
+            return int(instance_vcpus)
+        except (TypeError, ValueError):
+            pass
+    if not usage_type:
+        return None
+    # usage_type pattern: "m5.xlarge-EMR-CORE" or "USE2-m5.2xlarge-EMR-MASTER"
+    m = re.search(r'([a-z][0-9][a-z0-9]*\.[a-z0-9]+)-EMR', usage_type, re.IGNORECASE)
+    if m:
+        return _EMR_VCPU_MAP.get(m.group(1).lower())
+    return None
+
+
+def map_emr(rows):
+    """EMR management fee → Cloud Dataproc Premium.
+
+    EMR charges a per-node-hour management fee on top of the underlying EC2 cost.
+    The EC2 cost is captured separately by compute_breakdown. This mapper converts
+    the EMR management premium to the Dataproc cluster service charge.
+
+    Dataproc Premium: $0.01/vCPU-hr. We multiply the node-hours by vCPU count
+    to get vCPU-hours, then apply the Dataproc Premium SKU rate.
+    When the instance type is unknown, passthrough at cost parity with Dataproc label.
+    """
+    _DATAPROC_PREMIUM_SKU = "Dataproc Premium"
+    out = []
+    for r in rows:
+        ut = r.get("usage_type") or ""
+        gcp_region = r.get("gcp_region")
+        blob = f"{ut} {r.get('operation') or ''} {r.get('product') or ''}".lower()
+
+        # Spot/preemptible rows and storage-only rows → passthrough
+        if re.search(r"spot|storage|backup", blob):
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Dataproc",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "management",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    f"EMR spot/storage row — passthrough at cost parity (usage_type={ut!r})",
+                "mapping_confidence": 0.55,
+            })
+            continue
+
+        vcpus = _emr_vcpus(ut, r.get("instance_vcpus"))
+        if vcpus:
+            sku_id = resolve_sku("Cloud Dataproc", _DATAPROC_PREMIUM_SKU, gcp_region)
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Dataproc",
+                "gcp_sku_name":       _DATAPROC_PREMIUM_SKU,
+                "component":          "management",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    float(vcpus),
+                "gcp_region":         gcp_region,
+                "projection_note":    f"EMR management fee → Dataproc Premium ({vcpus} vCPU × $0.01/hr per node-hour)",
+                "mapping_confidence": 0.70,
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+        else:
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Dataproc",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "management",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    f"EMR management fee — vCPU count unknown for usage_type={ut!r}; passthrough at cost parity",
+                "mapping_confidence": 0.45,
+            }
+        out.append(entry)
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <projection.duckdb>", file=sys.stderr)
@@ -1194,7 +1305,7 @@ def main():
         FROM aws_li_catalog
         WHERE mechanic_group IN
               ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer',
-               'non_workload', 'cloudwatch', 'guardduty', 'redshift', 'athena', 'kinesis', 'efs', 'xray', 'fsx')
+               'non_workload', 'cloudwatch', 'guardduty', 'redshift', 'athena', 'kinesis', 'efs', 'xray', 'fsx', 'emr')
     """).fetchall()
     con.close()
 
@@ -1203,7 +1314,7 @@ def main():
     by_group: dict[str, list] = {g: [] for g in
                                  ("flat_hourly", "object_storage", "per_request",
                                   "block_storage", "data_transfer", "non_workload", "cloudwatch",
-                                  "guardduty", "redshift", "athena", "kinesis", "efs", "xray", "fsx")}
+                                  "guardduty", "redshift", "athena", "kinesis", "efs", "xray", "fsx", "emr")}
     for raw in rows:
         r = dict(zip(cols, raw))
         by_group[r["mechanic_group"]].append(r)
@@ -1226,6 +1337,7 @@ def main():
         "efs":            map_efs,
         "xray":           map_xray,
         "fsx":            map_fsx,
+        "emr":            map_emr,
     }
     for group, handler in handlers.items():
         mappings = handler(by_group[group])

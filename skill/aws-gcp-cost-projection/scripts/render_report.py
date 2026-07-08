@@ -359,6 +359,22 @@ def main():
         ORDER BY c.aws_amortized_cost DESC
     """).fetchall()
 
+    # ── rate provenance coverage (P0-C) ──────────────────────────────────────
+    rate_source_rows = []
+    try:
+        rate_source_rows = conn.execute("""
+            SELECT
+                COALESCE(m.rate_source, 'unknown')                     AS source,
+                COUNT(*)                                                AS row_count,
+                COALESCE(SUM(c.aws_amortized_cost), 0)                 AS spend
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog c USING (aws_li_key)
+            GROUP BY source
+            ORDER BY spend DESC
+        """).fetchall()
+    except Exception:
+        pass  # rate_source column not yet present (old job)
+
     # ── wins/losses (top 5 each, workload only, mapped rows) ─────────────────
     wl_rows = conn.execute("""
         WITH agg AS (
@@ -570,6 +586,47 @@ def main():
     if outlier_note:
         warn_block += f'<div class="warn-box"><b>&#9888; Cost outliers clamped to passthrough</b><pre style="white-space:pre-wrap;font-size:11px;margin:6px 0">{_html.escape(outlier_note[:1200])}</pre></div>'
 
+    # ── rate provenance section HTML ──────────────────────────────────────────
+    _SOURCE_META = {
+        "exact_sku":  ("#0D9D58", "Exact SKU",      "SKU pinned by static mapper or LLM exact match — highest accuracy"),
+        "passthrough":("#1A73E8", "Passthrough",     "No GCP rate applied; AWS cost carried as placeholder"),
+        "word_overlap":("#E37400","Word-Overlap SKU","SKU resolved by description search — verify if cost looks wrong"),
+        "no_rate":    ("#D93025", "No Rate Found",   "Rate missing for resolved SKU; row fell back to passthrough"),
+        "unknown":    ("#80868B", "Unknown",          "Rate source not recorded (pre-P0-B run)"),
+    }
+    coverage_section_html = ""
+    if rate_source_rows:
+        total_rows_rs  = sum(r[1] for r in rate_source_rows)
+        total_spend_rs = sum(r[2] for r in rate_source_rows)
+        cov_rows_html = ""
+        for source, row_cnt, spend in rate_source_rows:
+            color, label, desc = _SOURCE_META.get(source, ("#80868B", source, ""))
+            row_pct   = 100.0 * row_cnt  / total_rows_rs  if total_rows_rs  else 0
+            spend_pct = 100.0 * spend    / total_spend_rs if total_spend_rs else 0
+            badge_style = (f"display:inline-block;font-size:10px;font-weight:600;color:#fff;"
+                           f"background:{color};border-radius:3px;padding:1px 5px;margin-right:4px")
+            warn = ""
+            if source == "word_overlap":
+                warn = ' <span style="color:#E37400;font-size:10px">⚠ verify if inflated</span>'
+            elif source == "no_rate":
+                warn = ' <span style="color:#D93025;font-size:10px">⚠ check SKU catalog</span>'
+            cov_rows_html += (
+                f"<tr>"
+                f"<td><span style='{badge_style}'>{label}</span>{warn}</td>"
+                f"<td style='color:#5F6368;font-size:11px'>{desc}</td>"
+                f"<td class='num'>{row_cnt:,} ({row_pct:.1f}%)</td>"
+                f"<td class='num'><b>${spend:,.2f}</b> ({spend_pct:.1f}%)</td>"
+                f"</tr>"
+            )
+        coverage_section_html = f"""
+<h2>Rate Provenance Coverage</h2>
+<p class="section-meta">How each row's GCP rate was obtained. Word-Overlap rows are lowest trust — inflate when description match is loose.</p>
+<table style="width:auto;min-width:640px">
+  <tr><th>Source</th><th>Description</th><th class="num">Rows</th><th class="num">AWS Spend</th></tr>
+  {cov_rows_html}
+</table>
+"""
+
     wins_html  = wins_table(gcp_wins,  "GCP Savings", "#0D9D58")
     loses_html = wins_table(gcp_loses, "Extra Cost on GCP", "#D93025")
 
@@ -655,6 +712,7 @@ def main():
 <div id="aws-infra-baseline" hidden>{aws_infra_baseline:.2f}</div>
 <p class="legend">&#9888; Windows / commercial software license premiums excluded unless explicitly modeled in the source bill. Infrastructure Baseline strips Marketplace passthrough to show the true IaaS/PaaS cost comparison.</p>
 
+{coverage_section_html}
 <h2>Where GCP Wins &amp; Loses</h2>
 <p class="section-meta">Top services where GCP is cheaper / more expensive than current AWS spend (On-Demand, workload rows only).</p>
 <h3 style="color:#0D9D58">&#9660; GCP Savings Opportunities</h3>

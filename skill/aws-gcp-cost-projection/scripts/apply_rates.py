@@ -363,6 +363,21 @@ def main():
     remap_elasticache_to_memorystore(conn)
     fix_managed_db_storage_rows(conn, DATA_DIR)
 
+    # Add rate_source column if not yet present (idempotent — safe to re-run)
+    try:
+        conn.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN rate_source VARCHAR")
+    except Exception:
+        pass  # column already exists
+
+    # Snapshot rows whose sku_id was already pinned before apply_rates ran.
+    # These come from static mappers (resolve_sku) or from LLM-provided exact IDs.
+    # They get rate_source='exact_sku'. Rows still NULL here are word-overlap resolved.
+    pinned_keys = set(
+        r[0] for r in conn.execute(
+            "SELECT aws_li_key FROM aws_li_to_gcp_li WHERE gcp_sku_id IS NOT NULL AND strategy IN ('map','break_down')"
+        ).fetchall()
+    )
+
     # Auto-resolve NULL gcp_sku_id for mapped rows using catalog lookup rules.
     # This prevents Phase 5 from seeing NULL projected cost and wrongly setting passthrough.
     null_sku_rows = conn.execute("""
@@ -374,6 +389,7 @@ def main():
     """).fetchall()
 
     resolved = 0
+    word_overlap_keys = set()
     for aws_li_key, gcp_service, gcp_sku_name, gcp_region in null_sku_rows:
         sku_id = _resolve_sku_for_row(gcp_service, gcp_sku_name, gcp_region, services, DATA_DIR)
         if sku_id:
@@ -381,11 +397,12 @@ def main():
                 "UPDATE aws_li_to_gcp_li SET gcp_sku_id = ? WHERE aws_li_key = ? AND gcp_sku_id IS NULL",
                 (sku_id, aws_li_key),
             )
+            word_overlap_keys.add(aws_li_key)
             resolved += 1
             print(f"  resolved SKU: {gcp_service} / {gcp_sku_name!r} -> {sku_id}")
 
     if resolved:
-        print(f"Auto-resolved {resolved} NULL gcp_sku_id row(s) from catalog")
+        print(f"Auto-resolved {resolved} NULL gcp_sku_id row(s) from catalog (word-overlap)")
 
     # Get all required SKUs (including any just resolved above)
     skus_used = conn.execute("""
@@ -681,6 +698,35 @@ def main():
         )
         create_projection_view(conn)
         print(f"  Rate-gap fallback: {len(keys)} NULL-cost row(s) → passthrough")
+
+    # ── Populate rate_source ───────────────────────────────────────────────────
+    # Order matters: no_rate first (subset of passthrough), then passthrough,
+    # then exact_sku, then word_overlap. Remaining unknowns → 'unknown'.
+    conn.execute("""
+        UPDATE aws_li_to_gcp_li
+        SET rate_source = 'no_rate'
+        WHERE projection_note LIKE '%no-rate-fallback%'
+    """)
+    conn.execute("""
+        UPDATE aws_li_to_gcp_li
+        SET rate_source = 'passthrough'
+        WHERE strategy IN ('passthrough', 'ignore') AND rate_source IS NULL
+    """)
+    if pinned_keys:
+        conn.execute(f"""
+            UPDATE aws_li_to_gcp_li
+            SET rate_source = 'exact_sku'
+            WHERE strategy IN ('map','break_down') AND rate_source IS NULL
+              AND aws_li_key IN ({','.join(['?']*len(pinned_keys))})
+        """, list(pinned_keys))
+    if word_overlap_keys:
+        conn.execute(f"""
+            UPDATE aws_li_to_gcp_li
+            SET rate_source = 'word_overlap'
+            WHERE rate_source IS NULL
+              AND aws_li_key IN ({','.join(['?']*len(word_overlap_keys))})
+        """, list(word_overlap_keys))
+    conn.execute("UPDATE aws_li_to_gcp_li SET rate_source = 'unknown' WHERE rate_source IS NULL")
 
     print("Rate fill complete.")
 

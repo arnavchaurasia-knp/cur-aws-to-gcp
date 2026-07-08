@@ -688,6 +688,164 @@ def map_non_workload(rows):
     return out
 
 
+def map_guardduty(rows):
+    """GuardDuty and Security Hub → Security Command Center passthrough.
+
+    Both services are priced on incompatible models (GuardDuty: $/GB-analyzed;
+    SCC Premium: $/asset/mo) so a rate-based mapping is not feasible. We carry
+    the AWS cost as an honest passthrough with the correct GCP service label
+    so the report says "Security Command Center" rather than "Unmapped".
+    """
+    out = []
+    for r in rows:
+        product = (r.get("product") or "").lower()
+        if "security hub" in product or "securityhub" in product:
+            note = ("AWS Security Hub → Security Command Center Standard; "
+                    "pricing model differs (per-finding vs per-asset/mo); passthrough at cost parity")
+        else:
+            note = ("Amazon GuardDuty → Security Command Center Premium; "
+                    "pricing model differs (per-GB-analyzed vs per-asset/mo); passthrough at cost parity")
+        out.append({
+            "aws_li_key":         r["aws_li_key"],
+            "gcp_service":        "Security Command Center",
+            "gcp_sku_id":         None,
+            "gcp_sku_name":       None,
+            "component":          "security",
+            "strategy":           "passthrough",
+            "unit_multiplier":    1.0,
+            "gcp_region":         r.get("gcp_region"),
+            "projection_note":    note,
+            "mapping_confidence": 0.60,
+        })
+    return out
+
+
+# Redshift node-type → BigQuery Standard Edition slot-hour conversion table.
+# Derived from BigQuery migration guide capacity recommendations.
+_REDSHIFT_SLOT_MAP = {
+    "dc2.large":    500,
+    "dc2.8xlarge":  4000,
+    "ds2.xlarge":   500,
+    "ds2.8xlarge":  4000,
+    "ra3.xlplus":   500,
+    "ra3.4xlarge":  1500,
+    "ra3.16xlarge": 6000,
+}
+_BQ_SLOT_SKU      = "Standard Edition Slot Hour"
+_BQ_STORAGE_SKU   = "Active Storage"
+
+
+def map_redshift(rows):
+    """Redshift → BigQuery deterministic mapping.
+
+    Node-hours: converted to BigQuery Standard Edition slot-hours using
+    _REDSHIFT_SLOT_MAP (slots per node). RA3 ManagedStorage → BQ active storage.
+    Serverless RPU → BQ slot-hours at 128 slots/RPU. Backups → passthrough.
+    Unknown instance types → passthrough with a note.
+    """
+    out = []
+    for r in rows:
+        ut  = (r.get("usage_type") or "").lower()
+        op  = (r.get("operation")  or "").lower()
+        gcp_region = r.get("gcp_region")
+        blob = f"{ut} {op} {(r.get('product') or '').lower()}"
+
+        # Backup and snapshot rows → passthrough (no BQ equivalent charge)
+        if "backup" in blob or "snapshot" in blob:
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "BigQuery",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "backup",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "Redshift backup/snapshot — no BigQuery equivalent charge; passthrough at cost parity",
+                "mapping_confidence": 0.70,
+            })
+            continue
+
+        # RA3 ManagedStorage → BigQuery active storage ($0.02/GB-mo)
+        if "managedstorage" in ut or "managed storage" in blob:
+            sku_id = resolve_sku("BigQuery", _BQ_STORAGE_SKU, gcp_region)
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "BigQuery",
+                "gcp_sku_name":       _BQ_STORAGE_SKU,
+                "component":          "storage",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "Redshift RA3 ManagedStorage → BigQuery Active Storage",
+                "mapping_confidence": 0.80,
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+            out.append(entry)
+            continue
+
+        # Serverless RPU hours → BigQuery slot-hours (1 RPU ≈ 128 BQ slots)
+        if "serverless" in blob or re.search(r"\brpu\b", ut):
+            sku_id = resolve_sku("BigQuery", _BQ_SLOT_SKU, gcp_region)
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "BigQuery",
+                "gcp_sku_name":       _BQ_SLOT_SKU,
+                "component":          "compute",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    128.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "Redshift Serverless RPU → BigQuery slot-hours (1 RPU ≈ 128 BQ Standard slots)",
+                "mapping_confidence": 0.65,
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+            out.append(entry)
+            continue
+
+        # Node-hour rows: match instance type in usage_type or operation
+        slots = None
+        matched_family = None
+        for family, slot_count in _REDSHIFT_SLOT_MAP.items():
+            if family in ut or family in op:
+                slots = slot_count
+                matched_family = family
+                break
+
+        if slots:
+            sku_id = resolve_sku("BigQuery", _BQ_SLOT_SKU, gcp_region)
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "BigQuery",
+                "gcp_sku_name":       _BQ_SLOT_SKU,
+                "component":          "compute",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    float(slots),
+                "gcp_region":         gcp_region,
+                "projection_note":    f"Redshift {matched_family} node-hour → BigQuery {slots} Standard slot-hours",
+                "mapping_confidence": 0.70,
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+            out.append(entry)
+        else:
+            # Unrecognized Redshift row → passthrough with note
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "BigQuery",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "compute",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    f"Redshift row unrecognized (usage_type={r.get('usage_type')!r}) — passthrough at cost parity",
+                "mapping_confidence": 0.40,
+            })
+    return out
+
+
 def map_cloudwatch(rows):
     out = []
     for r in rows:
@@ -741,6 +899,208 @@ def map_cloudwatch(rows):
     return out
 
 
+def map_athena(rows):
+    """Athena → BigQuery on-demand.
+
+    Athena bills per-TB-scanned. BigQuery on-demand is also $/TB-analyzed
+    (same unit, directly comparable). We map at unit_multiplier=1.0 — the
+    total_usage (bytes or GB/TB scanned) maps to BigQuery Analysis pricing.
+    If bytes_scanned is not in the usage unit, passthrough with note.
+    """
+    _BQ_ANALYSIS_SKU = "Analysis"
+    out = []
+    for r in rows:
+        ut  = (r.get("usage_type") or "").lower()
+        gcp_region = r.get("gcp_region")
+
+        # Passthrough for non-data-scanned rows (CTAS, DDL, cancelled, limits)
+        if re.search(r"data.?scanned|bytes.?scanned|tb.?scanned", ut):
+            sku_id = resolve_sku("BigQuery", _BQ_ANALYSIS_SKU, gcp_region)
+            # Athena bills in TB; BigQuery Analysis SKU is also /TB → multiplier=1.0
+            # Unit conversion note: if CUR usage_type shows bytes, the projection
+            # framework uses total_usage directly against the rate — verify unit matches.
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "BigQuery",
+                "gcp_sku_name":       _BQ_ANALYSIS_SKU,
+                "component":          "analysis",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "Athena data-scanned → BigQuery Analysis ($6.25/TB on-demand; first 1 TB/mo free)",
+                "mapping_confidence": 0.85,
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+            out.append(entry)
+        else:
+            # Other Athena charges (DDL, cancelled queries, DML metadata) → passthrough
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "BigQuery",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "analysis",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    f"Athena row (usage_type={r.get('usage_type')!r}) not data-scanned charge — passthrough at cost parity",
+                "mapping_confidence": 0.50,
+            })
+    return out
+
+
+def map_kinesis(rows):
+    """Kinesis shard-hours → Pub/Sub throughput (hourly billing only).
+
+    Kinesis Shard-Hours are the per-shard reservation fee. GCP Pub/Sub does not
+    have a shard model — it's throughput-based. A shard supports 1 MB/s write and
+    2 MB/s read. We map shard-hours → Pub/Sub message delivery as an approximation:
+    1 shard × 1 hr ≈ 3.6 GB throughput capacity (1 MB/s × 3600 s). This is an
+    over-estimate (many shards run < full utilization) — passthrough is also honest.
+    Strategy: passthrough with Pub/Sub label, because unit models differ too much
+    for an accurate rate-based projection without utilization data.
+    """
+    out = []
+    for r in rows:
+        ut  = (r.get("usage_type") or "").lower()
+        gcp_region = r.get("gcp_region")
+
+        if re.search(r"shard.?hr|shardhours|extended.?retention", ut):
+            note = "Kinesis shard-hours → Pub/Sub (no shard model on GCP; throughput-based billing differs fundamentally); passthrough at cost parity"
+        else:
+            note = f"Kinesis hourly charge (usage_type={r.get('usage_type')!r}) → Pub/Sub passthrough"
+
+        out.append({
+            "aws_li_key":         r["aws_li_key"],
+            "gcp_service":        "Pub/Sub",
+            "gcp_sku_id":         None,
+            "gcp_sku_name":       None,
+            "component":          "messaging",
+            "strategy":           "passthrough",
+            "unit_multiplier":    1.0,
+            "gcp_region":         gcp_region,
+            "projection_note":    note,
+            "mapping_confidence": 0.55,
+        })
+    return out
+
+
+# EFS storage class → Filestore tier
+_EFS_STORAGE_MAP = {
+    # Standard (infrequent access) and Intelligent-Tiering → Filestore Basic HDD
+    "standardia":      ("Filestore", "Filestore Basic HDD Capacity",       0.90),
+    "standard-ia":     ("Filestore", "Filestore Basic HDD Capacity",       0.90),
+    "ia":              ("Filestore", "Filestore Basic HDD Capacity",       0.90),
+    # Standard (frequent access) → Filestore Basic SSD (closer performance profile)
+    "standard":        ("Filestore", "Filestore Basic SSD Capacity",       1.0),
+}
+_EFS_DEFAULT_STORAGE = ("Filestore", "Filestore Basic SSD Capacity", 1.0)
+
+
+def map_efs(rows):
+    """EFS → Filestore mapping.
+
+    Standard storage → Filestore Basic SSD ($0.20/GB-mo).
+    Infrequent Access → Filestore Basic HDD ($0.10/GB-mo).
+    Provisioned Throughput (MB/s-month) → passthrough (Filestore includes throughput
+    in capacity price; no separate throughput charge exists to map to).
+    Data access / I/O requests → passthrough (GCP has no per-access EFS equivalent).
+    """
+    out = []
+    for r in rows:
+        ut  = (r.get("usage_type") or "").lower()
+        op  = (r.get("operation") or "").lower()
+        gcp_region = r.get("gcp_region")
+        blob = f"{ut} {op}"
+
+        # Provisioned Throughput (MB/s-month) → passthrough
+        if re.search(r"provisioned.?throughput|throughput.?capacity", blob):
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Filestore",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "storage",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "EFS Provisioned Throughput — Filestore includes throughput in capacity price; no separate charge to map",
+                "mapping_confidence": 0.75,
+            })
+            continue
+
+        # Data access requests / IO charges → passthrough
+        if re.search(r"data.?access|io.?request|meteredthroughput", blob):
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Filestore",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "storage",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "EFS data-access / I/O request charge — no direct Filestore equivalent; passthrough at cost parity",
+                "mapping_confidence": 0.60,
+            })
+            continue
+
+        # Storage rows — detect access tier
+        service, sku_name, mult = _EFS_DEFAULT_STORAGE
+        for key, val in _EFS_STORAGE_MAP.items():
+            if key in blob:
+                service, sku_name, mult = val
+                break
+
+        sku_id = resolve_sku(service, sku_name, gcp_region)
+        entry = {
+            "aws_li_key":         r["aws_li_key"],
+            "gcp_service":        service,
+            "gcp_sku_name":       sku_name,
+            "component":          "storage",
+            "strategy":           "map" if sku_id else "passthrough",
+            "unit_multiplier":    mult,
+            "gcp_region":         gcp_region,
+            "projection_note":    f"EFS storage → {sku_name}",
+            "mapping_confidence": 0.75,
+        }
+        if sku_id:
+            entry["gcp_sku_id"] = sku_id
+        out.append(entry)
+    return out
+
+
+def map_xray(rows):
+    """X-Ray → Cloud Trace.
+
+    X-Ray: $5.00/million traces (first 100k free). Cloud Trace: $0.20/million spans.
+    Unit models are compatible (count-based), though GCP spans are more granular than
+    AWS traces. We map at unit_multiplier=1.0 and flag the rate difference — the GCP
+    price is dramatically lower ($0.20 vs $5.00/M), so passthrough would overstate cost.
+    """
+    _TRACE_SKU = "Trace Ingestion"
+    out = []
+    for r in rows:
+        gcp_region = r.get("gcp_region")
+        sku_id = resolve_sku("Cloud Trace", _TRACE_SKU, gcp_region)
+        entry = {
+            "aws_li_key":         r["aws_li_key"],
+            "gcp_service":        "Cloud Trace",
+            "gcp_sku_name":       _TRACE_SKU,
+            "component":          "tracing",
+            "strategy":           "map" if sku_id else "passthrough",
+            "unit_multiplier":    1.0,
+            "gcp_region":         gcp_region,
+            "projection_note":    "AWS X-Ray → Cloud Trace ($0.20/M spans vs $5.00/M traces on AWS — GCP significantly cheaper)",
+            "mapping_confidence": 0.75,
+        }
+        if sku_id:
+            entry["gcp_sku_id"] = sku_id
+        out.append(entry)
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <projection.duckdb>", file=sys.stderr)
@@ -756,7 +1116,8 @@ def main():
                total_usage
         FROM aws_li_catalog
         WHERE mechanic_group IN
-              ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer', 'non_workload', 'cloudwatch')
+              ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer',
+               'non_workload', 'cloudwatch', 'guardduty', 'redshift', 'athena', 'kinesis', 'efs', 'xray')
     """).fetchall()
     con.close()
 
@@ -764,7 +1125,8 @@ def main():
             "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type", "total_usage"]
     by_group: dict[str, list] = {g: [] for g in
                                  ("flat_hourly", "object_storage", "per_request",
-                                  "block_storage", "data_transfer", "non_workload", "cloudwatch")}
+                                  "block_storage", "data_transfer", "non_workload", "cloudwatch",
+                                  "guardduty", "redshift", "athena", "kinesis", "efs", "xray")}
     for raw in rows:
         r = dict(zip(cols, raw))
         by_group[r["mechanic_group"]].append(r)
@@ -780,6 +1142,12 @@ def main():
         "data_transfer":  map_data_transfer,
         "non_workload":   map_non_workload,
         "cloudwatch":     map_cloudwatch,
+        "guardduty":      map_guardduty,
+        "redshift":       map_redshift,
+        "athena":         map_athena,
+        "kinesis":        map_kinesis,
+        "efs":            map_efs,
+        "xray":           map_xray,
     }
     for group, handler in handlers.items():
         mappings = handler(by_group[group])

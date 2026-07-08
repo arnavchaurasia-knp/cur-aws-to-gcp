@@ -161,9 +161,10 @@ RULES = [
         ),
     ),
     (
-        # Architecturally complex services (Cognito, DynamoDB, SES, GuardDuty,
-        # Security Hub) are excluded here — they fall through to misc so the LLM
-        # gets a personalized prompt per service rather than a static SKU lookup.
+        # Architecturally complex services (Cognito, DynamoDB, SES) are excluded
+        # here — they fall through to misc so the LLM gets a personalized prompt.
+        # GuardDuty and Security Hub are caught by the guardduty rule above and
+        # never reach this rule.
         "per_request",
         lambda r: (
             (
@@ -176,6 +177,68 @@ RULES = [
                     "GuardDuty", "Security Hub",
                 )
             )
+        ),
+    ),
+    (
+        # GuardDuty and Security Hub → static passthrough to Security Command Center.
+        # Excluded from per_request because their pricing model (per-GB-analyzed /
+        # per-asset) is incompatible with GCP equivalents; static mapper handles them
+        # with the correct gcp_service label and an explanatory note.
+        "guardduty",
+        lambda r: (
+            _ilike(r["product"], "GuardDuty")
+            or _ilike(r["product"], "AmazonGuardDuty")
+            or _ilike(r["product"], "Security Hub")
+            or _ilike(r["product"], "SecurityHub")
+        ),
+    ),
+    (
+        # Redshift → BigQuery static mapper. Node hours are converted to BQ slot-hours
+        # using the slot-per-node table in apply_static_mappings.py. Backup/snapshot
+        # rows pass through. Falls through to misc only if instance type is unrecognized.
+        "redshift",
+        lambda r: (
+            _ilike(r["product"], "Redshift")
+            or _ilike(r["product"], "AmazonRedshift")
+        ),
+    ),
+    (
+        # Athena → BigQuery on-demand. Athena bills per-TB-scanned; BigQuery on-demand
+        # uses the same unit ($6.25/TB). Static mapper handles the conversion directly.
+        "athena",
+        lambda r: (
+            _ilike(r["product"], "Athena")
+            or _ilike(r["product"], "AmazonAthena")
+        ),
+    ),
+    (
+        # Kinesis shard-hours → Pub/Sub throughput. Kinesis data-volume rows (Requests
+        # unit) are already handled by per_request → Pub/Sub Message Delivery.
+        # This catches hourly shard billing (unit=Hrs) that falls through per_request.
+        "kinesis",
+        lambda r: (
+            (
+                _ilike(r["product"], "Kinesis")
+                or _ilike(r["product"], "AmazonKinesis")
+            )
+            and r.get("unit") in ("Hrs", "hours", "Shard-Hrs", "ShardHours")
+        ),
+    ),
+    (
+        # EFS → Filestore. Catches storage and throughput rows.
+        "efs",
+        lambda r: (
+            _ilike(r["product"], "Elastic File System")
+            or _ilike(r["product"], "AmazonEFS")
+        ),
+    ),
+    (
+        # X-Ray → Cloud Trace. Traces are priced per million after free tier.
+        "xray",
+        lambda r: (
+            _ilike(r["product"], "X-Ray")
+            or _ilike(r["product"], "AmazonXRay")
+            or _ilike(r["product"], "XRay")
         ),
     ),
     (
@@ -250,6 +313,13 @@ _MISC_SERVICE_HINTS: list[tuple[str, str, list[str], list[str]]] = [
                                                  ["node_count", "cluster_mode"]),
     ("EMR",             "Amazon EMR",           ["usage_type", "operation", "unit", "region"],
                                                  ["node_count", "instance_type"]),
+    # Inferentia/Trainium: no direct GCP equivalent — TPU v4/v5 is the architectural
+    # analogue but requires migration effort to port the model. Passthrough with a
+    # clear note so the report doesn't silently omit this spend.
+    ("Inferentia",    "AWS Inferentia",       ["usage_type", "operation", "unit", "region"],
+                                               ["model_type", "batch_size"]),
+    ("Trainium",      "AWS Trainium",         ["usage_type", "operation", "unit", "region"],
+                                               ["model_type", "batch_size"]),
     # --- Architecturally complex / no-equivalent services ---
     # These fall through the per_request classify rule intentionally.
     ("Cognito",         "Amazon Cognito",       ["usage_type", "operation", "unit", "region"],
@@ -267,8 +337,10 @@ _MISC_SERVICE_HINTS: list[tuple[str, str, list[str], list[str]]] = [
 
 # Services with no GCP equivalent — strategy is always passthrough regardless
 # of information_completeness. Checked in _misc_reason() before the sizing logic.
+# NOTE: GuardDuty and Security Hub are now handled by map_guardduty() static mapper
+# (mechanic_group='guardduty') and never reach misc — they are removed from here.
 _PASSTHROUGH_SERVICES = frozenset(
-    ["Simple Email", "SES", "GuardDuty", "Security Hub"]
+    ["Simple Email", "SES", "Inferentia", "Trainium"]
 )
 
 # Services with no MANAGED GCP equivalent, mapped to self-hosted GCE. The
@@ -293,7 +365,10 @@ _SIZING_RE = re.compile(
 # Services where an incorrect size estimate is worse than passthrough.
 # When information_completeness='minimal', these get strategy='passthrough'.
 _SIZING_SENSITIVE = frozenset(
-    ["EKS", "ECS", "Fargate", "EMR", "Redshift", "Glue", "Athena", "Kinesis"]
+    # Redshift, Athena, and Kinesis removed — they now have dedicated static mappers
+    # and never reach misc. EMR and Glue remain: node sizing varies too much for a
+    # simple slot table, and the LLM passthrough is more honest than a wrong fixed mapping.
+    ["EKS", "ECS", "Fargate", "EMR", "Glue"]
 )
 
 
@@ -618,6 +693,7 @@ def main():
         "commitment_discount",
         "flat_hourly", "object_storage", "per_request",
         "block_storage", "data_transfer", "non_workload", "cloudwatch",
+        "guardduty", "redshift", "athena", "kinesis", "efs", "xray",
     }
     manifest_out = {
         g: {"rows": rows, "row_count": len(rows),

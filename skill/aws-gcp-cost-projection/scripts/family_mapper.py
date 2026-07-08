@@ -70,6 +70,13 @@ def map_gce_row(r, parsed):
     vcpus = r.get("instance_vcpus") or 2
     ram = r.get("instance_ram_gb") or 8.0
     
+    # t2/t3 burstable instances: E2 has no burst-credit model — it runs at the
+    # configured vCPU count continuously. If the workload relies on CPU burst credits
+    # to handle spikes, the GCP projection may understate peak-hour cost.
+    is_burstable = parsed["prefix"] == "t"
+    burst_note = (" [Note: E2 has no burst-credit model; projection assumes steady-state CPU usage]"
+                  if is_burstable else "")
+
     # 1. Core Component
     core_desc = f"{gcp_family} Instance Core"
     core_sku = resolve_sku("Compute Engine", core_desc, gcp_region)
@@ -81,8 +88,8 @@ def map_gce_row(r, parsed):
         "strategy": "map",
         "unit_multiplier": float(vcpus),
         "gcp_region": gcp_region,
-        "projection_note": f"Deterministic mapping: GCE {gcp_family} Core",
-        "mapping_confidence": 1.0,
+        "projection_note": f"Deterministic mapping: GCE {gcp_family} Core{burst_note}",
+        "mapping_confidence": 0.85 if is_burstable else 1.0,
         "is_workload": True,
         "break_down": True
     }
@@ -100,8 +107,8 @@ def map_gce_row(r, parsed):
         "strategy": "map",
         "unit_multiplier": float(ram),
         "gcp_region": gcp_region,
-        "projection_note": f"Deterministic mapping: GCE {gcp_family} RAM",
-        "mapping_confidence": 1.0,
+        "projection_note": f"Deterministic mapping: GCE {gcp_family} RAM{burst_note}",
+        "mapping_confidence": 0.85 if is_burstable else 1.0,
         "is_workload": True,
         "break_down": True
     }

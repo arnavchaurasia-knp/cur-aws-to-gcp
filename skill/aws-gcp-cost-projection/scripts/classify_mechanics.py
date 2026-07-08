@@ -120,7 +120,8 @@ RULES = [
                 or _ilike(r["product"], "DocumentDB")
                 or _ilike(r["product"], "MemoryDB")
             )
-            and r.get("unit") in ("Hrs", "hours", "Hour", "hrs")
+            # Aurora Serverless v2 bills in ACU-Hrs; include alongside instance Hrs.
+            and r.get("unit") in ("Hrs", "hours", "Hour", "hrs", "ACU-Hrs", "ACU-hours")
         ),
     ),
     (
@@ -333,6 +334,11 @@ _MISC_SERVICE_HINTS: list[tuple[str, str, list[str], list[str]]] = [
                                                  ["node_count", "cluster_mode"]),
     ("EMR",             "Amazon EMR",           ["usage_type", "operation", "unit", "region"],
                                                  ["node_count", "instance_type"]),
+    # Aurora Serverless v2: ACU-Hrs billing. Cloud SQL does not have serverless mode;
+    # map ACU to the equivalent Cloud SQL instance hours at mean ACU consumption.
+    # 1 ACU ≈ 2 vCPU + 4 GB RAM; map to Cloud SQL Custom vCPU + RAM at same ACU rate.
+    ("Aurora Serverless", "Amazon Aurora Serverless v2", ["usage_type", "operation", "unit", "region"],
+                                                          ["min_acu", "max_acu", "avg_acu"]),
     # Inferentia/Trainium: no direct GCP equivalent — TPU v4/v5 is the architectural
     # analogue but requires migration effort to port the model. Passthrough with a
     # clear note so the report doesn't silently omit this spend.

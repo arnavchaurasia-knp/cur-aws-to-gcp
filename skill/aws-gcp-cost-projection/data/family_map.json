@@ -2,7 +2,7 @@
   "mappings": {
     "t": { "g": "T2A", "default": "E2" },
     "c": { "g": "C4A", "a": "C3D", "default": "C3" },
-    "r": { "g": "C4A", "a": "N2", "default": "N4" },
+    "r": { "g": "C4A", "a": "N2D", "default": "N4" },
     "m": { "g": "C4A", "a": "N2D", "default": "N4" },
     "hpc": { "g": "T2A", "a": "C3D", "default": "C3" }
   }

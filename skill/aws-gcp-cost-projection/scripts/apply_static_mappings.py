@@ -65,8 +65,12 @@ FLAT_HOURLY_MAP = [
      "Compute Engine", r"External IP Charge on a Standard VM", 1.0),
     (r"VPN",
      "Cloud VPN", r"Cloud VPN Tunnel", 1.0),
-    (r"DirectConnect|DX",
+    (r"DirectConnect|DX|HostedConnection",
      "Cloud Interconnect", r"Dedicated Interconnect", 1.0),
+    # Global Accelerator port-hours → Cloud CDN (nearest CDN equivalent).
+    # GA premium data transfer → Premium Network Tier egress (handled by data_transfer).
+    (r"GlobalAccelerator|Global Accelerator",
+     "Cloud CDN", r"Cache Egress", 1.0),
 ]
 FLAT_HOURLY_DEFAULT_SERVICE = "Compute Engine"
 FLAT_HOURLY_DEFAULT_DESC    = r"Other Hourly Charge"
@@ -1071,6 +1075,79 @@ def map_efs(rows):
     return out
 
 
+def map_fsx(rows):
+    """FSx variants → Filestore or passthrough.
+
+    FSx for Lustre → Filestore High Scale (closest performance tier).
+    FSx for Windows → Filestore Enterprise (SMB-compatible).
+    FSx for NetApp ONTAP, OpenZFS → passthrough (no direct GCP equivalent).
+    Backup/snapshot rows → passthrough.
+    """
+    out = []
+    for r in rows:
+        product = (r.get("product") or "").lower()
+        ut      = (r.get("usage_type") or "").lower()
+        gcp_region = r.get("gcp_region")
+        blob = f"{product} {ut}"
+
+        # Backup rows → passthrough regardless of FSx type
+        if "backup" in blob or "snapshot" in blob:
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Filestore",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "storage",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "FSx backup — no Filestore equivalent; passthrough at cost parity",
+                "mapping_confidence": 0.70,
+            })
+            continue
+
+        if "lustre" in blob:
+            sku_name = "Filestore High Scale SSD Capacity"
+            note = "FSx for Lustre → Filestore High Scale SSD (high-throughput parallel workloads)"
+            confidence = 0.65
+        elif "windows" in blob:
+            sku_name = "Filestore Enterprise Capacity"
+            note = "FSx for Windows → Filestore Enterprise (SMB-compatible; Kerberos/AD auth differs)"
+            confidence = 0.65
+        else:
+            # NetApp ONTAP, OpenZFS — no direct GCP equivalent
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Filestore",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "storage",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    f"FSx ({r.get('product')!r}) — no direct GCP equivalent; passthrough at cost parity",
+                "mapping_confidence": 0.50,
+            })
+            continue
+
+        sku_id = resolve_sku("Filestore", sku_name, gcp_region)
+        entry = {
+            "aws_li_key":         r["aws_li_key"],
+            "gcp_service":        "Filestore",
+            "gcp_sku_name":       sku_name,
+            "component":          "storage",
+            "strategy":           "map" if sku_id else "passthrough",
+            "unit_multiplier":    1.0,
+            "gcp_region":         gcp_region,
+            "projection_note":    note,
+            "mapping_confidence": confidence,
+        }
+        if sku_id:
+            entry["gcp_sku_id"] = sku_id
+        out.append(entry)
+    return out
+
+
 def map_xray(rows):
     """X-Ray → Cloud Trace.
 
@@ -1117,7 +1194,7 @@ def main():
         FROM aws_li_catalog
         WHERE mechanic_group IN
               ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer',
-               'non_workload', 'cloudwatch', 'guardduty', 'redshift', 'athena', 'kinesis', 'efs', 'xray')
+               'non_workload', 'cloudwatch', 'guardduty', 'redshift', 'athena', 'kinesis', 'efs', 'xray', 'fsx')
     """).fetchall()
     con.close()
 
@@ -1126,7 +1203,7 @@ def main():
     by_group: dict[str, list] = {g: [] for g in
                                  ("flat_hourly", "object_storage", "per_request",
                                   "block_storage", "data_transfer", "non_workload", "cloudwatch",
-                                  "guardduty", "redshift", "athena", "kinesis", "efs", "xray")}
+                                  "guardduty", "redshift", "athena", "kinesis", "efs", "xray", "fsx")}
     for raw in rows:
         r = dict(zip(cols, raw))
         by_group[r["mechanic_group"]].append(r)
@@ -1148,6 +1225,7 @@ def main():
         "kinesis":        map_kinesis,
         "efs":            map_efs,
         "xray":           map_xray,
+        "fsx":            map_fsx,
     }
     for group, handler in handlers.items():
         mappings = handler(by_group[group])

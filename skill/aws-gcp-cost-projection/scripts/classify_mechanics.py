@@ -155,8 +155,17 @@ RULES = [
     (
         "flat_hourly",
         lambda r: (
-            (_re(r["usage_type"], r"LoadBalancerUsage|NatGateway-Hours|ElasticIP|IPAddress|TransitGateway-Hours")
-             or _re(r["operation"], r"LoadBalancer|public IPv4 address|TransitGateway-Hours|Transit Gateway"))
+            (
+                _re(r["usage_type"], r"LoadBalancerUsage|NatGateway-Hours|ElasticIP|IPAddress"
+                                     r"|TransitGateway-Hours|DirectConnect|HostedConnection"
+                                     r"|GlobalAccelerator")
+                or _re(r["operation"], r"LoadBalancer|public IPv4 address|TransitGateway-Hours"
+                                       r"|Transit Gateway|DirectConnect|Global Accelerator")
+                or _ilike(r["product"], "Direct Connect")
+                or _ilike(r["product"], "AmazonDirectConnect")
+                or _ilike(r["product"], "GlobalAccelerator")
+                or _ilike(r["product"], "Global Accelerator")
+            )
             and r["unit"] in ("Hrs", "hours")
         ),
     ),
@@ -230,6 +239,17 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "Elastic File System")
             or _ilike(r["product"], "AmazonEFS")
+        ),
+    ),
+    (
+        # FSx variants → Filestore or passthrough. Must come before block_storage
+        # because FSx rows have "Storage" in usage_type and would otherwise match
+        # the generic block_storage storage rule.
+        "fsx",
+        lambda r: (
+            _ilike(r["product"], "FSx")
+            or _ilike(r["product"], "AmazonFSx")
+            or _ilike(r["product"], "Amazon FSx")
         ),
     ),
     (
@@ -693,7 +713,7 @@ def main():
         "commitment_discount",
         "flat_hourly", "object_storage", "per_request",
         "block_storage", "data_transfer", "non_workload", "cloudwatch",
-        "guardduty", "redshift", "athena", "kinesis", "efs", "xray",
+        "guardduty", "redshift", "athena", "kinesis", "efs", "xray", "fsx",
     }
     manifest_out = {
         g: {"rows": rows, "row_count": len(rows),

@@ -48,43 +48,55 @@ def main():
         f.write("# Outlier Triage Report\n\n")
         f.write("Review the following flagged rows and fix the mappings in the database.\n\n")
 
-        execute_query_to_md(conn, f, "A1. Big-dollar deviations", 
-            "Meaningful rows where GCP cost has shifted noticeably from AWS.",
+        # A1: Only flag OVER-projection (GCP > AWS) — under-projection (GCP cheaper) is the
+        # expected outcome and not a bug. Thresholds: >1.3x for core infra, >1.5x for others.
+        # Data Transfer excluded: GCP inter-zone ($0.01/GB) is legitimately 9x cheaper than
+        # AWS inter-AZ ($0.09/GB) — flagging those as outliers floods the LLM with false positives.
+        # Includes gcp_sku_name and unit_multiplier so LLM can fix without extra SELECTs.
+        execute_query_to_md(conn, f, "A1. Over-projection (GCP costs more than AWS)",
+            "GCP projected cost is materially higher than AWS — likely a wrong SKU or unit multiplier.",
             """
-            SELECT aws_li_key, product, gcp_service, gcp_sku_id,
-                   ROUND(aws_amortized_cost,2) AS aws,
-                   ROUND(gcp_projected_cost,2) AS gcp,
-                   ROUND(gcp_projected_cost / NULLIF(aws_amortized_cost,0), 2) AS ratio
-            FROM   gcp_projection
-            WHERE  strategy NOT IN ('ignore','passthrough')
-              AND  aws_amortized_cost > 50
+            SELECT p.aws_li_key, p.product, p.gcp_service, p.gcp_sku_id,
+                   m.gcp_sku_name, m.unit_multiplier, m.component,
+                   ROUND(p.aws_amortized_cost,2) AS aws,
+                   ROUND(p.gcp_projected_cost,2) AS gcp,
+                   ROUND(p.gcp_projected_cost / NULLIF(p.aws_amortized_cost,0), 2) AS ratio
+            FROM   gcp_projection p
+            JOIN   aws_li_to_gcp_li m USING (aws_li_key)
+            WHERE  p.strategy NOT IN ('ignore','passthrough')
+              AND  p.aws_amortized_cost > 50
+              AND  p.product NOT ILIKE '%Data Transfer%'
               AND  (
-                ( gcp_service IN ('Compute Engine','Cloud SQL','AlloyDB','Cloud Memorystore',
-                                  'Cloud Memorystore for Redis','Cloud Memorystore for Memcached')
-                  AND ( gcp_projected_cost > aws_amortized_cost * 1.3
-                     OR gcp_projected_cost < aws_amortized_cost * 0.77 )
+                ( p.gcp_service IN ('Compute Engine','Cloud SQL','AlloyDB','Cloud Memorystore',
+                                    'Cloud Memorystore for Redis','Cloud Memorystore for Memcached')
+                  AND p.gcp_projected_cost > p.aws_amortized_cost * 1.3
                 )
                 OR
-                ( gcp_service NOT IN ('Compute Engine','Cloud SQL','AlloyDB','Cloud Memorystore',
-                                      'Cloud Memorystore for Redis','Cloud Memorystore for Memcached')
-                  AND ( gcp_projected_cost > aws_amortized_cost * 1.5
-                     OR gcp_projected_cost < aws_amortized_cost * 0.667 )
+                ( p.gcp_service NOT IN ('Compute Engine','Cloud SQL','AlloyDB','Cloud Memorystore',
+                                        'Cloud Memorystore for Redis','Cloud Memorystore for Memcached')
+                  AND p.gcp_projected_cost > p.aws_amortized_cost * 1.5
                 )
               );
             """)
 
-        execute_query_to_md(conn, f, "A2. Wildly implausible ratios", 
-            "Ratio of 100x or 0.01x is almost always a unit multiplier bug.",
+        # A2: Only flag extreme ratios — >10x over OR <5% of AWS cost.
+        # GCP being 15-50% of AWS is EXPECTED for Compute Engine (GCP is cheaper).
+        # The old <0.5x threshold caught almost all EC2 rows as false positives.
+        # Includes gcp_sku_name, unit_multiplier, component so LLM can fix without extra SELECTs.
+        execute_query_to_md(conn, f, "A2. Extreme ratio outliers (>10x over or <5% of AWS)",
+            "Ratio >10x almost always means wrong SKU. Ratio <0.05x almost always means unit_multiplier bug.",
             """
-            SELECT aws_li_key, product, gcp_service, gcp_sku_id,
-                   ROUND(aws_amortized_cost,2) AS aws,
-                   ROUND(gcp_projected_cost,2) AS gcp,
-                   ROUND(gcp_projected_cost / NULLIF(aws_amortized_cost,0), 2) AS ratio
-            FROM   gcp_projection
-            WHERE  strategy NOT IN ('ignore','passthrough')
-              AND  aws_amortized_cost > 1
-              AND  ( gcp_projected_cost > aws_amortized_cost * 3
-                  OR gcp_projected_cost < aws_amortized_cost * 0.5 );
+            SELECT p.aws_li_key, p.product, p.gcp_service, p.gcp_sku_id,
+                   m.gcp_sku_name, m.unit_multiplier, m.component,
+                   ROUND(p.aws_amortized_cost,2) AS aws,
+                   ROUND(p.gcp_projected_cost,2) AS gcp,
+                   ROUND(p.gcp_projected_cost / NULLIF(p.aws_amortized_cost,0), 2) AS ratio
+            FROM   gcp_projection p
+            JOIN   aws_li_to_gcp_li m USING (aws_li_key)
+            WHERE  p.strategy NOT IN ('ignore','passthrough')
+              AND  p.aws_amortized_cost > 1
+              AND  ( p.gcp_projected_cost > p.aws_amortized_cost * 10
+                  OR p.gcp_projected_cost < p.aws_amortized_cost * 0.05 );
             """)
 
         execute_query_to_md(conn, f, "B. Phantom GCP cost", 
@@ -135,21 +147,23 @@ def main():
                                WHERE r.gcp_sku_id = m.gcp_sku_id AND r.pricing_type = 'Commit1Yr');
             """)
 
-        execute_query_to_md(conn, f, "F. Unit-multiplier sanity check", 
-            "For non-trivial AWS rows, the projected OD cost should be within 0.5x-2x of AWS cost.",
+        # F: Only flag over-projection (GCP > 2x AWS). GCP being cheaper than AWS is correct.
+        # The old <0.5x lower bound matched most Compute Engine rows legitimately.
+        execute_query_to_md(conn, f, "F. Unit-multiplier over-projection check",
+            "GCP OD cost >2x AWS for a mapped row — likely wrong unit_multiplier or SKU.",
             """
-            SELECT aws_li_key, product, gcp_service, gcp_sku_id,
-                   ROUND(aws_amortized_cost,2) AS aws,
-                   ROUND(gcp_projected_cost,2) AS gcp_od,
-                   unit_multiplier,
-                   ROUND(gcp_projected_cost / NULLIF(aws_amortized_cost,0), 2) AS ratio
-            FROM   gcp_projection
-            WHERE  strategy = 'map'
-              AND  pricing_model = 'OnDemand'
-              AND  line_item_type IN ('Usage')
-              AND  aws_amortized_cost > 20
-              AND  ( gcp_projected_cost > aws_amortized_cost * 2
-                  OR gcp_projected_cost < aws_amortized_cost * 0.5 );
+            SELECT p.aws_li_key, p.product, p.gcp_service, p.gcp_sku_id,
+                   m.gcp_sku_name, m.unit_multiplier, m.component,
+                   ROUND(p.aws_amortized_cost,2) AS aws,
+                   ROUND(p.gcp_projected_cost,2) AS gcp_od,
+                   ROUND(p.gcp_projected_cost / NULLIF(p.aws_amortized_cost,0), 2) AS ratio
+            FROM   gcp_projection p
+            JOIN   aws_li_to_gcp_li m USING (aws_li_key)
+            WHERE  p.strategy = 'map'
+              AND  p.pricing_model = 'OnDemand'
+              AND  p.line_item_type IN ('Usage')
+              AND  p.aws_amortized_cost > 20
+              AND  p.gcp_projected_cost > p.aws_amortized_cost * 2;
             """)
 
         execute_query_to_md(conn, f, "G. break_down multiplier verification", 

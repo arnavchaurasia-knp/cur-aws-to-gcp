@@ -133,28 +133,68 @@ def map_gce_row(r, parsed):
         
     return mappings
 
+def _gpu_profile(prefix, gen, suffixes, itype_full, vcpus):
+    """Return (gcp_family, gpu_desc_pattern, gpu_count) or None for unknown types.
+
+    Mapping rationale:
+      g3/g4dn/g4ad  → N1+T4      (NVIDIA T4; closest available GCE accelerated shape)
+      g5/g6/g6e     → G2+L4      (NVIDIA L4; direct successor to T4, same generation)
+      p2            → A2+A100    (K80 workloads; A100 is the current closest; treat as 1 GPU)
+      p3            → A2+A100    (V100; A100 is the on-catalog closest. GPU count = vcpu÷8)
+      p4d/p4de      → A2+A100    (A100 40/80 GB; 8 GPU = standard p4d.24xlarge footprint)
+      p5/p5e        → A3+H100    (H100 SXM; p5.48xlarge = 8× H100)
+    """
+    itype = itype_full or ""
+    # g-family: T4 (g3/g4dn) → GCE N1+T4, L4 (g5+) → GCE G2+L4
+    if prefix == "g":
+        if gen <= 4:
+            # g3, g4dn, g4ad → N1 custom + T4 GPU
+            gpu_count = max(1.0, vcpus / 4)  # g4dn: 4 vCPU per T4 slot
+            return ("N1", "Nvidia Tesla T4 GPU running in", gpu_count)
+        else:
+            # g5, g6 → G2 + L4
+            # GPU count from instance size: g5.12xlarge=4 GPUs, g5.48xlarge=8 GPUs
+            if vcpus >= 96:
+                gpu_count = 8.0
+            elif vcpus >= 48:
+                gpu_count = 4.0
+            elif vcpus >= 32:
+                gpu_count = 2.0
+            else:
+                gpu_count = 1.0
+            return ("G2", "Nvidia L4 GPU running in", gpu_count)
+
+    # p-family
+    if prefix == "p":
+        if gen <= 3:
+            # p2 (K80), p3 (V100) → A2+A100 (K80 discontinued; A100 is closest catalog option)
+            # GPU count: p3.2xlarge=1, p3.8xlarge=4, p3.16xlarge=8
+            gpu_count = max(1.0, vcpus / 8)
+            return ("A2", "Nvidia Tesla A100 GPU running in", gpu_count)
+        elif gen == 4:
+            # p4d.24xlarge = 8× A100 40GB, p4de.24xlarge = 8× A100 80GB
+            return ("A2", "Nvidia Tesla A100 GPU running in", 8.0)
+        elif gen >= 5:
+            # p5.48xlarge = 8× H100 SXM
+            return ("A3", "Nvidia H100 80GB GPU", 8.0)
+
+    return None
+
+
 def map_gpu_row(r, parsed):
     prefix = parsed["prefix"]
     gen = parsed["gen"]
+    suffixes = parsed["suffixes"]
     gcp_region = r.get("gcp_region")
     aws_key = r["aws_li_key"]
     vcpus = r.get("instance_vcpus") or 8
     ram = r.get("instance_ram_gb") or 32.0
-    
-    if prefix == "g":
-        gcp_family = "G2"
-        gpu_desc = "Nvidia L4 GPU running in"
-        gpu_count = 1.0
-    elif prefix == "p" and gen == 4:
-        gcp_family = "A2"
-        gpu_desc = "Nvidia Tesla A100 GPU running in"
-        gpu_count = 8.0
-    elif prefix == "p" and gen == 5:
-        gcp_family = "A3"
-        gpu_desc = "Nvidia H100 80GB GPU"
-        gpu_count = 8.0
-    else:
+    itype_full = r.get("instance_type") or ""
+
+    profile = _gpu_profile(prefix, gen, suffixes, itype_full, vcpus)
+    if not profile:
         return None
+    gcp_family, gpu_desc, gpu_count = profile
         
     # Core
     core_desc = f"{gcp_family} Instance Core"
@@ -227,8 +267,13 @@ def map_db_row(r, parsed):
     
     suffix = " (Regional)" if is_ha else ""
     
+    # SKU names must match Cloud SQL catalog descriptions via word overlap.
+    # "SQLGen2InstancesCPU" resolves to null — use catalog-matching patterns instead.
+    tier = "Regional" if is_ha else "Zonal"
+    core_desc = f"Cloud SQL {tier} vCPU"
+    ram_desc = f"Cloud SQL {tier} RAM"
+
     # 1. Core Component
-    core_desc = f"SQLGen2InstancesCPU{suffix}"
     core_sku = resolve_sku("Cloud SQL", core_desc, gcp_region)
     core_entry = {
         "aws_li_key": aws_key,
@@ -238,8 +283,8 @@ def map_db_row(r, parsed):
         "strategy": "map",
         "unit_multiplier": float(vcpus),
         "gcp_region": gcp_region,
-        "projection_note": f"Deterministic DB mapping: Cloud SQL CPU ({gcp_family} family equivalent{suffix})",
-        "mapping_confidence": 1.0,
+        "projection_note": f"Deterministic DB mapping: Cloud SQL {tier} vCPU ({gcp_family} family equivalent)",
+        "mapping_confidence": 0.90,
         "is_workload": True,
         "break_down": True
     }
@@ -247,7 +292,6 @@ def map_db_row(r, parsed):
         core_entry["gcp_sku_id"] = core_sku
 
     # 2. RAM Component
-    ram_desc = f"SQLGen2InstancesRAM{suffix}"
     ram_sku = resolve_sku("Cloud SQL", ram_desc, gcp_region)
     ram_entry = {
         "aws_li_key": aws_key,
@@ -257,8 +301,8 @@ def map_db_row(r, parsed):
         "strategy": "map",
         "unit_multiplier": float(ram),
         "gcp_region": gcp_region,
-        "projection_note": f"Deterministic DB mapping: Cloud SQL RAM ({gcp_family} family equivalent{suffix})",
-        "mapping_confidence": 1.0,
+        "projection_note": f"Deterministic DB mapping: Cloud SQL {tier} RAM ({gcp_family} family equivalent)",
+        "mapping_confidence": 0.90,
         "is_workload": True,
         "break_down": True
     }
@@ -319,12 +363,12 @@ def main():
     # Write mapping files if any mapped
     os.makedirs(MAPPINGS_DIR, exist_ok=True)
     if compute_mapped:
-        with open(os.path.join(MAPPINGS_DIR, "compute_breakdown_mappings.json"), "w") as f:
+        with open(os.path.join(MAPPINGS_DIR, "compute_breakdown_fm_mappings.json"), "w") as f:
             json.dump(compute_mapped, f, indent=2)
         print(f"  family_mapper: mapped {len(compute_skipped_keys)} compute row(s) deterministically")
-        
+
     if db_mapped:
-        with open(os.path.join(MAPPINGS_DIR, "managed_db_mappings.json"), "w") as f:
+        with open(os.path.join(MAPPINGS_DIR, "managed_db_fm_mappings.json"), "w") as f:
             json.dump(db_mapped, f, indent=2)
         print(f"  family_mapper: mapped {len(db_skipped_keys)} database row(s) deterministically")
 

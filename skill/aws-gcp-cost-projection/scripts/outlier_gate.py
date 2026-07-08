@@ -62,7 +62,7 @@ def main():
     for product, svc, sku, aws, gcp, li_key in rows:
         aws = aws or 0.0
         gcp = gcp or 0.0
-        if aws > 1 and gcp > 50 * aws and gcp > 100:
+        if aws > 1 and gcp > 50 * aws and gcp > 25:
             hard.append(("R1 ratio>50x", product, svc, aws, gcp, li_key)); continue
         if gcp > 10000 and aws < 100:
             hard.append(("R2 abs>$10k", product, svc, aws, gcp, li_key)); continue
@@ -108,13 +108,14 @@ def main():
     if bad_keys:
         placeholders = ",".join(["?" for _ in bad_keys])
         try:
+            # UPDATE the base table (aws_li_to_gcp_li), not gcp_projection which is a VIEW.
+            # Set strategy='passthrough' so the VIEW recomputes cost = aws_amortized_cost.
             con.execute(
                 f"""
-                UPDATE gcp_projection
-                SET gcp_projected_cost = (
-                    SELECT aws_amortized_cost FROM aws_li_catalog
-                    WHERE aws_li_catalog.aws_li_key = gcp_projection.aws_li_key
-                )
+                UPDATE aws_li_to_gcp_li
+                SET strategy = 'passthrough',
+                    projection_note = COALESCE(projection_note || ' ', '') ||
+                        '[outlier_gate: clamped to passthrough — gcp/aws ratio exceeded 50x]'
                 WHERE aws_li_key IN ({placeholders})
                 """,
                 bad_keys

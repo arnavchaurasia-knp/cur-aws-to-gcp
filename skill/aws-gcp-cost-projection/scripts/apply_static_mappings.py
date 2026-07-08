@@ -166,26 +166,39 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region):
     with gzip.open(sku_file, "rt") as f:
         skus = json.load(f)
 
-    for sku in skus:
-        desc = sku.get("description", "")
-        if not re.search(desc_pattern, desc, re.IGNORECASE):
-            continue
+    _CONTINENT = {
+        "asia": ["asia-east1","asia-east2","asia-northeast1","asia-northeast2","asia-northeast3",
+                 "asia-south1","asia-south2","asia-southeast1","asia-southeast2"],
+        "europe": ["europe-west1","europe-west2","europe-west3","europe-west4","europe-west6",
+                   "europe-north1","europe-central2","europe-southwest1"],
+        "us":     ["us-central1","us-east1","us-east4","us-east5","us-south1","us-west1","us-west2","us-west3","us-west4"],
+    }
+
+    def _region_match(sku):
         geo = sku.get("geoTaxonomy", {})
         if geo.get("type") == "GLOBAL":
+            return True
+        regions = sku.get("serviceRegions", [])
+        if gcp_region and gcp_region in regions:
+            return True
+        for rc in regions:
+            if gcp_region in _CONTINENT.get(rc.lower(), []):
+                return True
+        return False
+
+    # Two-pass: prefer non-Preemptible SKUs. Preemptible variants carry
+    # "Preemptible" in their description and have no OnDemand rate — resolving
+    # to them silently produces NULL projected cost for non-Spot rows.
+    candidates = [sku for sku in skus
+                  if re.search(desc_pattern, sku.get("description", ""), re.IGNORECASE)
+                  and _region_match(sku)]
+
+    for sku in candidates:
+        if "preemptible" not in sku.get("description", "").lower():
             return sku["skuId"]
-        if gcp_region and gcp_region in sku.get("serviceRegions", []):
-            return sku["skuId"]
-        # Container region codes (e.g. "asia") also count
-        _CONTINENT = {
-            "asia": ["asia-east1","asia-east2","asia-northeast1","asia-northeast2","asia-northeast3",
-                     "asia-south1","asia-south2","asia-southeast1","asia-southeast2"],
-            "europe": ["europe-west1","europe-west2","europe-west3","europe-west4","europe-west6",
-                       "europe-north1","europe-central2","europe-southwest1"],
-            "us":     ["us-central1","us-east1","us-east4","us-east5","us-south1","us-west1","us-west2","us-west3","us-west4"],
-        }
-        for region_code in sku.get("serviceRegions", []):
-            if gcp_region in _CONTINENT.get(region_code.lower(), []):
-                return sku["skuId"]
+    # Fallback: accept a Preemptible SKU if nothing else matched
+    for sku in candidates:
+        return sku["skuId"]
 
     return None
 
@@ -342,17 +355,25 @@ def map_object_storage(rows):
             if key in blob:
                 service, sku_name, mult = S3_CLASS_MAP[key]
                 break
-        out.append({
+        gcp_region = r.get("gcp_region")
+        # Resolve the SKU directly so apply_rates.py's word-overlap auto-resolver
+        # is not invoked — word overlap finds wrong tiers (e.g. "Archive Storage"
+        # for "Coldline Storage" because both contain "Storage").
+        sku_id = resolve_sku(service, sku_name, gcp_region)
+        entry = {
             "aws_li_key":       r["aws_li_key"],
             "gcp_service":      service,
             "gcp_sku_name":     sku_name,
             "component":        "storage",
             "strategy":         "map",
             "unit_multiplier":  mult,
-            "gcp_region":       r.get("gcp_region"),
+            "gcp_region":       gcp_region,
             "projection_note":  f"S3 class lookup → {sku_name}",
             "mapping_confidence": 0.95,
-        })
+        }
+        if sku_id:
+            entry["gcp_sku_id"] = sku_id
+        out.append(entry)
     return out
 
 
@@ -388,24 +409,33 @@ def map_flat_hourly(rows):
     return out
 
 
-def _s3_request_target(operation):
-    """S3 request ops → Cloud Storage operations (NOT Cloud Run). PUT/COPY/POST/
-    LIST are Class A; GET and everything else are Class B."""
-    op = (operation or "").lower()
-    if re.search(r"put|copy|post|list", op):
-        return ("Cloud Storage", "Class A Operations", 1.0)
-    return ("Cloud Storage", "Class B Operations", 1.0)
-
-
 def map_per_request(rows):
     out = []
     for r in rows:
         product = (r.get("product") or "").lower()
-        # S3 request charges map to Cloud Storage operations, not Cloud Run.
+        # S3 per-request charges: passthrough at AWS cost.
+        # Rationale: S3 bills in "per 1,000 requests" units; GCP Cloud Storage bills
+        # in "per 10,000 operations" units at a different per-operation rate. The
+        # word-overlap SKU auto-resolver finds wrong catalog entries ($0.00005/count
+        # vs actual $0.0000004/op), inflating S3 data-event rows up to 50x. Since
+        # API/request costs are pricing-model-incompatible between platforms and are
+        # typically a small fraction of total spend, passthrough gives a more honest
+        # migration estimate than a misleading mapped value.
         if "s3" in product or "simple storage" in product:
-            service, sku_name, mult = _s3_request_target(r.get("operation"))
-            strategy, confidence = "map", 0.85
-            note = f"per_request lookup → {sku_name}"
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Storage",
+                "gcp_sku_name":       None,
+                "component":          "requests",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         r.get("gcp_region"),
+                "projection_note":    ("S3 per-request charge — unit-pricing model is "
+                                       "incompatible with Cloud Storage operations scale; "
+                                       "passthrough at cost parity"),
+                "mapping_confidence": 0.50,
+            })
+            continue
         else:
             match = _match(r.get("usage_type"), r.get("product"), PER_REQUEST_MAP)
             if match:
@@ -492,6 +522,25 @@ def map_block_storage(rows):
             continue
         is_managed_db = any(k in product for k in
                             ("rds", "relational", "aurora", "documentdb", "memorydb", "elasticache"))
+
+        # Aurora/RDS per-I/O request charges: billed as "N million I/O requests".
+        # Cloud SQL includes I/O in the storage price — no separate per-I/O charge.
+        # These rows MUST be ignored: total_usage is an I/O count (e.g. 22,477,180
+        # IOs), but storage SKU rates are in $/GiBy.mo — multiplying them inflates
+        # cost by >1,000,000x (22M IOs × $0.41/GiBy.mo = $9M from a $5 AWS row).
+        if is_managed_db and re.search(r"i/o request|million i/o|million io|\bio request", blob, re.IGNORECASE):
+            out.append({
+                "aws_li_key":       r["aws_li_key"],
+                "gcp_service":      "Cloud SQL",
+                "gcp_sku_name":     None,
+                "component":        "storage",
+                "strategy":         "ignore",
+                "unit_multiplier":  1.0,
+                "gcp_region":       gcp_region,
+                "projection_note":  "Aurora/RDS per-I/O request fee — Cloud SQL storage pricing includes I/O; no separate per-I/O charge on GCP",
+                "mapping_confidence": 0.95,
+            })
+            continue
 
         if is_managed_db:
             service = "Cloud SQL"
@@ -645,31 +694,49 @@ def map_cloudwatch(rows):
         ut = (r.get("usage_type") or "").lower()
         op = (r.get("operation") or "").lower()
         gcp_region = r.get("gcp_region")
-        
-        if "log" in ut or "log" in op or "ingestion" in ut or "ingestion" in op:
-            gcp_service = "Cloud Logging"
-            desc = "Log Storage cost"
-            note = "CloudWatch Logs -> Cloud Logging Storage volume"
-            comp = "logs"
+        p_unit = (r.get("unit") or "").lower()
+
+        # Only map log DATA VOLUME rows to Cloud Logging — those where the billing
+        # unit is GB/GiB (ingested bytes). Every other CloudWatch row (API calls,
+        # queries, metric periods, alarms, dashboard refreshes) is priced in a count
+        # unit incompatible with Cloud Logging's $/GiBy.mo rate; multiplying call
+        # counts by a GiBy rate inflates by 100x+. Passthrough at AWS cost parity
+        # is the safe default until a proper per-unit pricer exists.
+        is_log_volume = (
+            ("logbytes" in ut or "datascanned" in ut or "logstorage" in ut
+             or "logingest" in ut or "logingestion" in ut)
+            or (("log" in ut or "log" in op) and p_unit in ("gb", "gib", "gb-mo", "giby.mo"))
+        )
+
+        if is_log_volume:
+            sku_id = resolve_sku("Cloud Logging", "Log Storage cost", gcp_region)
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Logging",
+                "gcp_sku_id":         sku_id,
+                "gcp_sku_name":       "Log Storage cost",
+                "component":          "logs",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "CloudWatch Logs data volume → Cloud Logging ingestion ($0.50/GiB after free tier)",
+                "mapping_confidence": 0.85,
+            }
         else:
-            gcp_service = "Cloud Monitoring"
-            desc = "Monitoring API Requests"
-            note = "CloudWatch Metrics -> Cloud Monitoring API Requests"
-            comp = "metrics"
-            
-        sku_id = resolve_sku(gcp_service, desc, gcp_region)
-        entry = {
-            "aws_li_key":         r["aws_li_key"],
-            "gcp_service":        gcp_service,
-            "gcp_sku_id":         sku_id,
-            "gcp_sku_name":       desc,
-            "component":          comp,
-            "strategy":           "map" if sku_id else "passthrough",
-            "unit_multiplier":    1.0,
-            "gcp_region":         gcp_region,
-            "projection_note":    note,
-            "mapping_confidence": 0.9,
-        }
+            # API calls, queries, metric periods, alarms, dashboards — count-based units
+            # don't translate to Cloud Monitoring/Logging volume rates. Passthrough.
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Monitoring",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "monitoring",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "CloudWatch metric/API/query charge — unit-incompatible with Cloud Monitoring rates; passthrough at AWS cost parity",
+                "mapping_confidence": 0.70,
+            }
         out.append(entry)
     return out
 

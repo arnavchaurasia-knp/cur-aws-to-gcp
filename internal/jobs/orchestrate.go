@@ -169,8 +169,12 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// run the autofixer, so the phase gate sees fresh, repaired costs
 			// rather than stale projections (O3). This is what lets a Phase-5
 			// edit actually converge instead of failing the gate forever.
+			// incremental_rerate.py only fills rates for NEW gcp_sku_ids introduced
+			// by Phase 5 — it never drops or rebuilds the full table. Phase 4 already
+			// built it; this just upserts the changed rows. Avoids the 2-3x full
+			// catalog reload that apply_rates.py would cause here.
 			PostLLMScripts: []string{
-				"scripts/apply_rates.py",
+				"scripts/incremental_rerate.py",
 				"?scripts/validate_fix.py $JOBDIR",
 				// Re-apply the classifier + storage backstop in case Phase-3/5
 				// re-mapped a row, then the final safety gate.

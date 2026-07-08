@@ -148,7 +148,10 @@ def _resolve_sku_for_row(gcp_service, gcp_sku_name, gcp_region, services, data_d
 
 
 import re as _re_mod
-_ACCEL_RE = _re_mod.compile(r'\b(inf\d|trn\d|dl\d|p[2-5]|g[3-6]|vt\d)[a-z0-9]*\.')
+# Only Inferentia/Trainium/DL-AMI have no GCP equivalent at all — these stay as passthrough.
+# NVIDIA GPU families (g*, p*) ARE mapped by family_mapper.py to G2/A2/A3+GPU components;
+# those mappings are intentionally NOT overridden here.
+_ACCEL_RE = _re_mod.compile(r'\b(inf\d|trn\d|dl\d|vt\d)[a-z0-9]*\.')
 
 
 def enforce_accelerator_passthrough(conn):
@@ -571,6 +574,30 @@ def main():
             ON CONFLICT DO NOTHING
         """)
 
+    # CUD fallback for Compute Engine SKUs whose resource_group is not in ('CPU','RAM','GPU').
+    # ARM/T2A and some specialized families have different resource_group values (e.g. blank,
+    # 'Compute') and miss the CUD synthesis above. Apply the multiplier-based fallback for any
+    # Compute Engine OnDemand SKU still lacking a Commit1Yr row — these show up as query E
+    # outliers (OD=1yr=3yr) and were being sent to the LLM unnecessarily.
+    r1_ce, r3_ce = cud_pct.get("Compute Engine", _default_pct)
+    url_ce = "https://cloud.google.com/compute/docs/instances/signing-up-committed-use-discounts"
+    for pricing_type, mult in [("Commit1Yr", r1_ce), ("Commit3Yr", r3_ce)]:
+        conn.execute(f"""
+            INSERT INTO gcp_sku_rates
+            SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
+                   resource_group, '{pricing_type}', region, unit,
+                   rate_usd * {mult}, 'doc-percentage-fallback', '{url_ce}'
+            FROM gcp_sku_rates
+            WHERE gcp_service = 'Compute Engine' AND pricing_type = 'OnDemand'
+              AND NOT EXISTS (
+                  SELECT 1 FROM gcp_sku_rates r2
+                  WHERE r2.gcp_sku_id = gcp_sku_rates.gcp_sku_id
+                    AND r2.pricing_type = '{pricing_type}'
+                    AND r2.region = gcp_sku_rates.region
+              )
+            ON CONFLICT DO NOTHING
+        """)
+
     # Preemptible rate synthesis for Compute Engine CPU/RAM SKUs.
     # GCP Preemptible (and Spot VM) price ≈ 22% of On-Demand in most regions.
     # Synthesised here so the gcp_projection VIEW can select the correct rate for
@@ -628,6 +655,32 @@ def main():
     # (no_null_projected_cost) and the validator autofix can query it. Phase 5's
     # detect_outliers.py re-creates it idempotently from the same shared SQL.
     create_projection_view(conn)
+
+    # Safety net: any mapped row still lacking an OnDemand rate after fill
+    # (e.g. resolved to a Preemptible-only SKU, or SKU genuinely absent from catalog)
+    # must not block the gate. Convert to passthrough so the report always generates.
+    null_keys = conn.execute("""
+        SELECT p.aws_li_key
+        FROM gcp_projection p
+        WHERE p.strategy IN ('map', 'break_down')
+          AND p.gcp_projected_cost IS NULL
+          AND p.aws_amortized_cost > 1
+    """).fetchall()
+    if null_keys:
+        keys = [k[0] for k in null_keys]
+        placeholders = ",".join(["?" for _ in keys])
+        conn.execute(
+            f"""
+            UPDATE aws_li_to_gcp_li
+            SET strategy = 'passthrough',
+                projection_note = COALESCE(projection_note || ' ', '') ||
+                    '[no-rate-fallback: passthrough at cost parity — OnDemand rate missing for resolved SKU]'
+            WHERE aws_li_key IN ({placeholders})
+            """,
+            keys,
+        )
+        create_projection_view(conn)
+        print(f"  Rate-gap fallback: {len(keys)} NULL-cost row(s) → passthrough")
 
     print("Rate fill complete.")
 

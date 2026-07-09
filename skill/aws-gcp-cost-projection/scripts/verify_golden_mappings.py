@@ -34,9 +34,13 @@ def main():
             continue
         itype_lower = itype.lower()
         if itype_lower.startswith("db."):
-            # All db. instances must map to Cloud SQL SQLGen2Instances
+            # Storage/IO rows for RDS instances legitimately map to storage SKUs —
+            # only assert on compute (vCPU/RAM) rows.
+            sku_lower = (sku_name or "").lower()
+            if any(w in sku_lower for w in ("storage", "snapshot", "i/o", "backup")):
+                continue
             spec = assertions["db.r6i.large"]
-            sku_ok = spec["sku_desc"].lower() in (sku_name or "").lower()
+            sku_ok = spec["sku_desc"].lower() in sku_lower
             svc_ok = spec["service"].lower() in (gcp_svc or "").lower()
             if not (sku_ok and svc_ok):
                 print(f"❌ FAIL: DB instance {itype} mapped to {gcp_svc} / {sku_name} (expected {spec['service']} / {spec['sku_desc']})")

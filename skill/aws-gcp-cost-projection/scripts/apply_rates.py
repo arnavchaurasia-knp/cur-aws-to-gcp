@@ -3,7 +3,7 @@ import duckdb
 import os
 import sys
 import json
-import gzip
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from projection_view import create_projection_view
@@ -12,6 +12,7 @@ from egress_rates import EGRESS_SKUS
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 DATA_DIR = os.path.join(os.environ.get("SKILL_DIR", ""), "data")
+CATALOG_DB = os.path.join(DATA_DIR, "catalog.duckdb")
 
 # CUD discount multipliers — the SINGLE source of truth, shared verbatim with
 # validate_fix.py. Both read data/cud_pct.json so 1yr/3yr math is identical no
@@ -72,12 +73,6 @@ def blended_rate(tiered_rates, total_qty):
         total_cost += tier_qty * tier.get("rate", 0)
     return total_cost / total_qty if total_qty > 0 else tiered_rates[-1].get("rate", 0)
 
-def extract_rate(unit_price):
-    if not unit_price: return 0.0
-    units = int(unit_price.get("units", 0))
-    nanos = int(unit_price.get("nanos", 0))
-    return units + (nanos / 1e9)
-
 def _score_sku_match(description: str, gcp_sku_name: str) -> int:
     """Score how well a catalog SKU description matches the LLM-provided gcp_sku_name.
     Higher = better. Uses word-level intersection — no hardcoded rules needed."""
@@ -86,41 +81,30 @@ def _score_sku_match(description: str, gcp_sku_name: str) -> int:
     return len(desc_words & name_words)
 
 
-def _resolve_sku_for_row(gcp_service, gcp_sku_name, gcp_region, services, data_dir):
+def _resolve_sku_for_row(gcp_service, gcp_sku_name, gcp_region, *_ignored):
     """Return the best gcp_sku_id for a NULL-sku mapped row using catalog description search.
 
-    Strategy:
-    1. Load the service's SKU catalog file.
-    2. For each OnDemand SKU, score its description against gcp_sku_name by word overlap.
-    3. Prefer an exact-region match; fall back to any region with the best score.
-    No hardcoded rules — the catalog is the contract.
+    Queries catalog.duckdb (indexed) instead of scanning gzip files. Same word-overlap
+    scoring as before; same free-tier / intra-zone exclusions; same region-preference logic.
+    Extra positional args are accepted but ignored (backwards-compat with old signature).
     """
-    service_id = services.get(gcp_service)
-    if not service_id:
-        return None
-    sku_file = os.path.join(data_dir, "skus", f"{service_id}.json.gz")
-    if not os.path.exists(sku_file):
+    if not gcp_sku_name or not os.path.exists(CATALOG_DB):
         return None
 
-    with gzip.open(sku_file, "rt") as f:
-        all_skus = json.load(f)
-
-    if not gcp_sku_name:
-        return None
+    cat = duckdb.connect(CATALOG_DB, read_only=True)
+    try:
+        rows = cat.execute("""
+            SELECT sku_id, description, service_regions
+            FROM skus
+            WHERE service_name = ? AND usage_type = 'OnDemand'
+        """, [gcp_service]).fetchall()
+    finally:
+        cat.close()
 
     best_exact_score, best_exact_id = (-1, 0), None
     best_any_score,   best_any_id   = (-1, 0), None
 
-    for s in all_skus:
-        if s.get("category", {}).get("usageType") != "OnDemand":
-            continue
-        desc = s.get("description", "")
-        # Skip $0 SKUs that would otherwise win a word-overlap tie and produce a
-        # phantom $0 projection on a billed row:
-        #   - free-tier / promotional / trial SKUs
-        #   - "intra zone" transfer (free on GCP) matching a billed egress line
-        #     whose name says "inter zone"/"internet"/"egress" (one word apart,
-        #     opposite meaning — billed egress must never resolve to free intra-zone)
+    for sku, desc, regions in rows:
         dl = desc.lower()
         if "free tier" in dl or "promotional" in dl or "trial" in dl:
             continue
@@ -129,16 +113,9 @@ def _resolve_sku_for_row(gcp_service, gcp_sku_name, gcp_region, services, data_d
         score = _score_sku_match(desc, gcp_sku_name)
         if score <= 0:
             continue
-        sku = s["skuId"]
-        regions = s.get("serviceRegions", [])
-        # Composite rank: (word-overlap score, -extra words, lexically-smallest
-        # skuId). Penalizing extra description words makes the TIGHTEST match
-        # win a tie — "Balanced PD Capacity in Mumbai" beats "Regional Balanced
-        # PD Capacity in Mumbai" and "Storage PD Snapshot in Asia" (a pricier
-        # replicated/multi-region variant the caller never asked for). The
-        # skuId tiebreak keeps resolution deterministic across catalog order.
+        # Composite rank: (word-overlap score, -extra words). Tighter match wins ties.
         rank = (score, -len(desc.split()))
-        if gcp_region and gcp_region in regions:
+        if gcp_region and gcp_region in (regions or []):
             if rank > best_exact_score or (rank == best_exact_score and (best_exact_id is None or sku < best_exact_id)):
                 best_exact_score, best_exact_id = rank, sku
         if rank > best_any_score or (rank == best_any_score and (best_any_id is None or sku < best_any_id)):
@@ -217,7 +194,7 @@ def remap_elasticache_to_memorystore(conn):
     return n
 
 
-def fix_managed_db_storage_rows(conn, data_dir):
+def fix_managed_db_storage_rows(conn, *_ignored):
     """Aurora/RDS 'Storage and I/O' rows are billed in GB-Mo, not Hrs. The LLM
     maps them to vCPU/RAM SKUs (correct for instance rows), which multiplies
     millions of GB against $/vCPU-hr and blows the total by 10,000x.
@@ -226,16 +203,6 @@ def fix_managed_db_storage_rows(conn, data_dir):
     SKU is a vCPU/RAM SKU, then remap to the correct Cloud SQL SSD Storage SKU.
     This is the same class of fix as enforce_accelerator_passthrough — a unit
     mismatch the LLM cannot reliably avoid."""
-    import json, os
-
-    # Load SKU resolver (needed to look up the right storage SKU per region)
-    services_path = os.path.join(data_dir, "services.json")
-    try:
-        services = json.load(open(services_path))
-        if isinstance(services, list):
-            services = {s["displayName"]: s["serviceId"] for s in services}
-    except Exception:
-        services = {}
 
     rows = conn.execute("""
         SELECT m.aws_li_key, m.gcp_service, m.gcp_sku_name, c.gcp_region,
@@ -347,21 +314,13 @@ def main():
 
     conn = duckdb.connect(DB_PATH)
 
-    services_file = os.path.join(DATA_DIR, "services.json")
-    services = {}
-    if os.path.exists(services_file):
-        with open(services_file, "r") as f:
-            services_data = json.load(f)
-            for s in services_data:
-                services[s["displayName"]] = s["serviceId"]
-
     # Deterministic mapping-correctness enforcement (runs before SKU resolution
     # so corrected rows get the right rate). Both override the LLM's choices:
     #   - accelerators (Inferentia/Trainium/GPU) → single passthrough, never CPU VM
     #   - ElastiCache → Memorystore for Memcached, never Cloud SQL
     enforce_accelerator_passthrough(conn)
     remap_elasticache_to_memorystore(conn)
-    fix_managed_db_storage_rows(conn, DATA_DIR)
+    fix_managed_db_storage_rows(conn)
 
     # Add rate_source column if not yet present (idempotent — safe to re-run)
     try:
@@ -391,7 +350,7 @@ def main():
     resolved = 0
     word_overlap_keys = set()
     for aws_li_key, gcp_service, gcp_sku_name, gcp_region in null_sku_rows:
-        sku_id = _resolve_sku_for_row(gcp_service, gcp_sku_name, gcp_region, services, DATA_DIR)
+        sku_id = _resolve_sku_for_row(gcp_service, gcp_sku_name, gcp_region)
         if sku_id:
             conn.execute(
                 "UPDATE aws_li_to_gcp_li SET gcp_sku_id = ? WHERE aws_li_key = ? AND gcp_sku_id IS NULL",
@@ -434,109 +393,88 @@ def main():
     """)
     conn.execute("DELETE FROM gcp_sku_rates")
 
-    # Load SKUs
-    for sku_id, gcp_service in skus_used:
-        service_id = services.get(gcp_service)
-        if not service_id:
-            print(f"Service {gcp_service} not found in services.json")
-            continue
+    # Load all needed SKU rates from catalog.duckdb in one indexed batch query.
+    # Replaces per-SKU gzip file scanning (O(N) per lookup) with a single JOIN
+    # (O(log N) via sku_id index). Both Preemptible and Commit* rows are fetched
+    # now so the CUD synthesis below can fill any gaps with percentage fallbacks.
+    if not os.path.exists(CATALOG_DB):
+        print(f"WARNING: catalog.duckdb not found at {CATALOG_DB} — rate fill skipped.")
+        return
 
-        sku_file = os.path.join(DATA_DIR, "skus", f"{service_id}.json.gz")
-        if not os.path.exists(sku_file):
-            print(f"SKU file {sku_file} not found")
-            continue
+    sku_ids = [sku_id for sku_id, _ in skus_used]
+    # Map sku_id → gcp_service as declared in mappings (for the INSERT below).
+    sku_to_service = {sku_id: svc for sku_id, svc in skus_used}
 
-        sku_data = None
-        with gzip.open(sku_file, "rt") as f:
-            all_skus = json.load(f)
-            for s in all_skus:
-                if s["skuId"] == sku_id:
-                    sku_data = s
-                    break
-        
-        if not sku_data:
-            print(f"SKU {sku_id} not found in {sku_file}")
-            continue
+    cat = duckdb.connect(CATALOG_DB, read_only=True)
+    try:
+        placeholders = ",".join(["?" for _ in sku_ids])
+        catalog_rows = cat.execute(f"""
+            SELECT s.sku_id, s.service_name, s.description, s.resource_family,
+                   s.resource_group, s.usage_type, s.usage_unit, s.service_regions,
+                   t.tier_start, t.rate_usd
+            FROM skus s
+            JOIN tiered_rates t ON t.sku_id = s.sku_id
+            WHERE s.sku_id IN ({placeholders})
+              AND s.usage_type IN ('OnDemand', 'Preemptible', 'Commit1Yr', 'Commit3Yr')
+            ORDER BY s.sku_id, s.usage_type, t.tier_start
+        """, sku_ids).fetchall()
+    finally:
+        cat.close()
 
-        category = sku_data.get("category", {})
-        resource_family = category.get("resourceFamily", "")
-        resource_group = category.get("resourceGroup", "")
-        usage_type = category.get("usageType", "OnDemand")
+    # Group tiers per (sku_id, usage_type); keep one metadata record per key.
+    sku_tiers: dict[tuple, list] = defaultdict(list)
+    sku_meta: dict[tuple, tuple] = {}
+    for sku_id, svc_name, desc, rf, rg, ut, unit, regions, tier_start, rate_usd in catalog_rows:
+        key = (sku_id, ut)
+        sku_tiers[key].append({"startUsageAmount": tier_start, "rate": rate_usd})
+        if key not in sku_meta:
+            sku_meta[key] = (svc_name, desc, rf, rg, unit, regions or [])
 
-        # Determine regions
-        regions = set()
-        geo = sku_data.get("geoTaxonomy", {})
-        if geo.get("type") == "GLOBAL":
-            regions.add("global")
-        
-        for r in sku_data.get("serviceRegions", []):
-            if r.lower() in CONTAINER_CODES:
-                regions.update(CONTAINER_CODES[r.lower()])
-            else:
-                regions.add(r)
-        
-        # Determine rate
-        pricing_info = sku_data.get("pricingInfo", [])
-        if not pricing_info: continue
-        
-        pe = pricing_info[0].get("pricingExpression", {})
-        unit = pe.get("usageUnit", "")
-        tiered_rates = pe.get("tieredRates", [])
-        
-        parsed_tiers = []
-        for t in tiered_rates:
-            rate = extract_rate(t.get("unitPrice"))
-            parsed_tiers.append({"startUsageAmount": t.get("startUsageAmount", 0), "rate": rate})
-        
-        parsed_tiers.sort(key=lambda x: x["startUsageAmount"])
-        
-        if not parsed_tiers: continue
+    # Pre-fetch max usage per SKU for tiered-rate blending (one query, all SKUs).
+    max_usage_rows = conn.execute("""
+        SELECT m.gcp_sku_id, MAX(c.total_usage)
+        FROM aws_li_to_gcp_li m
+        JOIN aws_li_catalog c USING (aws_li_key)
+        WHERE m.gcp_sku_id IS NOT NULL
+        GROUP BY m.gcp_sku_id
+    """).fetchall()
+    max_usage: dict[str, float] = {r[0]: (r[1] or 0.0) for r in max_usage_rows}
 
-        # Since multiple LIs might use this SKU with different total_usages, 
-        # for flat-rate SKUs we just use the base rate. For tiered rates, we need to fetch the max usage.
-        # However, to be safe, if there's only 1 tier, it's flat. 
-        # If >1 tier, we just use the blended rate for the max usage across all LIs.
-        base_rate = parsed_tiers[0]["rate"]
-        if len(parsed_tiers) > 1:
-            total_qty = conn.execute(f"""
-                SELECT MAX(c.total_usage) FROM aws_li_catalog c
-                JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
-                WHERE m.gcp_sku_id = '{sku_id}'
-            """).fetchone()[0] or 0.0
-            base_rate = blended_rate(parsed_tiers, total_qty)
-        
-        # Insert OD row for all regions. ON CONFLICT DO NOTHING: one sku_id can
-        # expand to overlapping regions via CONTAINER_CODES, and the same key can
-        # recur across catalog entries — a bare INSERT would raise and abort the
-        # whole rate fill mid-way, leaving a partial table and NULL projections.
+    # Synthetic egress SKU IDs are injected directly into gcp_sku_rates below —
+    # they are never in catalog.duckdb, so exclude them from the "not found" report.
+    synthetic_ids = {sku_id for sku_id, _, _ in EGRESS_SKUS.values()}
+    found_skus = {k[0] for k in sku_tiers}
+    for sku_id in sku_ids:
+        if sku_id not in found_skus and sku_id not in synthetic_ids:
+            print(f"SKU {sku_id} ({sku_to_service.get(sku_id)}) not found in catalog.duckdb")
+
+    # Insert rates for all pricing types fetched from catalog.
+    # usage_type in catalog maps 1:1 to pricing_type in gcp_sku_rates.
+    for (sku_id, ut), tiers in sku_tiers.items():
+        gcp_service = sku_to_service.get(sku_id, sku_meta[(sku_id, ut)][0])
+        _, desc, rf, rg, unit, regions = sku_meta[(sku_id, ut)]
+
+        if len(tiers) > 1:
+            base_rate = blended_rate(tiers, max_usage.get(sku_id, 0.0))
+        else:
+            base_rate = tiers[0]["rate"]
+
+        # Expand container codes (e.g. 'us' → list of us-* regions).
+        expanded: set[str] = set()
         for r in regions:
+            if r.lower() in CONTAINER_CODES:
+                expanded.update(CONTAINER_CODES[r.lower()])
+            else:
+                expanded.add(r)
+
+        # ON CONFLICT DO NOTHING: container-code expansion can produce overlapping
+        # regions; the same sku_id may appear in multiple catalog rows.
+        for region in expanded:
             conn.execute("""
-                INSERT INTO gcp_sku_rates VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO gcp_sku_rates VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT DO NOTHING
-            """, (sku_id, gcp_service, sku_data.get("description", ""), resource_family, resource_group,
-                  usage_type, r, unit, base_rate, "catalog-bundled", f"data/skus/{service_id}.json.gz#{sku_id}"))
-
-        # Compute Engine CUD aliasing (pattern 1)
-        if gcp_service == "Compute Engine" and usage_type == "OnDemand" and resource_group in ["CPU", "RAM", "GPU"]:
-            commit_rates = {"Commit1Yr": None, "Commit3Yr": None}
-            desc = sku_data.get("description", "")
-            for s in all_skus:
-                if s.get("description") == desc and s.get("category", {}).get("usageType") in commit_rates:
-                    pi = s.get("pricingInfo", [])
-                    if pi:
-                        rate = extract_rate(pi[0].get("pricingExpression", {}).get("tieredRates", [{}])[0].get("unitPrice"))
-                        commit_rates[s["category"]["usageType"]] = rate
-
-            for c_type, c_rate in commit_rates.items():
-                if c_rate is not None:
-                    for r in regions:
-                        conn.execute("""
-                            INSERT INTO gcp_sku_rates VALUES
-                            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT DO NOTHING
-                        """, (sku_id, gcp_service, sku_data.get("description", "") + f" ({c_type} alias)", resource_family, resource_group,
-                              c_type, r, unit, c_rate, "catalog-bundled", f"data/skus/{service_id}.json.gz#alias"))
+            """, (sku_id, gcp_service, desc, rf, rg, ut, region, unit, base_rate,
+                  "catalog.duckdb", f"catalog.duckdb#{sku_id}"))
             
     # CUD synthesis. Discount MULTIPLIERS come from data/cud_pct.json — the SINGLE
     # source of truth shared with validate_fix.py, so both scripts apply identical
@@ -727,6 +665,37 @@ def main():
               AND aws_li_key IN ({','.join(['?']*len(word_overlap_keys))})
         """, list(word_overlap_keys))
     conn.execute("UPDATE aws_li_to_gcp_li SET rate_source = 'unknown' WHERE rate_source IS NULL")
+
+    # Normalize gcp_service to match the catalog's gcp_service field for all mapped rows.
+    # The LLM often writes shortened names ("Cloud KMS", "Memorystore", "Cloud Run") that
+    # differ from the catalog's canonical name ("Cloud Key Management Service (KMS)", etc.).
+    # detect_outliers query D flags these mismatches. Fixing here avoids 700+ false positives.
+    norm_result = conn.execute("""
+        UPDATE aws_li_to_gcp_li m
+        SET gcp_service = (
+            SELECT r.gcp_service FROM gcp_sku_rates r
+            WHERE r.gcp_sku_id = m.gcp_sku_id
+            LIMIT 1
+        )
+        WHERE m.strategy IN ('map', 'break_down')
+          AND m.gcp_sku_id IS NOT NULL
+          AND m.gcp_service != (
+            SELECT r.gcp_service FROM gcp_sku_rates r
+            WHERE r.gcp_sku_id = m.gcp_sku_id
+            LIMIT 1
+          )
+    """)
+    norm_count = conn.execute("""
+        SELECT COUNT(*) FROM aws_li_to_gcp_li m
+        WHERE m.strategy IN ('map', 'break_down')
+          AND m.gcp_sku_id IS NOT NULL
+          AND m.gcp_service != (
+            SELECT r.gcp_service FROM gcp_sku_rates r
+            WHERE r.gcp_sku_id = m.gcp_sku_id LIMIT 1
+          )
+    """).fetchone()[0]
+    if norm_count:
+        print(f"  Normalized gcp_service for {norm_count} rows to match SKU catalog.")
 
     print("Rate fill complete.")
 

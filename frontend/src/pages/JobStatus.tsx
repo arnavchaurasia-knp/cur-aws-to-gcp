@@ -40,7 +40,7 @@ function TotalsCard({ run, fallback }: { run: RunResult | null; fallback: number
     )
   }
   const rows: Array<{ label: string; value: number; compare: boolean }> = [
-    { label: 'AWS Monthly Spend (pre-tax)', value: run.aws_total, compare: false },
+    { label: 'AWS Infra Spend (excl. Marketplace)', value: run.aws_total, compare: false },
     { label: 'GCP On-Demand',              value: run.gcp_od,      compare: true },
     { label: 'GCP 1-Year CUD',             value: run.gcp_1yr_cud, compare: true },
     { label: 'GCP 3-Year CUD',             value: run.gcp_3yr_cud, compare: true },
@@ -188,32 +188,32 @@ export function JobStatus({ user }: { user: UserInfo }) {
               </div>
               <p className="text-gray-300">An AI agent is analyzing your bill and mapping each AWS line item to its GCP equivalent. This typically takes 10–30 minutes.</p>
               <p className="text-gray-400 text-xs mt-1">We'll email you when it's ready — you can close this tab.</p>
-              {progress && progress.transcript_ok && progress.phase_number > 0 && (
-                <div className="mt-3 pt-3 border-t border-[#645DF6]/20">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs uppercase tracking-wider text-gray-400">Currently</span>
-                    <span className="text-xs text-gray-500 tabular-nums">Step {progress.phase_number} of {TOTAL_PHASES}</span>
+              {(() => {
+                const phase = progress?.phase_number || 1
+                const label = PHASE_LABELS[phase] ?? 'Initializing…'
+                return (
+                  <div className="mt-3 pt-3 border-t border-[#645DF6]/20">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs uppercase tracking-wider text-gray-400">Currently</span>
+                      <span className="text-xs text-gray-500 tabular-nums">Step {phase} of {TOTAL_PHASES}</span>
+                    </div>
+                    <p className="text-sm text-gray-200">{label}</p>
+                    <div className="mt-3 flex gap-1">
+                      {[1, 2, 3, 4, 5, 6].map(n => (
+                        <div key={n}
+                          className={`h-1.5 flex-1 rounded-full overflow-hidden ${n > phase ? 'bg-white/10' : ''}`}>
+                          {n <= phase && (
+                            <div className={`h-full w-full rounded-full bg-[#00C2BB] ${
+                              n === phase ? 'animate-pulse' : 'phase-bar-done'
+                            }`}
+                              style={n < phase ? { animationDelay: `${(n - 1) * 80}ms` } : undefined} />
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <p className="text-sm text-gray-200">{PHASE_LABELS[progress.phase_number]}</p>
-                  <div className="mt-3 flex gap-1">
-                    {[1, 2, 3, 4, 5, 6].map(n => (
-                      <div key={n}
-                        className={`h-1.5 flex-1 rounded-full overflow-hidden ${
-                          n > progress.phase_number ? 'bg-white/10' : ''
-                        }`}>
-                        {n <= progress.phase_number && (
-                          <div className={`h-full w-full rounded-full bg-[#00C2BB] ${
-                            n === progress.phase_number
-                              ? 'animate-pulse'
-                              : 'phase-bar-done'
-                          }`}
-                            style={n < progress.phase_number ? { animationDelay: `${(n - 1) * 80}ms` } : undefined} />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                )
+              })()}
             </div>
           )}
 

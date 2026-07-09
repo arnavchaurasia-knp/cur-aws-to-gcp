@@ -16,7 +16,8 @@ WITH od_pick AS (
   SELECT m.aws_li_key, m.gcp_sku_id,
          COALESCE(
            MAX(CASE WHEN r.region = c.gcp_region THEN r.rate_usd END),
-           MAX(CASE WHEN r.region = 'global'     THEN r.rate_usd END)
+           MAX(CASE WHEN r.region = 'global'     THEN r.rate_usd END),
+           MAX(r.rate_usd)  -- fallback for uniformly-priced SKUs (e.g. KMS) with no global row
          ) AS rate_usd
   FROM   aws_li_to_gcp_li m
   JOIN   aws_li_catalog   c USING (aws_li_key)
@@ -31,7 +32,8 @@ c1_pick AS (
   SELECT m.aws_li_key, m.gcp_sku_id,
          COALESCE(
            MAX(CASE WHEN r.region = c.gcp_region THEN r.rate_usd END),
-           MAX(CASE WHEN r.region = 'global'     THEN r.rate_usd END)
+           MAX(CASE WHEN r.region = 'global'     THEN r.rate_usd END),
+           MAX(r.rate_usd)
          ) AS rate_usd
   FROM   aws_li_to_gcp_li m
   JOIN   aws_li_catalog   c USING (aws_li_key)
@@ -43,7 +45,8 @@ c3_pick AS (
   SELECT m.aws_li_key, m.gcp_sku_id,
          COALESCE(
            MAX(CASE WHEN r.region = c.gcp_region THEN r.rate_usd END),
-           MAX(CASE WHEN r.region = 'global'     THEN r.rate_usd END)
+           MAX(CASE WHEN r.region = 'global'     THEN r.rate_usd END),
+           MAX(r.rate_usd)
          ) AS rate_usd
   FROM   aws_li_to_gcp_li m
   JOIN   aws_li_catalog   c USING (aws_li_key)

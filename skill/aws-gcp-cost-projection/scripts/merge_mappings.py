@@ -18,6 +18,8 @@ import os
 import sys
 import duckdb
 
+CATALOG_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "catalog.duckdb")
+
 # Columns that can appear in a mapping JSON object.
 # Order matches the INSERT statement below.
 COLUMNS = [
@@ -125,6 +127,30 @@ def main() -> None:
 
     # Truncate existing mappings so re-runs are idempotent
     con.execute("DELETE FROM aws_li_to_gcp_li")
+
+    # Validate SKU IDs against catalog — null out any that don't exist.
+    # The LLM occasionally fabricates SKU IDs; phantom IDs silently produce
+    # NULL projected costs that only surface in detect_outliers query E/I.
+    valid_skus: set[str] = set()
+    if os.path.exists(CATALOG_DB):
+        try:
+            cat = duckdb.connect(CATALOG_DB, read_only=True)
+            valid_skus = {r[0] for r in cat.execute("SELECT sku_id FROM skus").fetchall()}
+            cat.close()
+        except Exception as e:
+            print(f"WARNING: could not load catalog for SKU validation: {e}", file=sys.stderr)
+
+    nulled = 0
+    if valid_skus:
+        for r in rows:
+            sku = r.get("gcp_sku_id")
+            if sku and sku not in valid_skus:
+                print(f"  INVALID SKU nulled: {sku!r} on {r.get('aws_li_key')} "
+                      f"({r.get('gcp_sku_name', '')}) — not in catalog", file=sys.stderr)
+                r["gcp_sku_id"] = None
+                nulled += 1
+        if nulled:
+            print(f"  {nulled} phantom SKU ID(s) nulled — apply_rates.py will fall back to passthrough.")
 
     # Build tuples in column order
     records = []

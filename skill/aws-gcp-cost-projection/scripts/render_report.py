@@ -567,13 +567,17 @@ def main():
                 f'{"<div class=card-sub>" + sub + "</div>" if sub else ""}'
                 f'</div>')
 
-    mkt_note = f"incl. {fmt(aws_marketplace)} Marketplace" if aws_marketplace > 0 else ""
+    mkt_note = f"incl. {fmt(aws_marketplace)} Marketplace passthrough" if aws_marketplace > 0 else ""
+    # GCP cards show workload-only costs vs aws_infra_baseline (excl. marketplace).
+    # Marketplace passes through 1:1 so including it in both sides would cancel out
+    # anyway, but excluding it keeps the headline % meaningful: it reflects only the
+    # infrastructure we actually map and price.
     cards_html = (
-        card("AWS Infra Baseline", fmt(aws_infra_baseline), "excl. Marketplace passthrough", accent=True) +
-        card("AWS Total (Bill)", fmt(aws_grand), mkt_note) +
-        card("GCP On-Demand", fmt(gcp_grand_od), _pct_infra(gcp_grand_od)) +
-        card("GCP 1-Year CUD", fmt(gcp_grand_1yr), _pct_infra(gcp_grand_1yr)) +
-        card("GCP 3-Year CUD", fmt(gcp_grand_3yr), _pct_infra(gcp_grand_3yr)) +
+        card("AWS Total (Bill)", fmt(aws_grand), mkt_note, accent=True) +
+        card("GCP On-Demand", fmt(gcp_od), _pct(aws_infra_baseline, gcp_od)) +
+        card("GCP 1-Year CUD", fmt(gcp_1yr), _pct(aws_infra_baseline, gcp_1yr)) +
+        card("GCP 3-Year CUD", fmt(gcp_3yr), _pct(aws_infra_baseline, gcp_3yr)) +
+        card("Mapped Workload (AWS)", fmt(aws_infra_baseline), "excl. Marketplace") +
         card("Mapping Confidence", f"{avg_conf*100:.1f}%", "excl. passthrough rows")
     )
 
@@ -703,9 +707,9 @@ def main():
   <tr style="background:#e8f5e9">
     <td><b>Infrastructure Baseline</b> <span style="font-size:11px;color:#5F6368">(excl. {fmt(aws_marketplace)} Marketplace)</span></td>
     <td class="num" style="font-weight:600">{fmt(aws_infra_baseline)}</td>
-    <td class="num" style="font-weight:600">{fmt(gcp_grand_od)} {pct_badge(aws_infra_baseline, gcp_grand_od)}</td>
-    <td class="num" style="font-weight:600">{fmt(gcp_grand_1yr)} {pct_badge(aws_infra_baseline, gcp_grand_1yr)}</td>
-    <td class="num" style="font-weight:600">{fmt(gcp_grand_3yr)} {pct_badge(aws_infra_baseline, gcp_grand_3yr)}</td>
+    <td class="num" style="font-weight:600">{fmt(gcp_od)} {pct_badge(aws_infra_baseline, gcp_od)}</td>
+    <td class="num" style="font-weight:600">{fmt(gcp_1yr)} {pct_badge(aws_infra_baseline, gcp_1yr)}</td>
+    <td class="num" style="font-weight:600">{fmt(gcp_3yr)} {pct_badge(aws_infra_baseline, gcp_3yr)}</td>
   </tr>
 </table>
 <div id="aws-total-spend" hidden>{aws_grand:.2f}</div>
@@ -785,6 +789,68 @@ def main():
             f.write(page)
     print(f"Generated {html_path}")
 
+    # ── AI summary markdown (shown in frontend JobStatus card) ────────────────
+    summary_md_rel = None
+    try:
+        od_pct  = (gcp_od  - aws_infra_baseline) / aws_infra_baseline * 100 if aws_infra_baseline else 0
+        c1_pct  = (gcp_1yr - aws_infra_baseline) / aws_infra_baseline * 100 if aws_infra_baseline else 0
+        c3_pct  = (gcp_3yr - aws_infra_baseline) / aws_infra_baseline * 100 if aws_infra_baseline else 0
+        arrow   = lambda p: ("▲" if p > 0 else "▼") + f" {abs(p):.1f}%"
+        verdict = "GCP On-Demand is cost-neutral" if abs(od_pct) < 2 else \
+                  f"GCP On-Demand is {arrow(od_pct)} vs AWS" + (" — GCP more expensive" if od_pct > 0 else " — GCP cheaper")
+
+        top_saves = "\n".join(
+            f"- **{r[0]}** → {r[1]}: save ${r[4]:,.0f}/mo ({r[4]/r[2]*100:.0f}%)"
+            for r in gcp_wins[:3] if r[2]
+        ) or "_No significant savings identified._"
+
+        top_costs = "\n".join(
+            f"- **{r[0]}** → {r[1]}: +${abs(r[4]):,.0f}/mo ({abs(r[4])/r[2]*100:.0f}% more)"
+            for r in gcp_loses[:3] if r[2]
+        ) or "_No significant cost increases identified._"
+
+        passthrough_rows = conn.execute("""
+            SELECT c.product, c.aws_amortized_cost
+            FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING (aws_li_key)
+            WHERE m.strategy = 'passthrough' AND c.is_workload AND c.aws_amortized_cost > 0
+            GROUP BY c.product, c.aws_amortized_cost
+            ORDER BY c.aws_amortized_cost DESC LIMIT 4
+        """).fetchall()
+        passthrough_note = ", ".join(r[0] for r in passthrough_rows) if passthrough_rows else "none"
+
+        summary_lines = [
+            f"## {customer_name} — AWS → GCP Cost Projection",
+            "",
+            f"**{verdict}**",
+            "",
+            "| Pricing Tier | Monthly Estimate | vs AWS |",
+            "|---|---|---|",
+            f"| AWS Infra Baseline | ${aws_infra_baseline:,.0f} | — |",
+            f"| GCP On-Demand | ${gcp_od:,.0f} | {arrow(od_pct)} |",
+            f"| GCP 1-Year CUD | ${gcp_1yr:,.0f} | {arrow(c1_pct)} |",
+            f"| GCP 3-Year CUD | ${gcp_3yr:,.0f} | {arrow(c3_pct)} |",
+            "",
+            "### Where GCP saves",
+            top_saves,
+            "",
+            "### Where GCP costs more",
+            top_costs,
+            "",
+            f"### Mapping coverage",
+            f"- **{total_li:,}** AWS line items · **{avg_conf*100:.0f}%** average mapping confidence",
+            f"- Passthroughs (no GCP equivalent): {passthrough_note}",
+            f"- Primary GCP region: {gcp_region_display}",
+        ]
+        summary_text = "\n".join(summary_lines)
+        summary_rel  = os.path.join("projection-audit", f"summary-{run_id}.md")
+        summary_abs  = os.path.join(JOB_DIR, summary_rel)
+        with open(summary_abs, "w", encoding="utf-8") as sf:
+            sf.write(summary_text)
+        summary_md_rel = summary_rel
+        print(f"Generated summary: {summary_abs}")
+    except Exception as e:
+        print(f"Warning: could not write summary_md: {e}")
+
     # ── run_results row (for frontend TotalsCard) ─────────────────────────────
     try:
         conn.execute("""
@@ -802,9 +868,13 @@ def main():
                 "INSERT INTO run_results "
                 "(run_id,ts_utc,run_type,instruction,aws_total,gcp_od,gcp_1yr_cud,gcp_3yr_cud,"
                 " report_html,report_md,summary_md,mapped_rows,passthroughs,confidence) "
-                "VALUES (?,?,?,NULL,?,?,?,?,'projection-audit/report.html',NULL,NULL,?,?,NULL)",
+                "VALUES (?,?,?,NULL,?,?,?,?,'projection-audit/report.html',NULL,?,?,?,NULL)",
+                # aws_total stores the infrastructure baseline (excl. marketplace) so
+                # the frontend TotalsCard % comparison reflects only what we map and price.
+                # gcp_od/1yr/3yr are workload-only — marketplace passes through 1:1
+                # and is not included in either side of the comparison.
                 [run_id, now.strftime("%Y-%m-%dT%H:%M:%SZ"), "initial",
-                 aws_grand, gcp_grand_od, gcp_grand_1yr, gcp_grand_3yr, mapped_rows, passthroughs]
+                 aws_infra_baseline, gcp_od, gcp_1yr, gcp_3yr, summary_md_rel, mapped_rows, passthroughs]
             )
             conn.commit()
             print(f"Inserted run_results row for {run_id}")

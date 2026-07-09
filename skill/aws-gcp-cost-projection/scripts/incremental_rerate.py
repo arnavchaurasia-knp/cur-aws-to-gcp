@@ -14,28 +14,29 @@ even though only 1-5 SKUs changed.
 """
 
 import duckdb
-import gzip
-import json
 import os
 import sys
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from projection_view import create_projection_view
 from apply_rates import (
+    CATALOG_DB,
     CONTAINER_CODES,
     blended_rate,
-    extract_rate,
     load_cud_pct,
     flag_license_exposure,
 )
 
 JOB_DIR  = os.getcwd()
 DB_PATH  = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
-DATA_DIR = os.path.join(os.environ.get("SKILL_DIR", ""), "data")
 
 
-def fill_missing_skus(conn, services):
-    """Load rates for any gcp_sku_id in aws_li_to_gcp_li not already in gcp_sku_rates."""
+def fill_missing_skus(conn):
+    """Load rates for any gcp_sku_id in aws_li_to_gcp_li not already in gcp_sku_rates.
+
+    Queries catalog.duckdb directly (indexed) — no gzip file scanning.
+    """
     missing = conn.execute("""
         SELECT DISTINCT m.gcp_sku_id, m.gcp_service
         FROM aws_li_to_gcp_li m
@@ -50,100 +51,76 @@ def fill_missing_skus(conn, services):
         print("  incremental_rerate: no new SKUs to load")
         return 0
 
+    if not os.path.exists(CATALOG_DB):
+        print(f"  incremental_rerate: catalog.duckdb not found — skipping {len(missing)} SKU(s)")
+        return 0
+
     print(f"  incremental_rerate: loading {len(missing)} new SKU(s)")
 
-    loaded = 0
-    for sku_id, gcp_service in missing:
-        service_id = services.get(gcp_service)
-        if not service_id:
-            print(f"    skip {sku_id}: service '{gcp_service}' not in services.json")
-            continue
+    sku_ids = [sku_id for sku_id, _ in missing]
+    sku_to_service = {sku_id: svc for sku_id, svc in missing}
 
-        sku_file = os.path.join(DATA_DIR, "skus", f"{service_id}.json.gz")
-        if not os.path.exists(sku_file):
-            print(f"    skip {sku_id}: catalog file missing for {gcp_service}")
-            continue
+    cat = duckdb.connect(CATALOG_DB, read_only=True)
+    try:
+        placeholders = ",".join(["?" for _ in sku_ids])
+        catalog_rows = cat.execute(f"""
+            SELECT s.sku_id, s.service_name, s.description, s.resource_family,
+                   s.resource_group, s.usage_type, s.usage_unit, s.service_regions,
+                   t.tier_start, t.rate_usd
+            FROM skus s
+            JOIN tiered_rates t ON t.sku_id = s.sku_id
+            WHERE s.sku_id IN ({placeholders})
+              AND s.usage_type IN ('OnDemand', 'Preemptible', 'Commit1Yr', 'Commit3Yr')
+            ORDER BY s.sku_id, s.usage_type, t.tier_start
+        """, sku_ids).fetchall()
+    finally:
+        cat.close()
 
-        with gzip.open(sku_file, "rt") as f:
-            all_skus = json.load(f)
+    sku_tiers: dict[tuple, list] = defaultdict(list)
+    sku_meta: dict[tuple, tuple] = {}
+    for sku_id, svc_name, desc, rf, rg, ut, unit, regions, tier_start, rate_usd in catalog_rows:
+        key = (sku_id, ut)
+        sku_tiers[key].append({"startUsageAmount": tier_start, "rate": rate_usd})
+        if key not in sku_meta:
+            sku_meta[key] = (svc_name, desc, rf, rg, unit, regions or [])
 
-        sku_data = next((s for s in all_skus if s["skuId"] == sku_id), None)
-        if not sku_data:
-            print(f"    skip {sku_id}: not found in {gcp_service} catalog")
-            continue
+    max_usage_rows = conn.execute("""
+        SELECT m.gcp_sku_id, MAX(c.total_usage)
+        FROM aws_li_to_gcp_li m
+        JOIN aws_li_catalog c USING (aws_li_key)
+        WHERE m.gcp_sku_id IS NOT NULL
+        GROUP BY m.gcp_sku_id
+    """).fetchall()
+    max_usage = {r[0]: (r[1] or 0.0) for r in max_usage_rows}
 
-        category       = sku_data.get("category", {})
-        resource_family = category.get("resourceFamily", "")
-        resource_group  = category.get("resourceGroup", "")
-        usage_type      = category.get("usageType", "OnDemand")
+    found = set()
+    for (sku_id, ut), tiers in sku_tiers.items():
+        gcp_service = sku_to_service.get(sku_id, sku_meta[(sku_id, ut)][0])
+        _, desc, rf, rg, unit, regions = sku_meta[(sku_id, ut)]
 
-        regions = set()
-        geo = sku_data.get("geoTaxonomy", {})
-        if geo.get("type") == "GLOBAL":
-            regions.add("global")
-        for r in sku_data.get("serviceRegions", []):
-            if r.lower() in CONTAINER_CODES:
-                regions.update(CONTAINER_CODES[r.lower()])
-            else:
-                regions.add(r)
+        base_rate = blended_rate(tiers, max_usage.get(sku_id, 0.0)) if len(tiers) > 1 else tiers[0]["rate"]
 
-        pricing_info = sku_data.get("pricingInfo", [])
-        if not pricing_info:
-            continue
-        pe = pricing_info[0].get("pricingExpression", {})
-        unit = pe.get("usageUnit", "")
-        tiered_rates = pe.get("tieredRates", [])
-        parsed_tiers = sorted(
-            [{"startUsageAmount": t.get("startUsageAmount", 0),
-              "rate": extract_rate(t.get("unitPrice"))} for t in tiered_rates],
-            key=lambda x: x["startUsageAmount"]
-        )
-        if not parsed_tiers:
-            continue
-
-        base_rate = parsed_tiers[0]["rate"]
-        if len(parsed_tiers) > 1:
-            total_qty = conn.execute(f"""
-                SELECT MAX(c.total_usage) FROM aws_li_catalog c
-                JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
-                WHERE m.gcp_sku_id = '{sku_id}'
-            """).fetchone()[0] or 0.0
-            base_rate = blended_rate(parsed_tiers, total_qty)
-
-        audit_url = f"data/skus/{service_id}.json.gz#{sku_id}"
+        expanded: set[str] = set()
         for r in regions:
+            if r.lower() in CONTAINER_CODES:
+                expanded.update(CONTAINER_CODES[r.lower()])
+            else:
+                expanded.add(r)
+
+        for region in expanded:
             conn.execute("""
                 INSERT INTO gcp_sku_rates VALUES (?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT DO NOTHING
-            """, (sku_id, gcp_service, sku_data.get("description",""),
-                  resource_family, resource_group, usage_type,
-                  r, unit, base_rate, "catalog-bundled", audit_url))
-
-        # CUD aliases for Compute Engine CPU/RAM/GPU SKUs
-        if gcp_service == "Compute Engine" and usage_type == "OnDemand" \
-                and resource_group in ["CPU", "RAM", "GPU"]:
-            desc = sku_data.get("description", "")
-            for s in all_skus:
-                ct = s.get("category", {}).get("usageType", "")
-                if s.get("description") == desc and ct in ("Commit1Yr", "Commit3Yr"):
-                    pi = s.get("pricingInfo", [])
-                    if pi:
-                        c_rate = extract_rate(
-                            pi[0].get("pricingExpression", {})
-                               .get("tieredRates", [{}])[0].get("unitPrice"))
-                        for r in regions:
-                            conn.execute("""
-                                INSERT INTO gcp_sku_rates VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                                ON CONFLICT DO NOTHING
-                            """, (sku_id, gcp_service, desc + f" ({ct} alias)",
-                                  resource_family, resource_group, ct,
-                                  r, unit, c_rate, "catalog-bundled",
-                                  f"data/skus/{service_id}.json.gz#alias"))
-
-        loaded += 1
+            """, (sku_id, gcp_service, desc, rf, rg, ut, region, unit, base_rate,
+                  "catalog.duckdb", f"catalog.duckdb#{sku_id}"))
+        found.add(sku_id)
         print(f"    loaded: {gcp_service} / {sku_id}")
 
-    return loaded
+    missing_from_catalog = set(sku_ids) - found
+    for sku_id in missing_from_catalog:
+        print(f"    skip {sku_id}: not found in catalog.duckdb")
+
+    return len(found)
 
 
 def synthesize_cud_for_new_skus(conn):
@@ -188,14 +165,7 @@ def main():
 
     conn = duckdb.connect(DB_PATH)
 
-    services_file = os.path.join(DATA_DIR, "services.json")
-    services = {}
-    if os.path.exists(services_file):
-        with open(services_file) as f:
-            for s in json.load(f):
-                services[s["displayName"]] = s["serviceId"]
-
-    loaded = fill_missing_skus(conn, services)
+    loaded = fill_missing_skus(conn)
     if loaded:
         synthesize_cud_for_new_skus(conn)
 

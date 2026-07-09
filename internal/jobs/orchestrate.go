@@ -124,25 +124,49 @@ func phaseSpecs(inputExt string) []phaseSpec {
 		},
 		{
 			Num: 3, Name: "Review", Activity: "Verifying mappings",
-			PreScript: "scripts/auto_review.py",
+			// auto_review.py is a pure suggestion engine: detects illegal passthroughs
+			// and spec violations, pre-computes candidate fixes, writes review_flags.md
+			// (for LLM) and review_candidates.json (for apply_review_fixes.py).
+			// It NEVER modifies the database.
+			PreLLMScripts: []string{"scripts/auto_review.py"},
+			// apply_review_fixes.py reads review_fixes.json from the LLM and
+			// review_candidates.json from auto_review.py, then applies confirm/override/veto
+			// decisions with schema validation. It is the ONLY script that writes to the DB.
+			PostLLMScripts: []string{"scripts/apply_review_fixes.py"},
 			Prompt: "Phase 3 — Review. Strict protocol, no deviations.\n\n" +
 				"SETUP (already done by orchestrator):\n" +
-				"  • auto_review.py ran → review_flags.md lists every detected issue with aws_li_key and reason.\n\n" +
-				"YOUR ONLY JOB: fix the rows listed in review_flags.md.\n\n" +
+				"  • auto_review.py ran → review_flags.md lists every flagged row with a pre-computed\n" +
+				"    candidate fix and a confidence label (HIGH / LOW / NONE).\n\n" +
+				"YOUR ONLY JOB: read review_flags.md and write review_fixes.json.\n\n" +
 				"MANDATORY STEPS — follow exactly in this order:\n" +
 				"1. Read review_flags.md. This is the ONLY input you need.\n" +
-				"   DO NOT re-scan all mappings. DO NOT query aws_li_catalog to find new issues.\n" +
-				"2. For each flagged aws_li_key in review_flags.md:\n" +
-				"   a. Look up its current mapping: run ONE query — SELECT * FROM aws_li_to_gcp_li WHERE aws_li_key='...'.\n" +
-				"   b. Decide the correct fix (wrong SKU, illegal passthrough, wrong strategy).\n" +
-				"   c. Apply fix: run ONE UPDATE on aws_li_to_gcp_li for that row.\n" +
-				"   d. Move to the next flagged row. Do not re-query the same row twice.\n" +
-				"3. After all flags are resolved, append a brief summary to mapping-notes.md.\n\n" +
+				"   DO NOT query the database. DO NOT re-scan mappings. DO NOT run SQL.\n" +
+				"2. For each flagged aws_li_key, decide:\n" +
+				"   • HIGH confidence candidate: confirm unless something is visibly wrong.\n" +
+				"   • LOW confidence candidate: verify it makes sense; override if it looks wrong.\n" +
+				"   • NONE (no candidate): reason from product/usage_type, supply gcp_sku_id + gcp_sku_name.\n" +
+				"3. Write review_fixes.json — a JSON array, one object per flagged row:\n" +
+				"   [{\"aws_li_key\": \"...\", \"decision\": \"confirm|override|veto\",\n" +
+				"     \"gcp_sku_id\": \"...\", \"gcp_sku_name\": \"...\",\n" +
+				"     \"unit_multiplier\": 4.0, \"component\": \"core\", \"reason\": \"...\"}]\n" +
+				"   confirm  → apply the pre-computed candidate as-is\n" +
+				"   override → supply your own values (include gcp_sku_id+gcp_sku_name and/or unit_multiplier)\n" +
+				"   veto     → leave unchanged (document why in reason)\n\n" +
 				"RULES:\n" +
-				"  • Phase 3 never re-enters Phase 2. All fixes are direct SQL UPDATEs on aws_li_to_gcp_li.\n" +
-				"  • DO NOT run a broad SELECT on all mappings — only SELECT the specific aws_li_key being fixed.\n" +
-				"  • DO NOT write new mapping files. DO NOT call merge_mappings.py or classify_mechanics.py.\n" +
-				"  • STOP after processing every row in review_flags.md. Nothing else.",
+				"  • DO NOT run any SQL or touch the database — apply_review_fixes.py handles all writes.\n" +
+				"  • DO NOT write mapping files or call any other scripts.\n" +
+				"  • STOP after writing review_fixes.json. Nothing else.",
+			CheckName: "no_illegal_passthroughs",
+			CheckSQL: "SELECT count(*) FROM aws_li_catalog c " +
+				"JOIN aws_li_to_gcp_li m USING(aws_li_key) " +
+				"WHERE m.strategy = 'passthrough' " +
+				"AND (c.product ILIKE '%Elastic Compute Cloud%' OR c.product ILIKE '%EC2%' " +
+				"OR c.product ILIKE '%Elastic Block Store%' OR c.product ILIKE '%EBS%' " +
+				"OR c.product ILIKE '%Relational Database%' OR c.product ILIKE '%RDS%' " +
+				"OR c.product ILIKE '%Aurora%' OR c.product ILIKE '%ElastiCache%' " +
+				"OR c.product ILIKE '%Simple Storage%' OR c.product ILIKE '%Amazon S3%' " +
+				"OR c.product ILIKE '%Data Transfer%' OR c.product ILIKE '%Load Balanc%' " +
+				"OR c.product ILIKE '%Lambda%' OR c.product ILIKE '%CloudWatch%')",
 		},
 		{
 			Num: 4, Name: "Rate-Card Fill", Activity: "Fetching GCP rates",
@@ -161,64 +185,62 @@ func phaseSpecs(inputExt string) []phaseSpec {
 		},
 		{
 			Num: 5, Name: "Outlier Triage", Activity: "Running outlier queries",
+			// detect_outliers.py: splits output into structural_outliers.md + pricing_outliers.md,
+			// writes outliers_data.json, and fails hard if total rows > 20 (systematic mapper bug).
+			// auto_triage.py: pure suggestion engine — reads outliers_data.json, computes
+			// candidates for structural rows (D/E/G/B/C/H/I), enriches pricing rows (A1/A2/F)
+			// with context only (no candidate — word-overlap re-resolution caused Glacier 120x).
+			// Writes triage_suggestions.md (for LLM) and triage_candidates.json (for apply script).
+			// incremental_rerate.py before LLM: ensures LLM reasons over fresh costs.
 			PreLLMScripts: []string{
 				"scripts/ensure_catalog_coverage.py",
 				"scripts/detect_outliers.py",
+				"scripts/auto_triage.py",
+				"scripts/incremental_rerate.py",
 			},
-			// After the LLM triages, recompute rates for any SKU it changed and
-			// run the autofixer, so the phase gate sees fresh, repaired costs
-			// rather than stale projections (O3). This is what lets a Phase-5
-			// edit actually converge instead of failing the gate forever.
-			// incremental_rerate.py only fills rates for NEW gcp_sku_ids introduced
-			// by Phase 5 — it never drops or rebuilds the full table. Phase 4 already
-			// built it; this just upserts the changed rows. Avoids the 2-3x full
-			// catalog reload that apply_rates.py would cause here.
+			// apply_outlier_fixes.py: single application point — reads outlier_fixes.json
+			// (LLM output) + triage_candidates.json, applies confirm/override/veto with
+			// schema validation. LLM never touches the DB directly.
+			// incremental_rerate.py after LLM: fills rates for new SKU IDs introduced by fixes.
+			// outlier_gate.py: hard gate unchanged.
 			PostLLMScripts: []string{
+				"scripts/apply_outlier_fixes.py",
 				"scripts/incremental_rerate.py",
 				"?scripts/validate_fix.py $JOBDIR",
-				// Re-apply the classifier + storage backstop in case Phase-3/5
-				// re-mapped a row, then the final safety gate.
-				"scripts/service_classifier.py $DB",
-				"scripts/fix_storage_misroute.py $DB",
-				// HARD gate: fail the job with named rows if any implausible blowup
-				// remains (single row >50x, >$10k from <$100, inflated
-				// non-storage->GCS, or whole-bill >2x).
 				"scripts/outlier_gate.py $DB",
 			},
 			Prompt: "Phase 5 — Outlier Triage. Strict protocol, no deviations.\n\n" +
 				"SETUP (already done by orchestrator):\n" +
-				"  • detect_outliers.py ran → outliers.md lists every flagged row with aws_li_key, query ID, and values.\n\n" +
-				"YOUR ONLY JOB: triage each row in outliers.md.\n\n" +
+				"  • detect_outliers.py ran → structural_outliers.md + pricing_outliers.md\n" +
+				"  • auto_triage.py ran → triage_suggestions.md with pre-computed candidates\n\n" +
+				"YOUR ONLY JOB: read triage_suggestions.md and write outlier_fixes.json.\n\n" +
 				"MANDATORY STEPS — follow exactly in this order:\n" +
-				"1. Read outliers.md. This is the ONLY input you need.\n" +
-				"   DO NOT re-run the outlier queries yourself. DO NOT SELECT * from gcp_projection.\n" +
-				"2. For each flagged aws_li_key in outliers.md:\n" +
-				"   a. Check triage order: unit multiplier wrong → wrong SKU → spec mismatch → documented mechanism.\n" +
-				"   b. Apply exactly ONE of:\n" +
-				"      • UPDATE aws_li_to_gcp_li SET unit_multiplier=... WHERE aws_li_key='...'\n" +
-				"      • UPDATE aws_li_to_gcp_li SET gcp_sku_id=..., gcp_sku_name=... WHERE aws_li_key='...'\n" +
-				"      • If you truly cannot resolve it: leave strategy='map' and append the row to mapping-notes.md\n" +
-				"        under '## Rate gaps'. DO NOT set strategy='passthrough' — the orchestrator's autofixer and\n" +
-				"        global-fallback rates will resolve a rate; passthrough on a mappable service fails the gate.\n" +
-				"   c. The NEW SKU description must literally match the AWS resource type — inter-zone egress → inter-zone SKU.\n" +
-				"   d. Never create GCP On-Demand > 3× AWS cost without a visible bill explanation.\n" +
-				"3. Append a one-line note per fixed row to mapping-notes.md.\n\n" +
+				"1. Read triage_suggestions.md. This is the ONLY input you need.\n" +
+				"   DO NOT query the database. DO NOT run SQL. DO NOT re-run outlier queries.\n" +
+				"2. For each aws_li_key in triage_suggestions.md, decide:\n" +
+				"   STRUCTURAL rows (D/E/G/B/C/H/I):\n" +
+				"   • HIGH confidence candidate: confirm unless something is visibly wrong.\n" +
+				"   • LOW confidence candidate: validate carefully; override if it looks wrong.\n" +
+				"   • NONE (no candidate): reason from the context provided, supply fix fields.\n" +
+				"   PRICING rows (A1/A2/F — no candidate provided):\n" +
+				"   • Use the current gcp_sku_name, ratio, and context to reason about the fix.\n" +
+				"   • If unit_multiplier is wrong: provide the correct value.\n" +
+				"   • If SKU is wrong tier: supply correct gcp_sku_id + gcp_sku_name.\n" +
+				"   • If you cannot determine the fix: veto and document as rate gap.\n" +
+				"   ABSOLUTE RULE: strategy='passthrough' means GCP has no equivalent service.\n" +
+				"   Never use passthrough to resolve a missing rate or NULL projected cost.\n" +
+				"3. Write outlier_fixes.json — a JSON array, one object per row:\n" +
+				"   [{\"aws_li_key\": \"...\", \"decision\": \"confirm|override|veto\",\n" +
+				"     \"gcp_sku_id\": \"...\", \"gcp_sku_name\": \"...\",\n" +
+				"     \"unit_multiplier\": 4.0, \"component\": \"core\",\n" +
+				"     \"gcp_service\": \"...\", \"gcp_region\": \"...\", \"reason\": \"...\"}]\n" +
+				"   confirm  → apply the pre-computed candidate as-is\n" +
+				"   override → supply your own values (include every field you want changed)\n" +
+				"   veto     → leave unchanged, reason goes to rate-gaps section of mapping-notes.md\n\n" +
 				"RULES:\n" +
-				"  • Phase 5 never re-enters Phase 2 or 3. Every fix is a direct SQL UPDATE.\n" +
-				"  • DO NOT run broad SELECTs. One targeted SELECT per row if you need to verify current state.\n" +
-				"  • STOP when all rows in outliers.md are resolved or documented.\n\n" +
-				"NULL-COST TRIAGE — mandatory diagnosis before any fix:\n" +
-				"  When gcp_projected_cost IS NULL for a mapped row, diagnose the cause first:\n" +
-				"  (a) SELECT c.gcp_region FROM aws_li_catalog c WHERE c.aws_li_key='<key>'\n" +
-				"      → if NULL: UPDATE aws_li_catalog SET gcp_region='asia-southeast1' WHERE aws_li_key='<key>'\n" +
-				"         NEVER set strategy=passthrough for a NULL-gcp_region row.\n" +
-				"  (b) SELECT gcp_sku_id FROM aws_li_to_gcp_li WHERE aws_li_key='<key>'\n" +
-				"      → if NULL: UPDATE aws_li_to_gcp_li SET gcp_sku_id='<correct-id>' WHERE aws_li_key='<key>'\n" +
-				"         DO NOT set strategy=passthrough just because gcp_sku_id is NULL.\n" +
-				"  (c) SELECT COUNT(*) FROM gcp_sku_rates WHERE gcp_sku_id='<sku>'\n" +
-				"      → if 0: document as rate-gap in mapping-notes.md. DO NOT change strategy.\n" +
-				"  ABSOLUTE RULE: strategy='passthrough' means GCP has no equivalent service.\n" +
-				"  It does NOT mean the rate is missing. Never use passthrough to resolve a NULL projected cost.",
+				"  • DO NOT run any SQL or touch the database — apply_outlier_fixes.py handles all writes.\n" +
+				"  • DO NOT write to mapping-notes.md — vetoed rows are logged by apply_outlier_fixes.py.\n" +
+				"  • STOP after writing outlier_fixes.json. Nothing else.",
 			CheckName: "over_and_under_projection",
 			// Under-projection zero-check uses a $10 materiality floor: a small
 			// row can legitimately project to $0 on GCP (usage within a free

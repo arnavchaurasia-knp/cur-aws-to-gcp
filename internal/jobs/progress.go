@@ -25,12 +25,6 @@ const totalPhases = config.TotalPhases
 // progressFile is the file the skill writes into the job working directory.
 const progressFile = "progress.json"
 
-// skillProgress mirrors the JSON the skill writes at each phase transition.
-type skillProgress struct {
-	Phase        int    `json:"phase"`
-	PhaseName    string `json:"phase_name"`
-	LastActivity string `json:"last_activity"`
-}
 
 // ReadProgress reads progress.json from the job directory. The second argument
 // (sessionID) is kept for API compatibility with callers but is unused —
@@ -53,25 +47,61 @@ func ReadProgress(jobDir, _ string) (*Progress, error) {
 		return &Progress{}, nil
 	}
 
-	var sp skillProgress
-	if err := json.Unmarshal(data, &sp); err != nil {
-		// File exists but not yet valid JSON (partial write) — report alive
-		// but no phase info yet.
+	// Parse into a raw map to handle "phase" being int (legacy) or string (new).
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return &Progress{TranscriptOK: true}, nil
 	}
 
-	phase := sp.Phase
-	if phase < 1 {
-		phase = 1
+	// Phase number: new schema uses "current_step" (int), legacy uses "phase" (int).
+	phaseNum := 0
+	if v, ok := raw["current_step"]; ok {
+		if f, ok := v.(float64); ok {
+			phaseNum = int(f)
+		}
 	}
-	if phase > totalPhases {
-		phase = totalPhases
+	if phaseNum == 0 {
+		if v, ok := raw["phase"]; ok {
+			if f, ok := v.(float64); ok {
+				phaseNum = int(f)
+			}
+		}
+	}
+	if phaseNum < 1 {
+		phaseNum = 1
+	}
+	if phaseNum > totalPhases {
+		phaseNum = totalPhases
+	}
+
+	// Phase name: new schema "phase" (string), legacy "phase_name".
+	phaseName := ""
+	if v, ok := raw["phase"]; ok {
+		if s, ok := v.(string); ok {
+			phaseName = s
+		}
+	}
+	if phaseName == "" {
+		if v, ok := raw["phase_name"]; ok {
+			phaseName, _ = v.(string)
+		}
+	}
+
+	// Last activity: new schema "status", legacy "last_activity".
+	lastActivity := ""
+	if v, ok := raw["status"]; ok {
+		lastActivity, _ = v.(string)
+	}
+	if lastActivity == "" {
+		if v, ok := raw["last_activity"]; ok {
+			lastActivity, _ = v.(string)
+		}
 	}
 
 	return &Progress{
 		TranscriptOK: true,
-		Phase:        sp.PhaseName,
-		PhaseNumber:  phase,
-		LastActivity: sp.LastActivity,
+		Phase:        phaseName,
+		PhaseNumber:  phaseNum,
+		LastActivity: lastActivity,
 	}, nil
 }

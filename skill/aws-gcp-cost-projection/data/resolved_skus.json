@@ -216,5 +216,12 @@
   "Cloud SQL|^Cloud SQL for PostgreSQL: Zonal - Small instance|asia-southeast1": "FB2B-BC59-824D",
   "Cloud SQL|^Cloud SQL for PostgreSQL: Regional - Small instance|asia-southeast1": "E5B0-928E-2903",
   "Networking|^Networking Cloud Armor Policy|global": "26E3-0501-E08C",
-  "Networking|^Networking Cloud Armor Rule|global": "15EF-FD49-BC8F"
+  "Networking|^Networking Cloud Armor Rule|global": "15EF-FD49-BC8F",
+  "BigQuery|Standard Edition Slot Hour|us-east4": null,
+  "BigQuery|Active Storage|us-east4": null,
+  "Filestore|Filestore Basic SSD Capacity|us-east4": null,
+  "Filestore|Filestore Basic SSD Capacity|asia-south1": null,
+  "Filestore|Filestore Basic HDD Capacity|us-east4": null,
+  "Filestore|Filestore Basic SSD Capacity|global": null,
+  "Cloud Trace|Trace Ingestion|us-east4": null
 }

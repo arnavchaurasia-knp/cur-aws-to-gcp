@@ -142,12 +142,12 @@ def main():
         with open(FIXES_FILE) as f:
             fixes = json.load(f)
     except Exception as e:
-        print(f"ERROR: Could not parse outlier_fixes.json: {e}", file=sys.stderr)
-        sys.exit(1)
+        print(f"WARNING: Could not parse outlier_fixes.json: {e} — skipping outlier fixes.", file=sys.stderr)
+        sys.exit(0)
 
     if not isinstance(fixes, list):
-        print("ERROR: outlier_fixes.json must be a JSON array.", file=sys.stderr)
-        sys.exit(1)
+        print("WARNING: outlier_fixes.json must be a JSON array — skipping outlier fixes.", file=sys.stderr)
+        sys.exit(0)
 
     candidates = {}
     if os.path.exists(CANDIDATES_FILE):

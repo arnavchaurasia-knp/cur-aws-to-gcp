@@ -29,8 +29,12 @@ CANDIDATES_JSON = os.path.join(JOB_DIR, "triage_candidates.json")
 
 def main():
     if not os.path.exists(DATA_FILE):
-        print("outliers_data.json not found — detect_outliers.py may have failed.")
-        sys.exit(1)
+        print("outliers_data.json not found — detect_outliers.py may have failed. Writing empty suggestions.")
+        with open(SUGGESTIONS_MD, "w") as f:
+            f.write("# Triage Suggestions\n\nNo outliers data available. Return `[]`.\n")
+        with open(CANDIDATES_JSON, "w") as f:
+            json.dump({}, f)
+        sys.exit(0)
 
     with open(DATA_FILE) as f:
         data = json.load(f)

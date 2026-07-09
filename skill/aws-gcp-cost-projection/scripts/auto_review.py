@@ -24,23 +24,38 @@ DB_PATH         = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 FLAGS_FILE      = os.path.join(JOB_DIR, "review_flags.md")
 CANDIDATES_FILE = os.path.join(JOB_DIR, "review_candidates.json")
 
-# Products that must NEVER be passthrough (unless skip_group mechanic did it intentionally)
-# Skip-group products (guardduty/kinesis/efs/xray/fsx/etc.) are NOT in this list —
-# they are legitimately passthrough and never flagged here.
+# Products that must NEVER be passthrough: services with clear, direct GCP equivalents
+# where a passthrough means we're not actually projecting GCP cost.
+#
+# Excluded from this list (legitimately passthrough):
+#   - CloudWatch: alarms/dashboards/metrics have no per-unit GCP pricing equivalent
+#   - Lambda: requires memory_size_mb not present in CUR; passthrough is correct fallback
+#   - Data Transfer: multi-directional, many sub-types; static mapper handles what it can
+#   - NAT Gateway: multi-component (gateway-hours + data-processed); excluded via NOT ILIKE below
+#   - Route 53 / KMS: minor cost, pricing models differ enough that passthrough is acceptable
 _NEVER_PASSTHROUGH_ILIKE = [
-    "%Elastic Compute Cloud%", "%EC2%",
-    "%Elastic Block Store%", "%EBS%",
-    "%Relational Database%", "%RDS%",
-    "%Aurora%", "%ElastiCache%",
-    "%Simple Storage%", "%Amazon S3%",
-    "%Data Transfer%", "%Load Balanc%",
-    "%Lambda%", "%Route 53%",
-    "%KMS%", "%CloudWatch%",
+    "%Elastic Compute Cloud%",
+    "%Elastic Block Store%",
+    "%Relational Database%",
+    "%Aurora%",
+    "%ElastiCache%",
+    "%Simple Storage%",
+    "%Load Balanc%",
+]
+
+# Sub-patterns to EXCLUDE even when a product matches the list above.
+# NAT Gateway sits under "Amazon Elastic Compute Cloud NatGateway" — it's multi-component
+# infrastructure, not an EC2 instance, and legitimately maps to Cloud NAT passthrough.
+_NEVER_PASSTHROUGH_EXCLUDE_ILIKE = [
+    "%NatGateway%",
+    "%Nat:%",
 ]
 
 
 def _never_passthrough_clause():
-    return " OR ".join(f"c.product ILIKE '{p}'" for p in _NEVER_PASSTHROUGH_ILIKE)
+    include = " OR ".join(f"c.product ILIKE '{p}'" for p in _NEVER_PASSTHROUGH_ILIKE)
+    exclude = " AND ".join(f"c.product NOT ILIKE '{p}'" for p in _NEVER_PASSTHROUGH_EXCLUDE_ILIKE)
+    return f"({include}) AND {exclude}"
 
 
 def main():

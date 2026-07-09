@@ -210,6 +210,14 @@ RULES = [
             (
                 r["unit"] in ("Requests", "Lambda-GB-Second", "Count")
                 or _re(r["usage_type"], r"Requests|Invocations")
+                # S3 Intelligent-Tiering, lifecycle, and miscellaneous S3 charges
+                # with blank usage_type / unit fall here rather than to misc.
+                # map_per_request() handles them as Cloud Storage passthroughs.
+                or (
+                    (_ilike(r["product"], "S3") or _ilike(r["product"], "Simple Storage"))
+                    and not r["unit"] in ("GB-Mo", "GB Month", "GB-Month")
+                    and not _re(r["usage_type"], r"TimedStorage|ByteHrs")
+                )
             )
             and not any(
                 _ilike(r["product"], p) for p in (
@@ -217,6 +225,15 @@ RULES = [
                     "GuardDuty", "Security Hub",
                 )
             )
+        ),
+    ),
+    (
+        # ElastiCache → Cloud Memorystore for Redis. Static mapper converts
+        # node-hours to GiBy.h using node RAM from instance_type/operation text.
+        "elasticache",
+        lambda r: (
+            _ilike(r["product"], "ElastiCache")
+            or _ilike(r["product"], "AmazonElastiCache")
         ),
     ),
     (
@@ -731,7 +748,7 @@ def main():
         "commitment_discount",
         "flat_hourly", "object_storage", "per_request",
         "block_storage", "data_transfer", "non_workload", "cloudwatch",
-        "guardduty", "redshift", "athena", "kinesis", "efs", "xray", "fsx", "emr",
+        "guardduty", "redshift", "athena", "kinesis", "efs", "xray", "fsx", "emr", "elasticache",
     }
     # Only include groups the LLM actually needs to map. Static groups (flat_hourly,
     # object_storage, block_storage, etc.) are handled deterministically by

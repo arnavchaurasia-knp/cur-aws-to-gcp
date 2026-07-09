@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 apply_static_mappings.py — Deterministic mappings for flat_hourly, object_storage,
 per_request, block_storage, and data_transfer groups. Zero LLM tokens spent.
@@ -727,6 +728,124 @@ def map_guardduty(rows):
     return out
 
 
+# ElastiCache node type → RAM in GiB.
+# Memorystore for Redis bills in GiBy.h, so unit_multiplier = RAM_GiB converts
+# ElastiCache node-hours into Memorystore GiBy.h at the catalog rate.
+# Source: https://aws.amazon.com/elasticache/pricing/ (node specs column)
+_ELASTICACHE_RAM_GIB = {
+    # T family
+    "cache.t2.micro": 0.555, "cache.t2.small": 1.55, "cache.t2.medium": 3.22,
+    "cache.t3.micro": 0.555, "cache.t3.small": 1.42, "cache.t3.medium": 3.09,
+    "cache.t4g.micro": 0.555, "cache.t4g.small": 1.42, "cache.t4g.medium": 3.09,
+    # M5 / M6g
+    "cache.m5.large": 6.38,  "cache.m5.xlarge": 12.93, "cache.m5.2xlarge": 26.04,
+    "cache.m5.4xlarge": 52.82, "cache.m5.12xlarge": 157.12, "cache.m5.24xlarge": 314.32,
+    "cache.m6g.large": 6.38, "cache.m6g.xlarge": 12.93, "cache.m6g.2xlarge": 26.04,
+    "cache.m6g.4xlarge": 52.82, "cache.m6g.8xlarge": 103.68, "cache.m6g.12xlarge": 157.12,
+    "cache.m6g.16xlarge": 209.55,
+    "cache.m7g.large": 6.38, "cache.m7g.xlarge": 12.93, "cache.m7g.2xlarge": 26.04,
+    "cache.m7g.4xlarge": 52.82, "cache.m7g.8xlarge": 103.68, "cache.m7g.12xlarge": 157.12,
+    "cache.m7g.16xlarge": 209.55,
+    # R5 / R6g / R7g
+    "cache.r5.large": 13.07, "cache.r5.xlarge": 26.24, "cache.r5.2xlarge": 52.82,
+    "cache.r5.4xlarge": 105.81, "cache.r5.12xlarge": 317.77, "cache.r5.24xlarge": 635.61,
+    "cache.r6g.large": 13.07, "cache.r6g.xlarge": 26.24, "cache.r6g.2xlarge": 52.82,
+    "cache.r6g.4xlarge": 105.81, "cache.r6g.8xlarge": 209.55, "cache.r6g.12xlarge": 317.77,
+    "cache.r6g.16xlarge": 423.48,
+    "cache.r7g.large": 13.07, "cache.r7g.xlarge": 26.24, "cache.r7g.2xlarge": 52.82,
+    "cache.r7g.4xlarge": 105.81, "cache.r7g.8xlarge": 209.55, "cache.r7g.12xlarge": 317.77,
+    "cache.r7g.16xlarge": 423.48,
+}
+
+# Regex to extract a bare node type from the operation text when instance_type is null.
+# Matches patterns like "M5.large", "m6g.xlarge", "R5.large", "T4G Medium", "T3 Small", etc.
+_EC_NODE_RE = re.compile(
+    r"\b(t[234]g?)\s*(micro|small|medium)"        # T-family with optional space
+    r"|\b(m[567]g?)\.(large|xlarge|[248]xlarge|12xlarge|16xlarge|24xlarge)"  # M-family
+    r"|\b(r[567]g?)\.(large|xlarge|[248]xlarge|12xlarge|16xlarge|24xlarge)"  # R-family
+    , re.IGNORECASE
+)
+
+
+def _elasticache_ram(r: dict) -> float | None:
+    """Return RAM in GiB for an ElastiCache row, or None if unknown."""
+    # instance_ram_gb is populated by ingest.py for rows that have instance_type
+    ram = r.get("instance_ram_gb")
+    if ram:
+        return float(ram)
+    itype = (r.get("instance_type") or "").lower().strip()
+    if itype in _ELASTICACHE_RAM_GIB:
+        return _ELASTICACHE_RAM_GIB[itype]
+    # Fall back to parsing the operation text (PDF bills often lack instance_type)
+    op = r.get("operation") or ""
+    m = _EC_NODE_RE.search(op)
+    if m:
+        # Reconstruct a canonical cache.family.size key
+        if m.group(1):   # T-family: "T4G Medium" → "cache.t4g.medium"
+            key = f"cache.{m.group(1).lower()}.{m.group(2).lower()}"
+        elif m.group(3): # M-family
+            key = f"cache.{m.group(3).lower()}.{m.group(4).lower()}"
+        else:            # R-family
+            key = f"cache.{m.group(5).lower()}.{m.group(6).lower()}"
+        return _ELASTICACHE_RAM_GIB.get(key)
+    return None
+
+
+def map_elasticache(rows: list) -> list:
+    """ElastiCache for Redis/Memcached → Cloud Memorystore for Redis.
+
+    Billing model: ElastiCache charges per node-hour; Memorystore charges per
+    GiBy.h of capacity.  unit_multiplier = RAM_GiB converts node-hours into
+    GiBy.h so the catalog rate applies directly.
+
+    Tier: defaults to Basic M1 (single-instance).  Multi-AZ / cluster-mode
+    topology is not reliably exposed by CUR, so we note the uncertainty and
+    apply a 0.80 confidence ceiling.
+    """
+    out = []
+    for r in rows:
+        region = r.get("gcp_region")
+        ram = _elasticache_ram(r)
+
+        if ram is None:
+            # Can't determine node size — passthrough with correct GCP label
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Memorystore for Redis",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       "Redis Capacity Basic M1",
+                "component":          "cache",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    ("ElastiCache → Memorystore for Redis; node RAM unknown "
+                                       "(instance_type missing from CUR) — passthrough at cost parity"),
+                "mapping_confidence": 0.50,
+            })
+            continue
+
+        sku_name = "Redis Capacity Basic M1"
+        sku_id = resolve_sku("Cloud Memorystore for Redis", sku_name, region)
+        strategy = "map" if sku_id else "passthrough"
+        note = (f"ElastiCache → Memorystore for Redis Basic; "
+                f"node RAM={ram:.2f} GiB → unit_multiplier={ram:.2f} (GiBy.h); "
+                f"assumes single-instance (Basic tier) — verify if Multi-AZ or Cluster mode "
+                f"is in use (Standard HA tier costs ~2x)")
+        out.append({
+            "aws_li_key":         r["aws_li_key"],
+            "gcp_service":        "Cloud Memorystore for Redis",
+            "gcp_sku_id":         sku_id,
+            "gcp_sku_name":       sku_name,
+            "component":          "cache",
+            "strategy":           strategy,
+            "unit_multiplier":    ram,
+            "gcp_region":         region,
+            "projection_note":    note,
+            "mapping_confidence": 0.80,
+        })
+    return out
+
+
 # Redshift node-type → BigQuery Standard Edition slot-hour conversion table.
 # Derived from BigQuery migration guide capacity recommendations.
 _REDSHIFT_SLOT_MAP = {
@@ -1301,20 +1420,23 @@ def main():
     rows = con.execute("""
         SELECT aws_li_key, mechanic_group, product, usage_type, pricing_unit AS unit,
                aws_amortized_cost, aws_region AS region, gcp_region, operation, volume_type,
-               total_usage
+               total_usage, instance_type, instance_ram_gb
         FROM aws_li_catalog
         WHERE mechanic_group IN
               ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer',
-               'non_workload', 'cloudwatch', 'guardduty', 'redshift', 'athena', 'kinesis', 'efs', 'xray', 'fsx', 'emr')
+               'non_workload', 'cloudwatch', 'guardduty', 'redshift', 'athena', 'kinesis', 'efs',
+               'xray', 'fsx', 'emr', 'elasticache')
     """).fetchall()
     con.close()
 
     cols = ["aws_li_key", "mechanic_group", "product", "usage_type", "unit",
-            "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type", "total_usage"]
+            "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type",
+            "total_usage", "instance_type", "instance_ram_gb"]
     by_group: dict[str, list] = {g: [] for g in
                                  ("flat_hourly", "object_storage", "per_request",
                                   "block_storage", "data_transfer", "non_workload", "cloudwatch",
-                                  "guardduty", "redshift", "athena", "kinesis", "efs", "xray", "fsx", "emr")}
+                                  "guardduty", "redshift", "athena", "kinesis", "efs", "xray",
+                                  "fsx", "emr", "elasticache")}
     for raw in rows:
         r = dict(zip(cols, raw))
         by_group[r["mechanic_group"]].append(r)
@@ -1338,6 +1460,7 @@ def main():
         "xray":           map_xray,
         "fsx":            map_fsx,
         "emr":            map_emr,
+        "elasticache":    map_elasticache,
     }
     for group, handler in handlers.items():
         mappings = handler(by_group[group])

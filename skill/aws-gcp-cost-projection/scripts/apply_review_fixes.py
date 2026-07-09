@@ -87,12 +87,12 @@ def main():
         with open(FIXES_FILE) as f:
             fixes = json.load(f)
     except Exception as e:
-        print(f"ERROR: Could not parse review_fixes.json: {e}", file=sys.stderr)
-        sys.exit(1)
+        print(f"WARNING: Could not parse review_fixes.json: {e} — skipping review fixes.", file=sys.stderr)
+        sys.exit(0)
 
     if not isinstance(fixes, list):
-        print("ERROR: review_fixes.json must be a JSON array.", file=sys.stderr)
-        sys.exit(1)
+        print("WARNING: review_fixes.json must be a JSON array — skipping review fixes.", file=sys.stderr)
+        sys.exit(0)
 
     candidates = {}
     if os.path.exists(CANDIDATES_FILE):

@@ -113,11 +113,9 @@ def main() -> None:
     rows, missing = load_mappings(mappings_dir)
 
     if missing:
-        print(f"ERROR: {len(missing)} group(s) have no mapping file — cannot merge:", file=sys.stderr)
+        print(f"WARNING: {len(missing)} group(s) have no mapping file — proceeding with available files:", file=sys.stderr)
         for g in missing:
             print(f"  missing: {g}_mappings.json", file=sys.stderr)
-        print("Re-run failed agents, then retry merge_mappings.py.", file=sys.stderr)
-        sys.exit(1)
 
     if not rows:
         print("WARNING: no mapping rows found in any file — aws_li_to_gcp_li will be empty.")

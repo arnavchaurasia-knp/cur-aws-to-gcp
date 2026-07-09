@@ -1,19 +1,24 @@
 {
   "_meta": {
     "description": "GCP CUD discount multipliers (committed_rate / on_demand_rate). Source: GCP public CUD documentation.",
-    "last_verified": "2024-06",
+    "last_verified": "2026-07",
     "refresh_note": "Verify annually. GCP occasionally adjusts CUD discount percentages.",
     "reference": "https://cloud.google.com/compute/docs/instances/signing-up-committed-use-discounts"
   },
   "Compute Engine": {
-    "1yr_multiplier": 0.70,
-    "3yr_multiplier": 0.55,
-    "note": "~30%/45% discount for resource-based CUDs (vCPU + memory separately)"
+    "1yr_multiplier": 0.63,
+    "3yr_multiplier": 0.45,
+    "note": "~37%/55% discount for general-purpose resource-based CUDs (E2, N2, N2D, C2D, C3)"
+  },
+  "Compute Engine Memory Optimized": {
+    "1yr_multiplier": 0.59,
+    "3yr_multiplier": 0.30,
+    "note": "~41%/70% discount for memory-optimized families (M2, M3)"
   },
   "Cloud SQL": {
     "1yr_multiplier": 0.75,
-    "3yr_multiplier": 0.60,
-    "note": "~25%/40% discount"
+    "3yr_multiplier": 0.48,
+    "note": "~25%/52% discount"
   },
   "Cloud Spanner": {
     "1yr_multiplier": 0.75,
@@ -24,21 +29,21 @@
     "3yr_multiplier": 0.60
   },
   "Memorystore": {
-    "1yr_multiplier": 0.80,
-    "3yr_multiplier": 0.65,
-    "note": "Redis/Memcached CUD"
+    "1yr_multiplier": 0.75,
+    "3yr_multiplier": 0.48,
+    "note": "~25%/52% discount for Redis/Memcached CUD"
   },
   "Cloud Memorystore": {
-    "1yr_multiplier": 0.80,
-    "3yr_multiplier": 0.65
+    "1yr_multiplier": 0.75,
+    "3yr_multiplier": 0.48
   },
   "Cloud Memorystore for Redis": {
-    "1yr_multiplier": 0.80,
-    "3yr_multiplier": 0.65
+    "1yr_multiplier": 0.75,
+    "3yr_multiplier": 0.48
   },
   "Cloud Memorystore for Memcached": {
-    "1yr_multiplier": 0.80,
-    "3yr_multiplier": 0.65
+    "1yr_multiplier": 0.75,
+    "3yr_multiplier": 0.48
   },
   "AlloyDB": {
     "1yr_multiplier": 0.75,

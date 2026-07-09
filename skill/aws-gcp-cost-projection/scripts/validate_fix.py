@@ -56,15 +56,16 @@ MAPPABLE_SERVICE_PATTERNS = [
 # https://cloud.google.com/compute/docs/sustained-use-discounts
 
 _CUD_PCT_FALLBACK = {
-    "Compute Engine":                   (0.70, 0.55),
-    "Cloud SQL":                        (0.75, 0.60),
+    "Compute Engine":                   (0.63, 0.45),
+    "Compute Engine Memory Optimized":  (0.59, 0.30),
+    "Cloud SQL":                        (0.75, 0.48),
     "Cloud Spanner":                    (0.75, 0.60),
     "Cloud Bigtable":                   (0.75, 0.60),
     "AlloyDB":                          (0.75, 0.60),
-    "Memorystore":                      (0.80, 0.65),
-    "Cloud Memorystore":                (0.80, 0.65),
-    "Cloud Memorystore for Redis":      (0.80, 0.65),
-    "Cloud Memorystore for Memcached":  (0.80, 0.65),
+    "Memorystore":                      (0.75, 0.48),
+    "Cloud Memorystore":                (0.75, 0.48),
+    "Cloud Memorystore for Redis":      (0.75, 0.48),
+    "Cloud Memorystore for Memcached":  (0.75, 0.48),
     "Cloud Run":                        (0.83, 0.67),
     "DEFAULT":                          (0.75, 0.60),
 }

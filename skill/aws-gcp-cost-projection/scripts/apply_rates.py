@@ -18,14 +18,15 @@ CATALOG_DB = os.path.join(DATA_DIR, "catalog.duckdb")
 # validate_fix.py. Both read data/cud_pct.json so 1yr/3yr math is identical no
 # matter which script sets a rate. Fallback mirrors validate_fix's fallback.
 _CUD_PCT_FALLBACK = {
-    "Compute Engine": (0.70, 0.55),
-    "Cloud SQL": (0.75, 0.60),
+    "Compute Engine": (0.63, 0.45),
+    "Compute Engine Memory Optimized": (0.59, 0.30),
+    "Cloud SQL": (0.75, 0.48),
     "Cloud Spanner": (0.75, 0.60),
     "Cloud Bigtable": (0.75, 0.60),
-    "Memorystore": (0.80, 0.65),
-    "Cloud Memorystore": (0.80, 0.65),
-    "Cloud Memorystore for Redis": (0.80, 0.65),
-    "Cloud Memorystore for Memcached": (0.80, 0.65),
+    "Memorystore": (0.75, 0.48),
+    "Cloud Memorystore": (0.75, 0.48),
+    "Cloud Memorystore for Redis": (0.75, 0.48),
+    "Cloud Memorystore for Memcached": (0.75, 0.48),
     "AlloyDB": (0.75, 0.60),
     "Cloud Run": (0.83, 0.67),
     "DEFAULT": (0.75, 0.60),

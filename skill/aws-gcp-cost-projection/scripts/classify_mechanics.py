@@ -733,11 +733,19 @@ def main():
         "block_storage", "data_transfer", "non_workload", "cloudwatch",
         "guardduty", "redshift", "athena", "kinesis", "efs", "xray", "fsx", "emr",
     }
+    # Only include groups the LLM actually needs to map. Static groups (flat_hourly,
+    # object_storage, block_storage, etc.) are handled deterministically by
+    # apply_static_mappings.py — serializing them into the manifest burns ~87K tokens
+    # per run as the LLM reads each group and discovers there is nothing to do.
+    llm_groups = {g for g in manifest if g not in skip_groups}
+    static_groups = {g for g in manifest if g in skip_groups}
+
     manifest_out = {
         g: {"rows": rows, "row_count": len(rows),
             "total_spend": sum(r.get("aws_amortized_cost") or 0 for r in rows),
-            "needs_llm": g not in skip_groups}
+            "needs_llm": True}
         for g, rows in manifest.items()
+        if g in llm_groups
     }
 
     # Add output_dir so the LLM knows exactly where to write mapping files.
@@ -745,6 +753,7 @@ def main():
     manifest_out["_meta"] = {
         "output_dir": "projection-audit/mappings",
         "db_path": "projection-audit/projection.duckdb",
+        "skip_groups": sorted(static_groups),
     }
 
     manifest_path = os.path.join(os.path.dirname(db_path), "phase2_manifest.json")

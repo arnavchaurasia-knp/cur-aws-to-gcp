@@ -338,5 +338,20 @@
     "sku_id": null,
     "unit": null,
     "resource_group": null
+  },
+  "Memorystore|Redis Capacity Basic M2|asia-south1": {
+    "sku_id": null,
+    "unit": null,
+    "resource_group": null
+  },
+  "Memorystore|Redis Capacity Basic M3|asia-south1": {
+    "sku_id": null,
+    "unit": null,
+    "resource_group": null
+  },
+  "Cloud Monitoring|Time series billed count|asia-south1": {
+    "sku_id": "6E35-67F5-C3C6",
+    "unit": "count",
+    "resource_group": "Monitoring"
   }
 }

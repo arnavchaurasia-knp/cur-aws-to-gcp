@@ -133,8 +133,9 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// auto_review.py is a pure suggestion engine: detects illegal passthroughs
 			// and spec violations, pre-computes candidate fixes, writes review_flags.md
 			// (for LLM) and review_candidates.json (for apply_review_fixes.py).
-			// It NEVER modifies the database.
-			PreLLMScripts: []string{"scripts/auto_review.py"},
+			// It NEVER modifies the database. Soft (?) so a crash here skips review
+			// but still allows the report to be generated.
+			PreLLMScripts: []string{"?scripts/auto_review.py"},
 			// apply_review_fixes.py reads review_fixes.json from the LLM and
 			// review_candidates.json from auto_review.py, then applies confirm/override/veto
 			// decisions with schema validation. It is the ONLY script that writes to the DB.
@@ -185,7 +186,10 @@ func phaseSpecs(inputExt string) []phaseSpec {
 		},
 		{
 			Num: 4, Name: "Rate-Card Fill", Activity: "Fetching GCP rates",
-			PreScript: "scripts/ensure_catalog_coverage.py",
+			// ensure_catalog_coverage.py is soft: if the catalog fetch fails, apply_rates.py
+			// falls back to cached resolved_skus.json entries (99% hit rate after warmup).
+			// A crash here should not prevent report generation.
+			PreLLMScripts: []string{"?scripts/ensure_catalog_coverage.py"},
 			Script: "?scripts/apply_rates.py",
 			// After rates load, run the deterministic autofixer (regional-SKU
 			// repair, CUD synthesis, per-N clamping, illegal-passthrough repair)
@@ -209,7 +213,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// incremental_rerate.py before LLM: ensures LLM reasons over fresh costs.
 			PreLLMScripts: []string{
 				"?scripts/ensure_catalog_coverage.py",
-				"scripts/detect_outliers.py",
+				"?scripts/detect_outliers.py",
 				"?scripts/auto_triage.py",
 				"?scripts/incremental_rerate.py",
 			},
@@ -760,10 +764,14 @@ def run_phase(ph):
             msg = ("pre_script " + pre_script + " exited with code " + str(e.returncode)
                    + " during Phase " + str(ph["num"]) + " (" + ph["name"] + "). Check agy.log for details.")
             log("ERROR: " + msg)
-            with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
-                _f.write(msg)
-            measure_metrics(phase_runs)
-            sys.exit(0)
+            if ph["num"] in CRITICAL_PHASES:
+                with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
+                    _f.write(msg)
+                measure_metrics(phase_runs)
+                sys.exit(0)
+            else:
+                log("WARNING: pre_script failed on non-critical Phase %%d — continuing to report" %% ph["num"])
+                return
 
     # Deterministic pre-LLM scripts always run (zero LLM tokens).
     for scmd in ph.get("pre_llm_scripts") or []:
@@ -801,15 +809,19 @@ def run_phase(ph):
     qm_early = quota_blocked(start_pos)
     if qm_early:
         log("quota/auth block (%%s) during Phase %%d — stopping before post-LLM scripts" %% (qm_early, ph["num"]))
-        with open(os.path.join(JOB_DIR, "failure.txt"), "w") as f:
-            f.write("Gemini quota/auth limit reached (" + qm_early + ") during Phase "
-                    + str(ph["num"]) + " (" + ph["name"] + "). The model API returned a "
-                    "quota error, so the projection could not be completed. Re-run once the "
-                    "quota resets or switch to an account with available quota.")
         phase_runs.append({"num": ph["num"], "name": ph["name"],
                            "convs": get_new_convs(AGY_LOG, start_pos)})
-        measure_metrics(phase_runs)
-        sys.exit(0)
+        if ph["num"] in CRITICAL_PHASES:
+            with open(os.path.join(JOB_DIR, "failure.txt"), "w") as f:
+                f.write("Gemini quota/auth limit reached (" + qm_early + ") during Phase "
+                        + str(ph["num"]) + " (" + ph["name"] + "). The model API returned a "
+                        "quota error, so the projection could not be completed. Re-run once the "
+                        "quota resets or switch to an account with available quota.")
+            measure_metrics(phase_runs)
+            sys.exit(0)
+        else:
+            log("WARNING: quota/auth block on non-critical Phase %%d — skipping phase, report will still be generated" %% ph["num"])
+            return
 
     # Deterministic post-LLM scripts always run (zero LLM tokens). For a script
     # phase these are the recompute/repair steps that must follow it (D4/O3):
@@ -833,13 +845,17 @@ def run_phase(ph):
     qm = quota_blocked(start_pos)
     if qm:
         log("quota/auth block detected (%%s) after Phase %%d — stopping, no retry" %% (qm, ph["num"]))
-        with open(os.path.join(JOB_DIR, "failure.txt"), "w") as f:
-            f.write("Gemini quota/auth limit reached (" + qm + ") during Phase "
-                    + str(ph["num"]) + " (" + ph["name"] + "). The model API returned a "
-                    "quota error, so the projection could not be completed. Re-run once the "
-                    "quota resets or switch to an account with available quota.")
-        measure_metrics(phase_runs)
-        sys.exit(0)
+        if ph["num"] in CRITICAL_PHASES:
+            with open(os.path.join(JOB_DIR, "failure.txt"), "w") as f:
+                f.write("Gemini quota/auth limit reached (" + qm + ") during Phase "
+                        + str(ph["num"]) + " (" + ph["name"] + "). The model API returned a "
+                        "quota error, so the projection could not be completed. Re-run once the "
+                        "quota resets or switch to an account with available quota.")
+            measure_metrics(phase_runs)
+            sys.exit(0)
+        else:
+            log("WARNING: quota/auth block on non-critical Phase %%d — continuing to report" %% ph["num"])
+            return
     sql = ph.get("check_sql")
     if sql:
         v = gate(sql)
@@ -866,13 +882,17 @@ def run_phase(ph):
             qm_retry = quota_blocked(start_pos_retry)
             if qm_retry:
                 log("quota/auth block (" + qm_retry + ") during retry of Phase " + str(ph["num"]) + " — stopping")
-                with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
-                    _f.write("Gemini quota/auth limit reached (" + qm_retry + ") during retry of Phase "
-                             + str(ph["num"]) + " (" + ph["name"] + "). The model API returned a "
-                             "quota error, so the projection could not be completed. Re-run once the "
-                             "quota resets or switch to an account with available quota.")
-                measure_metrics(phase_runs)
-                sys.exit(0)
+                if ph["num"] in CRITICAL_PHASES:
+                    with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
+                        _f.write("Gemini quota/auth limit reached (" + qm_retry + ") during retry of Phase "
+                                 + str(ph["num"]) + " (" + ph["name"] + "). The model API returned a "
+                                 "quota error, so the projection could not be completed. Re-run once the "
+                                 "quota resets or switch to an account with available quota.")
+                    measure_metrics(phase_runs)
+                    sys.exit(0)
+                else:
+                    log("WARNING: quota/auth block on non-critical Phase %%d retry — continuing to report" %% ph["num"])
+                    return
 
             # Re-run post-LLM recompute/repair before re-checking, so the
             # retry's edits are reflected in the projection (mirrors the normal

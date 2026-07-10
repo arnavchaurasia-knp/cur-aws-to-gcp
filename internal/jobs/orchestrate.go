@@ -306,7 +306,7 @@ func (s *Spawner) StartOrchestrated(jobDir, inputExt string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("render orchestrator: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(jobDir, "run_all.py"), []byte(script), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(filepath.Clean(jobDir), "run_all.py"), []byte(script), 0644); err != nil {
 		return 0, fmt.Errorf("write run_all.py: %w", err)
 	}
 
@@ -325,7 +325,7 @@ func (s *Spawner) StartOrchestrated(jobDir, inputExt string) (int, error) {
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	logFile, err := os.OpenFile(filepath.Join(jobDir, "agy.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	logFile, err := os.OpenFile(filepath.Join(filepath.Clean(jobDir), "agy.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return 0, fmt.Errorf("open log: %w", err)
 	}

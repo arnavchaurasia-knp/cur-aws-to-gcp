@@ -9,6 +9,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from projection_view import create_projection_view
 from egress_rates import EGRESS_SKUS
 
+GCP_COMPUTE_ENGINE = "Compute Engine"
+
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 DATA_DIR = os.path.join(os.environ.get("SKILL_DIR", ""), "data")
@@ -18,7 +20,7 @@ CATALOG_DB = os.path.join(DATA_DIR, "catalog.duckdb")
 # validate_fix.py. Both read data/cud_pct.json so 1yr/3yr math is identical no
 # matter which script sets a rate. Fallback mirrors validate_fix's fallback.
 _CUD_PCT_FALLBACK = {
-    "Compute Engine": (0.63, 0.45),
+    GCP_COMPUTE_ENGINE: (0.63, 0.45),
     "Compute Engine Memory Optimized": (0.59, 0.30),
     "Cloud SQL": (0.75, 0.48),
     "Cloud Spanner": (0.75, 0.60),
@@ -518,7 +520,7 @@ def main():
     for svc, (r1, r3) in cud_pct.items():
         if svc == "DEFAULT":
             continue
-        rg_clause = "AND resource_group IN ('CPU','RAM','GPU')" if svc == "Compute Engine" else ""
+        rg_clause = "AND resource_group IN ('CPU','RAM','GPU')" if svc == GCP_COMPUTE_ENGINE else ""
         for pricing_type, mult in [("Commit1Yr", r1), ("Commit3Yr", r3)]:
             conn.execute(f"""
                 INSERT INTO gcp_sku_rates
@@ -534,7 +536,7 @@ def main():
     # Compute Engine CUD fallback: ARM/T2A and other non-standard resource_groups
     # (blank, 'Compute', etc.) miss the CPU/RAM/GPU filter above. Apply the same
     # multiplier to any CE OnDemand SKU still without a Commit1Yr/3yr entry.
-    r1_ce, r3_ce = cud_pct.get("Compute Engine", _default_pct)
+    r1_ce, r3_ce = cud_pct.get(GCP_COMPUTE_ENGINE, _default_pct)
     for pricing_type, mult in [("Commit1Yr", r1_ce), ("Commit3Yr", r3_ce)]:
         conn.execute(f"""
             INSERT INTO gcp_sku_rates

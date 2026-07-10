@@ -16,6 +16,14 @@ import json, os, sys
 import duckdb
 
 
+def _safe_path(base: str, *parts: str) -> str:
+    """Resolve path and verify it stays within base (path traversal guard)."""
+    p = os.path.realpath(os.path.join(base, *parts))
+    if not p.startswith(os.path.realpath(base) + os.sep) and p != os.path.realpath(base):
+        raise ValueError(f"Path escapes base directory: {p}")
+    return p
+
+
 def main():
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <projection.duckdb>", file=sys.stderr)
@@ -37,9 +45,9 @@ def main():
         for r in rows
     ]
 
-    out_dir = os.path.join(os.path.dirname(db_path), "mappings")
+    out_dir = _safe_path(os.path.dirname(db_path), "mappings")
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "commitment_discount_mappings.json")
+    out_path = _safe_path(out_dir, "commitment_discount_mappings.json")
     with open(out_path, "w") as f:
         json.dump(mappings, f, indent=2)
 

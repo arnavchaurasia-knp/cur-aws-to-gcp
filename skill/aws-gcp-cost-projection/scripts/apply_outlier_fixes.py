@@ -105,12 +105,20 @@ def apply_override(conn, key: str, fix: dict, notes: list):
         notes.append(f"- `{key}`: override strategy → {strategy} — {reason}")
 
     if gcp_sku_id and gcp_sku_name:
-        conn.execute("""
-            UPDATE aws_li_to_gcp_li
-            SET gcp_sku_id = ?, gcp_sku_name = ?
-            WHERE aws_li_key = ?
-        """, [gcp_sku_id, gcp_sku_name, key])
-        notes.append(f"- `{key}`: override SKU → {gcp_sku_id} ({gcp_sku_name}) — {reason}")
+        if component:
+            conn.execute("""
+                UPDATE aws_li_to_gcp_li
+                SET gcp_sku_id = ?, gcp_sku_name = ?
+                WHERE aws_li_key = ? AND component = ?
+            """, [gcp_sku_id, gcp_sku_name, key, component])
+        else:
+            conn.execute("""
+                UPDATE aws_li_to_gcp_li
+                SET gcp_sku_id = ?, gcp_sku_name = ?
+                WHERE aws_li_key = ?
+            """, [gcp_sku_id, gcp_sku_name, key])
+        notes.append(f"- `{key}`: override SKU → {gcp_sku_id} ({gcp_sku_name})" +
+                     (f" ({component})" if component else "") + f" — {reason}")
 
     if unit_mult is not None:
         mult = float(unit_mult)

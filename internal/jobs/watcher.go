@@ -84,7 +84,7 @@ func logSize(path string) int64 {
 //     neither has advanced in staleTimeout the process is considered hung and
 //     we SIGKILL the group so the next tick sees it gone.
 func (w *Watcher) watchUntilDead(jobID string, pid int) {
-	jobDir := filepath.Join(w.jobsDir, jobID)
+	jobDir := filepath.Clean(filepath.Join(w.jobsDir, jobID))
 	// Per-watch activity watermark. Initialized to spawn time (now) so a
 	// pre-existing log from a prior run doesn't false-trip stale detection
 	// in the first few seconds.
@@ -142,7 +142,7 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		log.Printf("watcher %s: GetJob: %v", jobID, err)
 		return
 	}
-	jobDir := filepath.Join(w.jobsDir, jobID)
+	jobDir := filepath.Clean(filepath.Join(w.jobsDir, jobID))
 
 	// SUCCESS CHECK FIRST: report presence is the ground truth. If render_report.py
 	// ran and wrote an HTML file, the job succeeded — regardless of what agy logged
@@ -289,7 +289,7 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 // watcher can mark the job failed with a useful message instead of burning
 // three retry attempts on the same broken input.
 func readFailureReason(jobDir string) string {
-	data, err := os.ReadFile(filepath.Join(jobDir, "failure.txt"))
+	data, err := os.ReadFile(filepath.Join(filepath.Clean(jobDir), "failure.txt"))
 	if err != nil {
 		return ""
 	}
@@ -322,7 +322,7 @@ var quotaMarkers = []string{
 }
 
 func quotaExhausted(jobDir string, logOffset int64) bool {
-	logPath := filepath.Join(jobDir, agyInternalLog)
+	logPath := filepath.Join(filepath.Clean(jobDir), agyInternalLog)
 	f, err := os.Open(logPath)
 	if err != nil {
 		return false

@@ -200,7 +200,7 @@ func buildProjectionPrompt(inputExt string) string {
 }
 
 func tailLog(path string, n int) string {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return ""
 	}

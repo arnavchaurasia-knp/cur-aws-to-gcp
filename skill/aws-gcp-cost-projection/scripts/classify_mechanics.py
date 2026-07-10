@@ -23,7 +23,22 @@ Exits 0 on success. Prints WARNING if misc > 15% of total aws_amortized_cost.
 import json
 import sys
 import re
+import os
 import duckdb
+
+AWS_RDS = "Relational Database"
+AWS_S3 = "Simple Storage"
+AWS_SES = "Simple Email"
+AWS_SECURITY_HUB = "Security Hub"
+
+
+def _safe_path(base: str, *parts: str) -> str:
+    """Resolve path and verify it stays within base (LLM path traversal guard)."""
+    resolved = os.path.realpath(os.path.join(base, *parts))
+    base_real = os.path.realpath(base)
+    if resolved != base_real and not resolved.startswith(base_real + os.sep):
+        raise ValueError(f"Path escapes base directory: {resolved}")
+    return resolved
 
 # ---------------------------------------------------------------------------
 # Rule definitions — each rule is (group_name, test_fn).

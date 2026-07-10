@@ -891,6 +891,67 @@ def main():
     # information was available without re-detecting it from column presence.
     fmt = "raw_cur" if is_raw_cur else "flat_csv"
     conn.execute("UPDATE aws_li_catalog SET billing_format = ?", (fmt,))
+
+    # ── Materiality filter ────────────────────────────────────────────────────
+    # 1. Drop zero-cost rows. Negative costs are credits/refunds — always kept.
+    zero_dropped = conn.execute(
+        "SELECT COUNT(*) FROM aws_li_catalog WHERE aws_amortized_cost = 0"
+    ).fetchone()[0]
+    if zero_dropped:
+        conn.execute("DELETE FROM aws_li_catalog WHERE aws_amortized_cost = 0")
+
+    # 2. Drop low-materiality positive rows whose cumulative sum (sorted
+    #    cheapest-first) stays within 1% of total positive spend. Greedily
+    #    removing the cheapest rows guarantees total dropped cost < 1% of bill.
+    #    Rows like $0.10–$0.50 that individually look trivial but whose sum
+    #    is still < 1% are removed here; anything whose inclusion would push
+    #    the running total past the 1% cap is kept.
+    pre_filter = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(aws_amortized_cost) FILTER (WHERE aws_amortized_cost > 0), 0)"
+        " FROM aws_li_catalog"
+    ).fetchone()
+    total_rows_pre, total_positive = pre_filter
+
+    low_mat_dropped, low_mat_cost = 0, 0.0
+    if total_positive > 0:
+        # Identify rows to drop: cumulative sum (ASC) ≤ 1% of total positive spend.
+        to_drop = conn.execute("""
+            WITH low_mat AS (
+                SELECT aws_li_key, aws_amortized_cost,
+                       SUM(aws_amortized_cost) OVER (
+                           ORDER BY aws_amortized_cost ASC
+                           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                       ) AS cum_sum
+                FROM aws_li_catalog
+                WHERE aws_amortized_cost > 0
+            )
+            SELECT aws_li_key, aws_amortized_cost
+            FROM low_mat
+            WHERE cum_sum <= ?
+        """, [total_positive * 0.01]).fetchall()
+
+        if to_drop:
+            low_mat_dropped = len(to_drop)
+            low_mat_cost = sum(r[1] for r in to_drop)
+            drop_keys = [r[0] for r in to_drop]
+            # Use a temp table to avoid large IN-list for bills with many tiny rows.
+            conn.execute(
+                "CREATE TEMP TABLE _mat_drop AS SELECT unnest(?) AS k", [drop_keys]
+            )
+            conn.execute(
+                "DELETE FROM aws_li_catalog WHERE aws_li_key IN (SELECT k FROM _mat_drop)"
+            )
+            conn.execute("DROP TABLE _mat_drop")
+
+    total_dropped = zero_dropped + low_mat_dropped
+    if total_dropped:
+        pct = (low_mat_cost / total_positive * 100) if total_positive else 0
+        print(
+            f"Materiality filter: dropped {zero_dropped} zero-cost rows + "
+            f"{low_mat_dropped} low-materiality rows "
+            f"(${low_mat_cost:.2f} = {pct:.2f}% of bill); credits/refunds retained"
+        )
+
     print(f"Ingest complete. billing_format={fmt!r}")
 
 if __name__ == "__main__":

@@ -7,7 +7,6 @@
 # the JSON; if verdict=FAIL, surface the failed checks to the user
 # and stop.
 #
-# bash 3.x compatible (macOS).
 
 set -euo pipefail
 
@@ -24,7 +23,7 @@ add_check() {
   # add_check <name> <status> <detail>
   local entry
   entry="$(printf '    {"name":"%s","status":"%s","detail":"%s"}' "$1" "$2" "$(esc "$3")")"
-  if [ ${#results[@]} -eq 0 ]; then
+  if [[ ${#results[@]} -eq 0 ]]; then
     results=("$entry")
   else
     results=("${results[@]}" "$entry")
@@ -63,7 +62,7 @@ fi
 META="$SKILL_DIR/data/CATALOG_META.json"
 SVC="$SKILL_DIR/data/services.json"
 SKUS="$SKILL_DIR/data/skus"
-if [ -f "$META" ] && [ -f "$SVC" ] && [ -d "$SKUS" ]; then
+if [[ -f "$META" ]] && [ -f "$SVC" ]] && [ -d "$SKUS" ]]; then
   sku_count="?"
   svc_count="?"
   if command -v jq >/dev/null 2>&1; then
@@ -73,17 +72,17 @@ if [ -f "$META" ] && [ -f "$SVC" ] && [ -d "$SKUS" ]; then
   add_check catalog pass "$svc_count services, $sku_count SKUs"
 else
   missing=""
-  [ ! -f "$META" ] && missing="$missing CATALOG_META.json"
-  [ ! -f "$SVC" ] && missing="$missing services.json"
-  [ ! -d "$SKUS" ] && missing="$missing skus/"
+  [[ ! -f "$META" ]] && missing="$missing CATALOG_META.json"
+  [[ ! -f "$SVC" ]] && missing="$missing services.json"
+  [[ ! -d "$SKUS" ]] && missing="$missing skus/"
   add_check catalog fail "missing in data/:$missing — partial install?"
   fail=1
 fi
 
 # --- 5. Catalog age (warn-only; never fails) ---
-if [ -f "$META" ] && command -v jq >/dev/null 2>&1; then
+if [[ -f "$META" ]] && command -v jq >/dev/null 2>&1; then
   fetched_at="$(jq -r '.fetched_at // empty' "$META" 2>/dev/null || true)"
-  if [ -n "$fetched_at" ]; then
+  if [[ -n "$fetched_at" ]]; then
     # Strip subseconds and 'Z' for portable parsing.
     raw="${fetched_at%.*}"
     raw="${raw%Z}"
@@ -91,13 +90,13 @@ if [ -f "$META" ] && command -v jq >/dev/null 2>&1; then
     # macOS BSD date
     fetched_epoch="$(date -j -f "%Y-%m-%dT%H:%M:%S" "$raw" "+%s" 2>/dev/null || true)"
     # GNU date fallback
-    if [ -z "$fetched_epoch" ]; then
+    if [[ -z "$fetched_epoch" ]]; then
       fetched_epoch="$(date -d "$fetched_at" "+%s" 2>/dev/null || true)"
     fi
-    if [ -n "$fetched_epoch" ]; then
+    if [[ -n "$fetched_epoch" ]]; then
       now_epoch="$(date "+%s")"
       age_days="$(( (now_epoch - fetched_epoch) / 86400 ))"
-      if [ "$age_days" -gt 90 ]; then
+      if [[ "$age_days" -gt 90 ]]; then
         add_check catalog_age warn "catalog is $age_days days old (fetched $fetched_at); rates may be stale — ask maintainer to run scripts/refresh-catalog.sh if signing off"
       else
         add_check catalog_age pass "$age_days days (fetched $fetched_at)"
@@ -111,10 +110,10 @@ if [ -f "$META" ] && command -v jq >/dev/null 2>&1; then
 fi
 
 # --- 6. SKU file count vs services.json ---
-if [ -f "$SVC" ] && [ -d "$SKUS" ] && command -v jq >/dev/null 2>&1; then
+if [[ -f "$SVC" ]] && [ -d "$SKUS" ]] && command -v jq >/dev/null 2>&1; then
   expected="$(jq 'length' "$SVC" 2>/dev/null || echo 0)"
   actual="$(find "$SKUS" -maxdepth 1 -name '*.json.gz' -type f | wc -l | tr -d ' ')"
-  if [ "$actual" = "$expected" ]; then
+  if [[ "$actual" = "$expected" ]]; then
     add_check sku_files pass "$actual files match $expected services"
   else
     add_check sku_files warn "$actual *.json.gz files but $expected services in services.json — partial install?"
@@ -122,11 +121,11 @@ if [ -f "$SVC" ] && [ -d "$SKUS" ] && command -v jq >/dev/null 2>&1; then
 fi
 
 # --- 7. Bill input (only if path provided) ---
-if [ -n "$BILL_PATH" ]; then
-  if [ -f "$BILL_PATH" ]; then
+if [[ -n "$BILL_PATH" ]]; then
+  if [[ -f "$BILL_PATH" ]]; then
     size="$(wc -c < "$BILL_PATH" 2>/dev/null | tr -d ' ' || echo "?")"
     add_check bill pass "$BILL_PATH ($size bytes)"
-  elif [ -d "$BILL_PATH" ]; then
+  elif [[ -d "$BILL_PATH" ]]; then
     count="$(find "$BILL_PATH" -type f \( -name '*.csv*' -o -name '*.parquet*' -o -name '*.gz' \) | wc -l | tr -d ' ')"
     add_check bill pass "$BILL_PATH (directory, $count candidate part files)"
   else
@@ -139,13 +138,13 @@ fi
 printf '{\n  "skill": "aws-gcp-cost-projection",\n  "checks": [\n'
 n=${#results[@]}
 i=0
-while [ $i -lt $n ]; do
+while [[ $i -lt $n ]]; do
   printf '%s' "${results[$i]}"
   i=$((i + 1))
-  if [ $i -lt $n ]; then printf ',\n'; else printf '\n'; fi
+  if [[ $i -lt $n ]]; then printf ',\n'; else printf '\n'; fi
 done
 printf '  ],\n'
-if [ $fail -eq 0 ]; then
+if [[ $fail -eq 0 ]]; then
   printf '  "verdict": "PASS"\n}\n'
 else
   printf '  "verdict": "FAIL"\n}\n'

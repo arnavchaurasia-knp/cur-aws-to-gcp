@@ -19,6 +19,30 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from egress_rates import EGRESS_SKUS
 
 
+def _safe_path(base: str, *parts: str) -> str:
+    """Resolve path and verify it stays within base (path traversal guard)."""
+    p = os.path.realpath(os.path.join(base, *parts))
+    if not p.startswith(os.path.realpath(base) + os.sep) and p != os.path.realpath(base):
+        raise ValueError(f"Path escapes base directory: {p}")
+    return p
+
+GCS_NEARLINE = GCS_NEARLINE
+GCS_STANDARD = GCS_STANDARD
+GCS_ARCHIVE = GCS_ARCHIVE
+GCS_COLDLINE = GCS_COLDLINE
+GCP_COMPUTE_ENGINE = GCP_COMPUTE_ENGINE
+PUBSUB_MESSAGE_DELIVERY = PUBSUB_MESSAGE_DELIVERY
+GCP_PUBSUB = GCP_PUBSUB
+GCP_BALANCED_PD = GCP_BALANCED_PD
+GCP_STANDARD_PD = GCP_STANDARD_PD
+GCP_CLOUD_STORAGE = GCP_CLOUD_STORAGE
+GCP_CLOUD_SQL = GCP_CLOUD_SQL
+GCP_MEMORYSTORE = GCP_MEMORYSTORE
+GCP_FILESTORE_HDD = GCP_FILESTORE_HDD
+GCP_DATAPROC = GCP_DATAPROC
+
+
+
 class SKUMeta(str):
     """str subclass returned by resolve_sku().
     Existing callers that do `if sku:` or `entry["gcp_sku_id"] = sku` continue
@@ -60,19 +84,19 @@ class SKUMeta(str):
 # ---------------------------------------------------------------------------
 _S3_USAGE_TYPE_ROUTING = [
     # Intelligent-Tiering storage tiers (must precede bare tiered-storage catch-alls)
-    ("timedstorage-int-ia-bytehrs",       "Nearline Storage"),   # IT infrequent access
-    ("timedstorage-int-fa-bytehrs",       "Standard Storage"),   # IT frequent access
+    ("timedstorage-int-ia-bytehrs",       GCS_NEARLINE),   # IT infrequent access
+    ("timedstorage-int-fa-bytehrs",       GCS_STANDARD),   # IT frequent access
     # Glacier variants
-    ("timedstorage-deeparchivebytehrs",   "Archive Storage"),    # Glacier Deep Archive
-    ("timedstorage-gda-bytehrs",          "Archive Storage"),    # GDA alias
-    ("timedstorage-glacierbytehrs",       "Coldline Storage"),   # Glacier Flexible
-    ("timedstorage-gir-bytehrs",          "Coldline Storage"),   # Glacier Instant Retrieval
+    ("timedstorage-deeparchivebytehrs",   GCS_ARCHIVE),    # Glacier Deep Archive
+    ("timedstorage-gda-bytehrs",          GCS_ARCHIVE),    # GDA alias
+    ("timedstorage-glacierbytehrs",       GCS_COLDLINE),   # Glacier Flexible
+    ("timedstorage-gir-bytehrs",          GCS_COLDLINE),   # Glacier Instant Retrieval
     # IA variants
-    ("timedstorage-sia-bytehrs",          "Nearline Storage"),   # Standard-IA
-    ("timedstorage-zia-bytehrs",          "Nearline Storage"),   # One Zone-IA
+    ("timedstorage-sia-bytehrs",          GCS_NEARLINE),   # Standard-IA
+    ("timedstorage-zia-bytehrs",          GCS_NEARLINE),   # One Zone-IA
     # Standard / RRS (catch-all last)
-    ("timedstorage-rrs-bytehrs",          "Standard Storage"),   # Reduced Redundancy
-    ("timedstorage-bytehrs",              "Standard Storage"),   # Standard
+    ("timedstorage-rrs-bytehrs",          GCS_STANDARD),   # Reduced Redundancy
+    ("timedstorage-bytehrs",              GCS_STANDARD),   # Standard
 
     # Fees with no GCP pricing equivalent — passthrough at AWS cost
     ("monitoring-automation-int",         None),   # IT per-object monitoring fee
@@ -93,18 +117,18 @@ def _s3_route_usage_type(usage_type_lower: str):
 # Pass 2 — blob fallback for PDF/summary bills where usage_type is unpopulated.
 # Keyed on human-readable substrings that appear in operation/product/description.
 _S3_BLOB_FALLBACK_MAP = {
-    "glacier deep archive": "Archive Storage",
-    "glacierdeeparchive":   "Archive Storage",
-    "glacier instant":      "Coldline Storage",
-    "glacierinstant":       "Coldline Storage",
-    "glacier flexible":     "Coldline Storage",
-    "glacierflexible":      "Coldline Storage",
-    "archive instant":      "Coldline Storage",
-    "standard-ia":          "Nearline Storage",
-    "standardia":           "Nearline Storage",
-    "onezone-ia":           "Nearline Storage",
-    "intelligent":          "Standard Storage",   # IT frequent access is the dominant tier
-    "standard":             "Standard Storage",
+    "glacier deep archive": GCS_ARCHIVE,
+    "glacierdeeparchive":   GCS_ARCHIVE,
+    "glacier instant":      GCS_COLDLINE,
+    "glacierinstant":       GCS_COLDLINE,
+    "glacier flexible":     GCS_COLDLINE,
+    "glacierflexible":      GCS_COLDLINE,
+    "archive instant":      GCS_COLDLINE,
+    "standard-ia":          GCS_NEARLINE,
+    "standardia":           GCS_NEARLINE,
+    "onezone-ia":           GCS_NEARLINE,
+    "intelligent":          GCS_STANDARD,   # IT frequent access is the dominant tier
+    "standard":             GCS_STANDARD,
     # No-equivalent patterns in blob context
     "per 1,000 objects":    None,
     "per 1000 objects":     None,
@@ -138,7 +162,7 @@ FLAT_HOURLY_MAP = [
      "Networking", r"Network Connectivity Center Spoke Hours VPC Network Spoke", 1.0),
     # VPC in-use public IPv4 (simplified CUR) or ElasticIP / EIP (raw CUR)
     (r"In-use public IPv4|public IPv4 address|ElasticIP|EIP",
-     "Compute Engine", r"External IP Charge on a Standard VM", 1.0),
+     GCP_COMPUTE_ENGINE, r"External IP Charge on a Standard VM", 1.0),
     (r"VPN",
      "Cloud VPN", r"Cloud VPN Tunnel", 1.0),
     (r"DirectConnect|DX|HostedConnection",
@@ -148,7 +172,7 @@ FLAT_HOURLY_MAP = [
     (r"GlobalAccelerator|Global Accelerator",
      "Cloud CDN", r"Cache Egress", 1.0),
 ]
-FLAT_HOURLY_DEFAULT_SERVICE = "Compute Engine"
+FLAT_HOURLY_DEFAULT_SERVICE = GCP_COMPUTE_ENGINE
 FLAT_HOURLY_DEFAULT_DESC    = r"Other Hourly Charge"
 
 # per_request: product/usage_type → GCP service + SKU family + unit_multiplier
@@ -158,9 +182,9 @@ PER_REQUEST_MAP = [
     (r"Lambda.*GB.Second|Lambda-GB-Second",
                                "Cloud Run",       "Cloud Run CPU Allocation Time", 1.0),
     (r"Lambda",                "Cloud Run",       "Cloud Run Requests",            1.0),
-    (r"SQS|SimpleQueue",       "Pub/Sub",         "Message Delivery",              1.0),
-    (r"SNS|SimpleNotification","Pub/Sub",         "Message Delivery",              1.0),
-    (r"Kinesis",               "Pub/Sub",         "Message Delivery",              1.0),
+    (r"SQS|SimpleQueue",       GCP_PUBSUB,         PUBSUB_MESSAGE_DELIVERY,              1.0),
+    (r"SNS|SimpleNotification",GCP_PUBSUB,         PUBSUB_MESSAGE_DELIVERY,              1.0),
+    (r"Kinesis",               GCP_PUBSUB,         PUBSUB_MESSAGE_DELIVERY,              1.0),
     (r"ApiGateway|API Gateway","Cloud Endpoints", "API Gateway Requests",          1.0),
     (r"StepFunctions|Step Functions",
                                "Workflows",       "Workflow Steps",                1.0),
@@ -178,16 +202,16 @@ PER_REQUEST_MAP = [
 # in the Compute Engine catalog). RDS/managed-db storage rows that landed here map
 # to Cloud SQL storage instead (branched on product in map_block_storage).
 EBS_VOLUME_MAP = {
-    "gp2": "Balanced PD Capacity",
-    "gp3": "Balanced PD Capacity",
+    "gp2": GCP_BALANCED_PD,
+    "gp3": GCP_BALANCED_PD,
     "io1": "Extreme PD Capacity",
     "io2": "Extreme PD Capacity",
-    "st1": "Storage PD Capacity",
-    "sc1": "Storage PD Capacity",
-    "standard": "Storage PD Capacity",
-    "magnetic": "Storage PD Capacity",
+    "st1": GCP_STANDARD_PD,
+    "sc1": GCP_STANDARD_PD,
+    "standard": GCP_STANDARD_PD,
+    "magnetic": GCP_STANDARD_PD,
 }
-EBS_DEFAULT_DESC = "Balanced PD Capacity"
+EBS_DEFAULT_DESC = GCP_BALANCED_PD
 
 # data_transfer: direction inferred from usage_type. Ingress is free on GCP → ignore.
 # Inter-zone / inter-region / internet egress each map to their egress SKU family.
@@ -463,7 +487,7 @@ def map_object_storage(rows):
                 # Known fee type with no GCP equivalent
                 mapped.append({
                     "aws_li_key":         r["aws_li_key"],
-                    "gcp_service":        "Cloud Storage",
+                    "gcp_service":        GCP_CLOUD_STORAGE,
                     "gcp_sku_name":       None,
                     "component":          "storage",
                     "strategy":           "passthrough",
@@ -476,10 +500,10 @@ def map_object_storage(rows):
                 })
             else:
                 # Known storage class — resolve SKU directly to avoid word-overlap errors
-                sku_id = resolve_sku("Cloud Storage", result, gcp_region)
+                sku_id = resolve_sku(GCP_CLOUD_STORAGE, result, gcp_region)
                 entry = {
                     "aws_li_key":         r["aws_li_key"],
-                    "gcp_service":        "Cloud Storage",
+                    "gcp_service":        GCP_CLOUD_STORAGE,
                     "gcp_sku_name":       result,
                     "component":          "storage",
                     "strategy":           "map",
@@ -503,7 +527,7 @@ def map_object_storage(rows):
             if result_blob is None:
                 mapped.append({
                     "aws_li_key":         r["aws_li_key"],
-                    "gcp_service":        "Cloud Storage",
+                    "gcp_service":        GCP_CLOUD_STORAGE,
                     "gcp_sku_name":       None,
                     "component":          "storage",
                     "strategy":           "passthrough",
@@ -513,10 +537,10 @@ def map_object_storage(rows):
                     "mapping_confidence": 0.40,
                 })
             else:
-                sku_id = resolve_sku("Cloud Storage", result_blob, gcp_region)
+                sku_id = resolve_sku(GCP_CLOUD_STORAGE, result_blob, gcp_region)
                 entry = {
                     "aws_li_key":         r["aws_li_key"],
-                    "gcp_service":        "Cloud Storage",
+                    "gcp_service":        GCP_CLOUD_STORAGE,
                     "gcp_sku_name":       result_blob,
                     "component":          "storage",
                     "strategy":           "map",
@@ -585,7 +609,7 @@ def map_per_request(rows):
         if "s3" in product or "simple storage" in product:
             out.append({
                 "aws_li_key":         r["aws_li_key"],
-                "gcp_service":        "Cloud Storage",
+                "gcp_service":        GCP_CLOUD_STORAGE,
                 "gcp_sku_name":       None,
                 "component":          "requests",
                 "strategy":           "passthrough",
@@ -655,7 +679,7 @@ def map_block_storage(rows):
             if is_managed_db:
                 out.append({
                     "aws_li_key":       r["aws_li_key"],
-                    "gcp_service":      "Cloud SQL",
+                    "gcp_service":      GCP_CLOUD_SQL,
                     "gcp_sku_name":     None,
                     "component":        "storage",
                     "strategy":         "ignore",
@@ -667,7 +691,7 @@ def map_block_storage(rows):
             else:
                 out.append({
                     "aws_li_key":       r["aws_li_key"],
-                    "gcp_service":      "Compute Engine",
+                    "gcp_service":      GCP_COMPUTE_ENGINE,
                     "gcp_sku_name":     "Extreme PD IOPS",
                     "component":        "storage",
                     "strategy":         "ignore" if gp3_like else "passthrough",
@@ -692,7 +716,7 @@ def map_block_storage(rows):
         if is_managed_db and re.search(r"i/o request|million i/o|million io|\bio request", blob, re.IGNORECASE):
             out.append({
                 "aws_li_key":       r["aws_li_key"],
-                "gcp_service":      "Cloud SQL",
+                "gcp_service":      GCP_CLOUD_SQL,
                 "gcp_sku_name":     None,
                 "component":        "storage",
                 "strategy":         "ignore",
@@ -704,7 +728,7 @@ def map_block_storage(rows):
             continue
 
         if is_managed_db:
-            service = "Cloud SQL"
+            service = GCP_CLOUD_SQL
             if "backup" in ut or "backup" in op:
                 desc = "Backups"
             elif vol in ("st1", "sc1", "standard", "magnetic"):
@@ -713,7 +737,7 @@ def map_block_storage(rows):
                 desc = "SSD storage"
             note = f"managed-db storage ({vol or 'default'}) → Cloud SQL {desc}"
         else:
-            service = "Compute Engine"
+            service = GCP_COMPUTE_ENGINE
             if is_snapshot:
                 desc = "Storage PD Snapshot"
             else:
@@ -804,7 +828,7 @@ def map_data_transfer(rows):
         strategy, direction, note = _transfer_target(r.get("usage_type"), r.get("operation"))
         entry = {
             "aws_li_key":       r["aws_li_key"],
-            "gcp_service":      "Compute Engine",
+            "gcp_service":      GCP_COMPUTE_ENGINE,
             "component":        "transfer",
             "strategy":         strategy,
             "unit_multiplier":  1.0,
@@ -969,7 +993,7 @@ def map_elasticache(rows: list) -> list:
             # Can't determine node size — passthrough with correct GCP label
             out.append({
                 "aws_li_key":         r["aws_li_key"],
-                "gcp_service":        "Cloud Memorystore for Redis",
+                "gcp_service":        GCP_MEMORYSTORE,
                 "gcp_sku_id":         None,
                 "gcp_sku_name":       "Redis Capacity Basic M1",
                 "component":          "cache",
@@ -983,7 +1007,7 @@ def map_elasticache(rows: list) -> list:
             continue
 
         sku_name = "Redis Capacity Basic M1"
-        sku_id = resolve_sku("Cloud Memorystore for Redis", sku_name, region)
+        sku_id = resolve_sku(GCP_MEMORYSTORE, sku_name, region)
         strategy = "map" if sku_id else "passthrough"
         note = (f"ElastiCache → Memorystore for Redis Basic; "
                 f"node RAM={ram:.2f} GiB → unit_multiplier={ram:.2f} (GiBy.h); "
@@ -991,7 +1015,7 @@ def map_elasticache(rows: list) -> list:
                 f"is in use (Standard HA tier costs ~2x)")
         out.append({
             "aws_li_key":         r["aws_li_key"],
-            "gcp_service":        "Cloud Memorystore for Redis",
+            "gcp_service":        GCP_MEMORYSTORE,
             "gcp_sku_id":         sku_id,
             "gcp_sku_name":       sku_name,
             "component":          "cache",
@@ -1261,7 +1285,7 @@ def map_kinesis(rows):
 
         out.append({
             "aws_li_key":         r["aws_li_key"],
-            "gcp_service":        "Pub/Sub",
+            "gcp_service":        GCP_PUBSUB,
             "gcp_sku_id":         None,
             "gcp_sku_name":       None,
             "component":          "messaging",
@@ -1277,9 +1301,9 @@ def map_kinesis(rows):
 # EFS storage class → Filestore tier
 _EFS_STORAGE_MAP = {
     # Standard (infrequent access) and Intelligent-Tiering → Filestore Basic HDD
-    "standardia":      ("Filestore", "Filestore Basic HDD Capacity",       0.90),
-    "standard-ia":     ("Filestore", "Filestore Basic HDD Capacity",       0.90),
-    "ia":              ("Filestore", "Filestore Basic HDD Capacity",       0.90),
+    "standardia":      ("Filestore", GCP_FILESTORE_HDD,       0.90),
+    "standard-ia":     ("Filestore", GCP_FILESTORE_HDD,       0.90),
+    "ia":              ("Filestore", GCP_FILESTORE_HDD,       0.90),
     # Standard (frequent access) → Filestore Basic SSD (closer performance profile)
     "standard":        ("Filestore", "Filestore Basic SSD Capacity",       1.0),
 }
@@ -1528,7 +1552,7 @@ def map_emr(rows):
         if re.search(r"spot|storage|backup", blob):
             out.append({
                 "aws_li_key":         r["aws_li_key"],
-                "gcp_service":        "Cloud Dataproc",
+                "gcp_service":        GCP_DATAPROC,
                 "gcp_sku_id":         None,
                 "gcp_sku_name":       None,
                 "component":          "management",
@@ -1542,10 +1566,10 @@ def map_emr(rows):
 
         vcpus = _emr_vcpus(ut, r.get("instance_vcpus"))
         if vcpus:
-            sku_id = resolve_sku("Cloud Dataproc", _DATAPROC_PREMIUM_SKU, gcp_region)
+            sku_id = resolve_sku(GCP_DATAPROC, _DATAPROC_PREMIUM_SKU, gcp_region)
             entry = {
                 "aws_li_key":         r["aws_li_key"],
-                "gcp_service":        "Cloud Dataproc",
+                "gcp_service":        GCP_DATAPROC,
                 "gcp_sku_name":       _DATAPROC_PREMIUM_SKU,
                 "component":          "management",
                 "strategy":           "map" if sku_id else "passthrough",
@@ -1560,7 +1584,7 @@ def map_emr(rows):
         else:
             entry = {
                 "aws_li_key":         r["aws_li_key"],
-                "gcp_service":        "Cloud Dataproc",
+                "gcp_service":        GCP_DATAPROC,
                 "gcp_sku_id":         None,
                 "gcp_sku_name":       None,
                 "component":          "management",
@@ -1607,7 +1631,7 @@ def main():
         r = dict(zip(cols, raw))
         by_group[r["mechanic_group"]].append(r)
 
-    out_dir = os.path.join(os.path.dirname(db_path), "mappings")
+    out_dir = _safe_path(os.path.dirname(db_path), "mappings")
     os.makedirs(out_dir, exist_ok=True)
 
     handlers = {
@@ -1647,7 +1671,7 @@ def main():
         else:
             mappings = result
 
-        path = os.path.join(out_dir, f"{group}_mappings.json")
+        path = _safe_path(out_dir, f"{group}_mappings.json")
         with open(path, "w") as f:
             json.dump(mappings, f, indent=2)
         llm_note = f" (+{len(llm_rows)} → LLM)" if isinstance(result, tuple) and llm_rows else ""
@@ -1656,7 +1680,7 @@ def main():
     # Inject unknown rows from static mappers into the manifest misc group so the
     # Phase 2 LLM handles them with full context instead of them being silently lost.
     if all_llm_rows:
-        manifest_path = os.path.join(os.path.dirname(db_path), "phase2_manifest.json")
+        manifest_path = _safe_path(os.path.dirname(db_path), "phase2_manifest.json")
         if os.path.exists(manifest_path):
             with open(manifest_path) as f:
                 manifest = json.load(f)

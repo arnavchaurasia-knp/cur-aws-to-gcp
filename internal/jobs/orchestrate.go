@@ -731,6 +731,46 @@ def measure_metrics(runs):
             
         log("Saved token usage breakdown to: " + token_csv)
         log("Saved tool calls frequency to: " + tool_csv)
+
+        # Phase-level summary: wall-clock timing + aggregated token estimates per phase
+        phase_summary_csv = os.path.join(JOB_DIR, "phase_metrics_summary_{}.csv".format(customer_name))
+        phase_token_totals = {}
+        for row in csv_rows_tokens:
+            pn = row["phase_number"]
+            if pn not in phase_token_totals:
+                phase_token_totals[pn] = {"phase_name": row["phase_name"], "chars": 0, "tokens": 0}
+            phase_token_totals[pn]["chars"] += row["characters"]
+            phase_token_totals[pn]["tokens"] += row["estimated_tokens"]
+        fields_summary = ["phase_num", "phase_name", "start_time", "end_time", "duration_seconds",
+                          "total_chars", "total_tokens_est"]
+        summary_rows = []
+        seen_phases = set()
+        for run in runs:
+            pn = run["num"]
+            seen_phases.add(pn)
+            agg = phase_token_totals.get(pn, {"chars": 0, "tokens": 0})
+            summary_rows.append({
+                "phase_num": pn,
+                "phase_name": run["name"],
+                "start_time": run.get("start_time", ""),
+                "end_time": run.get("end_time", ""),
+                "duration_seconds": run.get("duration_seconds", ""),
+                "total_chars": agg["chars"],
+                "total_tokens_est": agg["tokens"],
+            })
+        for pn, agg in sorted(phase_token_totals.items()):
+            if pn not in seen_phases:
+                summary_rows.append({
+                    "phase_num": pn, "phase_name": agg["phase_name"],
+                    "start_time": "", "end_time": "", "duration_seconds": "",
+                    "total_chars": agg["chars"], "total_tokens_est": agg["tokens"],
+                })
+        summary_rows.sort(key=lambda r: r["phase_num"])
+        with open(phase_summary_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fields_summary)
+            writer.writeheader()
+            writer.writerows(summary_rows)
+        log("Saved phase metrics summary to: " + phase_summary_csv)
     except Exception as e:
         log("Error writing CSV files: " + str(e))
 
@@ -750,7 +790,9 @@ def run_phase(ph):
 
     write_progress(ph["num"], ph["name"], ph["activity"])
     log("=== Phase %%d (%%s) ===" %% (ph["num"], ph["name"]))
-    
+    _phase_start_t = time.time()
+    _phase_start_ts = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
+
     start_pos = 0
     if os.path.exists(AGY_LOG):
         start_pos = os.path.getsize(AGY_LOG)
@@ -810,7 +852,10 @@ def run_phase(ph):
     if qm_early:
         log("quota/auth block (%%s) during Phase %%d — stopping before post-LLM scripts" %% (qm_early, ph["num"]))
         phase_runs.append({"num": ph["num"], "name": ph["name"],
-                           "convs": get_new_convs(AGY_LOG, start_pos)})
+                           "convs": get_new_convs(AGY_LOG, start_pos),
+                           "start_time": _phase_start_ts,
+                           "end_time": time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S"),
+                           "duration_seconds": int(time.time() - _phase_start_t)})
         if ph["num"] in CRITICAL_PHASES:
             with open(os.path.join(JOB_DIR, "failure.txt"), "w") as f:
                 f.write("Gemini quota/auth limit reached (" + qm_early + ") during Phase "
@@ -834,7 +879,10 @@ def run_phase(ph):
     phase_entry = {
         "num": ph["num"],
         "name": ph["name"],
-        "convs": phase_convs
+        "convs": phase_convs,
+        "start_time": _phase_start_ts,
+        "end_time": time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S"),
+        "duration_seconds": int(time.time() - _phase_start_t)
     }
     phase_runs.append(phase_entry)
 

@@ -21,9 +21,10 @@ import (
 )
 
 const (
-	maxAttempts  = 3
-	pollInterval = 5 * time.Second
-	finalizeWait = 2 * time.Second
+	agyInternalLog = "agy-internal.log"
+	maxAttempts    = 3
+	pollInterval   = 5 * time.Second
+	finalizeWait   = 2 * time.Second
 	// staleTimeout: AGY writes nothing to agy.log while waiting for the model
 	// API response (can take 20-40 min on large bills). Set generously so the
 	// watcher never kills a job that's genuinely waiting on the API.
@@ -51,7 +52,7 @@ func NewWatcher(database *db.DB, spawner *Spawner, jobsDir string, nc NotifyConf
 // Watch blocks until the job reaches a terminal state. Used for fresh runs
 // that may clean-slate retry up to maxAttempts on failure.
 func (w *Watcher) Watch(jobID string, pid int) {
-	logOffset := logSize(filepath.Join(w.jobsDir, jobID, "agy-internal.log"))
+	logOffset := logSize(filepath.Join(w.jobsDir, jobID, agyInternalLog))
 	w.watchUntilDead(jobID, pid)
 	w.finalizeWithOffset(jobID, true, logOffset)
 }
@@ -60,7 +61,7 @@ func (w *Watcher) Watch(jobID string, pid int) {
 // Used for refinement runs — failure must not wipe the original successful
 // projection state.
 func (w *Watcher) WatchOnce(jobID string, pid int) {
-	logOffset := logSize(filepath.Join(w.jobsDir, jobID, "agy-internal.log"))
+	logOffset := logSize(filepath.Join(w.jobsDir, jobID, agyInternalLog))
 	w.watchUntilDead(jobID, pid)
 	w.finalizeWithOffset(jobID, false, logOffset)
 }
@@ -106,7 +107,7 @@ func (w *Watcher) watchUntilDead(jobID string, pid int) {
 // first phase marker).
 func (w *Watcher) activityMtime(jobDir string) time.Time {
 	var newest time.Time
-	for _, name := range []string{"agy.log", "agy-internal.log", progressFile, "run_all.py"} {
+	for _, name := range []string{"agy.log", agyInternalLog, progressFile, "run_all.py"} {
 		info, err := os.Stat(filepath.Join(jobDir, name))
 		if err != nil {
 			continue
@@ -321,7 +322,7 @@ var quotaMarkers = []string{
 }
 
 func quotaExhausted(jobDir string, logOffset int64) bool {
-	logPath := filepath.Join(jobDir, "agy-internal.log")
+	logPath := filepath.Join(jobDir, agyInternalLog)
 	f, err := os.Open(logPath)
 	if err != nil {
 		return false

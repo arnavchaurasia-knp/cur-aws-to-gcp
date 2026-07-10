@@ -28,7 +28,7 @@ function fmtWhen(iso: string) {
   return d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-interface StatCardProps { label: string; value: number; color?: string; delay?: number }
+type StatCardProps = Readonly<{ label: string; value: number; color?: string; delay?: number }>
 function StatCard({ label, value, color = 'text-white', delay = 0 }: StatCardProps) {
   return (
     <div
@@ -41,7 +41,7 @@ function StatCard({ label, value, color = 'text-white', delay = 0 }: StatCardPro
   )
 }
 
-export function AdminJobs({ user }: { user: UserInfo }) {
+export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('All reports — admin')
   const nav = useNavigate()
   const [jobs, setJobs] = useState<Job[] | null>(null)
@@ -118,7 +118,7 @@ export function AdminJobs({ user }: { user: UserInfo }) {
             <span className="relative flex w-2 h-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#645DF6] opacity-60" />
               <span className="relative inline-flex rounded-full w-2 h-2 bg-[#645DF6]" />
-            </span>
+            </span>{' '}
             Loading…
           </div>
         )}

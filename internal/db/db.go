@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"strings"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // registers the sqlite3 driver for database/sql
 )
 
 type DB struct {

@@ -33,8 +33,9 @@ function parseBlocks(markdown: string): Block[] {
     buffer = []
   }
 
+  const H2_RE = /^##\s+(.+)/
   for (const line of lines) {
-    const h2 = line.match(/^##\s+(.+)/)
+    const h2 = H2_RE.exec(line)
     if (h2) {
       flush()
       currentHeading = h2[1].trim()
@@ -46,7 +47,7 @@ function parseBlocks(markdown: string): Block[] {
   return blocks
 }
 
-function SectionBlock({ heading, body }: { heading: string; body: string }) {
+function SectionBlock({ heading, body }: Readonly<{ heading: string; body: string }>) {
   const meta = SECTION_META[normKey(heading)]
   if (!meta) {
     // Unknown section — render plainly
@@ -80,7 +81,7 @@ function SectionBlock({ heading, body }: { heading: string; body: string }) {
   )
 }
 
-export function Summary({ markdown }: { markdown: string }) {
+export function Summary({ markdown }: Readonly<{ markdown: string }>) {
   const blocks = parseBlocks(markdown)
 
   return (
@@ -95,13 +96,13 @@ export function Summary({ markdown }: { markdown: string }) {
       {blocks.map((block, i) => {
         if (block.type === 'intro') {
           return (
-            <p key={i} className="text-sm text-gray-300 leading-relaxed">
+            <p key={`intro-${i}`} className="text-sm text-gray-300 leading-relaxed">
               {block.body}
             </p>
           )
         }
         return (
-          <SectionBlock key={i} heading={block.heading!} body={block.body} />
+          <SectionBlock key={block.heading ?? `section-${i}`} heading={block.heading!} body={block.body} />
         )
       })}
     </div>

@@ -136,9 +136,19 @@ select:focus {
 
 /* ── Nav hover links ────────────────────────────────────────── */
 .nav-link {
+  cursor: pointer;
   transition: opacity 0.15s ease;
 }
 .nav-link:hover { opacity: 0.75; }
+
+/* ── Phase label fade on change ─────────────────────────────── */
+@keyframes phase-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.phase-label-enter {
+  animation: phase-fade-in 0.3s cubic-bezier(0.22,1,0.36,1) both;
+}
 
 /* ── Summary card gradient border ──────────────────────────── */
 .summary-card {

@@ -11,7 +11,7 @@ import type { UserInfo } from '../api/auth'
 import { PHASES, TOTAL_PHASES } from '../lib/phases'
 import { useTitle } from '../lib/useTitle'
 
-export function Upload({ user }: { user: UserInfo }) {
+export function Upload({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('New Estimation')
   const [prospect, setProspect] = useState('')
   const [file, setFile] = useState<File | null>(null)
@@ -46,20 +46,20 @@ export function Upload({ user }: { user: UserInfo }) {
             </p>
           </div>
           <div className="flex flex-col gap-2 anim-fade-in-up delay-100">
-            <label className="text-xs uppercase tracking-wider text-gray-400">Prospect / Customer Name</label>
-            <input value={prospect} onChange={e => setProspect(e.target.value)}
+            <label htmlFor="prospect-name" className="text-xs uppercase tracking-wider text-gray-400">Prospect / Customer Name</label>
+            <input id="prospect-name" value={prospect} onChange={e => setProspect(e.target.value)}
               placeholder="e.g. Acme Corp"
               className="bg-white/5 border border-white/20 rounded-lg px-4 py-2 text-sm outline-none
                 focus:border-[#645DF6] transition-colors duration-150" />
           </div>
           <div className="flex flex-col gap-2 anim-fade-in-up delay-175">
-            <label className="text-xs uppercase tracking-wider text-gray-400">AWS bill — CUR export, Cost Explorer CSV, Parquet, ZIP, or console PDF</label>
-            <DropZone file={file} onChange={setFile} />
+            <label htmlFor="bill-upload" className="text-xs uppercase tracking-wider text-gray-400">AWS bill — CUR export, Cost Explorer CSV, Parquet, ZIP, or console PDF</label>
+            <DropZone file={file} onChange={setFile} inputId="bill-upload" />
           </div>
           <div className="anim-fade-in-up delay-250">
             <button onClick={submit} disabled={!ready}
               className={`w-full py-3 rounded-lg font-medium text-white transition-all duration-200
-                ${ready ? 'btn-shimmer anim-glow-breathe' : 'bg-gradient-to-r from-[#645DF6] to-[#00C2BB] opacity-40 cursor-not-allowed'}`}>
+                ${ready ? 'btn-shimmer anim-glow-breathe cursor-pointer' : 'bg-gradient-to-r from-[#645DF6] to-[#00C2BB] opacity-40 cursor-not-allowed'}`}>
               {submitting ? 'Uploading…' : 'Submit'}
             </button>
           </div>

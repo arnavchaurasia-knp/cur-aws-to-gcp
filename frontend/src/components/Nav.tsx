@@ -3,16 +3,16 @@ import type { UserInfo } from '../api/auth'
 import { logoutURL } from '../api/auth'
 import { Link } from 'react-router-dom'
 
-export function Nav({ user }: { user: UserInfo }) {
-  function handleSignOut(e: React.MouseEvent) {
-    e.preventDefault()
-    fetch(logoutURL(), { method: 'POST', credentials: 'same-origin' })
-      .finally(() => { window.location.href = '/' })
-  }
+function handleSignOut(e: React.MouseEvent) {
+  e.preventDefault()
+  fetch(logoutURL(), { method: 'POST', credentials: 'same-origin' })
+    .finally(() => { window.location.href = '/' })
+}
+
+export function Nav({ user }: Readonly<{ user: UserInfo }>) {
 
   return (
-    <nav className="flex items-center justify-between px-6 py-3 border-b border-white/10 anim-slide-down
-      backdrop-blur-sm bg-[#0a0a0f]/80 sticky top-0 z-30">
+    <nav className="flex items-center justify-between px-6 py-3 border-b border-white/10 anim-slide-down backdrop-blur-sm bg-[#0a0a0f]/80 sticky top-0 z-30">
       <Link to="/" className="flex items-center gap-3 transition-opacity duration-150 hover:opacity-85">
         <img src={facetsFIcon} alt="Facets" className="h-5" />
         <span className="hidden sm:inline text-white/30">|</span>

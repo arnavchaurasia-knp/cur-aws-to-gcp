@@ -1,31 +1,31 @@
 import { useRef, useState } from 'react'
 
-interface Props { onChange: (file: File) => void; file: File | null }
+type Props = Readonly<{ onChange: (file: File) => void; file: File | null; inputId?: string }>
 
-export function DropZone({ onChange, file }: Props) {
+export function DropZone({ onChange, file, inputId }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
 
-  const accept = (f: File) => {
-    onChange(f)
-  }
+  const accept = (f: File) => { onChange(f) }
+
+  const borderClass = dragging
+    ? 'dropzone-drag'
+    : file
+      ? 'border-[#00C2BB]/50 bg-[#00C2BB]/5 hover:border-[#00C2BB]/70'
+      : 'border-white/20 hover:border-[#645DF6]/60 hover:bg-[#645DF6]/5'
 
   return (
     <div
+      role="button"
+      tabIndex={0}
       onClick={() => inputRef.current?.click()}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') inputRef.current?.click() }}
       onDragOver={e => { e.preventDefault(); setDragging(true) }}
       onDragLeave={() => setDragging(false)}
       onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) accept(f) }}
-      className={`border-2 border-dashed rounded-xl p-10 text-center cursor-pointer select-none
-        transition-all duration-200
-        ${dragging
-          ? 'dropzone-drag'
-          : file
-            ? 'border-[#00C2BB]/50 bg-[#00C2BB]/5 hover:border-[#00C2BB]/70'
-            : 'border-white/20 hover:border-[#645DF6]/60 hover:bg-[#645DF6]/5'
-        }`}
+      className={`border-2 border-dashed rounded-xl p-10 text-center cursor-pointer select-none transition-all duration-200 ${borderClass}`}
     >
-      <input ref={inputRef} type="file" accept="*" className="hidden"
+      <input ref={inputRef} id={inputId} type="file" accept="*" className="hidden"
         onChange={e => { const f = e.target.files?.[0]; if (f) accept(f) }} />
 
       {file ? (
@@ -50,7 +50,7 @@ export function DropZone({ onChange, file }: Props) {
   )
 }
 
-function UploadIcon({ active }: { active: boolean }) {
+function UploadIcon({ active }: Readonly<{ active: boolean }>) {
   return (
     <svg width="32" height="32" viewBox="0 0 24 24" fill="none"
       className={`transition-colors duration-200 ${active ? 'text-[#645DF6]' : 'text-gray-600'}`}

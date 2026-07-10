@@ -23,7 +23,7 @@ function pctVsAws(gcp: number, aws: number): { label: string; positive: boolean 
   return { label: `${sign}${Math.round(diff * 100)}%`, positive: diff < 0 }
 }
 
-function TotalsCard({ run, fallback }: { run: RunResult | null; fallback: number | null }) {
+function TotalsCard({ run, fallback }: Readonly<{ run: RunResult | null; fallback: number | null }>) {
   if (!run) {
     return (
       <div className="bg-white/[0.02] border border-white/10 rounded-lg p-5 anim-fade-in-up">
@@ -85,7 +85,7 @@ const PHASE_LABELS: Record<number, string> = {
   6: 'Generating the HTML Report',
 }
 
-export function JobStatus({ user }: { user: UserInfo }) {
+export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
   const { id } = useParams<{ id: string }>()
   const [job, setJob] = useState<Job | null>(null)
   const [jobs, setJobs] = useState<Job[]>([])
@@ -197,7 +197,7 @@ export function JobStatus({ user }: { user: UserInfo }) {
                       <span className="text-xs uppercase tracking-wider text-gray-400">Currently</span>
                       <span className="text-xs text-gray-500 tabular-nums">Step {phase} of {TOTAL_PHASES}</span>
                     </div>
-                    <p className="text-sm text-gray-200">{label}</p>
+                    <p key={label} className="phase-label-enter text-sm text-gray-200">{label}</p>
                     <div className="mt-3 flex gap-1">
                       {[1, 2, 3, 4, 5, 6].map(n => (
                         <div key={n}

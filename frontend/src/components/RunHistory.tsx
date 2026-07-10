@@ -4,7 +4,7 @@ import { downloadURL } from '../api/jobs'
 
 function formatTs(iso: string): string {
   const d = new Date(iso)
-  if (isNaN(d.getTime())) return iso
+  if (Number.isNaN(d.getTime())) return iso
   const yyyy = d.getUTCFullYear()
   const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
   const dd = String(d.getUTCDate()).padStart(2, '0')
@@ -18,7 +18,7 @@ function money(n: number | null | undefined): string {
   return `$${Math.round(n).toLocaleString()}`
 }
 
-function InstructionLine({ text }: { text: string }) {
+function InstructionLine({ text }: Readonly<{ text: string }>) {
   const [open, setOpen] = useState(false)
   const truncated = text.length > 80
   const display = open || !truncated ? text : text.slice(0, 80) + '…'
@@ -36,7 +36,7 @@ function InstructionLine({ text }: { text: string }) {
   )
 }
 
-export function RunHistory({ jobId, runs }: { jobId: string; runs: RunResult[] }) {
+export function RunHistory({ jobId, runs }: Readonly<{ jobId: string; runs: RunResult[] }>) {
   const [expanded, setExpanded] = useState(false)
   if (runs.length <= 1) return null
 

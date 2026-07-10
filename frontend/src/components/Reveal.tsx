@@ -1,11 +1,11 @@
 import type { ReactNode } from 'react'
 import { useInView } from '../lib/useInView'
 
-interface Props {
+type Props = Readonly<{
   children: ReactNode
   delay?: number
   className?: string
-}
+}>
 
 export function Reveal({ children, delay = 0, className = '' }: Props) {
   const { ref, visible } = useInView()

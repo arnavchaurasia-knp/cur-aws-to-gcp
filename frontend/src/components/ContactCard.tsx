@@ -58,9 +58,14 @@ export function ContactCard() {
 
       {open && (
         <div
+          role="presentation"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 anim-fade-in"
-          onClick={() => !submitting && setOpen(false)}>
+          onClick={() => !submitting && setOpen(false)}
+          onKeyDown={e => { if (e.key === 'Escape') !submitting && setOpen(false) }}>
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Contact us"
             className="w-full max-w-xl bg-[#0d0d14] border border-white/10 rounded-2xl shadow-2xl p-6 space-y-4 anim-scale-in"
             onClick={e => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-4">
@@ -97,14 +102,14 @@ export function ContactCard() {
                 onClick={() => !submitting && setOpen(false)}
                 disabled={submitting}
                 className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors duration-150
-                  disabled:opacity-40 disabled:cursor-not-allowed">
+                  cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">
                 Cancel
               </button>
               <button
                 onClick={submit}
                 disabled={submitting}
                 className="btn-shimmer px-5 py-2 rounded-lg text-sm font-medium text-white
-                  disabled:opacity-40 disabled:cursor-not-allowed">
+                  cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">
                 {submitting ? 'Sending…' : 'Submit Request'}
               </button>
             </div>

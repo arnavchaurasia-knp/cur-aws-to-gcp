@@ -15,10 +15,15 @@ MAPPINGS_DIR = "projection-audit/mappings"
 
 _ITYPE_RE = re.compile(r'^(?:db\.)?([a-z]+)(\d+)([a-z]*)\.(.*)$')
 
-# Load family map config
+# Load semantic family map config
 MAP_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "family_map.json")
 with open(MAP_CONFIG_PATH) as f:
-    FAMILY_MAP = json.load(f).get("mappings", {})
+    _cfg = json.load(f)
+
+_AWS_WORKLOAD = _cfg["aws_workload"]   # prefix → workload type
+_ARCH_SUFFIX  = _cfg["arch_suffix"]    # suffix char → architecture
+_GCP_FAMILIES = _cfg["gcp_families"]   # workload → arch → {family, arm_sku, min_aws_gen, ...}
+
 
 def parse_instance(itype):
     if not itype:
@@ -33,52 +38,58 @@ def parse_instance(itype):
         "size": m.group(4)
     }
 
+
 def get_gcp_family(parsed):
-    prefix = parsed["prefix"]
+    """Return (gcp_family, arm_sku) or (None, False).
+
+    Semantic lookup: AWS prefix → workload type, suffix → architecture,
+    then find the matching GCP family from config. gen-based fallback is
+    also data-driven via min_aws_gen / prev_gen_family in family_map.json.
+    """
+    prefix   = parsed["prefix"]
     suffixes = parsed["suffixes"]
-    gen = parsed["gen"]
-    
-    # Storage-optimized maps to high-memory Intel/AMD profiles with SSDs
-    if prefix in ("i", "im", "is", "d", "h"):
-        prefix = "r"
-        
-    cfg = FAMILY_MAP.get(prefix)
-    if not cfg:
-        return None
-        
-    if "g" in suffixes:
-        return cfg.get("g")
-    if "a" in suffixes:
-        return cfg.get("a")
-        
-    # Gen-based refinement
-    default_family = cfg.get("default")
-    if default_family == "C3" and gen <= 5:
-        return "N2"
-    if default_family == "N4" and gen <= 5:
-        return "N2"
-        
-    return default_family
+    gen      = parsed["gen"]
+
+    workload = _AWS_WORKLOAD.get(prefix, "general")
+
+    # Detect architecture from suffix characters
+    arch = "intel"
+    for char, detected in _ARCH_SUFFIX.items():
+        if char in suffixes:
+            arch = detected
+            break
+
+    target = _GCP_FAMILIES.get(workload, {}).get(arch)
+    if not target:
+        return None, False
+
+    family = target["family"]
+    if gen < target.get("min_aws_gen", 1):
+        family = target.get("prev_gen_family", family)
+
+    return family, target.get("arm_sku", False)
 
 def map_gce_row(r, parsed):
-    gcp_family = get_gcp_family(parsed)
+    gcp_family, arm_sku = get_gcp_family(parsed)
     if not gcp_family:
         return None
-        
+
     gcp_region = r.get("gcp_region")
     aws_key = r["aws_li_key"]
     vcpus = r.get("instance_vcpus") or 2
     ram = r.get("instance_ram_gb") or 8.0
-    
-    # t2/t3 burstable instances: E2 has no burst-credit model — it runs at the
-    # configured vCPU count continuously. If the workload relies on CPU burst credits
-    # to handle spikes, the GCP projection may understate peak-hour cost.
-    is_burstable = parsed["prefix"] == "t"
+
+    # burstable workload: E2/T2A have no burst-credit model — projection assumes
+    # steady-state CPU usage, which may overstate cost for mostly-idle workloads.
+    is_burstable = _AWS_WORKLOAD.get(parsed["prefix"]) == "burstable"
     burst_note = (" [Note: E2 has no burst-credit model; projection assumes steady-state CPU usage]"
                   if is_burstable else "")
 
+    # arm_sku comes from family_map.json — ARM GCP families use "Arm" in catalog SKU names.
+    arm_infix = "Arm " if arm_sku else ""
+
     # 1. Core Component
-    core_desc = f"{gcp_family} Instance Core"
+    core_desc = f"{gcp_family} {arm_infix}Instance Core"
     core_sku = resolve_sku("Compute Engine", core_desc, gcp_region)
     core_entry = {
         "aws_li_key": aws_key,
@@ -95,9 +106,10 @@ def map_gce_row(r, parsed):
     }
     if core_sku:
         core_entry["gcp_sku_id"] = core_sku
+        core_entry["gcp_sku_unit"] = core_sku.unit
 
     # 2. RAM Component
-    ram_desc = f"{gcp_family} Instance Ram"
+    ram_desc = f"{gcp_family} {arm_infix}Instance Ram"
     ram_sku = resolve_sku("Compute Engine", ram_desc, gcp_region)
     ram_entry = {
         "aws_li_key": aws_key,
@@ -114,6 +126,7 @@ def map_gce_row(r, parsed):
     }
     if ram_sku:
         ram_entry["gcp_sku_id"] = ram_sku
+        ram_entry["gcp_sku_unit"] = ram_sku.unit
         
     mappings = [core_entry, ram_entry]
     
@@ -136,69 +149,44 @@ def map_gce_row(r, parsed):
         }
         if ssd_sku:
             ssd_entry["gcp_sku_id"] = ssd_sku
+            ssd_entry["gcp_sku_unit"] = ssd_sku.unit
         mappings.append(ssd_entry)
         
     return mappings
 
-def _gpu_profile(prefix, gen, suffixes, itype_full, vcpus):
-    """Return (gcp_family, gpu_desc_pattern, gpu_count) or None for unknown types.
+def _resolve_gpu_count(entry, vcpus):
+    """Compute GPU count from a gpu_profiles config entry and the instance vCPU count."""
+    if "fixed_count" in entry:
+        return float(entry["fixed_count"])
+    if "gpu_per_vcpu" in entry:
+        return max(float(entry.get("min_count", 1)), vcpus * entry["gpu_per_vcpu"])
+    if "vcpu_breakpoints" in entry:
+        for bp in sorted(entry["vcpu_breakpoints"], key=lambda x: -x["min_vcpu"]):
+            if vcpus >= bp["min_vcpu"]:
+                return float(bp["count"])
+        return float(entry.get("default_count", 1))
+    return 1.0
 
-    Mapping rationale:
-      g3/g4dn/g4ad  → N1+T4      (NVIDIA T4; closest available GCE accelerated shape)
-      g5/g6/g6e     → G2+L4      (NVIDIA L4; direct successor to T4, same generation)
-      p2            → A2+A100    (K80 workloads; A100 is the current closest; treat as 1 GPU)
-      p3            → A2+A100    (V100; A100 is the on-catalog closest. GPU count = vcpu÷8)
-      p4d/p4de      → A2+A100    (A100 40/80 GB; 8 GPU = standard p4d.24xlarge footprint)
-      p5/p5e        → A3+H100    (H100 SXM; p5.48xlarge = 8× H100)
-    """
-    itype = itype_full or ""
-    # g-family: T4 (g3/g4dn) → GCE N1+T4, L4 (g5+) → GCE G2+L4
-    if prefix == "g":
-        if gen <= 4:
-            # g3, g4dn, g4ad → N1 custom + T4 GPU
-            gpu_count = max(1.0, vcpus / 4)  # g4dn: 4 vCPU per T4 slot
-            return ("N1", "Nvidia Tesla T4 GPU running in", gpu_count)
-        else:
-            # g5, g6 → G2 + L4
-            # GPU count from instance size: g5.12xlarge=4 GPUs, g5.48xlarge=8 GPUs
-            if vcpus >= 96:
-                gpu_count = 8.0
-            elif vcpus >= 48:
-                gpu_count = 4.0
-            elif vcpus >= 32:
-                gpu_count = 2.0
-            else:
-                gpu_count = 1.0
-            return ("G2", "Nvidia L4 GPU running in", gpu_count)
 
-    # p-family
-    if prefix == "p":
-        if gen <= 3:
-            # p2 (K80), p3 (V100) → A2+A100 (K80 discontinued; A100 is closest catalog option)
-            # GPU count: p3.2xlarge=1, p3.8xlarge=4, p3.16xlarge=8
-            gpu_count = max(1.0, vcpus / 8)
-            return ("A2", "Nvidia Tesla A100 GPU running in", gpu_count)
-        elif gen == 4:
-            # p4d.24xlarge = 8× A100 40GB, p4de.24xlarge = 8× A100 80GB
-            return ("A2", "Nvidia Tesla A100 GPU running in", 8.0)
-        elif gen >= 5:
-            # p5.48xlarge = 8× H100 SXM
-            return ("A3", "Nvidia H100 80GB GPU", 8.0)
-
+def _gpu_profile(prefix, gen, vcpus):
+    """Return (gcp_family, gpu_desc, gpu_count) from gpu_profiles config, or None."""
+    for entry in _cfg.get("gpu_profiles", {}).get(prefix, []):
+        min_gen = entry.get("min_gen", 1)
+        max_gen = entry.get("max_gen", 9999)
+        if min_gen <= gen <= max_gen:
+            return entry["family"], entry["gpu_desc"], _resolve_gpu_count(entry, vcpus)
     return None
 
 
 def map_gpu_row(r, parsed):
     prefix = parsed["prefix"]
     gen = parsed["gen"]
-    suffixes = parsed["suffixes"]
     gcp_region = r.get("gcp_region")
     aws_key = r["aws_li_key"]
     vcpus = r.get("instance_vcpus") or 8
     ram = r.get("instance_ram_gb") or 32.0
-    itype_full = r.get("instance_type") or ""
 
-    profile = _gpu_profile(prefix, gen, suffixes, itype_full, vcpus)
+    profile = _gpu_profile(prefix, gen, vcpus)
     if not profile:
         return None
     gcp_family, gpu_desc, gpu_count = profile
@@ -221,6 +209,7 @@ def map_gpu_row(r, parsed):
     }
     if core_sku:
         core_entry["gcp_sku_id"] = core_sku
+        core_entry["gcp_sku_unit"] = core_sku.unit
 
     # RAM
     ram_desc = f"{gcp_family} Instance Ram"
@@ -240,6 +229,7 @@ def map_gpu_row(r, parsed):
     }
     if ram_sku:
         ram_entry["gcp_sku_id"] = ram_sku
+        ram_entry["gcp_sku_unit"] = ram_sku.unit
 
     # GPU
     gpu_sku = resolve_sku("Compute Engine", gpu_desc, gcp_region)
@@ -258,11 +248,12 @@ def map_gpu_row(r, parsed):
     }
     if gpu_sku:
         gpu_entry["gcp_sku_id"] = gpu_sku
+        gpu_entry["gcp_sku_unit"] = gpu_sku.unit
         
     return [core_entry, ram_entry, gpu_entry]
 
 def map_db_row(r, parsed):
-    gcp_family = get_gcp_family(parsed)
+    gcp_family, _ = get_gcp_family(parsed)  # arm_sku unused — Cloud SQL has no ARM variants
     if not gcp_family:
         return None
         
@@ -297,6 +288,7 @@ def map_db_row(r, parsed):
     }
     if core_sku:
         core_entry["gcp_sku_id"] = core_sku
+        core_entry["gcp_sku_unit"] = core_sku.unit
 
     # 2. RAM Component
     ram_sku = resolve_sku("Cloud SQL", ram_desc, gcp_region)
@@ -315,6 +307,7 @@ def map_db_row(r, parsed):
     }
     if ram_sku:
         ram_entry["gcp_sku_id"] = ram_sku
+        ram_entry["gcp_sku_unit"] = ram_sku.unit
         
     return [core_entry, ram_entry]
 
@@ -341,7 +334,7 @@ def main():
         if not parsed:
             continue
             
-        is_gpu = parsed["prefix"] in ("g", "p")
+        is_gpu = _AWS_WORKLOAD.get(parsed["prefix"]) == "accelerated"
         if is_gpu:
             res = map_gpu_row(r, parsed)
         else:

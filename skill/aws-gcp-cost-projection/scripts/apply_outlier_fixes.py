@@ -34,8 +34,9 @@ def validate_override(fix: dict) -> str | None:
     has_mult  = fix.get("unit_multiplier") is not None
     has_svc   = fix.get("gcp_service")
     has_region = fix.get("gcp_region")
-    if not (has_sku or has_mult or has_svc or has_region):
-        return "override must include at least one of: gcp_sku_id+gcp_sku_name, unit_multiplier, gcp_service, gcp_region"
+    has_strat  = fix.get("strategy")
+    if not (has_sku or has_mult or has_svc or has_region or has_strat):
+        return "override must include at least one of: gcp_sku_id+gcp_sku_name, unit_multiplier, gcp_service, gcp_region, strategy"
     return None
 
 
@@ -93,7 +94,15 @@ def apply_override(conn, key: str, fix: dict, notes: list):
     gcp_service  = fix.get("gcp_service")
     gcp_region   = fix.get("gcp_region")
     component    = fix.get("component")
+    strategy     = fix.get("strategy")
     reason       = fix.get("reason", "")
+
+    if strategy:
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li SET strategy = ?
+            WHERE aws_li_key = ?
+        """, [strategy, key])
+        notes.append(f"- `{key}`: override strategy → {strategy} — {reason}")
 
     if gcp_sku_id and gcp_sku_name:
         conn.execute("""

@@ -394,75 +394,302 @@ def main():
                      license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit
         """
     else:
-        # CTE pre-computes all CASE expressions from raw columns so the outer
-        # GROUP BY only sees already-derived aliases — avoids DuckDB strict-mode
-        # "column must appear in GROUP BY" errors on unaggregated column refs.
-        sql = f"""
-            WITH _flat AS (
+        # Check if "service" column exists in aws_raw
+        if c(['service']) == 'NULL':
+            # Run the Python-based ingestion/mapping for the 4-column flat CSV
+            import hashlib
+            raw_rows = conn.execute("SELECT * FROM aws_raw").fetchall()
+            # Fetch column names
+            col_names = [col[0] for col in conn.description]
+            desc_idx = col_names.index("Description")
+            region_idx = col_names.index("Region")
+            usage_idx = col_names.index("Usage Quantity")
+            cost_idx = col_names.index("Amount in USD")
+            
+            # Temporary storage to aggregate rows by the same key
+            aggregated = {}
+            
+            for row in raw_rows:
+                desc = row[desc_idx]
+                region = row[region_idx]
+                usage_str = row[usage_idx]
+                cost_str = row[cost_idx]
+                
+                if not desc or desc.lower() == 'total tax' or 'tax' in desc.lower():
+                    continue
+                
+                # Parse usage quantity and unit
+                total_usage = 0.0
+                pricing_unit = ""
+                if usage_str:
+                    m = re.match(r'([\d,\.]+)\s*(.*)', str(usage_str).strip())
+                    if m:
+                        try:
+                            total_usage = float(m.group(1).replace(",", ""))
+                        except ValueError:
+                            total_usage = 0.0
+                        pricing_unit = m.group(2).strip()
+                        
+                # Parse cost
+                row_cost = 0.0
+                if cost_str:
+                    try:
+                        row_cost = float(str(cost_str).replace(",", "").replace("$", "").strip())
+                    except ValueError:
+                        row_cost = 0.0
+                        
+                # Map product and usage_type
+                desc_lower = desc.lower()
+                pricing_model = "OnDemand"
+                if "spot" in desc_lower:
+                    pricing_model = "Spot"
+                elif "reserved instance applied" in desc_lower:
+                    pricing_model = "Committed"
+                    
+                line_item_type = "DiscountedUsage" if "reserved instance applied" in desc_lower else "Usage"
+                
+                product = ""
+                usage_type = ""
+                
+                if "elastic compute" in desc_lower or desc_lower.startswith("ec2") or "natgateway" in desc_lower:
+                    product = "Amazon Elastic Compute Cloud"
+                    if "natgateway" in desc_lower:
+                        if "hour" in desc_lower:
+                            usage_type = "NatGateway-Hours"
+                        else:
+                            usage_type = "NatGateway-Bytes"
+                    elif "t4g cpu credits" in desc_lower:
+                        usage_type = "T4G CPU Credits"
+                    else:
+                        inst_match = re.search(r'\b([a-z0-9]+\.[a-z0-9]+)\b', desc_lower)
+                        if inst_match:
+                            itype = inst_match.group(1)
+                            prefix = "SpotUsage:" if pricing_model == "Spot" else "BoxUsage:"
+                            usage_type = prefix + itype
+                        else:
+                            usage_type = "BoxUsage"
+                elif "cloudtrail" in desc_lower:
+                    product = "AWS CloudTrail"
+                    usage_type = "CloudTrail"
+                elif "cloudwatch" in desc_lower:
+                    product = "AmazonCloudWatch"
+                    if "alarm" in desc_lower:
+                        usage_type = "AlarmThreshold"
+                    else:
+                        usage_type = "Metrics"
+                elif "cost explorer" in desc_lower:
+                    product = "AWS Cost Explorer"
+                    usage_type = "CostExplorer"
+                elif "dax" in desc_lower:
+                    product = "Amazon DynamoDB"
+                    usage_type = "DAX"
+                elif "dms" in desc_lower:
+                    product = "AWS Database Migration Service"
+                    usage_type = "DMS"
+                elif "data transfer" in desc_lower:
+                    product = "AWS Data Transfer"
+                    usage_type = "DataTransfer"
+                elif "directory service" in desc_lower:
+                    product = "AWS Directory Service"
+                    usage_type = "DirectoryService"
+                elif "dynamodb" in desc_lower:
+                    product = "Amazon DynamoDB"
+                    usage_type = "DynamoDB"
+                elif "ebs" in desc_lower:
+                    product = "Amazon Elastic Block Store"
+                    if "snapshot" in desc_lower:
+                        usage_type = "EBS:Snapshot"
+                    else:
+                        for vt in ["gp2", "gp3", "io1", "io2", "st1", "sc1"]:
+                            if vt in desc_lower:
+                                usage_type = f"EBS:VolumeUsage:{vt}"
+                                break
+                        if not usage_type:
+                            usage_type = "EBS:VolumeUsage"
+                elif "ecr" in desc_lower:
+                    product = "Amazon EC2 Container Registry"
+                    usage_type = "ECR"
+                elif "efs" in desc_lower:
+                    product = "Amazon Elastic File System"
+                    usage_type = "EFS"
+                elif "eks" in desc_lower:
+                    product = "Amazon Elastic Kubernetes Service"
+                    usage_type = "EKS"
+                elif "emr" in desc_lower:
+                    product = "Amazon Elastic MapReduce"
+                    usage_type = "EMR"
+                elif "elasticache" in desc_lower or "valkey" in desc_lower:
+                    product = "Amazon ElastiCache"
+                    usage_type = "ElastiCache"
+                elif "glue" in desc_lower:
+                    product = "AWS Glue"
+                    usage_type = "Glue"
+                elif "kms" in desc_lower:
+                    product = "AWS Key Management Service"
+                    usage_type = "KMS"
+                elif "lambda" in desc_lower:
+                    product = "AWS Lambda"
+                    if "compute" in desc_lower:
+                        usage_type = "Lambda-GB-Second"
+                    else:
+                        usage_type = "Lambda"
+                elif "nlb" in desc_lower:
+                    product = "Elastic Load Balancing"
+                    usage_type = "LoadBalancerUsage"
+                elif "neptune" in desc_lower:
+                    product = "Amazon Neptune"
+                    usage_type = "Neptune"
+                elif "quicksight" in desc_lower:
+                    product = "Amazon QuickSight"
+                    usage_type = "QuickSight"
+                elif "redshift" in desc_lower:
+                    product = "Amazon Redshift"
+                    usage_type = "Redshift"
+                elif "rekognition" in desc_lower:
+                    product = "Amazon Rekognition"
+                    usage_type = "Rekognition"
+                elif "route 53" in desc_lower or "route53" in desc_lower:
+                    product = "Amazon Route 53"
+                    usage_type = "Route53"
+                elif "s3" in desc_lower:
+                    product = "Amazon Simple Storage Service"
+                    usage_type = "S3"
+                elif "ses" in desc_lower or "simple email" in desc_lower:
+                    product = "Amazon Simple Email Service"
+                    usage_type = "SES"
+                elif "sqs" in desc_lower or "simple queue" in desc_lower:
+                    product = "Amazon Simple Queue Service"
+                    usage_type = "SQS"
+                elif "secrets manager" in desc_lower:
+                    product = "AWS Secrets Manager"
+                    usage_type = "SecretsManager"
+                elif "security hub" in desc_lower:
+                    product = "AWS Security Hub"
+                    usage_type = "SecurityHub"
+                elif "vpc" in desc_lower:
+                    product = "Amazon Elastic Compute Cloud"
+                    if "endpoint" in desc_lower:
+                        usage_type = "VPCEndpoint-Hours"
+                    elif "peering" in desc_lower:
+                        usage_type = "DataTransfer-Peering-Bytes"
+                    elif "transit gateway" in desc_lower:
+                        usage_type = "TransitGateway-Hours"
+                    elif "vpn" in desc_lower:
+                        usage_type = "VPN-Hours"
+                    elif "public ipv4" in desc_lower:
+                        usage_type = "IPAddress-Hours"
+                    else:
+                        usage_type = "VPC"
+                else:
+                    product = "Other"
+                    usage_type = "Other"
+                    
+                is_workload = True
+                if any(k in desc_lower for k in [
+                    "covered by compute savings plans",
+                    "covered by ec2 instance savings plans",
+                    "covered by reserved instances",
+                    "committed", "upfront", "no upfront fee",
+                    "recurring monthly fee", "edp discount",
+                    "enterprise discount program", "private pricing discount",
+                    "private rate", "solution provider", "bundled discount",
+                    "refund", "credit", "marketplace", "awsmp", "support",
+                    "aws support", "tax", "late fee", "ocb late fee"
+                ]) or any(k in product.lower() for k in ["marketplace", "awsmp", "support", "tax"]):
+                    is_workload = False
+                    
+                projection_note = None
+                if "reserved instance applied" in desc_lower:
+                    projection_note = 'AWS rate is RI-amortized; compare GCP CUD, not OD'
+                    
+                group_key = (product, usage_type, desc, region, pricing_model, line_item_type, is_workload, projection_note, pricing_unit)
+                if group_key not in aggregated:
+                    aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0}
+                aggregated[group_key]["total_usage"] += total_usage
+                aggregated[group_key]["row_cost"] += row_cost
+                
+            # Insert aggregated rows
+            for gk, val in aggregated.items():
+                prod, ut, op, aws_reg, pm, lit, is_wl, proj_note, p_unit = gk
+                key_str = f"{prod}{ut}{op}{aws_reg}{pm}{lit}{str(is_wl)}"
+                aws_li_key = hashlib.md5(key_str.encode('utf-8')).hexdigest()
+                
+                conn.execute("""
+                    INSERT INTO aws_li_catalog (
+                        aws_li_key, product, usage_type, operation, aws_region, gcp_region, 
+                        pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost,
+                        projection_note, pricing_unit
+                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+                """, (aws_li_key, prod, ut, op, aws_reg, pm, lit, is_wl, val["total_usage"], val["row_cost"], proj_note, p_unit))
+        else:
+            # CTE pre-computes all CASE expressions from raw columns so the outer
+            # GROUP BY only sees already-derived aliases — avoids DuckDB strict-mode
+            # "column must appear in GROUP BY" errors on unaggregated column refs.
+            sql = f"""
+                WITH _flat AS (
+                    SELECT
+                        COALESCE({c(['service'])}, '')          AS product,
+                        COALESCE({c(['custom_usage_type'])}, '') AS usage_type,
+                        COALESCE({c(['description'])}, '')       AS operation,
+                        COALESCE({c(['region'])}, '')             AS aws_region,
+                        CASE
+                            WHEN {c(['service'])} ILIKE '%Spot%' OR {c(['description'])} ILIKE '%Spot Instance%' THEN 'Spot'
+                            WHEN {c(['description'])} ILIKE '%reserved instance applied%' THEN 'Committed'
+                            ELSE 'OnDemand'
+                        END AS pricing_model,
+                        CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%'
+                             THEN 'DiscountedUsage' ELSE 'Usage' END AS line_item_type,
+                        CASE
+                            WHEN {c(['description'])} ILIKE '%covered by Compute Savings Plans%'
+                              OR {c(['description'])} ILIKE '%covered by EC2 Instance Savings Plans%'
+                              OR {c(['description'])} ILIKE '%covered by Reserved Instances%'
+                              OR {c(['description'])} ILIKE '%committed%upfront%'
+                              OR {c(['description'])} ILIKE '%No upfront fee%'
+                              OR {c(['description'])} ILIKE '%Recurring monthly fee%'
+                              OR {c(['description'])} ILIKE '%EDP Discount%'
+                              OR {c(['description'])} ILIKE '%Enterprise Discount Program%'
+                              OR {c(['service'])} ILIKE '%Enterprise Discount Program%'
+                              OR {c(['description'])} ILIKE '%Private Pricing Discount%'
+                              OR {c(['description'])} ILIKE '%Private Rate%'
+                              OR {c(['description'])} ILIKE '%Solution Provider%'
+                              OR {c(['description'])} ILIKE '%Bundled Discount%'
+                              OR {c(['description'])} ILIKE '%Refund%'
+                              OR {c(['description'])} ILIKE '%Credit%'
+                              OR {c(['service'])} ILIKE '%Marketplace%'
+                              OR {c(['service'])} ILIKE '%AWSMP%'
+                              OR {c(['service'])} ILIKE '%Support%'
+                              OR {c(['description'])} ILIKE '%Marketplace%'
+                              OR {c(['description'])} ILIKE '%AWS Support%' THEN FALSE
+                            ELSE TRUE
+                        END AS is_workload,
+                        CAST(REPLACE(COALESCE({c(['usage_quantity'])}, '0'), ',', '') AS DOUBLE) AS row_usage,
+                        CAST(REPLACE(COALESCE({cost_col}, '0'), ',', '')              AS DOUBLE) AS row_cost,
+                        CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%'
+                             THEN 'AWS rate is RI-amortized; compare GCP CUD, not OD' ELSE NULL END AS projection_note
+                    FROM aws_raw
+                    WHERE {c(['service'])} != 'Tax'
+                      AND {c(['service'])} NOT ILIKE '%Tax%'
+                      AND {c(['description'])} NOT ILIKE '%Tax%'
+                      AND COALESCE({c(['service'])}, '') != ''
+                      AND NOT regexp_matches(COALESCE({c(['description'])}, ''), '^Amazon [A-Za-z0-9 ]+\\([0-9]+ [A-Za-z]+\\)$')
+                )
+                INSERT INTO aws_li_catalog (aws_li_key, product, usage_type, operation, aws_region, gcp_region, pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost, projection_note)
                 SELECT
-                    COALESCE({c(['service'])}, '')          AS product,
-                    COALESCE({c(['custom_usage_type'])}, '') AS usage_type,
-                    COALESCE({c(['description'])}, '')       AS operation,
-                    COALESCE({c(['region'])}, '')             AS aws_region,
-                    CASE
-                        WHEN {c(['service'])} ILIKE '%Spot%' OR {c(['description'])} ILIKE '%Spot Instance%' THEN 'Spot'
-                        WHEN {c(['description'])} ILIKE '%reserved instance applied%' THEN 'Committed'
-                        ELSE 'OnDemand'
-                    END AS pricing_model,
-                    CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%'
-                         THEN 'DiscountedUsage' ELSE 'Usage' END AS line_item_type,
-                    CASE
-                        WHEN {c(['description'])} ILIKE '%covered by Compute Savings Plans%'
-                          OR {c(['description'])} ILIKE '%covered by EC2 Instance Savings Plans%'
-                          OR {c(['description'])} ILIKE '%covered by Reserved Instances%'
-                          OR {c(['description'])} ILIKE '%committed%upfront%'
-                          OR {c(['description'])} ILIKE '%No upfront fee%'
-                          OR {c(['description'])} ILIKE '%Recurring monthly fee%'
-                          OR {c(['description'])} ILIKE '%EDP Discount%'
-                          OR {c(['description'])} ILIKE '%Enterprise Discount Program%'
-                          OR {c(['service'])} ILIKE '%Enterprise Discount Program%'
-                          OR {c(['description'])} ILIKE '%Private Pricing Discount%'
-                          OR {c(['description'])} ILIKE '%Private Rate%'
-                          OR {c(['description'])} ILIKE '%Solution Provider%'
-                          OR {c(['description'])} ILIKE '%Bundled Discount%'
-                          OR {c(['description'])} ILIKE '%Refund%'
-                          OR {c(['description'])} ILIKE '%Credit%'
-                          OR {c(['service'])} ILIKE '%Marketplace%'
-                          OR {c(['service'])} ILIKE '%AWSMP%'
-                          OR {c(['service'])} ILIKE '%Support%'
-                          OR {c(['description'])} ILIKE '%Marketplace%'
-                          OR {c(['description'])} ILIKE '%AWS Support%' THEN FALSE
-                        ELSE TRUE
-                    END AS is_workload,
-                    CAST(REPLACE(COALESCE({c(['usage_quantity'])}, '0'), ',', '') AS DOUBLE) AS row_usage,
-                    CAST(REPLACE(COALESCE({cost_col}, '0'), ',', '')              AS DOUBLE) AS row_cost,
-                    CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%'
-                         THEN 'AWS rate is RI-amortized; compare GCP CUD, not OD' ELSE NULL END AS projection_note
-                FROM aws_raw
-                WHERE {c(['service'])} != 'Tax'
-                  AND {c(['service'])} NOT ILIKE '%Tax%'
-                  AND {c(['description'])} NOT ILIKE '%Tax%'
-                  AND COALESCE({c(['service'])}, '') != ''
-                  AND NOT regexp_matches(COALESCE({c(['description'])}, ''), '^Amazon [A-Za-z0-9 ]+\\([0-9]+ [A-Za-z]+\\)$')
-            )
-            INSERT INTO aws_li_catalog (aws_li_key, product, usage_type, operation, aws_region, gcp_region, pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost, projection_note)
-            SELECT
-                md5(product || usage_type || operation || aws_region ||
-                    CASE WHEN operation ILIKE '%reserved instance applied%' THEN 'Committed' ELSE 'OnDemand' END ||
-                    line_item_type ||
-                    CAST(is_workload AS VARCHAR)
-                ) AS aws_li_key,
-                product, usage_type, operation, aws_region,
-                NULL AS gcp_region,
-                pricing_model, line_item_type, is_workload,
-                SUM(row_usage)  AS total_usage,
-                SUM(row_cost)   AS aws_amortized_cost,
-                projection_note
-            FROM _flat
-            GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload, projection_note
-        """
-        
-    conn.execute(sql)
+                    md5(product || usage_type || operation || aws_region ||
+                        CASE WHEN operation ILIKE '%reserved instance applied%' THEN 'Committed' ELSE 'OnDemand' END ||
+                        line_item_type ||
+                        CAST(is_workload AS VARCHAR)
+                    ) AS aws_li_key,
+                    product, usage_type, operation, aws_region,
+                    NULL AS gcp_region,
+                    pricing_model, line_item_type, is_workload,
+                    SUM(row_usage)  AS total_usage,
+                    SUM(row_cost)   AS aws_amortized_cost,
+                    projection_note
+                FROM _flat
+                GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload, projection_note
+            """
+            conn.execute(sql)
     
     # 5. Map Regions
     catalog_rows = conn.execute("SELECT aws_li_key, aws_region FROM aws_li_catalog").fetchall()

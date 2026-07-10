@@ -18,6 +18,25 @@ import duckdb
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from egress_rates import EGRESS_SKUS
 
+
+class SKUMeta(str):
+    """str subclass returned by resolve_sku().
+    Existing callers that do `if sku:` or `entry["gcp_sku_id"] = sku` continue
+    to work unchanged. New callers access .unit and .resource_group.
+    """
+    def __new__(cls, sku_id, unit=None, resource_group=None):
+        obj = str.__new__(cls, sku_id or "")
+        obj.unit = unit
+        obj.resource_group = resource_group
+        return obj
+
+    def __bool__(self):
+        return bool(str.__str__(self))
+
+    @property
+    def sku_id(self):
+        return str.__str__(self) or None
+
 # ---------------------------------------------------------------------------
 # Lookup tables
 # ---------------------------------------------------------------------------
@@ -26,28 +45,81 @@ from egress_rates import EGRESS_SKUS
 # SKU names must use current GCS catalog vocabulary ("Standard Storage <region>").
 # The legacy name "Regional Storage" word-matched an Archive Storage SKU
 # ($0.0015/GB vs Standard's $0.023/GB — a 15x underprojection on bill3).
-S3_CLASS_MAP = {
-    "standard":              ("Cloud Storage",  "Standard Storage",          1.0),
-    "intelligent":           ("Cloud Storage",  "Standard Storage",          1.0),
-    "standardia":            ("Cloud Storage",  "Nearline Storage",          1.0),
-    "standard-ia":           ("Cloud Storage",  "Nearline Storage",          1.0),
-    "onezone-ia":            ("Cloud Storage",  "Nearline Storage",          1.0),
-    "archive instant":       ("Cloud Storage",  "Nearline Storage",          1.0),
-    "glacier deep archive":    ("Cloud Storage",  "Archive Storage",           1.0),
-    "glacierdeeparchive":      ("Cloud Storage",  "Archive Storage",           1.0),
-    "glacier instant":         ("Cloud Storage",  "Coldline Storage",          1.0),
-    "glacierinstant":          ("Cloud Storage",  "Coldline Storage",          1.0),
-    "glacier flexible":        ("Cloud Storage",  "Coldline Storage",          1.0),
-    "glacierflexible":         ("Cloud Storage",  "Coldline Storage",          1.0),
-    "reducedredundancy":     ("Cloud Storage",  "Standard Storage",          1.0),
-}
-S3_CLASS_DEFAULT = ("Cloud Storage", "Standard Storage", 1.0)
+# ---------------------------------------------------------------------------
+# S3 → GCS routing
+#
+# Two-pass approach:
+#   Pass 1: usage_type structural codes (authoritative, always present in CUR exports)
+#   Pass 2: blob fallback for PDF/summary bills where usage_type is empty/generic
+#   Pass 3 (in main): LLM for truly unknown rows
+#
+# Pass 1 — keyed on usage_type substrings (region prefix is stripped by lower()).
+# None  = no GCP equivalent, passthrough at AWS cost.
+# str   = GCS storage class name to map to.
+# Order matters: more specific patterns must precede shorter ones they overlap with.
+# ---------------------------------------------------------------------------
+_S3_USAGE_TYPE_ROUTING = [
+    # Intelligent-Tiering storage tiers (must precede bare tiered-storage catch-alls)
+    ("timedstorage-int-ia-bytehrs",       "Nearline Storage"),   # IT infrequent access
+    ("timedstorage-int-fa-bytehrs",       "Standard Storage"),   # IT frequent access
+    # Glacier variants
+    ("timedstorage-deeparchivebytehrs",   "Archive Storage"),    # Glacier Deep Archive
+    ("timedstorage-gda-bytehrs",          "Archive Storage"),    # GDA alias
+    ("timedstorage-glacierbytehrs",       "Coldline Storage"),   # Glacier Flexible
+    ("timedstorage-gir-bytehrs",          "Coldline Storage"),   # Glacier Instant Retrieval
+    # IA variants
+    ("timedstorage-sia-bytehrs",          "Nearline Storage"),   # Standard-IA
+    ("timedstorage-zia-bytehrs",          "Nearline Storage"),   # One Zone-IA
+    # Standard / RRS (catch-all last)
+    ("timedstorage-rrs-bytehrs",          "Standard Storage"),   # Reduced Redundancy
+    ("timedstorage-bytehrs",              "Standard Storage"),   # Standard
 
-# S3 fees with no GCS equivalent (Intelligent-Tiering per-object monitoring,
-# early-delete penalties). Priced as storage they project 2-3x high; carry the
-# AWS cost as an honest passthrough instead.
-S3_NO_EQUIVALENT_RE = re.compile(
-    r"per 1,?000 objects|monitoring and automation|early.?delete", re.IGNORECASE)
+    # Fees with no GCP pricing equivalent — passthrough at AWS cost
+    ("monitoring-automation-int",         None),   # IT per-object monitoring fee
+    ("int-tier1",                         None),   # IT request charges (unit incompatible)
+    ("int-tier2",                         None),   # IT request charges
+    ("int-ret",                           None),   # IT retrieval fee
+    ("earlydelete",                       None),   # Early delete penalty
+    ("obj-lambda",                        None),   # S3 Object Lambda (no GCP equivalent)
+]
+
+def _s3_route_usage_type(usage_type_lower: str):
+    """Return GCS class name, None (passthrough), or sentinel 'unknown'."""
+    for key, gcs_class in _S3_USAGE_TYPE_ROUTING:
+        if key in usage_type_lower:
+            return gcs_class  # str or None
+    return "unknown"
+
+# Pass 2 — blob fallback for PDF/summary bills where usage_type is unpopulated.
+# Keyed on human-readable substrings that appear in operation/product/description.
+_S3_BLOB_FALLBACK_MAP = {
+    "glacier deep archive": "Archive Storage",
+    "glacierdeeparchive":   "Archive Storage",
+    "glacier instant":      "Coldline Storage",
+    "glacierinstant":       "Coldline Storage",
+    "glacier flexible":     "Coldline Storage",
+    "glacierflexible":      "Coldline Storage",
+    "archive instant":      "Coldline Storage",
+    "standard-ia":          "Nearline Storage",
+    "standardia":           "Nearline Storage",
+    "onezone-ia":           "Nearline Storage",
+    "intelligent":          "Standard Storage",   # IT frequent access is the dominant tier
+    "standard":             "Standard Storage",
+    # No-equivalent patterns in blob context
+    "per 1,000 objects":    None,
+    "per 1000 objects":     None,
+    "monitoring and automation": None,
+    "monitoringautomation": None,
+    "early delete":         None,
+    "earlydelete":          None,
+}
+
+def _s3_route_blob(blob: str):
+    """Blob fallback: longest key first to avoid 'standard' matching 'standard-ia'."""
+    for key in sorted(_S3_BLOB_FALLBACK_MAP, key=len, reverse=True):
+        if key in blob:
+            return _S3_BLOB_FALLBACK_MAP[key]
+    return "unknown"
 
 # flat_hourly: usage_type/product/operation fragment → (GCP service, SKU description pattern, unit_multiplier)
 # SKU IDs are resolved at runtime from the bundled GCP catalog — no hardcoding.
@@ -156,20 +228,31 @@ def _load_services():
         return {s["displayName"]: s["serviceId"] for s in json.load(f)}
 
 
+def _sku_meta(sku):
+    """Extract (sku_id, unit, resource_group) from a catalog SKU dict."""
+    unit = None
+    pricing = sku.get("pricingInfo", [])
+    if pricing:
+        expr = pricing[0].get("pricingExpression", {})
+        unit = expr.get("usageUnit")
+    resource_group = sku.get("category", {}).get("resourceGroup")
+    return sku["skuId"], unit, resource_group
+
+
 def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region):
     """
     Search the bundled GCP catalog for the first SKU whose description matches
     desc_pattern (regex) and whose serviceRegions include gcp_region (or is GLOBAL).
-    Returns skuId string or None.
+    Returns (sku_id, unit, resource_group) tuple, or (None, None, None).
     """
     services = _load_services()
     service_id = services.get(gcp_service)
     if not service_id:
-        return None
+        return None, None, None
 
     sku_file = os.path.join(DATA_DIR, "skus", f"{service_id}.json.gz")
     if not os.path.exists(sku_file):
-        return None
+        return None, None, None
 
     with gzip.open(sku_file, "rt") as f:
         skus = json.load(f)
@@ -194,21 +277,35 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region):
                 return True
         return False
 
-    # Two-pass: prefer non-Preemptible SKUs. Preemptible variants carry
-    # "Preemptible" in their description and have no OnDemand rate — resolving
-    # to them silently produces NULL projected cost for non-Spot rows.
+    # Qualifiers that make a SKU a more-specific or differently-priced variant.
+    # When desc_pattern doesn't mention them, these variants must be excluded —
+    # "Nearline Storage" must not resolve to "Autoclass Nearline Storage" or
+    # "Nearline Storage Dual-region". The same rule applies to all GCP services.
+    _NOISE_QUALIFIERS = ["autoclass", "early delete", "dual-region", "multi-region"]
+
+    def _has_noise(sku_desc):
+        desc_lower = sku_desc.lower()
+        pattern_lower = desc_pattern.lower()
+        return any(q in desc_lower and q not in pattern_lower for q in _NOISE_QUALIFIERS)
+
     candidates = [sku for sku in skus
                   if re.search(desc_pattern, sku.get("description", ""), re.IGNORECASE)
                   and _region_match(sku)]
 
+    # Pass 1: non-Preemptible, non-noise (the ideal match)
+    for sku in candidates:
+        desc = sku.get("description", "").lower()
+        if "preemptible" not in desc and not _has_noise(sku.get("description", "")):
+            return _sku_meta(sku)
+    # Pass 2: non-Preemptible but allow noise (e.g. if only Autoclass SKU exists)
     for sku in candidates:
         if "preemptible" not in sku.get("description", "").lower():
-            return sku["skuId"]
-    # Fallback: accept a Preemptible SKU if nothing else matched
+            return _sku_meta(sku)
+    # Pass 3: accept Preemptible as last resort
     for sku in candidates:
-        return sku["skuId"]
+        return _sku_meta(sku)
 
-    return None
+    return None, None, None
 
 
 def _gcp_token():
@@ -298,23 +395,30 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region):
 
     key = f"{gcp_service}|{desc_pattern}|{gcp_region or ''}"
     if key in cache:
-        return cache[key]  # cache hit — no scan needed
+        v = cache[key]
+        if isinstance(v, dict):
+            return SKUMeta(v.get("sku_id"), v.get("unit"), v.get("resource_group"))
+        # backward compat: old flat-string entry (plain sku_id string or None)
+        return SKUMeta(v)
 
     # Not in cache: try bundled catalog
-    sku_id = lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region)
+    sku_id, unit, resource_group = lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region)
 
     if sku_id is None:
         # Genuinely missing — trigger live fetch for this new SKU only
         print(f"  SKU not in bundled catalog, trying live API: {gcp_service} / {desc_pattern!r}")
-        sku_id = _live_sku_fetch(gcp_service, desc_pattern, gcp_region)
+        raw = _live_sku_fetch(gcp_service, desc_pattern, gcp_region)
+        sku_id = raw
+        unit = None
+        resource_group = None
 
     if sku_id:
         print(f"  resolved SKU: {gcp_service} / {desc_pattern!r} → {sku_id}")
     else:
         print(f"  WARNING: no SKU found for {gcp_service} / {desc_pattern!r} in {gcp_region}")
 
-    # Append-only write — never overwrite existing entries
-    cache[key] = sku_id
+    # Append-only write — store enriched dict with unit/resource_group
+    cache[key] = {"sku_id": sku_id, "unit": unit, "resource_group": resource_group}
     try:
         os.makedirs(os.path.dirname(RESOLVED_SKUS_FILE), exist_ok=True)
         with open(RESOLVED_SKUS_FILE, "w") as f:
@@ -322,7 +426,7 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region):
     except Exception:
         pass
 
-    return sku_id
+    return SKUMeta(sku_id, unit, resource_group)
 
 
 def _match(usage_type, product, table, operation=None):
@@ -334,55 +438,103 @@ def _match(usage_type, product, table, operation=None):
 
 
 def map_object_storage(rows):
-    out = []
+    """Map S3 storage rows to GCS.
+
+    Three-pass routing (most reliable first):
+      Pass 1: usage_type structural codes — authoritative AWS billing keys
+      Pass 2: blob fallback — for PDF/summary bills with unpopulated usage_type
+      Pass 3: LLM — truly unknown usage_type; injected into misc by main()
+
+    Returns (mapped_rows, llm_rows). main() writes mapped_rows to the mappings
+    file and injects llm_rows into the manifest misc group for Phase 2 LLM.
+    """
+    mapped = []
+    llm_rows = []
+
     for r in rows:
-        # Detect the storage class from all available text — PDF/summary bills
-        # leave usage_type blank but name the class in the operation/description
-        # ("Glacier Deep Archive", "Standard-IA", ...). Without this the class
-        # always fell back to Standard.
-        blob = (f"{r.get('usage_type') or ''} {r.get('operation') or ''} "
-                f"{r.get('product') or ''}").lower()
-        if S3_NO_EQUIVALENT_RE.search(blob):
-            out.append({
-                "aws_li_key":       r["aws_li_key"],
-                "gcp_service":      "Cloud Storage",
-                "gcp_sku_name":     None,
-                "component":        "storage",
-                "strategy":         "passthrough",
-                "unit_multiplier":  1.0,
-                "gcp_region":       r.get("gcp_region"),
-                "projection_note":  ("S3 fee with no GCS equivalent (per-object "
-                                     "monitoring / early delete) — passthrough at cost parity"),
-                "mapping_confidence": 0.40,
-            })
-            continue
-        service, sku_name, mult = S3_CLASS_DEFAULT
-        # Longest key first so "standard-ia" / "glacier deep archive" win over
-        # the bare "standard" substring (which they contain).
-        for key in sorted(S3_CLASS_MAP, key=len, reverse=True):
-            if key in blob:
-                service, sku_name, mult = S3_CLASS_MAP[key]
-                break
         gcp_region = r.get("gcp_region")
-        # Resolve the SKU directly so apply_rates.py's word-overlap auto-resolver
-        # is not invoked — word overlap finds wrong tiers (e.g. "Archive Storage"
-        # for "Coldline Storage" because both contain "Storage").
-        sku_id = resolve_sku(service, sku_name, gcp_region)
-        entry = {
-            "aws_li_key":       r["aws_li_key"],
-            "gcp_service":      service,
-            "gcp_sku_name":     sku_name,
-            "component":        "storage",
-            "strategy":         "map",
-            "unit_multiplier":  mult,
-            "gcp_region":       gcp_region,
-            "projection_note":  f"S3 class lookup → {sku_name}",
-            "mapping_confidence": 0.95,
-        }
-        if sku_id:
-            entry["gcp_sku_id"] = sku_id
-        out.append(entry)
-    return out
+        usage_type_lower = (r.get("usage_type") or "").lower()
+
+        # ── Pass 1: structured usage_type code lookup ────────────────────────
+        result = _s3_route_usage_type(usage_type_lower)
+
+        if result != "unknown":
+            if result is None:
+                # Known fee type with no GCP equivalent
+                mapped.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud Storage",
+                    "gcp_sku_name":       None,
+                    "component":          "storage",
+                    "strategy":           "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    (f"S3 fee with no GCS equivalent "
+                                          f"(usage_type={r.get('usage_type')!r}) — "
+                                          f"passthrough at cost parity"),
+                    "mapping_confidence": 0.40,
+                })
+            else:
+                # Known storage class — resolve SKU directly to avoid word-overlap errors
+                sku_id = resolve_sku("Cloud Storage", result, gcp_region)
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud Storage",
+                    "gcp_sku_name":       result,
+                    "component":          "storage",
+                    "strategy":           "map",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    f"S3 usage_type routing → {result}",
+                    "mapping_confidence": 0.95,
+                }
+                if sku_id:
+                    entry["gcp_sku_id"] = sku_id
+                    entry["gcp_sku_unit"] = sku_id.unit
+                mapped.append(entry)
+            continue
+
+        # ── Pass 2: blob fallback for PDF/summary bills ──────────────────────
+        blob = (f"{usage_type_lower} {(r.get('operation') or '').lower()} "
+                f"{(r.get('product') or '').lower()}")
+        result_blob = _s3_route_blob(blob)
+
+        if result_blob != "unknown":
+            if result_blob is None:
+                mapped.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud Storage",
+                    "gcp_sku_name":       None,
+                    "component":          "storage",
+                    "strategy":           "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    "S3 fee with no GCS equivalent (blob match) — passthrough at cost parity",
+                    "mapping_confidence": 0.40,
+                })
+            else:
+                sku_id = resolve_sku("Cloud Storage", result_blob, gcp_region)
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud Storage",
+                    "gcp_sku_name":       result_blob,
+                    "component":          "storage",
+                    "strategy":           "map",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    f"S3 blob fallback → {result_blob}",
+                    "mapping_confidence": 0.75,
+                }
+                if sku_id:
+                    entry["gcp_sku_id"] = sku_id
+                    entry["gcp_sku_unit"] = sku_id.unit
+                mapped.append(entry)
+            continue
+
+        # ── Pass 3: truly unknown — send to LLM ─────────────────────────────
+        llm_rows.append(r)
+
+    return mapped, llm_rows
 
 
 def map_flat_hourly(rows):
@@ -413,6 +565,7 @@ def map_flat_hourly(rows):
         }
         if sku_id:
             entry["gcp_sku_id"] = sku_id
+            entry["gcp_sku_unit"] = sku_id.unit
         out.append(entry)
     return out
 
@@ -581,6 +734,7 @@ def map_block_storage(rows):
         }
         if sku_id:
             entry["gcp_sku_id"] = sku_id
+            entry["gcp_sku_unit"] = sku_id.unit
         out.append(entry)
     return out
 
@@ -608,6 +762,7 @@ def map_data_transfer(rows):
             }
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
             out.append(entry)
             continue
             
@@ -642,6 +797,7 @@ def map_data_transfer(rows):
             }
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
             out.append(entry)
             continue
 
@@ -659,6 +815,8 @@ def map_data_transfer(rows):
         if strategy == "map" and direction in EGRESS_SKUS:
             sku_id, sku_name, _rate = EGRESS_SKUS[direction]
             entry["gcp_sku_id"] = sku_id
+            # EGRESS_SKUS stores plain strings (synthetic IDs), no .unit attribute
+            entry["gcp_sku_unit"] = getattr(sku_id, "unit", None)
             entry["gcp_sku_name"] = sku_name
         else:
             entry["gcp_sku_name"] = None
@@ -908,6 +1066,7 @@ def map_redshift(rows):
             }
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
             out.append(entry)
             continue
 
@@ -927,6 +1086,7 @@ def map_redshift(rows):
             }
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
             out.append(entry)
             continue
 
@@ -954,6 +1114,7 @@ def map_redshift(rows):
             }
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
             out.append(entry)
         else:
             # Unrecognized Redshift row → passthrough with note
@@ -1058,6 +1219,7 @@ def map_athena(rows):
             }
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
             out.append(entry)
         else:
             # Other Athena charges (DDL, cancelled queries, DML metadata) → passthrough
@@ -1193,6 +1355,7 @@ def map_efs(rows):
         }
         if sku_id:
             entry["gcp_sku_id"] = sku_id
+            entry["gcp_sku_unit"] = sku_id.unit
         out.append(entry)
     return out
 
@@ -1266,6 +1429,7 @@ def map_fsx(rows):
         }
         if sku_id:
             entry["gcp_sku_id"] = sku_id
+            entry["gcp_sku_unit"] = sku_id.unit
         out.append(entry)
     return out
 
@@ -1296,6 +1460,7 @@ def map_xray(rows):
         }
         if sku_id:
             entry["gcp_sku_id"] = sku_id
+            entry["gcp_sku_unit"] = sku_id.unit
         out.append(entry)
     return out
 
@@ -1391,6 +1556,7 @@ def map_emr(rows):
             }
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
         else:
             entry = {
                 "aws_li_key":         r["aws_li_key"],
@@ -1462,13 +1628,64 @@ def main():
         "emr":            map_emr,
         "elasticache":    map_elasticache,
     }
+    all_llm_rows: list[dict] = []
+
     for group, handler in handlers.items():
-        mappings = handler(by_group[group])
+        try:
+            result = handler(by_group[group])
+        except Exception as e:
+            # A mapper failure must never stop report generation. Log it and emit
+            # an empty mapping file so downstream phases see the group as handled.
+            print(f"WARNING: {group} mapper raised {type(e).__name__}: {e} — skipping group, rows will be passthrough", file=sys.stderr)
+            result = []
+
+        # Handlers that have LLM fallback return (mapped, llm_rows).
+        # Legacy handlers return a plain list — treat as (result, []).
+        if isinstance(result, tuple):
+            mappings, llm_rows = result
+            all_llm_rows.extend(llm_rows)
+        else:
+            mappings = result
+
         path = os.path.join(out_dir, f"{group}_mappings.json")
         with open(path, "w") as f:
             json.dump(mappings, f, indent=2)
-        print(f"{group}: {len(mappings)} rows → {path}")
+        llm_note = f" (+{len(llm_rows)} → LLM)" if isinstance(result, tuple) and llm_rows else ""
+        print(f"{group}: {len(mappings)} rows → {path}{llm_note}")
+
+    # Inject unknown rows from static mappers into the manifest misc group so the
+    # Phase 2 LLM handles them with full context instead of them being silently lost.
+    if all_llm_rows:
+        manifest_path = os.path.join(os.path.dirname(db_path), "phase2_manifest.json")
+        if os.path.exists(manifest_path):
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            misc = manifest.setdefault("misc", {"row_count": 0, "rows": []})
+            for r in all_llm_rows:
+                misc["rows"].append({
+                    "aws_li_key":          r["aws_li_key"],
+                    "product":             r.get("product"),
+                    "usage_type":          r.get("usage_type"),
+                    "operation":           r.get("operation"),
+                    "gcp_region":          r.get("gcp_region"),
+                    "aws_amortized_cost":  r.get("aws_amortized_cost"),
+                    "mechanic_group":      r.get("mechanic_group"),
+                    "_injected_from_static": True,
+                })
+            misc["row_count"] = len(misc["rows"])
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, indent=2)
+            print(f"\nInjected {len(all_llm_rows)} unknown static-mapper row(s) into misc for LLM.")
+        else:
+            print(f"\nWARNING: {len(all_llm_rows)} unknown row(s) could not be injected "
+                  f"— phase2_manifest.json not found at {manifest_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        # Never exit 1 — a partial mapping is always better than no report.
+        print(f"FATAL in apply_static_mappings: {type(e).__name__}: {e}", file=sys.stderr)
+        import traceback; traceback.print_exc()
+        sys.exit(0)

@@ -323,9 +323,13 @@ def main():
     remap_elasticache_to_memorystore(conn)
     fix_managed_db_storage_rows(conn)
 
-    # Add rate_source column if not yet present (idempotent — safe to re-run)
+    # Add rate_source and gcp_sku_unit columns if not yet present (idempotent — safe to re-run)
     try:
         conn.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN rate_source VARCHAR")
+    except Exception:
+        pass  # column already exists
+    try:
+        conn.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN gcp_sku_unit VARCHAR")
     except Exception:
         pass  # column already exists
 
@@ -477,72 +481,66 @@ def main():
             """, (sku_id, gcp_service, desc, rf, rg, ut, region, unit, base_rate,
                   "catalog.duckdb", f"catalog.duckdb#{sku_id}"))
             
-    # CUD synthesis. Discount MULTIPLIERS come from data/cud_pct.json — the SINGLE
-    # source of truth shared with validate_fix.py, so both scripts apply identical
-    # CUD math and the 1yr/3yr columns never vary by which path last touched them.
-    # Only the per-service committable resource_group set lives here (that's rate-
-    # table structure, not a discount rate). rg_list=None → apply CUD to all
-    # OnDemand rows of the service (e.g. Memorystore node capacity).
-    #
-    # Service list must cover every service the validator's cud_coverage gate
-    # expects — apply_rates wipes the rate table each run, so an uncovered
-    # committable service silently falls back to OnDemand for 1yr/3yr and trips
-    # the gate.
-    cud_pct = load_cud_pct()
-    _CUD_GROUPS = [
-        ("Compute Engine", "('CPU','RAM','GPU')",
-         "https://cloud.google.com/compute/docs/instances/signing-up-committed-use-discounts"),
-        # rg_list=None: apply CUD to ALL Cloud SQL OnDemand SKUs rather than
-        # filtering by resource_group. CUR/PDF bills for RDS come in as
-        # instance-hour charges — the resource_group column is blank — so the
-        # old resource_group IN (...) clause never matched and Cloud SQL rows
-        # always showed OD=1yr=3yr (no discount applied at all).
-        ("Cloud SQL", None, "https://cloud.google.com/sql/cud"),
-        ("AlloyDB", None, "https://cloud.google.com/alloydb/pricing"),
-        ("Cloud Memorystore for Memcached", None,
-         "https://cloud.google.com/memorystore/docs/memcached/committed-use-discounts"),
-        ("Cloud Memorystore for Redis", None,
-         "https://cloud.google.com/memorystore/docs/redis/committed-use-discounts"),
-        ("Cloud Memorystore", None, "https://cloud.google.com/memorystore/pricing"),
-    ]
-    _default_pct = cud_pct.get("DEFAULT", (0.75, 0.60))
-    for svc, rg_list, url in _CUD_GROUPS:
-        r1, r3 = cud_pct.get(svc, _default_pct)
-        rg_clause = f"AND resource_group IN {rg_list}" if rg_list else ""
-        conn.execute(f"""
-            INSERT INTO gcp_sku_rates
-            SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
-                   resource_group, 'Commit1Yr', region, unit,
-                   rate_usd * {r1}, 'doc-percentage', '{url}'
-            FROM gcp_sku_rates
-            WHERE gcp_service = '{svc}' AND pricing_type = 'OnDemand'
-              {rg_clause}
-            ON CONFLICT DO NOTHING
-        """)
-        conn.execute(f"""
-            INSERT INTO gcp_sku_rates
-            SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
-                   resource_group, 'Commit3Yr', region, unit,
-                   rate_usd * {r3}, 'doc-percentage', '{url}'
-            FROM gcp_sku_rates
-            WHERE gcp_service = '{svc}' AND pricing_type = 'OnDemand'
-              {rg_clause}
-            ON CONFLICT DO NOTHING
-        """)
+    # Unit consistency check: warn when the unit_multiplier in the mapping assumes
+    # a different billing unit than the actual SKU in the rate catalog.
+    # E.g., a mapper sets unit_multiplier=vcpus thinking SKU is billed per-core-hour (h),
+    # but the actual SKU unit is GiBy.mo — the projected cost would be nonsense.
+    try:
+        unit_mismatches = conn.execute("""
+            SELECT m.aws_li_key, m.gcp_sku_name, m.gcp_sku_unit, r.unit,
+                   c.product, m.unit_multiplier
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog c USING (aws_li_key)
+            JOIN gcp_sku_rates r ON r.gcp_sku_id = m.gcp_sku_id
+                                AND r.pricing_type = 'OnDemand'
+                                AND r.region = m.gcp_region
+            WHERE m.gcp_sku_unit IS NOT NULL
+              AND m.gcp_sku_unit != r.unit
+            LIMIT 20
+        """).fetchall()
+        for li_key, sku_name, mapped_unit, rate_unit, product, mult in unit_mismatches:
+            print(f"  UNIT MISMATCH: {product} / {sku_name}: "
+                  f"mapper assumed '{mapped_unit}', SKU actually billed per '{rate_unit}' "
+                  f"(unit_multiplier={mult})")
+    except Exception as e:
+        print(f"  WARNING: unit consistency check failed: {e}")
 
-    # CUD fallback for Compute Engine SKUs whose resource_group is not in ('CPU','RAM','GPU').
-    # ARM/T2A and some specialized families have different resource_group values (e.g. blank,
-    # 'Compute') and miss the CUD synthesis above. Apply the multiplier-based fallback for any
-    # Compute Engine OnDemand SKU still lacking a Commit1Yr row — these show up as query E
-    # outliers (OD=1yr=3yr) and were being sent to the LLM unnecessarily.
+    # CUD synthesis. cud_pct.json is the SINGLE source of truth for which services
+    # have CUDs and at what multipliers. Adding a new CUD-eligible service requires
+    # only a new entry in data/cud_pct.json — no Python change here.
+    #
+    # Compute Engine is special: only CPU/RAM/GPU resource_groups are committable.
+    # The fallback block below catches ARM/T2A and other non-standard resource_groups
+    # that miss the primary filter. All other services apply CUD to all OnDemand rows.
+    cud_pct = load_cud_pct()
+    _default_pct = cud_pct.get("DEFAULT", (0.75, 0.60))
+
+    for svc, (r1, r3) in cud_pct.items():
+        if svc == "DEFAULT":
+            continue
+        rg_clause = "AND resource_group IN ('CPU','RAM','GPU')" if svc == "Compute Engine" else ""
+        for pricing_type, mult in [("Commit1Yr", r1), ("Commit3Yr", r3)]:
+            conn.execute(f"""
+                INSERT INTO gcp_sku_rates
+                SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
+                       resource_group, '{pricing_type}', region, unit,
+                       rate_usd * ?, 'doc-percentage', 'cud_pct.json'
+                FROM gcp_sku_rates
+                WHERE gcp_service = ? AND pricing_type = 'OnDemand'
+                  {rg_clause}
+                ON CONFLICT DO NOTHING
+            """, [mult, svc])
+
+    # Compute Engine CUD fallback: ARM/T2A and other non-standard resource_groups
+    # (blank, 'Compute', etc.) miss the CPU/RAM/GPU filter above. Apply the same
+    # multiplier to any CE OnDemand SKU still without a Commit1Yr/3yr entry.
     r1_ce, r3_ce = cud_pct.get("Compute Engine", _default_pct)
-    url_ce = "https://cloud.google.com/compute/docs/instances/signing-up-committed-use-discounts"
     for pricing_type, mult in [("Commit1Yr", r1_ce), ("Commit3Yr", r3_ce)]:
         conn.execute(f"""
             INSERT INTO gcp_sku_rates
             SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
                    resource_group, '{pricing_type}', region, unit,
-                   rate_usd * {mult}, 'doc-percentage-fallback', '{url_ce}'
+                   rate_usd * ?, 'doc-percentage-fallback', 'cud_pct.json'
             FROM gcp_sku_rates
             WHERE gcp_service = 'Compute Engine' AND pricing_type = 'OnDemand'
               AND NOT EXISTS (
@@ -552,7 +550,7 @@ def main():
                     AND r2.region = gcp_sku_rates.region
               )
             ON CONFLICT DO NOTHING
-        """)
+        """, [mult])
 
     # Preemptible rate synthesis for Compute Engine CPU/RAM SKUs.
     # GCP Preemptible (and Spot VM) price ≈ 22% of On-Demand in most regions.

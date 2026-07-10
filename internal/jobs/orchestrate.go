@@ -68,9 +68,9 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// mapping files. agy is spawned ONLY for the three LLM groups.
 			PreLLMScripts: []string{
 				"scripts/classify_mechanics.py $DB",
-				"scripts/apply_commitment_ignores.py $DB",
-				"scripts/apply_static_mappings.py $DB",
-				"scripts/family_mapper.py $DB",
+				"?scripts/apply_commitment_ignores.py $DB",
+				"?scripts/apply_static_mappings.py $DB",
+				"?scripts/family_mapper.py $DB",
 			},
 			// Post-merge deterministic passes (zero LLM tokens):
 			//   1. merge_mappings.py  — bulk-INSERT all group files into aws_li_to_gcp_li
@@ -115,6 +115,12 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"RULES:\n" +
 				"  • Never-passthrough: EC2/RDS/Aurora/ElastiCache/EBS/DataTransfer/ELB/S3 must be mapped.\n" +
 				"  • Total passthrough must stay under 5% of AWS cost.\n" +
+				"  • PASSTHROUGH = ONE ROW ONLY: if a service has no GCP equivalent, emit EXACTLY ONE\n" +
+				"    row with strategy='passthrough' and break_down=false. NEVER split a passthrough\n" +
+				"    into core+ram or any components — each component independently returns the full\n" +
+				"    AWS cost, so N components = N× cost multiplication. This is always a bug.\n" +
+				"  • break_down=true is ONLY valid when strategy='map' or 'break_down' with a real\n" +
+				"    gcp_sku_id. break_down=true combined with strategy='passthrough' is always wrong.\n" +
 				"  • DO NOT run merge_mappings.py — the orchestrator runs it after you finish.\n" +
 				"  • DO NOT query projection.duckdb with python3 -c or run_command. Read manifest only.\n" +
 				"  • STOP after writing the 3 _mappings.json files and mapping-notes.md. Nothing else.",
@@ -155,6 +161,9 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"RULES:\n" +
 				"  • DO NOT run any SQL or touch the database — apply_review_fixes.py handles all writes.\n" +
 				"  • DO NOT write mapping files or call any other scripts.\n" +
+				"  • unit_multiplier means QUANTITY CONVERSION ONLY (vCPU count, RAM GiB, etc.).\n" +
+				"    Never set it to aws_rate/gcp_rate to force cost parity — that is always wrong.\n" +
+				"    For storage rows unit_multiplier must be 1.0. If GCP costs more, that is correct.\n" +
 				"  • STOP after writing review_fixes.json. Nothing else.",
 			CheckName: "no_illegal_passthroughs",
 			// Only flag services with clear, direct GCP equivalents as illegal passthroughs.
@@ -177,7 +186,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 		{
 			Num: 4, Name: "Rate-Card Fill", Activity: "Fetching GCP rates",
 			PreScript: "scripts/ensure_catalog_coverage.py",
-			Script: "scripts/apply_rates.py",
+			Script: "?scripts/apply_rates.py",
 			// After rates load, run the deterministic autofixer (regional-SKU
 			// repair, CUD synthesis, per-N clamping, illegal-passthrough repair)
 			// BEFORE the gate evaluates. Previously this only ran read-only in
@@ -235,6 +244,16 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"   • If you cannot determine the fix: veto and document as rate gap.\n" +
 				"   ABSOLUTE RULE: strategy='passthrough' means GCP has no equivalent service.\n" +
 				"   Never use passthrough to resolve a missing rate or NULL projected cost.\n" +
+				"   CRITICAL — unit_multiplier rules:\n" +
+				"   • unit_multiplier means QUANTITY CONVERSION ONLY (e.g. vCPU count, RAM GiB).\n" +
+				"     It is NEVER a cost-adjustment knob. Do NOT set it to aws_rate/gcp_rate to\n" +
+				"     force cost parity — that is always wrong.\n" +
+				"   • For storage rows (block_storage, EBS, EFS, S3): unit_multiplier MUST be 1.0.\n" +
+				"     If GCP storage costs more than AWS, that is a legitimate price difference — veto.\n" +
+				"   • For compute rows: unit_multiplier = vCPU count or RAM GiB from the instance spec.\n" +
+				"     Never adjust it to match a target cost.\n" +
+				"   • If a ratio looks wrong but unit_multiplier is already 1.0 and the SKU is correct,\n" +
+				"     the answer is veto (rate gap), not override with a fractional multiplier.\n" +
 				"3. Write outlier_fixes.json — a JSON array, one object per row:\n" +
 				"   [{\"aws_li_key\": \"...\", \"decision\": \"confirm|override|veto\",\n" +
 				"     \"gcp_sku_id\": \"...\", \"gcp_sku_name\": \"...\",\n" +
@@ -753,17 +772,24 @@ def run_phase(ph):
     script = ph.get("script")
     if script:
         # Deterministic-only phase: run the single script in place of agy.
-        log("Running script: " + script)
+        # A leading '?' marks the script as soft — failure is logged but the
+        # pipeline continues so the report is always generated.
+        soft_script = script.startswith("?")
+        script_path = script[1:] if soft_script else script
+        log("Running script: " + ("(soft) " if soft_script else "") + script_path)
         try:
-            subprocess.run(["python3", os.path.join(SKILL_DIR, script)], cwd=JOB_DIR, check=True)
+            subprocess.run(["python3", os.path.join(SKILL_DIR, script_path)], cwd=JOB_DIR, check=True)
         except subprocess.CalledProcessError as e:
-            msg = ("script " + script + " exited with code " + str(e.returncode)
+            msg = ("script " + script_path + " exited with code " + str(e.returncode)
                    + " during Phase " + str(ph["num"]) + " (" + ph["name"] + "). Check agy.log for details.")
             log("ERROR: " + msg)
-            with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
-                _f.write(msg)
-            measure_metrics(phase_runs)
-            sys.exit(0)
+            if soft_script:
+                log("soft script failure — continuing to next phase")
+            else:
+                with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
+                    _f.write(msg)
+                measure_metrics(phase_runs)
+                sys.exit(0)
     else:
         # Spawn agy only for the LLM portion of this phase.
         run_agy(ph.get("prompt", ""), phase_label=ph.get("name", ""))

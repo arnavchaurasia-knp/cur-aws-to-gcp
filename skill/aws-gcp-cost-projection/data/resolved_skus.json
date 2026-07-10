@@ -305,7 +305,7 @@
   "Memorystore|Custom RAM M2 Singapore|asia-southeast1": null,
   "Memorystore|Custom Core M1 Singapore|asia-southeast1": null,
   "Memorystore|Custom RAM M1 Singapore|asia-southeast1": null,
-  "Cloud Storage|Nearline Storage|asia-south1": "01E8-D210-8C7B",
+  "Cloud Storage|Nearline Storage|asia-south1": "FD55-A8ED-B1A6",
   "BigQuery|Standard Edition Slot Hour|asia-south1": null,
   "BigQuery|Active Storage|asia-south1": null,
   "Filestore|Filestore Basic HDD Capacity|asia-south1": null,
@@ -320,5 +320,23 @@
   "Memorystore|Redis Capacity Basic M2 Mumbai|asia-south1": null,
   "Memorystore|Redis Capacity Basic M3 Mumbai|asia-south1": null,
   "Memorystore|Redis Capacity Basic M1 Mumbai|asia-south1": null,
-  "Compute Engine|Network Internet Egress|asia-south1": null
+  "Compute Engine|Network Internet Egress|asia-south1": null,
+  "Cloud Logging|Log Storage cost|asia-southeast1": "143F-A1B0-E0BE",
+  "Compute Engine|Extreme PD IOPS|asia-southeast1": "E97A-3CDB-37DD",
+  "Compute Engine|Network Internet Egress|asia-southeast1": null,
+  "Cloud Storage|Nearline Storage|asia-southeast1": "4453-FEE4-941B",
+  "Compute Engine|T2D AMD Instance Core|asia-south1": "7B25-FFC2-42EE",
+  "Memorystore|Redis Capacity Basic M1|asia-south1": null,
+  "Cloud Storage|Autoclass Management Fee|asia-southeast1": "CF60-426C-8557",
+  "Cloud Storage|Autoclass Management Fee|asia-south1": "CF60-426C-8557",
+  "Cloud Storage|Coldline Storage|asia-south1": "81E6-58F6-12C7",
+  "Cloud Storage|Coldline Storage|asia-southeast1": "8E89-0AC8-66C0",
+  "Cloud Storage|Storage Intelligence Standard Object Management Fee|asia-south1": "F67F-9FAF-E4FB",
+  "Cloud Storage|Storage Intelligence Standard Object Management Fee|asia-southeast1": "F67F-9FAF-E4FB",
+  "Compute Engine|T2A Arm Instance Core|us-central1": "7F42-2C35-6872",
+  "Memorystore|Redis Standard Node Capacity M5 Mumbai|asia-south1": {
+    "sku_id": null,
+    "unit": null,
+    "resource_group": null
+  }
 }

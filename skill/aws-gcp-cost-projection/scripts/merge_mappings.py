@@ -86,6 +86,7 @@ def ensure_table(con: duckdb.DuckDBPyConnection) -> None:
             gcp_service         TEXT,
             gcp_sku_id          TEXT,
             gcp_sku_name        TEXT,
+            gcp_sku_unit        TEXT,
             component           TEXT,
             strategy            TEXT,
             unit_multiplier     DOUBLE,
@@ -149,6 +150,55 @@ def main() -> None:
                 nulled += 1
         if nulled:
             print(f"  {nulled} phantom SKU ID(s) nulled — apply_rates.py will fall back to passthrough.")
+
+    # --- Deduplication pass 1: exact (aws_li_key, component) duplicates ---
+    # The LLM occasionally emits duplicate rows for the same (key, component).
+    # Keep the last occurrence (most specific) to avoid multiplying costs.
+    seen: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r.get("aws_li_key"), r.get("component"))
+        seen[key] = r
+    rows = list(seen.values())
+
+    # --- Deduplication pass 2: break_down + all-passthrough collapse ---
+    # When the LLM self-hosts a service (OpenSearch/MSK → GCE) but sets every
+    # break_down component to strategy='passthrough', each component independently
+    # returns aws_amortized_cost in the projection view → N× multiplication.
+    # Fix: if every row for a given aws_li_key has break_down=True and
+    # strategy='passthrough', collapse them all to a single non-break_down
+    # passthrough row (preserving gcp_service and the first projection_note).
+    from collections import defaultdict
+    by_key: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        by_key[r.get("aws_li_key")].append(r)
+
+    collapsed_rows: list[dict] = []
+    collapsed_count = 0
+    for li_key, group in by_key.items():
+        all_breakdown_passthrough = (
+            len(group) > 1
+            and all(r.get("break_down") and r.get("strategy") == "passthrough" for r in group)
+        )
+        if all_breakdown_passthrough:
+            representative = group[0].copy()
+            representative["break_down"] = False
+            representative["component"] = None
+            representative["unit_multiplier"] = 1.0
+            collapsed_rows.append(representative)
+            collapsed_count += 1
+            print(
+                f"  COLLAPSED {len(group)} break_down+passthrough rows → 1 passthrough: {li_key}",
+                file=sys.stderr,
+            )
+        else:
+            collapsed_rows.extend(group)
+
+    if collapsed_count:
+        print(
+            f"  {collapsed_count} aws_li_key(s) had all-passthrough break_down — collapsed to avoid N× cost multiplication.",
+            file=sys.stderr,
+        )
+    rows = collapsed_rows
 
     # Build tuples in column order
     records = []

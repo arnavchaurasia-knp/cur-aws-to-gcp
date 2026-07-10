@@ -74,6 +74,12 @@ def main():
                     hard.append(("R3 non-storage->GCS (inflated)", product, svc, aws, gcp, li_key))
                 else:
                     warn.append(("R3 non-storage->GCS", product, svc, aws, gcp, li_key))
+        # R5 under-projection: GCP is suspiciously cheap — could be wrong SKU,
+        # missing components, or unit mismatch. Flag for human review.
+        # Do NOT clamp — GCP may genuinely be cheaper. Warn only.
+        # Threshold: GCP < 10% of AWS on rows > $50 AWS spend.
+        if aws > 50 and 0 < gcp < 0.10 * aws:
+            warn.append(("R5 under-projection<10%", product, svc, aws, gcp, li_key))
 
     bill_over = tot_aws > 0 and tot_gcp > 2 * tot_aws
     ratio = tot_gcp / tot_aws if tot_aws else 0.0

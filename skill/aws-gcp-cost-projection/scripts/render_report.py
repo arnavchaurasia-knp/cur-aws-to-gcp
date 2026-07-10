@@ -221,6 +221,23 @@ def main():
     gcp_1yr  = conn.execute("SELECT COALESCE(SUM(gcp_cost_1yr_cud),0)  FROM gcp_projection WHERE is_workload").fetchone()[0]
     gcp_3yr  = conn.execute("SELECT COALESCE(SUM(gcp_cost_3yr_cud),0)  FROM gcp_projection WHERE is_workload").fetchone()[0]
 
+    # Mapped AWS cost = workload rows that received a real GCP projected cost
+    # (strategy map or break_down). Passthrough rows carry AWS cost 1:1 and
+    # inflate the baseline if included — comparing GCP vs mapped-only is apples-to-apples.
+    # EXISTS subquery ensures each aws_li_key is counted once even for break_down rows
+    # that join multiple components. SUM(DISTINCT ...) is wrong here — it deduplicates
+    # by value, not by key, which mis-sums rows with coincident costs.
+    aws_mapped_cost = conn.execute("""
+        SELECT COALESCE(SUM(c.aws_amortized_cost), 0)
+        FROM aws_li_catalog c
+        WHERE c.is_workload
+          AND EXISTS (
+            SELECT 1 FROM aws_li_to_gcp_li m
+            WHERE m.aws_li_key = c.aws_li_key
+              AND m.strategy IN ('map', 'break_down')
+          )
+    """).fetchone()[0]
+
     gcp_nw_od  = conn.execute("SELECT COALESCE(SUM(gcp_projected_cost),0) FROM gcp_projection WHERE NOT is_workload").fetchone()[0]
     gcp_nw_1yr = conn.execute("SELECT COALESCE(SUM(gcp_cost_1yr_cud),0)  FROM gcp_projection WHERE NOT is_workload").fetchone()[0]
     gcp_nw_3yr = conn.execute("SELECT COALESCE(SUM(gcp_cost_3yr_cud),0)  FROM gcp_projection WHERE NOT is_workload").fetchone()[0]
@@ -350,14 +367,24 @@ def main():
             COALESCE(SUM(p.gcp_cost_1yr_cud),   c.aws_amortized_cost)         AS gcp_1yr,
             COALESCE(SUM(p.gcp_cost_3yr_cud),   c.aws_amortized_cost)         AS gcp_3yr,
             c.aws_region,
-            c.is_workload
+            c.is_workload,
+            c.pricing_model
         FROM aws_li_catalog c
         LEFT JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
         LEFT JOIN gcp_projection    p ON c.aws_li_key = p.aws_li_key
                                       AND p.component IS NOT DISTINCT FROM m.component
-        GROUP BY c.aws_li_key, c.product, c.operation, c.aws_amortized_cost, c.aws_region, c.is_workload
+        GROUP BY c.aws_li_key, c.product, c.operation, c.aws_amortized_cost, c.aws_region, c.is_workload, c.pricing_model
         ORDER BY c.aws_amortized_cost DESC
     """).fetchall()
+
+    # ── passthrough spend for KPI card ───────────────────────────────────────
+    passthrough_spend = conn.execute("""
+        SELECT COALESCE(SUM(c.aws_amortized_cost), 0)
+        FROM aws_li_catalog c
+        JOIN aws_li_to_gcp_li m USING (aws_li_key)
+        WHERE m.strategy = 'passthrough' AND c.is_workload
+    """).fetchone()[0]
+    passthrough_pct = (passthrough_spend / aws_infra_baseline * 100) if aws_infra_baseline else 0
 
     # ── rate provenance coverage (P0-C) ──────────────────────────────────────
     rate_source_rows = []
@@ -375,13 +402,29 @@ def main():
     except Exception:
         pass  # rate_source column not yet present (old job)
 
+    word_overlap_by_service = []
+    try:
+        word_overlap_by_service = conn.execute("""
+            SELECT m.gcp_service,
+                   COUNT(*)                        AS rows,
+                   COALESCE(SUM(c.aws_amortized_cost), 0) AS spend
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog c USING (aws_li_key)
+            WHERE m.rate_source = 'word_overlap'
+            GROUP BY m.gcp_service
+            ORDER BY spend DESC
+            LIMIT 10
+        """).fetchall()
+    except Exception:
+        pass
+
     # ── wins/losses (top 5 each, workload only, mapped rows) ─────────────────
     wl_rows = conn.execute("""
         WITH agg AS (
             SELECT c.product,
                    ANY_VALUE(m.gcp_service) AS gcp_service,
                    c.aws_amortized_cost     AS aws,
-                   SUM(p.gcp_projected_cost) AS gcp
+                   SUM(p.gcp_cost_1yr_cud) AS gcp
             FROM aws_li_catalog c
             JOIN aws_li_to_gcp_li m USING (aws_li_key)
             JOIN gcp_projection    p ON p.aws_li_key = c.aws_li_key
@@ -397,6 +440,30 @@ def main():
 
     gcp_wins  = [r for r in wl_rows if r[4] > 0][:6]
     gcp_loses = [r for r in reversed(wl_rows) if r[4] < 0][:6]
+
+    # ── under-projection suspects (R5) ────────────────────────────────────────
+    # Rows where GCP < 10% of AWS on material spend (aws > $50), strategy='map'.
+    # These may reflect wrong SKU, missing components, or unit mismatch.
+    # We do NOT clamp — GCP may genuinely be cheaper — but we flag them for review.
+    under_proj_rows = conn.execute("""
+        SELECT c.product,
+               ANY_VALUE(m.gcp_service)      AS gcp_service,
+               ANY_VALUE(m.gcp_sku_name)     AS gcp_sku,
+               c.aws_amortized_cost          AS aws,
+               SUM(p.gcp_projected_cost)     AS gcp,
+               STRING_AGG(DISTINCT m.projection_note, ' | ') AS notes
+        FROM aws_li_catalog c
+        JOIN aws_li_to_gcp_li m USING (aws_li_key)
+        JOIN gcp_projection    p ON p.aws_li_key = c.aws_li_key
+                                AND p.component IS NOT DISTINCT FROM m.component
+        WHERE c.aws_amortized_cost > 50
+          AND m.strategy IN ('map', 'break_down')
+        GROUP BY c.aws_li_key, c.product, c.aws_amortized_cost
+        HAVING SUM(p.gcp_projected_cost) > 0
+           AND SUM(p.gcp_projected_cost) < 0.10 * c.aws_amortized_cost
+        ORDER BY c.aws_amortized_cost DESC
+        LIMIT 20
+    """).fetchall()
 
     # ── build HTML ────────────────────────────────────────────────────────────
     def diff_td(aws, gcp):
@@ -451,7 +518,7 @@ def main():
             )
         return (
             f"<table><tr><th>AWS Service</th><th>GCP Service</th>"
-            f"<th class='num'>AWS Cost</th><th class='num'>GCP OD</th>"
+            f"<th class='num'>AWS Cost</th><th class='num'>GCP 1yr CUD</th>"
             f"<th class='num'>{header_label}</th></tr>"
             f"{rows_html}</table>"
         )
@@ -483,7 +550,7 @@ def main():
     detail_rows_html = ""
     idx = 1
     for r in rows:
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, is_wl = r
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, is_wl, pricing_model = r
         ptype  = pill_type(gcp_svc, product)
         p_html = pill_html(ptype)
 
@@ -491,6 +558,12 @@ def main():
         od   = od   or 0.0
         cud1 = cud1 or 0.0
         cud3 = cud3 or 0.0
+
+        is_spot = (pricing_model or "").lower() == "spot"
+        cud1_str = '—' if is_spot else fmt(cud1)
+        cud3_str = '—' if is_spot else fmt(cud3)
+        cud1_td_extra = ' title="Spot/Preemptible — CUDs not applicable on GCP"' if is_spot else ''
+        cud3_td_extra = ' title="Spot/Preemptible — CUDs not applicable on GCP"' if is_spot else ''
 
         strategy_badge = ""
         if strategy == "passthrough":
@@ -534,8 +607,8 @@ def main():
             f"<td>{desc_html}</td>"
             f'<td class="num">{fmt(aws)}</td>'
             f'<td class="num">{fmt(od)}</td>'
-            f'<td class="num">{fmt(cud1)}</td>'
-            f'<td class="num">{fmt(cud3)}</td>'
+            f'<td class="num"{cud1_td_extra}>{cud1_str}</td>'
+            f'<td class="num"{cud3_td_extra}>{cud3_str}</td>'
             f"{diff_td}"
             f"</tr>\n"
         )
@@ -568,16 +641,16 @@ def main():
                 f'</div>')
 
     mkt_note = f"incl. {fmt(aws_marketplace)} Marketplace passthrough" if aws_marketplace > 0 else ""
-    # GCP cards show workload-only costs vs aws_infra_baseline (excl. marketplace).
-    # Marketplace passes through 1:1 so including it in both sides would cancel out
-    # anyway, but excluding it keeps the headline % meaningful: it reflects only the
-    # infrastructure we actually map and price.
+    # GCP cards compare against mapped AWS cost (rows with real GCP projected costs only).
+    # Passthrough rows carry AWS cost 1:1 and would inflate the baseline, making
+    # GCP look artificially cheaper — comparing against mapped-only is apples-to-apples.
+    infra_sub = f"{_pct_infra(gcp_od)} · Passthrough: {fmt(passthrough_spend)} ({passthrough_pct:.1f}%)"
     cards_html = (
-        card("AWS Total (Bill)", fmt(aws_grand), mkt_note, accent=True) +
-        card("GCP On-Demand", fmt(gcp_od), _pct(aws_infra_baseline, gcp_od)) +
-        card("GCP 1-Year CUD", fmt(gcp_1yr), _pct(aws_infra_baseline, gcp_1yr)) +
-        card("GCP 3-Year CUD", fmt(gcp_3yr), _pct(aws_infra_baseline, gcp_3yr)) +
-        card("Mapped Workload (AWS)", fmt(aws_infra_baseline), "excl. Marketplace") +
+        card("AWS Total (Bill)", fmt(aws_grand), infra_sub, accent=True) +
+        card("AWS Mapped Cost", fmt(aws_mapped_cost), "AWS spend with GCP rates applied (excl. passthrough)") +
+        card("GCP On-Demand", fmt(gcp_od), _pct(aws_mapped_cost, gcp_od)) +
+        card("GCP 1-Year CUD", fmt(gcp_1yr), _pct(aws_mapped_cost, gcp_1yr)) +
+        card("GCP 3-Year CUD", fmt(gcp_3yr), _pct(aws_mapped_cost, gcp_3yr)) +
         card("Mapping Confidence", f"{avg_conf*100:.1f}%", "excl. passthrough rows")
     )
 
@@ -622,6 +695,21 @@ def main():
                 f"<td class='num'><b>${spend:,.2f}</b> ({spend_pct:.1f}%)</td>"
                 f"</tr>"
             )
+        if word_overlap_by_service:
+            wo_rows = ""
+            for svc, cnt, spend in word_overlap_by_service:
+                wo_rows += f"<tr><td>{_html.escape(str(svc or ''))}</td><td class='num'>{cnt}</td><td class='num'>{fmt(spend)}</td></tr>"
+            word_overlap_detail_html = f"""
+<details style="margin-top:8px">
+  <summary style="cursor:pointer;font-size:12px;color:#E37400">⚠ Word-overlap resolved rows by service (review for SKU accuracy)</summary>
+  <table style="margin-top:8px;font-size:12px">
+    <tr><th>GCP Service</th><th class="num">Rows</th><th class="num">AWS Spend</th></tr>
+    {wo_rows}
+  </table>
+</details>"""
+        else:
+            word_overlap_detail_html = ""
+
         coverage_section_html = f"""
 <h2>Rate Provenance Coverage</h2>
 <p class="section-meta">How each row's GCP rate was obtained. Word-Overlap rows are lowest trust — inflate when description match is loose.</p>
@@ -629,10 +717,45 @@ def main():
   <tr><th>Source</th><th>Description</th><th class="num">Rows</th><th class="num">AWS Spend</th></tr>
   {cov_rows_html}
 </table>
+{word_overlap_detail_html}
 """
 
     wins_html  = wins_table(gcp_wins,  "GCP Savings", "#0D9D58")
     loses_html = wins_table(gcp_loses, "Extra Cost on GCP", "#D93025")
+
+    # Under-projection warning block
+    if under_proj_rows:
+        up_rows_html = ""
+        for product, gcp_service, gcp_sku, aws, gcp, notes in under_proj_rows:
+            ratio = gcp / aws if aws else 0
+            note_text = (notes or "")[:120]
+            up_rows_html += (
+                f"<tr>"
+                f"<td>{_html.escape(str(product or ''))}</td>"
+                f"<td style='color:#5F6368;font-size:12px'>{_html.escape(str(gcp_service or ''))}</td>"
+                f"<td class='num'>{fmt(aws)}</td>"
+                f"<td class='num'>{fmt(gcp)}</td>"
+                f"<td class='num' style='color:#E37400;font-weight:600'>{ratio:.1%}</td>"
+                f"<td style='color:#5F6368;font-size:11px'>{_html.escape(note_text)}</td>"
+                f"</tr>"
+            )
+        under_proj_html = f"""
+<div style="background:#FEF7E0;border-left:4px solid #E37400;border-radius:4px;padding:16px 20px;margin:16px 0">
+  <b style="color:#E37400">&#9888; Potential Understatement — GCP &lt;10% of AWS on {len(under_proj_rows)} row(s)</b>
+  <p style="margin:6px 0 12px;font-size:13px;color:#444">
+    These rows project very low GCP cost relative to AWS spend. This may indicate a wrong SKU, missing
+    components, or a unit mismatch — not necessarily genuine GCP savings. Review before presenting.
+  </p>
+  <div style="overflow-x:auto">
+  <table style="font-size:12px">
+    <tr><th>AWS Product</th><th>GCP Service</th><th class="num">AWS Cost</th>
+        <th class="num">GCP OD</th><th class="num">Ratio</th><th>Notes</th></tr>
+  {up_rows_html}
+  </table>
+  </div>
+</div>"""
+    else:
+        under_proj_html = ""
 
     vcpu_color = "#0D9D58" if vcpu_ok else "#E37400"
     ram_color  = "#0D9D58" if ram_ok  else "#E37400"
@@ -646,6 +769,8 @@ def main():
         f"<td class='num'>{aws_ram:,.1f}</td><td class='num'>{gcp_ram:,.1f}</td>"
         f"<td class='num' style='color:{ram_color}'>{ram_badge}</td></tr>"
     )
+    if aws_vcpu == 0 and gcp_vcpu == 0:
+        capacity_rows = "<tr><td colspan='4' style='color:#80868B;font-size:12px;text-align:center'>Instance specs not available in this CUR export — capacity reconciliation requires BoxUsage line items with instance type.</td></tr>"
 
     page = f"""<!doctype html>
 <html lang="en">
@@ -684,9 +809,9 @@ def main():
   <tr>
     <td><b>Core Infrastructure (Workload)</b></td>
     <td class="num">{fmt(aws_workload)}</td>
-    <td class="num">{fmt(gcp_od)} {pct_badge(aws_workload, gcp_od)}</td>
-    <td class="num">{fmt(gcp_1yr)} {pct_badge(aws_workload, gcp_1yr)}</td>
-    <td class="num">{fmt(gcp_3yr)} {pct_badge(aws_workload, gcp_3yr)}</td>
+    <td class="num">{fmt(gcp_od)}</td>
+    <td class="num">{fmt(gcp_1yr)}</td>
+    <td class="num">{fmt(gcp_3yr)}</td>
   </tr>
   <tr>
     <td><b>Non-Workload (Marketplace &amp; Support)</b>
@@ -700,30 +825,39 @@ def main():
   <tr class="total-row">
     <td>Grand Total (Bill)</td>
     <td class="num">{fmt(aws_grand)}</td>
-    <td class="num">{fmt(gcp_grand_od)} {pct_badge(aws_grand, gcp_grand_od)}</td>
-    <td class="num">{fmt(gcp_grand_1yr)} {pct_badge(aws_grand, gcp_grand_1yr)}</td>
-    <td class="num">{fmt(gcp_grand_3yr)} {pct_badge(aws_grand, gcp_grand_3yr)}</td>
+    <td class="num">{fmt(gcp_grand_od)}</td>
+    <td class="num">{fmt(gcp_grand_1yr)}</td>
+    <td class="num">{fmt(gcp_grand_3yr)}</td>
   </tr>
   <tr style="background:#e8f5e9">
     <td><b>Infrastructure Baseline</b> <span style="font-size:11px;color:#5F6368">(excl. {fmt(aws_marketplace)} Marketplace)</span></td>
     <td class="num" style="font-weight:600">{fmt(aws_infra_baseline)}</td>
-    <td class="num" style="font-weight:600">{fmt(gcp_od)} {pct_badge(aws_infra_baseline, gcp_od)}</td>
-    <td class="num" style="font-weight:600">{fmt(gcp_1yr)} {pct_badge(aws_infra_baseline, gcp_1yr)}</td>
-    <td class="num" style="font-weight:600">{fmt(gcp_3yr)} {pct_badge(aws_infra_baseline, gcp_3yr)}</td>
+    <td class="num" style="font-weight:600">{fmt(gcp_od)}</td>
+    <td class="num" style="font-weight:600">{fmt(gcp_1yr)}</td>
+    <td class="num" style="font-weight:600">{fmt(gcp_3yr)}</td>
+  </tr>
+  <tr style="background:#e3f2fd">
+    <td><b>Mapped AWS Cost</b>
+      <div class="desc">AWS spend on rows with a real GCP projected cost (excl. passthrough). GCP % is calculated against this — apples-to-apples comparison.</div>
+    </td>
+    <td class="num" style="font-weight:600">{fmt(aws_mapped_cost)}</td>
+    <td class="num" style="font-weight:600">{fmt(gcp_od)} {pct_badge(aws_mapped_cost, gcp_od)}</td>
+    <td class="num" style="font-weight:600">{fmt(gcp_1yr)} {pct_badge(aws_mapped_cost, gcp_1yr)}</td>
+    <td class="num" style="font-weight:600">{fmt(gcp_3yr)} {pct_badge(aws_mapped_cost, gcp_3yr)}</td>
   </tr>
 </table>
 <div id="aws-total-spend" hidden>{aws_grand:.2f}</div>
 <div id="aws-infra-baseline" hidden>{aws_infra_baseline:.2f}</div>
-<p class="legend">&#9888; Windows / commercial software license premiums excluded unless explicitly modeled in the source bill. Infrastructure Baseline strips Marketplace passthrough to show the true IaaS/PaaS cost comparison.</p>
+<p class="legend">&#9888; Windows / commercial software license premiums excluded unless explicitly modeled in the source bill. GCP % change is calculated against <b>Mapped AWS Cost</b> (rows with actual GCP pricing applied) — not the full bill total. This gives an apples-to-apples comparison since passthrough rows carry AWS cost unchanged on both sides.</p>
 
 {coverage_section_html}
 <h2>Where GCP Wins &amp; Loses</h2>
-<p class="section-meta">Top services where GCP is cheaper / more expensive than current AWS spend (On-Demand, workload rows only).</p>
+<p class="section-meta">Top services where GCP is cheaper / more expensive than current AWS spend (1-Year CUD vs AWS amortized, workload rows only).</p>
 <h3 style="color:#0D9D58">&#9660; GCP Savings Opportunities</h3>
 {wins_html}
 <h3 style="color:#D93025">&#9650; GCP Cost Increases</h3>
 {loses_html}
-
+{under_proj_html}
 <h2>Capacity Reconciliation</h2>
 <p class="section-meta">GCP recommended capacity vs AWS baseline. WARN means the GCP mapping is below the AWS spec by more than 0.5%.</p>
 <table style="width:auto;min-width:480px">

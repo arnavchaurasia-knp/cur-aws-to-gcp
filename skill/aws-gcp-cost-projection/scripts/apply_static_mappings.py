@@ -26,20 +26,20 @@ def _safe_path(base: str, *parts: str) -> str:
         raise ValueError(f"Path escapes base directory: {p}")
     return p
 
-GCS_NEARLINE = GCS_NEARLINE
-GCS_STANDARD = GCS_STANDARD
-GCS_ARCHIVE = GCS_ARCHIVE
-GCS_COLDLINE = GCS_COLDLINE
-GCP_COMPUTE_ENGINE = GCP_COMPUTE_ENGINE
-PUBSUB_MESSAGE_DELIVERY = PUBSUB_MESSAGE_DELIVERY
-GCP_PUBSUB = GCP_PUBSUB
-GCP_BALANCED_PD = GCP_BALANCED_PD
-GCP_STANDARD_PD = GCP_STANDARD_PD
-GCP_CLOUD_STORAGE = GCP_CLOUD_STORAGE
-GCP_CLOUD_SQL = GCP_CLOUD_SQL
-GCP_MEMORYSTORE = GCP_MEMORYSTORE
-GCP_FILESTORE_HDD = GCP_FILESTORE_HDD
-GCP_DATAPROC = GCP_DATAPROC
+GCS_NEARLINE            = "Nearline Storage"
+GCS_STANDARD            = "Standard Storage"
+GCS_ARCHIVE             = "Archive Storage"
+GCS_COLDLINE            = "Coldline Storage"
+GCP_COMPUTE_ENGINE      = "Compute Engine"
+PUBSUB_MESSAGE_DELIVERY = "Pub/Sub Message Delivery"
+GCP_PUBSUB              = "Pub/Sub"
+GCP_BALANCED_PD         = "Balanced PD Capacity"
+GCP_STANDARD_PD         = "Standard Persistent Disk Capacity"
+GCP_CLOUD_STORAGE       = "Cloud Storage"
+GCP_CLOUD_SQL           = "Cloud SQL"
+GCP_MEMORYSTORE         = "Cloud Memorystore for Redis"
+GCP_FILESTORE_HDD       = "Filestore Basic HDD Capacity"
+GCP_DATAPROC            = "Dataproc"
 
 
 

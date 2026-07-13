@@ -123,6 +123,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"    gcp_sku_id. break_down=true combined with strategy='passthrough' is always wrong.\n" +
 				"  • DO NOT run merge_mappings.py — the orchestrator runs it after you finish.\n" +
 				"  • DO NOT query projection.duckdb with python3 -c or run_command. Read manifest only.\n" +
+				"  • DO NOT use search_web or any web browsing tool — all SKU lookups must use scripts/find-sku.sh only.\n" +
 				"  • STOP after writing the 3 _mappings.json files and mapping-notes.md. Nothing else.",
 			CheckName: "mapping_coverage",
 			CheckSQL: "SELECT count(*) FROM aws_li_catalog c WHERE NOT EXISTS " +
@@ -268,6 +269,8 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"   veto     → leave unchanged, reason goes to rate-gaps section of mapping-notes.md\n\n" +
 				"RULES:\n" +
 				"  • DO NOT run any SQL or touch the database — apply_outlier_fixes.py handles all writes.\n" +
+				"  • DO NOT use search_web or any web browsing tool — all context is in triage_suggestions.md.\n" +
+				"  • DO NOT read run_all.py, outlier_gate.py, detect_outliers.py, or any script file — your ONLY input is triage_suggestions.md.\n" +
 				"  • DO NOT write to mapping-notes.md — vetoed rows are logged by apply_outlier_fixes.py.\n" +
 				"  • STOP after writing outlier_fixes.json. Nothing else.",
 			CheckName: "over_and_under_projection",
@@ -783,6 +786,115 @@ phase_runs = []
 # their passthrough / best-effort values). See the driver loop below.
 CRITICAL_PHASES = {1, 2}
 
+
+def _build_targeted_retry_prompt(ph, v):
+    """
+    Build a minimal focused retry prompt for gate failures.
+    For Phase 5 (over_and_under_projection gate), query the DB for the specific
+    violating rows and send only those — not the full triage_suggestions.md.
+    Falls back to the original full-prompt approach for other phases.
+    """
+    if ph.get("check_name") != "over_and_under_projection":
+        return (ph.get("prompt", "") + " IMPORTANT: a deterministic validation gate ('"
+                + ph.get("check_name","") + "') still reports " + str(v)
+                + " violation(s). Find and fix exactly those rows in projection-audit/projection.duckdb."
+                + " DO NOT DELETE, DROP, OR OVERWRITE any existing data or tables."
+                + " Only address the missing/violating rows; do not stop until the gate passes.")
+    try:
+        import duckdb as _ddb
+        _conn = _ddb.connect(DB, read_only=True)
+        _over = _conn.execute("""
+            SELECT m.aws_li_key, m.product, m.gcp_service, m.gcp_sku_name,
+                   m.unit_multiplier, m.component, m.projection_note,
+                   round(p.aws_amortized_cost,2) AS aws_cost,
+                   round(p.gcp_projected_cost,2) AS gcp_cost,
+                   round(p.gcp_projected_cost / nullif(p.aws_amortized_cost,0), 2) AS ratio
+            FROM aws_li_to_gcp_li m JOIN gcp_projection p USING (aws_li_key)
+            WHERE p.is_workload AND m.strategy IN ('map','break_down')
+              AND p.aws_amortized_cost > 20 AND p.gcp_projected_cost > p.aws_amortized_cost * 3
+        """).fetchall()
+        _zero = _conn.execute("""
+            SELECT m.aws_li_key, m.product, m.gcp_service, m.gcp_sku_name,
+                   m.unit_multiplier, m.component, m.projection_note,
+                   round(p.aws_amortized_cost,2) AS aws_cost,
+                   p.gcp_projected_cost,
+                   0.0 AS ratio
+            FROM aws_li_to_gcp_li m JOIN gcp_projection p USING (aws_li_key)
+            WHERE p.is_workload AND m.strategy IN ('map','break_down')
+              AND p.aws_amortized_cost > 10 AND p.gcp_projected_cost IS NOT NULL
+              AND p.gcp_projected_cost = 0
+        """).fetchall()
+        _conn.close()
+
+        # Load prior attempt decisions so LLM knows what already failed.
+        import json as _json
+        _prev_fixes = {}
+        try:
+            _fixes_path = os.path.join(JOB_DIR, "outlier_fixes.json")
+            if os.path.exists(_fixes_path):
+                with open(_fixes_path) as _fp:
+                    _fx_list = _json.load(_fp)
+                for _fx in (_fx_list if isinstance(_fx_list, list) else []):
+                    if isinstance(_fx, dict) and "aws_li_key" in _fx:
+                        _prev_fixes[_fx["aws_li_key"]] = _fx
+        except Exception:
+            pass
+
+        cols = ["aws_li_key","product","gcp_service","gcp_sku_name",
+                "unit_multiplier","component","projection_note","aws_cost","gcp_cost","ratio"]
+        lines = []
+        for _row in _over:
+            d = dict(zip(cols, _row))
+            lines.append("### " + d["aws_li_key"] + " — OVER-PROJECTION (ratio=" + str(d["ratio"]) + "x, aws=$" + str(d["aws_cost"]) + ", gcp=$" + str(d["gcp_cost"]) + ")")
+            for k, val in d.items():
+                if k != "aws_li_key" and val is not None:
+                    lines.append("- " + k + ": " + str(val))
+            if d["aws_li_key"] in _prev_fixes:
+                _fx = _prev_fixes[d["aws_li_key"]]
+                lines.append("- prior_attempt: decision=" + str(_fx.get("decision","?")) + ", reason=" + str(_fx.get("reason","(none)")))
+            lines.append("")
+        for _row in _zero:
+            d = dict(zip(cols, _row))
+            lines.append("### " + d["aws_li_key"] + " — ZERO PROJECTION (aws=$" + str(d["aws_cost"]) + ", gcp=$0)")
+            for k, val in d.items():
+                if k != "aws_li_key" and val is not None:
+                    lines.append("- " + k + ": " + str(val))
+            if d["aws_li_key"] in _prev_fixes:
+                _fx = _prev_fixes[d["aws_li_key"]]
+                lines.append("- prior_attempt: decision=" + str(_fx.get("decision","?")) + ", reason=" + str(_fx.get("reason","(none)")))
+            lines.append("")
+
+        if not lines:
+            # Gate said violations exist but query found none — race condition, use fallback
+            raise ValueError("no violating rows found")
+
+        row_block = "\n".join(lines)
+        return (
+            "You are the Phase 5 outlier-triage retry agent. The over_and_under_projection gate"
+            " reports " + str(v) + " violation(s) that were NOT fixed in the first pass. Your ONLY job is"
+            " to fix the rows listed below.\n\n"
+            "## Violating rows\n\n" + row_block +
+            "## Instructions\n\n"
+            "Fix each row by updating aws_li_to_gcp_li in projection-audit/projection.duckdb.\n"
+            "Over-projection: reduce unit_multiplier or switch to a cheaper SKU.\n"
+            "Zero projection: the SKU has no rate — set strategy=passthrough with a clear gcp_service label.\n"
+            "After fixing, run scripts/incremental_rerate.py $DB then scripts/outlier_gate.py $DB.\n"
+            "RULES:\n"
+            "  * Fix ONLY the rows listed above. Do not touch anything else.\n"
+            "  * DO NOT list the directory or read any files — the rows above have all context you need.\n"
+            "  * DO NOT use search_web.\n"
+            "  * DO NOT DROP or DELETE any table or row.\n"
+            "  * STOP after outlier_gate.py prints OK."
+        )
+    except Exception as _e:
+        log("targeted retry build failed (%s) — falling back to full prompt" %% str(_e))
+        return (ph.get("prompt", "") + " IMPORTANT: a deterministic validation gate ('"
+                + ph.get("check_name","") + "') still reports " + str(v)
+                + " violation(s). Find and fix exactly those rows in projection-audit/projection.duckdb."
+                + " DO NOT DELETE, DROP, OR OVERWRITE any existing data or tables."
+                + " Only address the missing/violating rows; do not stop until the gate passes.")
+
+
 def run_phase(ph):
     if ph["num"] < START_PHASE or ph["num"] > END_PHASE:
         log("Skipping Phase %%d (%%s)" %% (ph["num"], ph["name"]))
@@ -916,10 +1028,8 @@ def run_phase(ph):
             if os.path.exists(AGY_LOG):
                 start_pos_retry = os.path.getsize(AGY_LOG)
 
-            run_agy(ph.get("prompt", "") + " IMPORTANT: a deterministic validation gate ('"
-                    + ph.get("check_name","") + "') still reports " + str(v)
-                    + " violation(s). Find and fix exactly those rows in projection-audit/projection.duckdb. DO NOT DELETE, DROP, OR OVERWRITE any existing data or tables. Only address the missing/violating rows; do not stop until the gate passes.",
-                    phase_label=ph.get("name","") + "-retry")
+            retry_prompt = _build_targeted_retry_prompt(ph, v)
+            run_agy(retry_prompt, phase_label=ph.get("name","") + "-retry")
 
             retry_convs = get_new_convs(AGY_LOG, start_pos_retry)
             phase_entry["convs"].extend(retry_convs)

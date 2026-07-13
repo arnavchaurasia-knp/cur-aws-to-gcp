@@ -441,16 +441,38 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region):
     else:
         print(f"  WARNING: no SKU found for {gcp_service} / {desc_pattern!r} in {gcp_region}")
 
-    # Append-only write — store enriched dict with unit/resource_group
-    cache[key] = {"sku_id": sku_id, "unit": unit, "resource_group": resource_group}
-    try:
-        os.makedirs(os.path.dirname(RESOLVED_SKUS_FILE), exist_ok=True)
-        with open(RESOLVED_SKUS_FILE, "w") as f:
-            json.dump(cache, f, indent=2)
-    except Exception:
-        pass
+    # Append-only write — store enriched dict with unit/resource_group.
+    # Uses an exclusive flock so parallel jobs don't clobber each other's new entries.
+    # We re-read the file under the lock to pick up any entries added concurrently
+    # since our initial unlocked read above.
+    _sku_cache_write(RESOLVED_SKUS_FILE, key, sku_id, unit, resource_group)
 
     return SKUMeta(sku_id, unit, resource_group)
+
+
+def _sku_cache_write(path, key, sku_id, unit, resource_group):
+    """Atomic locked append to resolved_skus.json. Safe for parallel jobs."""
+    import fcntl
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # Open in "a+" so the file is created if absent; flock before any read.
+        with open(path, "a+") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            fh.seek(0)
+            content = fh.read()
+            try:
+                on_disk = json.loads(content) if content.strip() else {}
+            except Exception:
+                on_disk = {}
+            # Another job may have already written this key while we were in lookup.
+            if key not in on_disk:
+                on_disk[key] = {"sku_id": sku_id, "unit": unit, "resource_group": resource_group}
+                fh.seek(0)
+                fh.truncate()
+                json.dump(on_disk, fh, indent=2)
+            fcntl.flock(fh, fcntl.LOCK_UN)
+    except Exception:
+        pass
 
 
 def _match(usage_type, product, table, operation=None):

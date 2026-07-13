@@ -200,6 +200,42 @@ def main():
                 }
             }
 
+    # Fetch projection_note for pricing rows (A1/A2/F) before closing conn.
+    # Without this, LLM queries the DB directly to get context it needs.
+    pricing_keys = [r["aws_li_key"] for r in data.get("A1", []) + data.get("A2", []) + data.get("F", [])]
+    projection_notes = {}
+    if pricing_keys:
+        try:
+            placeholders = ",".join("?" * len(pricing_keys))
+            rows = conn.execute(
+                f"SELECT aws_li_key, projection_note FROM aws_li_to_gcp_li WHERE aws_li_key IN ({placeholders})",
+                pricing_keys
+            ).fetchall()
+            projection_notes = {r[0]: r[1] for r in rows if r[1]}
+        except Exception:
+            pass
+
+    # Pre-check the Phase 5 gate SQL so the LLM knows which rows MUST be fixed
+    # to pass the gate on first attempt. Rows that already violate are marked
+    # ⚠️ GATE VIOLATION in triage_suggestions.md — LLM must address these first.
+    gate_violations = set()
+    try:
+        over_rows = conn.execute("""
+            SELECT aws_li_key FROM gcp_projection
+            WHERE is_workload AND strategy IN ('map','break_down')
+            AND aws_amortized_cost > 20 AND gcp_projected_cost > aws_amortized_cost * 3
+        """).fetchall()
+        zero_rows = conn.execute("""
+            SELECT aws_li_key FROM gcp_projection
+            WHERE is_workload AND strategy IN ('map','break_down')
+            AND aws_amortized_cost > 10 AND gcp_projected_cost IS NOT NULL AND gcp_projected_cost = 0
+        """).fetchall()
+        gate_violations = {r[0] for r in over_rows + zero_rows}
+        if gate_violations:
+            print(f"auto_triage: {len(gate_violations)} row(s) already violate the gate — marking in suggestions")
+    except Exception:
+        pass
+
     conn.close()
 
     # ------------------------------------------------------------------ #
@@ -245,7 +281,8 @@ def main():
                 ctx  = cand_info.get("context", {})
                 qid  = cand_info.get("query", "?")
 
-                f.write(f"### `{key}` — Query {qid} — Confidence: `{conf}`\n\n")
+                gate_flag = " — ⚠️ GATE VIOLATION (must fix to pass gate)" if key in gate_violations else ""
+                f.write(f"### `{key}` — Query {qid} — Confidence: `{conf}`{gate_flag}\n\n")
 
                 # Write available row fields as context
                 for k, v in row.items():
@@ -274,11 +311,14 @@ def main():
             for row in pricing_rows:
                 key = row["aws_li_key"]
                 qid = _infer_pricing_query(row, data)
-                f.write(f"### `{key}` — Query {qid}\n\n")
+                gate_flag = " — ⚠️ GATE VIOLATION (must fix to pass gate)" if key in gate_violations else ""
+                f.write(f"### `{key}` — Query {qid}{gate_flag}\n\n")
                 for k, v in row.items():
                     if k != "aws_li_key" and v is not None:
                         f.write(f"- **{k}**: `{v}`\n")
-                # Fetch projection_note for this row directly — it has diagnostic value
+                note = projection_notes.get(key)
+                if note:
+                    f.write(f"- **projection_note**: `{note}`\n")
                 f.write("\n")
 
     n_high = sum(1 for c in candidates.values() if c.get("confidence") == "HIGH" and c.get("candidate"))

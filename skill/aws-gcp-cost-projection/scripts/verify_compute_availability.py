@@ -36,13 +36,16 @@ this file first; if it's missing or too stale, behavior falls back
 unchanged to today's catalog-only + _KNOWN_PHANTOM_AVAILABILITY logic —
 this script running (or not) can never break a job.
 
-This is a MAINTAINER-time script, run manually or via a periodic refresh
-trigger (like catalog_health_check.py / prefetch_skus.py) — never during a
-live customer job. It needs a real GCP project with the Compute Engine API
-enabled and at least roles/compute.viewer (or roles/viewer) for the calling
-identity; the data returned (which machine types exist in which zones) is a
-platform-wide fact, not specific to that project's own deployed resources,
-so any project with those two things will do.
+This script is run two ways now:
+  - Manually by a maintainer (a human present who can Ctrl-C it).
+  - Automatically, once a day, by internal/jobs/compute_availability_
+    refresher.go's background goroutine (unattended, server-side).
+
+It needs a real GCP project with the Compute Engine API enabled and at
+least roles/compute.viewer (or roles/viewer) for the calling identity; the
+data returned (which machine types exist in which zones) is a platform-wide
+fact, not specific to that project's own deployed resources, so any project
+with those two things will do.
 
 Usage:
     python3 scripts/verify_compute_availability.py --project PROJECT_ID
@@ -50,20 +53,26 @@ Usage:
         GOOGLE_CLOUD_AVAILABILITY_PROJECT env var
 
 Auth: GOOGLE_CLOUD_AVAILABILITY_TOKEN env var (a pre-fetched OAuth2 bearer
-token) takes priority; otherwise falls back to `gcloud auth print-access-
-token`. The Billing Catalog's API-key auth does NOT work here — reading a
-project's own Compute Engine resources requires real IAM-authorized OAuth,
-not a bare API key. This is a manually-run maintainer script (not part of
-any live job's hot path), so the gcloud subprocess call is used directly
-here rather than behind the AGY_ALLOW_GCLOUD_LIVE_FETCH gate that protects
-live jobs elsewhere in this codebase -- a maintainer running this by hand
-can Ctrl-C it the same way they could any other gcloud command.
+token) takes priority -- this is the only safe path for the unattended daily
+refresh, since it's a plain HTTP-usable token with no subprocess involved.
+The `gcloud auth print-access-token` fallback is opt-in only via
+AGY_ALLOW_GCLOUD_LIVE_FETCH=1: CONFIRMED REAL, this can hang indefinitely on
+Windows even with an active, valid gcloud session (gcloud.cmd spawns a child
+process that can keep stdout/stderr pipes open past any timeout the parent
+subprocess call requests). That risk is acceptable for a human running this
+by hand (they can Ctrl-C it), but NOT for the unattended daily refresher,
+which is exactly why that path defaults off here too -- same reasoning
+already applied to apply_static_mappings.py's and catalog_health_check.py's
+own gcloud fallbacks. The Billing Catalog's API-key auth does NOT work here
+either way -- reading a project's own Compute Engine resources requires
+real IAM-authorized OAuth, not a bare API key.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -79,16 +88,24 @@ def _get_token() -> str:
     env_token = os.environ.get("GOOGLE_CLOUD_AVAILABILITY_TOKEN")
     if env_token:
         return env_token
-    try:
-        return subprocess.check_output(
-            ["gcloud", "auth", "print-access-token"],
-            text=True, stderr=subprocess.DEVNULL, timeout=30,
-        ).strip()
-    except Exception as e:
-        print(f"ERROR: could not obtain a GCP access token ({e}).\n"
-              f"Run `gcloud auth login` first, or set GOOGLE_CLOUD_AVAILABILITY_TOKEN.",
-              file=sys.stderr)
-        sys.exit(1)
+    if os.environ.get("AGY_ALLOW_GCLOUD_LIVE_FETCH") == "1":
+        gcloud_bin = shutil.which("gcloud")
+        if gcloud_bin:
+            try:
+                tok = subprocess.check_output(
+                    [gcloud_bin, "auth", "print-access-token"],
+                    text=True, stderr=subprocess.DEVNULL, timeout=10,
+                ).strip()
+                if tok:
+                    return tok
+            except Exception:
+                pass
+    print("ERROR: could not obtain a GCP access token.\n"
+          "Set GOOGLE_CLOUD_AVAILABILITY_TOKEN, or set "
+          "AGY_ALLOW_GCLOUD_LIVE_FETCH=1 and run `gcloud auth login` first "
+          "(opt-in only -- see this script's module docstring for why).",
+          file=sys.stderr)
+    sys.exit(1)
 
 
 def _fetch_all_machine_types(project: str, token: str) -> tuple[dict, set]:

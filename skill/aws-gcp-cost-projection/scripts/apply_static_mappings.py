@@ -900,22 +900,32 @@ def _live_compute_availability():
 # from the list is a real, confident "this service doesn't operate here"
 # fact, the same kind of complete-enumeration signal Compute Engine's
 # aggregatedList gives for machine types. Checked directly with curl against
-# a real project before adding each entry here, not assumed from docs:
+# a real project (with the target API actually enabled there -- a 404 from a
+# disabled API is a different, inconclusive signal and was not treated as a
+# "doesn't exist" result) before adding each entry here, not assumed from docs:
 #   file.googleapis.com/v1/projects/{p}/locations               -> HTTP 200
 #   redis.googleapis.com/v1/projects/{p}/locations               -> HTTP 200
 #   memcache.googleapis.com/v1/projects/{p}/locations            -> HTTP 200
 #   bigqueryreservation.googleapis.com/v1/projects/{p}/locations -> HTTP 200
-# Confirmed NOT implementing this pattern (both 404 live, same check):
-# container.googleapis.com (GKE) and sqladmin.googleapis.com (Cloud SQL) --
-# handled differently below (GKE) or left as a documented, honest gap (Cloud
-# SQL has no clean per-region tier-availability API at all; its only real
-# per-region signal would be attempting to create an instance, which this
-# pipeline obviously can't safely do as an availability probe).
+#   firestore.googleapis.com/v1/projects/{p}/locations           -> HTTP 200
+# Confirmed NOT implementing this pattern, API enabled, still 404/wrong shape:
+# container.googleapis.com (GKE), sqladmin.googleapis.com (Cloud SQL),
+# bigquery.googleapis.com (base BigQuery -- BigQuery Reservation API above is
+# a separate service and DOES support it), pubsub.googleapis.com (arguably
+# not even a meaningful question for Pub/Sub, a global service). GKE is
+# handled differently below (serverConfig); the rest are left as documented,
+# honest gaps (no clean per-region availability API exists, and this
+# pipeline obviously can't safely probe by attempting to create a real
+# resource). Dataproc and Cloud Composer are UNTESTED, not confirmed either
+# way -- enabling their APIs requires billing linked to a project, which
+# wasn't available when this was checked; don't assume they lack the pattern
+# just because they're absent from this table.
 _LOCATIONS_LIST_SERVICES = {
     "Cloud Filestore": "file.googleapis.com",
     GCP_MEMORYSTORE: "redis.googleapis.com",
     GCP_MEMORYSTORE_MEMCACHED: "memcache.googleapis.com",
     "BigQuery Reservation API": "bigqueryreservation.googleapis.com",
+    "Firestore": "firestore.googleapis.com",
 }
 
 _LIVE_SERVICE_REGIONS_CACHE: dict = {}

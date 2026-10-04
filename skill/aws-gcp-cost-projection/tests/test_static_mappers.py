@@ -975,3 +975,29 @@ def test_gke_ambiguous_signal_never_forces_unavailable(monkeypatch):
     monkeypatch.setattr(_asm, "_live_gke_region_available", lambda region: None)
     assert _asm._family_phantom_unavailable(
         "Kubernetes Engine", "Zonal Kubernetes Clusters", "mars-north1") is False
+
+
+def test_composer_confirmed_available_region(monkeypatch):
+    # Unlike GKE, Composer's environments.list gives an UNAMBIGUOUS signal in
+    # both directions (confirmed live: 200 for a real region, a specific 400
+    # "Unexpected location: X" for a fake one) -- so it can assert a
+    # confident False, not just a positive-only signal.
+    monkeypatch.setattr(_asm, "_KNOWN_PHANTOM_AVAILABILITY", set())
+    monkeypatch.setattr(_asm, "_live_composer_region_available", lambda region: True)
+    assert _asm._family_phantom_unavailable(
+        "Cloud Composer", "x", "asia-south2") is False
+
+
+def test_composer_confirmed_unavailable_region(monkeypatch):
+    monkeypatch.setattr(_asm, "_KNOWN_PHANTOM_AVAILABILITY", set())
+    monkeypatch.setattr(_asm, "_live_composer_region_available", lambda region: False)
+    assert _asm._family_phantom_unavailable(
+        "Cloud Composer", "x", "mars-north1") is True
+
+
+def test_composer_no_live_signal_falls_back_to_phantom_table(monkeypatch):
+    monkeypatch.setattr(
+        _asm, "_KNOWN_PHANTOM_AVAILABILITY", {("x", "asia-south2")})
+    monkeypatch.setattr(_asm, "_live_composer_region_available", lambda region: None)
+    assert _asm._family_phantom_unavailable(
+        "Cloud Composer", "x", "asia-south2") is True

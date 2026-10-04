@@ -1012,6 +1012,48 @@ def _live_gke_region_available(gcp_region):
     return result
 
 
+_COMPOSER_ENVIRONMENTS_CACHE: dict = {}
+
+
+def _live_composer_region_available(gcp_region):
+    """Cloud Composer doesn't implement locations.list either (confirmed 404
+    live, API enabled). Unlike GKE, its per-region environments.list endpoint
+    gives an UNAMBIGUOUS signal: a real supported region returns HTTP 200
+    (confirmed live, e.g. us-central1/asia-south2: `{}`), and a genuinely
+    unsupported one returns a specific, clean HTTP 400 with message
+    "Unexpected location: <region>" (confirmed live against a made-up
+    region) -- not a generic/ambiguous error the way GKE's invalid-region
+    403 was. So this adapter CAN return a confident False, not just a
+    positive-only signal like GKE's -- any other failure shape (network,
+    auth, a different error message) is treated as unknown (None), never as
+    a confident answer in either direction."""
+    if gcp_region in _COMPOSER_ENVIRONMENTS_CACHE:
+        return _COMPOSER_ENVIRONMENTS_CACHE[gcp_region]
+    project = os.environ.get("GOOGLE_CLOUD_AVAILABILITY_PROJECT")
+    token = _gcp_availability_token() if project else None
+    if not (project and token):
+        return None
+    result = None
+    try:
+        import urllib.request, urllib.error
+        url = f"https://composer.googleapis.com/v1/projects/{project}/locations/{gcp_region}/environments"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                if r.status == 200:
+                    result = True
+        except urllib.error.HTTPError as e:
+            if e.code == 400:
+                body = json.loads(e.read())
+                msg = (body.get("error") or {}).get("message", "")
+                if msg.startswith("Unexpected location:"):
+                    result = False
+    except Exception:
+        pass
+    _COMPOSER_ENVIRONMENTS_CACHE[gcp_region] = result
+    return result
+
+
 def _family_phantom_unavailable(gcp_service, desc_pattern, gcp_region):
     """True if (gcp_service, desc_pattern, gcp_region) should be treated as
     unavailable, checking live GCP API data FIRST (per-service, see the
@@ -1035,6 +1077,10 @@ def _family_phantom_unavailable(gcp_service, desc_pattern, gcp_region):
     elif gcp_service == "Kubernetes Engine":
         if _live_gke_region_available(gcp_region) is True:
             return False
+    elif gcp_service == "Cloud Composer":
+        live = _live_composer_region_available(gcp_region)
+        if live is not None:
+            return not live
     return (desc_pattern, gcp_region) in _KNOWN_PHANTOM_AVAILABILITY
 
 # Qualifiers that make a SKU a more-specific or differently-priced variant of

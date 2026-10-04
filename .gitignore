@@ -10,7 +10,7 @@
 # Compiled binaries
 cur-web
 cur-web-*
-server
+/server
 *.exe
 *.so
 *.dylib

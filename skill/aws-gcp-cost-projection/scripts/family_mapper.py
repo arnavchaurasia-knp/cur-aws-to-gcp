@@ -218,6 +218,37 @@ def _license_entries(r, aws_key, gcp_region, vcpus, ram):
     return []
 
 
+def _gce_machine_type_label(gcp_family: str, vcpus: float, ram_gb: float) -> str:
+    """Build a readable GCE machine-type-style label (e.g. "n4d-standard-16")
+    for the report's "GCP Mapping" column — not a catalog-verified SKU name
+    (GCP's Billing Catalog bills vCPU/RAM as separate per-unit SKUs shared
+    across every size in a family, it has no single "machine type" SKU field
+    to read this from), but a derived label following GCE's real, documented
+    naming convention (<family>-<tier>-<vcpus>) so a report reader can tell
+    "m5a.4xlarge maps to a 16 vCPU / 64 GB GCE shape" instead of every
+    differently-sized row in a family looking identical ("N4D Instance Ram").
+    Tier (standard/highmem/highcpu) is derived from the actual RAM:vCPU ratio
+    rather than guessed, using each tier's real, documented ratio per vCPU:
+    standard ~4 GB, highmem ~8 GB, highcpu ~1 GB. The precise vCPU/RAM numbers
+    are always shown alongside this label by the caller, so an imprecise tier
+    guess never hides the real, ground-truth size.
+    """
+    vcpus_int = max(1, round(vcpus))
+    ratio = ram_gb / vcpus_int if vcpus_int else 4.0
+    if ratio <= 2.0:
+        tier = "highcpu"
+    elif ratio >= 6.0:
+        tier = "highmem"
+    else:
+        tier = "standard"
+    # Family labels sometimes carry a redundant trailing "Arm" word (e.g.
+    # "C4A Arm", "T2A Arm") on top of the "A" already in the family code
+    # itself — strip the word so the slug reads "c4a-standard-16", not
+    # "c4a-arm-standard-16".
+    family_slug = re.sub(r"\s+arm\b", "", gcp_family, flags=re.IGNORECASE).strip().lower().replace(" ", "-")
+    return f"{family_slug}-{tier}-{vcpus_int}"
+
+
 def map_gce_row(r, parsed):
     gcp_family, arm_sku = get_gcp_family(parsed)
     if not gcp_family:
@@ -408,6 +439,12 @@ def map_gce_row(r, parsed):
     burst_note = (f" [Note: {gcp_family} has no burst-credit model; projection assumes steady-state CPU usage]"
                   if is_burstable else "")
 
+    # Exact machine-type label for the report (see _gce_machine_type_label
+    # docstring) — computed once here, after gcp_family is finalized by any
+    # cost-tier/availability switch above, so it names whichever family
+    # actually won, not the original default.
+    gcp_machine_type = _gce_machine_type_label(gcp_family, vcpus, ram)
+
     # 1. Core Component
     # core_desc/ram_desc came out of cheapest_in_scope() above (both the x86
     # and ARM branches), which decides availability with STRICT exact-region
@@ -428,7 +465,8 @@ def map_gce_row(r, parsed):
         "projection_note": f"Deterministic mapping: GCE {gcp_family} Core{burst_note}{cost_tag}" + _no_rate_suffix(core_sku, gcp_region),
         "mapping_confidence": 0.85 if is_burstable else 1.0,
         "is_workload": True,
-        "break_down": True
+        "break_down": True,
+        "gcp_machine_type": gcp_machine_type,
     }
     if core_sku:
         core_entry["gcp_sku_id"] = core_sku
@@ -447,7 +485,8 @@ def map_gce_row(r, parsed):
         "projection_note": f"Deterministic mapping: GCE {gcp_family} RAM{burst_note}{cost_tag}" + _no_rate_suffix(ram_sku, gcp_region),
         "mapping_confidence": 0.85 if is_burstable else 1.0,
         "is_workload": True,
-        "break_down": True
+        "break_down": True,
+        "gcp_machine_type": gcp_machine_type,
     }
     if ram_sku:
         ram_entry["gcp_sku_id"] = ram_sku
@@ -872,9 +911,21 @@ def main():
     
     compute_skipped_keys = set()
     db_skipped_keys = set()
-    
+
     unknowns = []
-    
+
+    # aws_li_key -> instance_type, for every row where this resolution found
+    # a real value that aws_li_catalog.instance_type didn't already have.
+    # Persisted back to the DB at the end of main() — previously this was
+    # resolved ONLY in-memory for this process's own pricing math and then
+    # discarded, so the report's "AWS Instance" column fell back to a bare
+    # product label ("Elastic Compute Cloud") for every single EC2 row
+    # regardless of actual size, since aws_li_catalog.instance_type stayed
+    # NULL forever. Confirmed real: a customer's manager flagged that dozens
+    # of report rows were indistinguishable from each other for exactly this
+    # reason.
+    resolved_instance_types: dict[str, str] = {}
+
     # Map GCE Compute Instances
     for r in manifest.get("compute_breakdown", {}).get("rows", []):
         itype = _resolve_instance_type(r)
@@ -883,6 +934,7 @@ def main():
             # r["instance_type"] directly, e.g. _aws_gpu_spec()) see the
             # same fallback-resolved value, not the original None.
             r["instance_type"] = itype
+            resolved_instance_types[r["aws_li_key"]] = itype
         if itype:
             _backfill_specs_from_ec2_types(r, itype)
         parsed = parse_instance(itype)
@@ -906,6 +958,7 @@ def main():
         itype = _resolve_instance_type(r)
         if itype and not r.get("instance_type"):
             r["instance_type"] = itype
+            resolved_instance_types[r["aws_li_key"]] = itype
         if itype:
             _backfill_specs_from_ec2_types(r, itype)
         parsed = parse_instance(itype)
@@ -960,6 +1013,23 @@ def main():
         with open(os.path.join(log_dir, "unknown_families.log"), "w") as f:
             f.write("\n".join(unknowns) + "\n")
         print(f"  family_mapper: logged {len(unknowns)} unknown instance type(s)")
+
+    # Persist resolved instance types back onto aws_li_catalog — see the
+    # comment on resolved_instance_types' declaration above for why this
+    # previously-missing write is what makes the report's "AWS Instance"
+    # column show real machine types instead of a generic product label.
+    if resolved_instance_types and os.path.exists(DB_PATH):
+        con = duckdb.connect(DB_PATH)
+        try:
+            con.executemany(
+                "UPDATE aws_li_catalog SET instance_type = ? WHERE aws_li_key = ? "
+                "AND instance_type IS NULL",
+                [(itype, key) for key, itype in resolved_instance_types.items()],
+            )
+            con.commit()
+            print(f"  family_mapper: persisted instance_type for {len(resolved_instance_types)} row(s)")
+        finally:
+            con.close()
 
 if __name__ == "__main__":
     main()

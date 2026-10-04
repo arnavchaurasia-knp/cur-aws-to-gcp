@@ -846,3 +846,82 @@ def test_no_mapper_emits_an_unrecognized_strategy_value():
         f"{unrecognized!r} — render_report.py only handles "
         f"'passthrough'/'ignore'/'map'; anything else renders blank cost cells"
     )
+
+
+# ---------------------------------------------------------------------------
+# Live Compute Engine machine-family availability (scripts/verify_compute_
+# availability.py + apply_static_mappings.py's _family_phantom_unavailable())
+# ---------------------------------------------------------------------------
+#
+# Real-world motivation: the Billing Catalog said N4D was priced in
+# asia-south2 (Delhi) when it genuinely wasn't deployable (confirmed via a
+# customer's own console screenshot, 2026-07-24) -- hand-curated into
+# _KNOWN_PHANTOM_AVAILABILITY. Querying the real machineTypes.aggregatedList
+# API directly on 2026-10-04 showed that entry is now ITSELF stale -- N4D is
+# genuinely creatable in asia-south2 today. These tests use a monkeypatched
+# fixture (never the real, environment-dependent data/compute_family_
+# availability.json) so they're deterministic regardless of whether that file
+# exists on a given machine, and cover the precedence rule directly: live
+# data (when present) always wins over the hand-curated table, in both
+# directions.
+
+import apply_static_mappings as _asm
+
+
+def _patch_live_availability(monkeypatch, regions):
+    """Install a fake _live_compute_availability() result for the duration
+    of one test, bypassing the real file/cache entirely."""
+    monkeypatch.setattr(_asm, "_live_compute_availability", lambda: regions)
+
+
+def test_live_availability_true_overrides_stale_phantom_entry(monkeypatch):
+    # Simulates the real N4D/asia-south2 case: _KNOWN_PHANTOM_AVAILABILITY
+    # claims unavailable, but live data says it IS available -- live must win.
+    monkeypatch.setattr(
+        _asm, "_KNOWN_PHANTOM_AVAILABILITY",
+        {("N4D Instance Core", "asia-south2"), ("N4D Instance Ram", "asia-south2")},
+    )
+    _patch_live_availability(monkeypatch, {"asia-south2": {"n4d": True}})
+    assert _asm._family_phantom_unavailable(
+        "Compute Engine", "N4D Instance Core", "asia-south2") is False
+
+
+def test_live_availability_false_blocks_even_without_phantom_entry(monkeypatch):
+    # A family/region the hand-curated table has never heard of, but live
+    # data says is genuinely unavailable -- must still be blocked.
+    monkeypatch.setattr(_asm, "_KNOWN_PHANTOM_AVAILABILITY", set())
+    _patch_live_availability(monkeypatch, {"asia-south2": {"c4a": False}})
+    assert _asm._family_phantom_unavailable(
+        "Compute Engine", "C4A Arm Instance Core", "asia-south2") is True
+
+
+def test_no_live_data_falls_back_to_known_phantom_table(monkeypatch):
+    # No live signal at all (file missing/stale/no probe credentials) --
+    # must fall back to today's behavior unchanged, never silently trust
+    # everything as available.
+    monkeypatch.setattr(
+        _asm, "_KNOWN_PHANTOM_AVAILABILITY", {("N4D Instance Core", "asia-south2")})
+    _patch_live_availability(monkeypatch, None)
+    assert _asm._family_phantom_unavailable(
+        "Compute Engine", "N4D Instance Core", "asia-south2") is True
+
+
+def test_live_data_present_but_region_unseen_falls_back_to_phantom_table(monkeypatch):
+    # Live data exists but doesn't cover this particular region (e.g. a new
+    # region launched since the last probe run) -- fall back per-region, not
+    # all-or-nothing.
+    monkeypatch.setattr(
+        _asm, "_KNOWN_PHANTOM_AVAILABILITY", {("N4D Instance Core", "asia-south2")})
+    _patch_live_availability(monkeypatch, {"us-central1": {"n4d": True}})
+    assert _asm._family_phantom_unavailable(
+        "Compute Engine", "N4D Instance Core", "asia-south2") is True
+
+
+def test_live_availability_never_consulted_for_non_compute_engine_service(monkeypatch):
+    # The live probe only covers Compute Engine machine types -- a BigQuery/
+    # Cloud SQL/etc. desc_pattern must never be run through the GCE-specific
+    # prefix-matching logic, only the hand-curated table.
+    monkeypatch.setattr(_asm, "_KNOWN_PHANTOM_AVAILABILITY", set())
+    _patch_live_availability(monkeypatch, {"asia-south2": {"n4d": True}})
+    assert _asm._family_phantom_unavailable(
+        "BigQuery Reservation API", "N4D-shaped-but-not-really", "asia-south2") is False

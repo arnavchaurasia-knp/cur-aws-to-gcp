@@ -29,13 +29,7 @@ import sys
 
 import duckdb
 
-# Reuses the same page CSS as the per-job report (render_report.py) so the
-# portfolio summary looks like one family of documents, not a bolted-on
-# second style. Both scripts live in this same directory and are invoked
-# directly (not as an installed package), so a plain module import — not a
-# package-relative one — is what actually resolves at runtime here.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from render_report import CSS  # noqa: E402
 
 _FC_LOGO_ICON = """<svg width="24" height="20" viewBox="0 0 34 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Facets">
 <path d="M15.8331 19.9996V0L0 19.9996H15.8331Z" fill="#00C2BB"/>
@@ -369,6 +363,10 @@ def write_html(summary, out_path):
     table look — instead of the .xlsx workbook. This is the primary output
     format for the internal portfolio-summary tool; write_xlsx is kept only
     for anyone who still wants a spreadsheet to pivot on."""
+    # Lazy import: render_report triggers log_utils which adds a stdout
+    # StreamHandler. Importing at module level would prefix the JSON output
+    # (used by the Go backend) with a log line, breaking JSON parsing.
+    from render_report import CSS  # noqa: E402  # pylint: disable=import-outside-toplevel
     t = summary["totals"]
     now = datetime.datetime.now(datetime.timezone.utc)
 

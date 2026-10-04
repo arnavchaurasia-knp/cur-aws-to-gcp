@@ -8,14 +8,15 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/facets/cur-web/internal/metrics"
-
 	"github.com/facets/cur-web/internal/auth"
 	"github.com/facets/cur-web/internal/db"
+	"github.com/facets/cur-web/internal/metrics"
 	"github.com/facets/cur-web/internal/notify"
+	"github.com/facets/cur-web/internal/skill"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
@@ -381,12 +382,7 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 
 	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
 	runIDParam := r.URL.Query().Get("run_id")
-
-	reportPath, runIDForFilename := resolveReportPath(jobDir, runIDParam)
-	if reportPath == "" {
-		http.Error(w, `{"error":"no report file found"}`, http.StatusNotFound)
-		return
-	}
+	format := r.URL.Query().Get("format")
 
 	safeProspect := strings.Map(func(r rune) rune {
 		switch r {
@@ -395,13 +391,58 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 		}
 		return r
 	}, job.Prospect)
-	filename := fmt.Sprintf("%s-gcp-estimate.html", safeProspect)
-	if runIDForFilename != "" {
-		filename = fmt.Sprintf("%s-gcp-estimate-%s.html", safeProspect, runIDForFilename)
+
+	switch format {
+	case "xlsx", "csv":
+		h.downloadExport(w, r, jobDir, safeProspect, format)
+	default:
+		// HTML download (original behaviour)
+		reportPath, runIDForFilename := resolveReportPath(jobDir, runIDParam)
+		if reportPath == "" {
+			http.Error(w, `{"error":"no report file found"}`, http.StatusNotFound)
+			return
+		}
+		filename := fmt.Sprintf("%s-gcp-estimate.html", safeProspect)
+		if runIDForFilename != "" {
+			filename = fmt.Sprintf("%s-gcp-estimate-%s.html", safeProspect, runIDForFilename)
+		}
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+		w.Header().Set("Content-Type", "text/html")
+		http.ServeFile(w, r, reportPath)
 	}
+}
+
+// downloadExport generates an XLSX or CSV export from the job's DuckDB via the
+// export_report.py script and streams it back as an attachment.
+func (h *Handler) downloadExport(w http.ResponseWriter, r *http.Request, jobDir, safeProspect, format string) {
+	ext := "." + format
+	tmpFile, err := os.CreateTemp("", "gcp-export-*"+ext)
+	if err != nil {
+		http.Error(w, `{"error":"could not create temp file"}`, http.StatusInternalServerError)
+		return
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	scriptPath := filepath.Join(skill.ResolveDir(), "scripts", "export_report.py")
+	cmd := exec.Command(pythonBin(), scriptPath, "--format", format, "--out", tmpPath)
+	cmd.Dir = jobDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		http.Error(w, `{"error":"export failed: `+jsonEscape(string(out))+`"}`, http.StatusInternalServerError)
+		return
+	}
+
+	filename := fmt.Sprintf("%s-gcp-estimate%s", safeProspect, ext)
+	var contentType string
+	if format == "xlsx" {
+		contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	} else {
+		contentType = "text/csv; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-	w.Header().Set("Content-Type", "text/html")
-	http.ServeFile(w, r, reportPath)
+	http.ServeFile(w, r, tmpPath)
 }
 
 // resolveReportPath picks the report.html to serve for a Download request.

@@ -42,10 +42,12 @@ export async function getJob(id: string): Promise<Job> {
   return res.json()
 }
 
-export function downloadURL(id: string, runId?: string): string {
-  return runId
-    ? `/api/jobs/${id}/download?run_id=${encodeURIComponent(runId)}`
-    : `/api/jobs/${id}/download`
+export function downloadURL(id: string, runId?: string, format?: string): string {
+  const params = new URLSearchParams()
+  if (runId) params.set('run_id', runId)
+  if (format) params.set('format', format)
+  const qs = params.toString()
+  return qs ? `/api/jobs/${id}/download?${qs}` : `/api/jobs/${id}/download`
 }
 
 export async function getRuns(id: string): Promise<RunResult[]> {

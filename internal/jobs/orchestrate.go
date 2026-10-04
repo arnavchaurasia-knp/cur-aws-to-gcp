@@ -822,14 +822,31 @@ def run_agy(prompt, phase_label=""):
 
 def gate(sql):
     # Returns int violations, or None if the gate could not be evaluated.
+    #
+    # Previously shelled out to the external "duckdb" CLI binary (DUCKDB_BIN /
+    # PATH lookup via duckdbBin() in the Go spawner). Confirmed real: on a
+    # machine with no duckdb CLI installed anywhere (no PATH match, no
+    # ~/.local/bin/duckdb), duckdbBin() falls back to the literal string
+    # "duckdb", subprocess.check_output() then raises FileNotFoundError, and
+    # this function's own except-Exception silently returns None for EVERY
+    # gate on EVERY phase of EVERY job run on that machine -- "could not
+    # evaluate (skipping)" for mapping_coverage, null_gcp_service,
+    # passthrough_budget, every check this whole file defines. A job can run
+    # all 6 phases to completion with literally no gate ever having actually
+    # run, and nothing in the log distinguishes that from "ran and found zero
+    # violations". Using the duckdb PYTHON package directly (already a
+    # dependency of every other script in this pipeline, confirmed present on
+    # this exact machine throughout this session) removes the external-binary
+    # dependency entirely instead of trying to patch its discovery.
     try:
-        out = subprocess.check_output([DUCKDB, DB, "-noheader", "-list", sql],
-                                      text=True, stderr=subprocess.DEVNULL).strip()
+        import duckdb as _duckdb
+        _con = _duckdb.connect(DB, read_only=True)
+        try:
+            row = _con.execute(sql).fetchone()
+        finally:
+            _con.close()
+        return int(row[0]) if row and row[0] is not None else None
     except Exception:
-        return None
-    try:
-        return int(out.splitlines()[0])
-    except (ValueError, IndexError):
         return None
 
 def failed_structurally():
@@ -1493,6 +1510,26 @@ def run_phase(ph):
 
             v2 = gate(sql)
             log("gate %%s after retry: %%s" %% (ph.get("check_name","?"), "PASS" if v2 == 0 else str(v2) + " remaining"))
+
+            # Last-resort backstop for mapping_coverage specifically: if the
+            # LLM's own targeted retry still leaves rows with no mapping at
+            # all, ensure_full_coverage.py exists for exactly this (its own
+            # docstring: "an honest passthrough for a handful of leftover
+            # rows is a far better outcome than no report at all") but was
+            # never actually invoked anywhere in this orchestrator until now
+            # — confirmed real: 30 rows / $11,732.88 on a live job had zero
+            # aws_li_to_gcp_li entry at all (not even an honest passthrough
+            # label), and this gate had never caught it because gate() itself
+            # was silently failing to evaluate on a machine with no duckdb
+            # CLI installed (see gate()'s own comment). Runs only here, after
+            # the real LLM retry already had its shot — a quick targeted
+            # fix should still win over a generic "Manual Review" stamp.
+            if v2 and v2 > 0 and ph.get("check_name") == "mapping_coverage":
+                run_script("?scripts/ensure_full_coverage.py $DB")
+                v2 = gate(sql)
+                log("gate %%s after ensure_full_coverage backstop: %%s" %% (
+                    ph.get("check_name","?"), "PASS" if v2 == 0 else str(v2) + " remaining"))
+
             if v2 and v2 > 0:
                 msg = ("Phase %%d (%%s) gate '%%s' still reports %%d violation(s) after retry "
                        "and deterministic repair. This is a data/coverage gap the pipeline "

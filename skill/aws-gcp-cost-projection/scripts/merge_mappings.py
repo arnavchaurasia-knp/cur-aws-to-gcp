@@ -64,6 +64,7 @@ COLUMNS = [
     "mapping_confidence",
     "is_workload",
     "break_down",
+    "gcp_machine_type",
 ]
 
 
@@ -123,9 +124,15 @@ def ensure_table(con: duckdb.DuckDBPyConnection) -> None:
             projection_note     TEXT,
             mapping_confidence  DOUBLE,
             is_workload         BOOLEAN,
-            break_down          BOOLEAN
+            break_down          BOOLEAN,
+            gcp_machine_type    TEXT
         )
     """)
+    # Idempotent column add for DBs created before gcp_machine_type existed —
+    # same pattern as aws_normalizer.py's canonical_service column add.
+    existing_cols = {r[1].lower() for r in con.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+    if "gcp_machine_type" not in existing_cols:
+        con.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN gcp_machine_type TEXT")
 
 
 def main() -> None:

@@ -871,7 +871,16 @@ def main():
             log.debug(f"Could not load validation_report.json: {e}")
 
     # ── detail rows (one per aws_li_key, components aggregated) ──────────────
-    rows = conn.execute("""
+    # gcp_machine_type may be absent on a DB merged before this column existed
+    # (older job, not re-run since) — fall back to a literal NULL rather than
+    # erroring, same guarded-column pattern used elsewhere in this pipeline
+    # (classify_mechanics.py's billing_format, aws_normalizer.py's
+    # canonical_service).
+    _m2g_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+    _machine_type_expr = (
+        "ANY_VALUE(m.gcp_machine_type)" if "gcp_machine_type" in _m2g_cols else "NULL"
+    )
+    rows = conn.execute(f"""
         SELECT
             c.product,
             c.operation,
@@ -887,7 +896,8 @@ def main():
             c.is_workload,
             c.pricing_model,
             c.instance_type,
-            ANY_VALUE(m.gcp_sku_name)                                          AS gcp_sku_name
+            ANY_VALUE(m.gcp_sku_name)                                          AS gcp_sku_name,
+            {_machine_type_expr}                                               AS gcp_machine_type
         FROM aws_li_catalog c
         LEFT JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
         LEFT JOIN gcp_projection    p ON c.aws_li_key = p.aws_li_key
@@ -1074,7 +1084,7 @@ def main():
     detail_rows_html = ""
     idx = 1
     for r in rows:
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name = r
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type = r
 
         # Negative rows (EDP reconciliation, refunds, "covered by Savings
         # Plans" nettings, etc.) are rolled up into a single "Discounts &
@@ -1205,10 +1215,36 @@ def main():
             # so fall back to gcp_svc (the GCP service name, always present)
             # instead of leaving the first line blank.
             top_line = gcp_sku_name or gcp_svc or "Free on GCP"
+            # A bare "(Free tier)" badge reads as a permanent allowance. Some
+            # ignore-strategy rows are genuinely time-bound instead — $0 only
+            # until a known, dated billing-window start (e.g. RDS MySQL 8.0
+            # Extended Support -> Cloud SQL's own equivalent surcharge starts
+            # 2027-01-01, see map_rds_extended_support's _EXT_SUPPORT_FUTURE_
+            # START). Labeling a $5,793/mo row "(Free tier)" with no further
+            # qualifier made it look identical to a row that's free forever
+            # (CloudWatch alarms, dashboards) — confirmed a real point of
+            # confusion on a live job. Surface the date in the badge itself
+            # instead of leaving it buried only in the expandable note text.
+            future_start_m = re.search(
+                r"billing window starts (\d{4}-\d{2}-\d{2})", notes or ""
+            )
+            badge_text = (
+                f"Free until {future_start_m.group(1)}" if future_start_m else "Free tier"
+            )
             gcp_mapping_str = (
                 f'{_html.escape(str(top_line))}<br>'
-                f'<span class="free-tier">(Free tier)</span>'
+                f'<span class="free-tier">({_html.escape(badge_text)})</span>'
             )
+        elif gcp_machine_type:
+            # Precise GCE machine-type label (e.g. "n4d-standard-16") computed
+            # once per aws_li_key by family_mapper.py — identical on both the
+            # core and ram component rows, so this is deterministic (unlike
+            # gcp_sku_name below, which ANY_VALUE picks arbitrarily between
+            # "N4D Instance Core" and "N4D Instance Ram" for the same row).
+            # Preferred over gcp_sku_name specifically so every differently-
+            # sized EC2 row reads as its own distinct GCP shape instead of
+            # all collapsing to the same generic family label.
+            gcp_mapping_str = _html.escape(str(gcp_machine_type))
         elif gcp_sku_name:
             gcp_mapping_str = _html.escape(str(gcp_sku_name))
         elif is_pt:

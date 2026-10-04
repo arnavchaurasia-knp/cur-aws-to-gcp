@@ -13,6 +13,7 @@ so they are resolved here rather than by the LLM — deterministic and variance-
 """
 
 import gzip, json, os, re, sys
+from datetime import datetime, timezone
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -733,6 +734,182 @@ _KNOWN_PHANTOM_AVAILABILITY = {
         ["N4D Instance Ram", "asia-south2"],
     ])
 }
+# UPDATE: this specific N4D/asia-south2 entry is now itself confirmed STALE —
+# queried the real machineTypes.aggregatedList API directly on 2026-10-04 and
+# n4d-standard-8 (and the rest of the N4D family) is genuinely creatable in
+# asia-south2-a/b/c today. It was correct when added (2026-07-24 screenshot)
+# and is kept here, un-deleted, as the exact worked example of why this list
+# can silently go stale in either direction with no way to know — which is
+# the reason _live_compute_family_available() below exists: when live data is
+# present for a (family, region), it now takes precedence over this table
+# entirely, so this stale entry is already harmless in practice. It's left in
+# place only as a documented fallback for installs that haven't run
+# scripts/verify_compute_availability.py (no probe-project credentials) and
+# as the historical record of the bug class, not because it's still believed
+# true.
+
+
+_LIVE_AVAILABILITY_CACHE = None
+_LIVE_AVAILABILITY_LOADED = False
+# Machine-type rollouts change over weeks/months, not days -- same staleness
+# philosophy as CATALOG_META.json's 7-day Billing Catalog check, but longer
+# since this data changes far less often than prices do. Only used for the
+# fallback file below, never for a fresh live fetch (which is always current
+# by definition).
+_LIVE_AVAILABILITY_MAX_AGE_DAYS = 45
+
+_AVAILABILITY_TOKEN_CACHE = None
+_AVAILABILITY_TOKEN_CACHE_SET = False
+
+
+def _gcp_availability_token():
+    """OAuth2 bearer token for the Compute Engine machineTypes API.
+
+    Deliberately separate from _gcp_token()/_gcp_token_uncached() above
+    (which serve the Billing Catalog's SKUs endpoint): that endpoint accepts
+    a bare API key for a public-data read, but reading a PROJECT's own
+    Compute Engine resources is an IAM-authorized call that needs a real
+    identity -- an API key alone doesn't carry one. So GOOGLE_CLOUD_API_KEY/
+    GCP_API_KEY (checked by _gcp_token()) does not work here at all; this
+    needs GOOGLE_CLOUD_AVAILABILITY_TOKEN (a pre-provisioned OAuth token) or,
+    opt-in only, the same gated `gcloud auth print-access-token` fallback
+    used elsewhere in this file (AGY_ALLOW_GCLOUD_LIVE_FETCH=1 -- confirmed
+    real: this can hang indefinitely on Windows even with an active gcloud
+    session, so it is never attempted automatically).
+
+    Cached for the remainder of this process, same reasoning as _gcp_token().
+    """
+    global _AVAILABILITY_TOKEN_CACHE, _AVAILABILITY_TOKEN_CACHE_SET
+    if _AVAILABILITY_TOKEN_CACHE_SET:
+        return _AVAILABILITY_TOKEN_CACHE
+    _AVAILABILITY_TOKEN_CACHE_SET = True
+
+    env_token = os.environ.get("GOOGLE_CLOUD_AVAILABILITY_TOKEN")
+    if env_token:
+        _AVAILABILITY_TOKEN_CACHE = env_token
+        return env_token
+
+    if os.environ.get("AGY_ALLOW_GCLOUD_LIVE_FETCH") == "1":
+        import shutil, subprocess
+        gcloud_bin = shutil.which("gcloud")
+        if gcloud_bin:
+            try:
+                tok = subprocess.check_output(
+                    [gcloud_bin, "auth", "print-access-token"], text=True,
+                    stderr=subprocess.DEVNULL, timeout=10,
+                ).strip()
+                if tok:
+                    _AVAILABILITY_TOKEN_CACHE = tok
+                    return tok
+            except Exception:
+                pass
+
+    _AVAILABILITY_TOKEN_CACHE = None
+    return None
+
+
+def _fetch_live_compute_regions(project, token):
+    """One-shot live fetch of every Compute Engine machine type across every
+    zone in `project`, rolled up to {region: {family_prefix: True}} (only
+    prefixes actually SEEN are present -- absence is handled by the caller
+    the same way a False entry would be, since this is a single process-
+    lifetime fetch, not a persisted ground truth that needs an explicit
+    negative record the way the maintainer-refreshed file does).
+
+    Reuses verify_compute_availability.py's fetch/rollup helpers rather than
+    duplicating them -- that script remains runnable standalone (as a
+    maintainer step to refresh the fallback file this same function falls
+    back to when no live credentials are available for a given job), but the
+    actual fetch logic lives in one place.
+    """
+    import verify_compute_availability as _vca
+    items, unreachable_zones = _vca._fetch_all_machine_types(project, token)
+    # rollup_regions() explicitly drops any region touched by an unreachable
+    # zone this fetch, rather than recording a confident False for families
+    # it simply failed to check there -- see its docstring. Shared with
+    # verify_compute_availability.py's own file-writing path so both apply
+    # the exact same correctness rule.
+    return _vca.rollup_regions(items, unreachable_zones)
+
+
+def _live_compute_availability():
+    """Return {region: {family_prefix: bool}} Compute Engine machine-type
+    availability, or None if no signal is available at all (callers must
+    treat None as "fall back to catalog + _KNOWN_PHANTOM_AVAILABILITY",
+    never as "everything is available").
+
+    Resolution order (cached for the remainder of this process -- one fetch
+    attempt per job, not per row):
+      1. A LIVE fetch against GOOGLE_CLOUD_AVAILABILITY_PROJECT, straight
+         from the Compute Engine API -- always current by construction, this
+         is the primary path now, not an occasional refresh.
+      2. If no credentials/project are configured, or the live fetch fails
+         for any reason (network, quota, API not enabled) -- fall back to
+         the maintainer-refreshed data/compute_family_availability.json
+         (scripts/verify_compute_availability.py), if present and not too
+         stale, so a job never regresses below today's behavior just
+         because live credentials aren't configured in this environment.
+      3. Neither available -- None; caller falls back further to
+         _KNOWN_PHANTOM_AVAILABILITY and plain catalog pricing, exactly as
+         before this feature existed. A live job is never blocked or slowed
+         by a missing/failed availability check.
+    """
+    global _LIVE_AVAILABILITY_CACHE, _LIVE_AVAILABILITY_LOADED
+    if _LIVE_AVAILABILITY_LOADED:
+        return _LIVE_AVAILABILITY_CACHE
+    _LIVE_AVAILABILITY_LOADED = True
+
+    project = os.environ.get("GOOGLE_CLOUD_AVAILABILITY_PROJECT")
+    if project:
+        token = _gcp_availability_token()
+        if token:
+            try:
+                regions = _fetch_live_compute_regions(project, token)
+                if regions:
+                    print(f"  live Compute Engine availability check: {len(regions)} regions "
+                          f"from {project!r}", file=sys.stderr)
+                    _LIVE_AVAILABILITY_CACHE = regions
+                    return regions
+            except Exception as e:
+                print(f"  live compute-availability fetch failed ({e}); "
+                      f"falling back to cached file if present", file=sys.stderr)
+
+    path = os.path.join(DATA_DIR, "compute_family_availability.json")
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            fetched_at = data.get("fetched_at")
+            stale = False
+            if fetched_at:
+                age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(fetched_at)).days
+                stale = age_days > _LIVE_AVAILABILITY_MAX_AGE_DAYS
+            if not stale:
+                _LIVE_AVAILABILITY_CACHE = data.get("regions") or None
+                return _LIVE_AVAILABILITY_CACHE
+        except Exception:
+            pass
+
+    _LIVE_AVAILABILITY_CACHE = None
+    return None
+
+
+def _family_phantom_unavailable(gcp_service, desc_pattern, gcp_region):
+    """True if (gcp_service, desc_pattern, gcp_region) should be treated as
+    unavailable, checking live Compute Engine machine-type data FIRST (if
+    present and fresh) and falling back to the hand-curated
+    _KNOWN_PHANTOM_AVAILABILITY table only when no live signal exists for
+    this exact (family, region). Live data always wins when present --
+    including by saying something IS available that the hardcoded table
+    claims isn't (see the N4D/asia-south2 case documented above)."""
+    if gcp_service == GCP_COMPUTE_ENGINE:
+        regions = _live_compute_availability()
+        if regions and gcp_region in regions:
+            m = re.match(r"[A-Za-z0-9]+", desc_pattern)
+            prefix = m.group(0).lower() if m else None
+            if prefix and prefix in regions[gcp_region]:
+                return not regions[gcp_region][prefix]
+    return (desc_pattern, gcp_region) in _KNOWN_PHANTOM_AVAILABILITY
 
 # Qualifiers that make a SKU a more-specific or differently-priced variant of
 # whatever plain SKU a desc_pattern is actually asking for. Shared by both
@@ -760,7 +937,7 @@ def _is_noise_variant(desc_pattern, sku_desc):
 
 
 def _family_hourly_rate_uncached(gcp_service, desc_pattern, gcp_region):
-    if (desc_pattern, gcp_region) in _KNOWN_PHANTOM_AVAILABILITY:
+    if _family_phantom_unavailable(gcp_service, desc_pattern, gcp_region):
         return None
     services = _load_services()
     service_id = services.get(gcp_service)
@@ -1280,13 +1457,15 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region):
     desc_pattern (regex) and whose serviceRegions include gcp_region (or is GLOBAL).
     Returns (sku_id, unit, resource_group) tuple, or (None, None, None).
     """
-    # See _KNOWN_PHANTOM_AVAILABILITY above _family_hourly_rate_uncached: some
-    # (family, region) pairs have a real, priced billing-catalog SKU that
-    # Compute Engine won't actually deploy — this direct SKU-ID resolution
-    # path must refuse them too, not just the cost-comparison sweep, or a
-    # caller that resolves a SKU without going through cheapest_in_scope
-    # first would still get handed the phantom SKU ID.
-    if (desc_pattern, gcp_region) in _KNOWN_PHANTOM_AVAILABILITY:
+    # See _family_phantom_unavailable() above _family_hourly_rate_uncached:
+    # some (family, region) pairs have a real, priced billing-catalog SKU
+    # that Compute Engine won't actually deploy (checked against live
+    # machineTypes data first, falling back to the hand-curated
+    # _KNOWN_PHANTOM_AVAILABILITY table) — this direct SKU-ID resolution path
+    # must refuse them too, not just the cost-comparison sweep, or a caller
+    # that resolves a SKU without going through cheapest_in_scope first would
+    # still get handed the phantom SKU ID.
+    if _family_phantom_unavailable(gcp_service, desc_pattern, gcp_region):
         return None, None, None
     # Some user-facing GCP service names differ from the billing catalog display name.
     _CATALOG_SERVICE_ALIASES = {
@@ -1581,17 +1760,21 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region):
     cache write below for why.
     """
     # Must be checked BEFORE the resolved_skus.json cache below — that cache
-    # was prefetched before _KNOWN_PHANTOM_AVAILABILITY existed and already
-    # contains a real, cached SKU ID for the N4D/asia-south2 case (confirmed:
-    # resolved_skus.json has "Compute Engine|N4D Instance Core|asia-south2"
-    # resolved to a real sku_id from an earlier prefetch run). A cache hit
-    # returns immediately at step 2 below, so putting this check only in
-    # lookup_sku_in_catalog()/_family_hourly_rate_uncached (step 3, the
-    # catalog-scan fallback) never actually runs for an already-cached key —
-    # the exact bug this guard exists to prevent would still slip through
-    # resolve_sku() itself, which is what actually assigns the SKU ID used in
-    # the final report, not just the cost-comparison sweep.
-    if (desc_pattern, gcp_region) in _KNOWN_PHANTOM_AVAILABILITY:
+    # was prefetched before this phantom-availability check existed and
+    # already contains a real, cached SKU ID for the N4D/asia-south2 case
+    # (confirmed: resolved_skus.json has "Compute Engine|N4D Instance
+    # Core|asia-south2" resolved to a real sku_id from an earlier prefetch
+    # run). A cache hit returns immediately at step 2 below, so putting this
+    # check only in lookup_sku_in_catalog()/_family_hourly_rate_uncached
+    # (step 3, the catalog-scan fallback) never actually runs for an
+    # already-cached key — the exact bug this guard exists to prevent would
+    # still slip through resolve_sku() itself, which is what actually assigns
+    # the SKU ID used in the final report, not just the cost-comparison
+    # sweep. _family_phantom_unavailable() checks live Compute Engine data
+    # first (see above _family_hourly_rate_uncached) — for N4D/asia-south2
+    # specifically, live data now says it's genuinely available, so this
+    # correctly falls through to the cache/catalog instead of forcing None.
+    if _family_phantom_unavailable(gcp_service, desc_pattern, gcp_region):
         return SKUMeta(None, None, None)
 
     catalog_version = _catalog_version()
@@ -5893,7 +6076,19 @@ def _emr_vcpus(usage_type, instance_vcpus):
     # usage_type pattern: "m5.xlarge-EMR-CORE" or "USE2-m5.2xlarge-EMR-MASTER"
     m = re.search(r'([a-z][0-9][a-z0-9]*\.[a-z0-9]+)-EMR', usage_type, re.IGNORECASE)
     if m:
-        return _EMR_VCPU_MAP.get(m.group(1).lower())
+        v = _EMR_VCPU_MAP.get(m.group(1).lower())
+        if v:
+            return v
+    # Raw-CUR EMR surcharge lines look like "APS3-BoxUsage:m8g.4xlarge" (no
+    # "-EMR" suffix, instance_vcpus column NULL) — the pattern above never
+    # matched them, so every such row fell to "vCPU count unknown" passthrough
+    # at AWS cost. Fall back to the bundled EC2 spec table by instance type.
+    m2 = re.search(r'(?:BoxUsage|HeavyUsage|InstanceUsage):([a-z][0-9][a-z0-9]*\.[a-z0-9]+)',
+                   usage_type, re.IGNORECASE)
+    if m2:
+        spec = _EC2_TYPES_FOR_VCPU.get(m2.group(1).lower())
+        if spec and spec.get("vcpus"):
+            return int(spec["vcpus"])
     return None
 
 

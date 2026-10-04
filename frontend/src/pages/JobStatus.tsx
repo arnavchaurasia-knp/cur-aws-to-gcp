@@ -8,7 +8,6 @@ import { ContactCard } from '../components/ContactCard'
 import { Reveal } from '../components/Reveal'
 import { getJob, getProgress, listJobs, downloadURL, refineJob, retryJob, getRuns, getSummary } from '../api/jobs'
 import type { Job, Progress, RunResult } from '../api/jobs'
-import { shareJob } from '../api/admin'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { TOTAL_PHASES } from '../lib/phases'
@@ -267,23 +266,6 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
   const [refineError, setRefineError] = useState<string | null>(null)
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState<string | null>(null)
-  const [shareLink, setShareLink] = useState<string | null>(null)
-  const [sharing, setSharing] = useState(false)
-  const [shareError, setShareError] = useState<string | null>(null)
-
-  const handleShare = async () => {
-    if (!id) return
-    setSharing(true)
-    setShareError(null)
-    try {
-      const { url } = await shareJob(id)
-      setShareLink(`${window.location.origin}${url}`)
-    } catch (e: unknown) {
-      setShareError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setSharing(false)
-    }
-  }
 
   const submitRetry = async () => {
     if (!id) return
@@ -393,42 +375,25 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                 </Reveal>
               )}
 
-              <a href={downloadURL(job.id)}
-                className="btn-shimmer w-full py-3 rounded-lg font-medium text-white text-center block
-                  anim-fade-in-up delay-175">
-                ↓ Download latest report
-              </a>
-
-              <Reveal delay={100}>
-                <div className="bg-white/[0.02] border border-white/10 rounded-lg p-4 space-y-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <h3 className="text-sm font-semibold text-[#00C2BB] uppercase tracking-wider">
-                        Share this report
-                      </h3>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        Create a read-only public link, valid for 30 days.
-                      </p>
-                    </div>
-                    <button
-                      onClick={handleShare}
-                      disabled={sharing}
-                      className="text-xs font-medium text-[#645DF6] hover:text-[#8981ff] whitespace-nowrap
-                        disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150">
-                      {sharing ? 'Creating…' : shareLink ? 'Regenerate link' : 'Create link'}
-                    </button>
-                  </div>
-                  {shareError && <p className="text-xs text-orange-400">{shareError}</p>}
-                  {shareLink && (
-                    <input
-                      readOnly
-                      value={shareLink}
-                      onFocus={e => e.currentTarget.select()}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs font-mono text-gray-300"
-                    />
-                  )}
+              <div className="flex flex-col gap-2 anim-fade-in-up delay-175">
+                <p className="text-xs uppercase tracking-wider text-gray-500">Download report</p>
+                <div className="grid grid-cols-3 gap-2">
+                  <a href={downloadURL(job.id)}
+                    className="btn-shimmer py-2.5 rounded-lg font-medium text-white text-center text-sm block">
+                    ↓ HTML
+                  </a>
+                  <a href={downloadURL(job.id, undefined, 'xlsx')}
+                    className="rounded-lg border border-white/10 hover:border-[#645DF6]/50 hover:bg-white/[0.04]
+                      py-2.5 font-medium text-gray-300 hover:text-white text-center text-sm block transition-colors duration-150">
+                    ↓ Excel
+                  </a>
+                  <a href={downloadURL(job.id, undefined, 'csv')}
+                    className="rounded-lg border border-white/10 hover:border-[#645DF6]/50 hover:bg-white/[0.04]
+                      py-2.5 font-medium text-gray-300 hover:text-white text-center text-sm block transition-colors duration-150">
+                    ↓ CSV
+                  </a>
                 </div>
-              </Reveal>
+              </div>
 
               <Reveal delay={60}>
                 <div>

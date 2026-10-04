@@ -358,6 +358,20 @@ RULES = [
                 or _ilike(r["product"], "ElastiCache")
                 or _ilike(r["product"], "DocumentDB")
                 or _ilike(r["product"], "MemoryDB")
+                # EMR's own "BoxUsage:<type>" lines are EMR's per-instance
+                # SURCHARGE (confirmed real: 23-33% of the same instance's EC2
+                # rate in the raw bill, e.g. m8g.4xlarge $0.1795/h on EMR vs
+                # $0.5413/h on EC2) — the VM itself bills separately as
+                # AmazonEC2. The `emr` rule (below) routes these to map_emr's
+                # Dataproc-premium formula, but this rule's
+                # _has_instance_type(usage_type) clause matched them first and
+                # priced the surcharge as a whole GCE VM: five EMR rows,
+                # AWS $912.12 vs GCP $3,938.96 reported, ~$856 once routed
+                # correctly. Excluding the product here lets `emr` claim them.
+                or _ilike(r["product"], "Elastic MapReduce")
+                or _ilike(r["product"], "ElasticMapReduce")
+                or _ilike(r["product"], "AmazonEMR")
+                or _ilike(r["product"], "Amazon EMR")
             )
             # "Instance-hour" (hyphen) is the PDF-ingestion format
             # ("c7gd.4xlarge Linux/UNIX Spot Instance-hour in ..."); "Instance Hour"
@@ -906,6 +920,7 @@ RULES = [
         "emr",
         lambda r: (
             _ilike(r["product"], "Elastic MapReduce")
+            or _ilike(r["product"], "ElasticMapReduce")
             or _ilike(r["product"], "AmazonEMR")
             or _ilike(r["product"], "Amazon EMR")
         ),

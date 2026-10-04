@@ -894,14 +894,123 @@ def _live_compute_availability():
     return None
 
 
+# Services confirmed (live, 2026-10-04) to implement the standard "list
+# every location visible to this project" API pattern (Google's AIP-142) and
+# return a COMPLETE enumeration of operating regions -- so a region absent
+# from the list is a real, confident "this service doesn't operate here"
+# fact, the same kind of complete-enumeration signal Compute Engine's
+# aggregatedList gives for machine types. Checked directly with curl against
+# a real project before adding each entry here, not assumed from docs:
+#   file.googleapis.com/v1/projects/{p}/locations               -> HTTP 200
+#   redis.googleapis.com/v1/projects/{p}/locations               -> HTTP 200
+#   memcache.googleapis.com/v1/projects/{p}/locations            -> HTTP 200
+#   bigqueryreservation.googleapis.com/v1/projects/{p}/locations -> HTTP 200
+# Confirmed NOT implementing this pattern (both 404 live, same check):
+# container.googleapis.com (GKE) and sqladmin.googleapis.com (Cloud SQL) --
+# handled differently below (GKE) or left as a documented, honest gap (Cloud
+# SQL has no clean per-region tier-availability API at all; its only real
+# per-region signal would be attempting to create an instance, which this
+# pipeline obviously can't safely do as an availability probe).
+_LOCATIONS_LIST_SERVICES = {
+    "Cloud Filestore": "file.googleapis.com",
+    GCP_MEMORYSTORE: "redis.googleapis.com",
+    GCP_MEMORYSTORE_MEMCACHED: "memcache.googleapis.com",
+    "BigQuery Reservation API": "bigqueryreservation.googleapis.com",
+}
+
+_LIVE_SERVICE_REGIONS_CACHE: dict = {}
+
+
+def _live_service_regions(gcp_service):
+    """Return the set of regions `gcp_service` genuinely operates in (one
+    live locations.list call, cached per service for the remainder of this
+    process), or None if this service has no adapter, no credentials are
+    configured, or the call failed -- callers must treat None as "no live
+    signal, fall back to catalog + _KNOWN_PHANTOM_AVAILABILITY", never as
+    "available everywhere"."""
+    if gcp_service in _LIVE_SERVICE_REGIONS_CACHE:
+        return _LIVE_SERVICE_REGIONS_CACHE[gcp_service]
+    host = _LOCATIONS_LIST_SERVICES.get(gcp_service)
+    project = os.environ.get("GOOGLE_CLOUD_AVAILABILITY_PROJECT")
+    token = _gcp_availability_token() if (host and project) else None
+    if not (host and project and token):
+        _LIVE_SERVICE_REGIONS_CACHE[gcp_service] = None
+        return None
+    try:
+        import urllib.request, urllib.parse
+        regions = set()
+        page_token = ""
+        while True:
+            url = f"https://{host}/v1/projects/{project}/locations"
+            if page_token:
+                url += f"?pageToken={urllib.parse.quote(page_token)}"
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = json.loads(r.read())
+            for loc in data.get("locations", []):
+                loc_id = loc.get("locationId") or loc.get("name", "").rsplit("/", 1)[-1]
+                # Filestore's listing mixes zone entries ("africa-south1-a")
+                # in with region entries ("africa-south1") -- a zone ID ends
+                # in a single lowercase letter after the region's trailing
+                # digit. Redis/Memcached/BigQuery Reservation only ever list
+                # region-shaped IDs, so this filter is a harmless no-op there.
+                if re.search(r"-[a-z]$", loc_id):
+                    continue
+                regions.add(loc_id)
+            page_token = data.get("nextPageToken", "")
+            if not page_token:
+                break
+        print(f"  live {gcp_service} region check: {len(regions)} regions", file=sys.stderr)
+        _LIVE_SERVICE_REGIONS_CACHE[gcp_service] = regions
+        return regions
+    except Exception as e:
+        print(f"  live {gcp_service} region check failed ({e}); falling back", file=sys.stderr)
+        _LIVE_SERVICE_REGIONS_CACHE[gcp_service] = None
+        return None
+
+
+_GKE_SERVERCONFIG_CACHE: dict = {}
+
+
+def _live_gke_region_available(gcp_region):
+    """GKE/Container doesn't implement locations.list (confirmed 404 live)
+    -- the per-region serverConfig endpoint is the closest real signal: a
+    200 response means GKE genuinely operates there. A non-200 is
+    ambiguous (confirmed live: an invalid region returns 403 "Permission
+    denied... or it may not exist", not a clean 404 -- can't reliably tell
+    "doesn't exist" from a transient/permission issue from the status code
+    alone), so this only ever returns True or None, NEVER a confident
+    False -- it can add a positive signal but must never force something
+    unavailable on a flaky/ambiguous response."""
+    if gcp_region in _GKE_SERVERCONFIG_CACHE:
+        return _GKE_SERVERCONFIG_CACHE[gcp_region]
+    project = os.environ.get("GOOGLE_CLOUD_AVAILABILITY_PROJECT")
+    token = _gcp_availability_token() if project else None
+    if not (project and token):
+        return None
+    result = None
+    try:
+        import urllib.request
+        url = f"https://container.googleapis.com/v1/projects/{project}/locations/{gcp_region}/serverConfig"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            if r.status == 200:
+                result = True
+    except Exception:
+        pass
+    _GKE_SERVERCONFIG_CACHE[gcp_region] = result
+    return result
+
+
 def _family_phantom_unavailable(gcp_service, desc_pattern, gcp_region):
     """True if (gcp_service, desc_pattern, gcp_region) should be treated as
-    unavailable, checking live Compute Engine machine-type data FIRST (if
-    present and fresh) and falling back to the hand-curated
+    unavailable, checking live GCP API data FIRST (per-service, see the
+    adapters above) and falling back to the hand-curated
     _KNOWN_PHANTOM_AVAILABILITY table only when no live signal exists for
-    this exact (family, region). Live data always wins when present --
-    including by saying something IS available that the hardcoded table
-    claims isn't (see the N4D/asia-south2 case documented above)."""
+    this exact (service, family, region). Live data always wins when
+    present -- including by saying something IS available that the
+    hardcoded table claims isn't (see the N4D/asia-south2 case documented
+    above)."""
     if gcp_service == GCP_COMPUTE_ENGINE:
         regions = _live_compute_availability()
         if regions and gcp_region in regions:
@@ -909,6 +1018,13 @@ def _family_phantom_unavailable(gcp_service, desc_pattern, gcp_region):
             prefix = m.group(0).lower() if m else None
             if prefix and prefix in regions[gcp_region]:
                 return not regions[gcp_region][prefix]
+    elif gcp_service in _LOCATIONS_LIST_SERVICES:
+        regions = _live_service_regions(gcp_service)
+        if regions is not None:
+            return gcp_region not in regions
+    elif gcp_service == "Kubernetes Engine":
+        if _live_gke_region_available(gcp_region) is True:
+            return False
     return (desc_pattern, gcp_region) in _KNOWN_PHANTOM_AVAILABILITY
 
 # Qualifiers that make a SKU a more-specific or differently-priced variant of

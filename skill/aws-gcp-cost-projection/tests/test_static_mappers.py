@@ -917,11 +917,61 @@ def test_live_data_present_but_region_unseen_falls_back_to_phantom_table(monkeyp
         "Compute Engine", "N4D Instance Core", "asia-south2") is True
 
 
-def test_live_availability_never_consulted_for_non_compute_engine_service(monkeypatch):
-    # The live probe only covers Compute Engine machine types -- a BigQuery/
-    # Cloud SQL/etc. desc_pattern must never be run through the GCE-specific
-    # prefix-matching logic, only the hand-curated table.
+def test_compute_live_availability_never_consulted_for_other_services(monkeypatch):
+    # The Compute Engine machine-type probe (_live_compute_availability) must
+    # never be run through for a service that has its own dedicated adapter
+    # (or none at all) -- a BigQuery Reservation desc_pattern that happens to
+    # start with "N4D..." must not accidentally match the GCE prefix logic.
     monkeypatch.setattr(_asm, "_KNOWN_PHANTOM_AVAILABILITY", set())
     _patch_live_availability(monkeypatch, {"asia-south2": {"n4d": True}})
+    monkeypatch.setattr(_asm, "_live_service_regions", lambda svc: None)
     assert _asm._family_phantom_unavailable(
         "BigQuery Reservation API", "N4D-shaped-but-not-really", "asia-south2") is False
+
+
+# ---------------------------------------------------------------------------
+# Live multi-service region availability (Filestore, Memorystore Redis/
+# Memcached, BigQuery Reservation API via the generic locations.list pattern;
+# GKE via its per-region serverConfig positive-only signal)
+# ---------------------------------------------------------------------------
+
+def test_locations_list_service_region_absent_is_unavailable(monkeypatch):
+    monkeypatch.setattr(_asm, "_KNOWN_PHANTOM_AVAILABILITY", set())
+    monkeypatch.setattr(_asm, "_live_service_regions",
+                         lambda svc: {"asia-south1", "us-central1"} if svc == "Cloud Filestore" else None)
+    assert _asm._family_phantom_unavailable(
+        "Cloud Filestore", "Filestore Capacity Basic SSD", "asia-south2") is True
+    assert _asm._family_phantom_unavailable(
+        "Cloud Filestore", "Filestore Capacity Basic SSD", "asia-south1") is False
+
+
+def test_locations_list_no_live_signal_falls_back_to_phantom_table(monkeypatch):
+    monkeypatch.setattr(
+        _asm, "_KNOWN_PHANTOM_AVAILABILITY",
+        {("Memorystore for Redis Basic", "asia-south2")})
+    monkeypatch.setattr(_asm, "_live_service_regions", lambda svc: None)
+    assert _asm._family_phantom_unavailable(
+        _asm.GCP_MEMORYSTORE, "Memorystore for Redis Basic", "asia-south2") is True
+
+
+def test_gke_positive_signal_overrides_stale_phantom_entry(monkeypatch):
+    # Mirrors the real N4D case but for GKE's positive-only adapter: live
+    # says a region IS available even though the hand-curated table (stale)
+    # claims it isn't.
+    monkeypatch.setattr(
+        _asm, "_KNOWN_PHANTOM_AVAILABILITY",
+        {("Zonal Kubernetes Clusters", "asia-south2")})
+    monkeypatch.setattr(_asm, "_live_gke_region_available", lambda region: True)
+    assert _asm._family_phantom_unavailable(
+        "Kubernetes Engine", "Zonal Kubernetes Clusters", "asia-south2") is False
+
+
+def test_gke_ambiguous_signal_never_forces_unavailable(monkeypatch):
+    # GKE's serverConfig check can only ever confirm availability, never
+    # confirm unavailability (an error response is ambiguous — could be a
+    # real missing region or a transient/permission issue) -- a None result
+    # must fall through to the hand-curated table, never be treated as False.
+    monkeypatch.setattr(_asm, "_KNOWN_PHANTOM_AVAILABILITY", set())
+    monkeypatch.setattr(_asm, "_live_gke_region_available", lambda region: None)
+    assert _asm._family_phantom_unavailable(
+        "Kubernetes Engine", "Zonal Kubernetes Clusters", "mars-north1") is False

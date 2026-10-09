@@ -12,6 +12,7 @@ import (
 	"github.com/facets/cur-web/internal/db"
 	"github.com/facets/cur-web/internal/jobs"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,12 +48,13 @@ func TestGetJob_NotOwner(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	defer d.Close()
-	d.CreateJob("j1", "other@google.com", "Acme", ".csv", "")
+	id := uuid.New().String()
+	d.CreateJob(id, "other@google.com", "Acme", ".csv", "")
 	dir := t.TempDir()
 	h := jobs.NewHandler(d, dir, nil, nil, jobs.NotifyConfig{}, nil)
 
-	ctx := withChiID(ctxWithSession("rep@google.com", "Rep"), "j1")
-	req, _ := http.NewRequestWithContext(ctx, "GET", "/api/jobs/j1", nil)
+	ctx := withChiID(ctxWithSession("rep@google.com", "Rep"), id)
+	req, _ := http.NewRequestWithContext(ctx, "GET", "/api/jobs/"+id, nil)
 	w := httptest.NewRecorder()
 	h.GetByID(w, req)
 
@@ -65,12 +67,13 @@ func TestRuns_EmptyForLegacyJob(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	defer d.Close()
-	d.CreateJob("j-legacy", "rep@google.com", "Acme", ".csv", "")
+	id := uuid.New().String()
+	d.CreateJob(id, "rep@google.com", "Acme", ".csv", "")
 	dir := t.TempDir()
 	h := jobs.NewHandler(d, dir, nil, nil, jobs.NotifyConfig{}, nil)
 
-	ctx := withChiID(ctxWithSession("rep@google.com", "Rep"), "j-legacy")
-	req, _ := http.NewRequestWithContext(ctx, "GET", "/api/jobs/j-legacy/runs", nil)
+	ctx := withChiID(ctxWithSession("rep@google.com", "Rep"), id)
+	req, _ := http.NewRequestWithContext(ctx, "GET", "/api/jobs/"+id+"/runs", nil)
 	w := httptest.NewRecorder()
 	h.Runs(w, req)
 
@@ -84,12 +87,13 @@ func TestRuns_NotOwner(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	defer d.Close()
-	d.CreateJob("j-other", "other@google.com", "Acme", ".csv", "")
+	id := uuid.New().String()
+	d.CreateJob(id, "other@google.com", "Acme", ".csv", "")
 	dir := t.TempDir()
 	h := jobs.NewHandler(d, dir, nil, nil, jobs.NotifyConfig{}, nil)
 
-	ctx := withChiID(ctxWithSession("rep@google.com", "Rep"), "j-other")
-	req, _ := http.NewRequestWithContext(ctx, "GET", "/api/jobs/j-other/runs", nil)
+	ctx := withChiID(ctxWithSession("rep@google.com", "Rep"), id)
+	req, _ := http.NewRequestWithContext(ctx, "GET", "/api/jobs/"+id+"/runs", nil)
 	w := httptest.NewRecorder()
 	h.Runs(w, req)
 
@@ -100,12 +104,13 @@ func TestSummary_404WhenMissing(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	defer d.Close()
-	d.CreateJob("j-nosummary", "rep@google.com", "Acme", ".csv", "")
+	id := uuid.New().String()
+	d.CreateJob(id, "rep@google.com", "Acme", ".csv", "")
 	dir := t.TempDir()
 	h := jobs.NewHandler(d, dir, nil, nil, jobs.NotifyConfig{}, nil)
 
-	ctx := withChiID(ctxWithSession("rep@google.com", "Rep"), "j-nosummary")
-	req, _ := http.NewRequestWithContext(ctx, "GET", "/api/jobs/j-nosummary/summary", nil)
+	ctx := withChiID(ctxWithSession("rep@google.com", "Rep"), id)
+	req, _ := http.NewRequestWithContext(ctx, "GET", "/api/jobs/"+id+"/summary", nil)
 	w := httptest.NewRecorder()
 	h.Summary(w, req)
 
@@ -116,12 +121,13 @@ func TestGetJob_Owner(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	defer d.Close()
-	d.CreateJob("j1", "rep@google.com", "Acme Corp", ".csv", "")
+	id := uuid.New().String()
+	d.CreateJob(id, "rep@google.com", "Acme Corp", ".csv", "")
 	dir := t.TempDir()
 	h := jobs.NewHandler(d, dir, nil, nil, jobs.NotifyConfig{}, nil)
 
-	ctx := withChiID(ctxWithSession("rep@google.com", "Rep"), "j1")
-	req, _ := http.NewRequestWithContext(ctx, "GET", "/api/jobs/j1", nil)
+	ctx := withChiID(ctxWithSession("rep@google.com", "Rep"), id)
+	req, _ := http.NewRequestWithContext(ctx, "GET", "/api/jobs/"+id, nil)
 	w := httptest.NewRecorder()
 	h.GetByID(w, req)
 

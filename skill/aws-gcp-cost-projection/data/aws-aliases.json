@@ -65,6 +65,7 @@
     "opensearch service":                  "opensearch",
     "opensearch":                           "opensearch",
     "elasticsearch service":               "opensearch",
+    "amazones":                             "opensearch",
     "quicksight":                           "quicksight",
     "sagemaker":                            "sagemaker",
     "amazonsagemaker":                      "sagemaker",

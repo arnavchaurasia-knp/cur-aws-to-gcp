@@ -1,4 +1,36 @@
 #!/usr/bin/env python3
+"""
+ingest.py — Phase 1. SINGLE RESPONSIBILITY: EXTRACTION.
+
+Turn any supported bill format into a faithful, normalized catalog of line
+items. This is the extraction layer; it does not resolve canonical identity,
+classify charge-type, or map to GCP.
+
+OWNS (its whole job):
+  1. Format detection + loading — CSV/TSV (+gz/zst), Parquet, JSON, Excel, PDF,
+     ZIP; agy fallback (normalized_bill.csv) for unrecognized shapes.
+  2. Dedup into aws_li_catalog — one row per distinct line-item type, stable
+     aws_li_key (md5 of the dedup tuple).
+  3. Faithful field extraction — product, product_code (raw CUR
+     lineItem/ProductCode), usage_type, operation, region->gcp_region,
+     pricing_model, line_item_type, is_workload, total_usage, cost,
+     license/OS/engine/deployment/volume, pricing_unit, billing_format.
+  4. Structured enrichment derivable from the row — instance_type, vcpus,
+     ram_gb, arch, instance_count, billing_days, effective_unit_rate.
+  5. Bill integrity — PDF total reconciliation, materiality filter.
+
+OUTPUT GUARANTEE: a fully-populated aws_li_catalog carrying the raw facts +
+product_code (when the format has one) + structured fields where derivable.
+It promises identity RAW MATERIAL (product/product_code), not RESOLVED identity.
+
+EXPLICITLY NOT ingest's job (owned by later layers, keep them out of here):
+  - canonical_service resolution   -> aws_normalizer.py / resolve_unknown_product_codes.py
+  - mechanic_group (charge-type)   -> classify_mechanics.py
+  - any SKU / GCP pricing decision  -> apply_static_mappings.py / family_mapper.py
+
+(The only identity call here is _canonical_service(), used solely as a PDF
+section-header parsing heuristic — an extraction aid, not catalog identity.)
+"""
 import duckdb
 import os
 import sys
@@ -716,9 +748,14 @@ def main():
             volume_type VARCHAR,
             pricing_unit VARCHAR,
             workload_class VARCHAR,
-            billing_format VARCHAR
+            billing_format VARCHAR,
+            product_code VARCHAR
         )
     """)
+    # product_code (= CUR lineItem/ProductCode) is the authoritative stable key
+    # aws_normalizer.py keys canonical_service on. Guard for DBs created before
+    # this column existed (fresh jobs get it from the CREATE above).
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS product_code VARCHAR")
 
     # Reconcile sum helper
     if is_raw_cur:
@@ -786,21 +823,31 @@ def main():
                     COALESCE({c(['product/databaseengine', 'databaseengine'])}, '') as database_engine,
                     COALESCE({c(['product/deploymentoption', 'deploymentoption'])}, '') as deployment_option,
                     COALESCE({c(['product/volumetype', 'volumetype'])}, '') as volume_type,
-                    COALESCE({c(['pricing/unit', 'unit'])}, '') as pricing_unit
+                    COALESCE({c(['pricing/unit', 'unit'])}, '') as pricing_unit,
+                    -- Authoritative stable key: the raw CUR service code
+                    -- (lineItem/ProductCode), e.g. "AmazonEC2". Already read above
+                    -- for the product-name fallback and is_workload; now persisted
+                    -- as its own column so aws_normalizer.py can key on it.
+                    COALESCE({c(['lineitem/productcode', 'productcode'])}, '') as product_code
                 FROM aws_raw
                 WHERE {c(['lineitem/lineitemtype', 'lineitemtype'])} != 'Tax'
             )
             INSERT INTO aws_li_catalog (
-                aws_li_key, product, usage_type, operation, aws_region, gcp_region, 
+                aws_li_key, product, usage_type, operation, aws_region, gcp_region,
                 pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost,
-                license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit
+                license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,
+                product_code
             )
-            SELECT 
+            SELECT
                 md5(product || usage_type || operation || aws_region || pricing_model || line_item_type || CAST(is_workload AS VARCHAR) || license_model || operating_system || database_engine || deployment_option || volume_type || pricing_unit) as key,
                 product, usage_type, operation, aws_region, NULL as gcp_region, pricing_model, line_item_type, is_workload,
                 SUM(row_usage) as total_usage,
                 SUM(row_cost) as aws_amortized_cost,
-                license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit
+                license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,
+                -- product_code is functionally constant within a dedup group (it is
+                -- 1:1 with product); carried via max() so it is NOT part of the md5
+                -- dedup key — aws_li_key stays byte-identical to before this change.
+                max(product_code) as product_code
             FROM _raw_flat
             GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload,
                      license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit
@@ -1256,7 +1303,17 @@ def main():
                 product = ""
                 usage_type = ""
                 
-                if "elastic compute" in desc_lower or desc_lower.startswith("ec2") or "natgateway" in desc_lower:
+                # EMR's per-node surcharge is frequently described in free-text
+                # bills as "... EC2 instance usage <type> (EMR) ..." — if the EC2
+                # branch below matched first, the row gets permanently relabeled
+                # as plain Elastic Compute Cloud and all EMR identity is lost
+                # before classify_mechanics.py / map_emr() ever see it, so it
+                # never gets priced via the real Dataproc Premium SKU and instead
+                # falls through to a generic Compute Engine VM mapping (mirrors
+                # the same EC2/EMR exclusion already applied in
+                # classify_mechanics.py's compute_breakdown rule).
+                if ("elastic compute" in desc_lower or desc_lower.startswith("ec2") or "natgateway" in desc_lower) \
+                        and "emr" not in desc_lower:
                     product = "Amazon Elastic Compute Cloud"
                     if "natgateway" in desc_lower:
                         if "hour" in desc_lower:
@@ -1322,7 +1379,17 @@ def main():
                     usage_type = "EKS"
                 elif "emr" in desc_lower:
                     product = "Amazon Elastic MapReduce"
-                    usage_type = "EMR"
+                    # Preserve the instance type so apply_static_mappings.py's
+                    # _emr_vcpus() can resolve a real vCPU count for the
+                    # Dataproc Premium ($/vCPU-hr) formula. The flat literal
+                    # "EMR" (no instance type) used here previously matched
+                    # neither of _emr_vcpus()'s regexes, so every such row
+                    # silently fell to the "vCPU unknown" passthrough branch
+                    # instead of computing the real formula-based price.
+                    # "BoxUsage:<type>" matches the fallback pattern
+                    # _emr_vcpus() already supports for raw-CUR-style EMR rows.
+                    inst_match = re.search(r'\b([a-z0-9]+\.[a-z0-9]+)\b', desc_lower)
+                    usage_type = f"BoxUsage:{inst_match.group(1)}" if inst_match else "EMR"
                 elif "elasticache" in desc_lower or "valkey" in desc_lower:
                     product = "Amazon ElastiCache"
                     usage_type = "ElastiCache"

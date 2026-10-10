@@ -176,6 +176,7 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "CloudWatch")
             or _ilike(r["product"], "AmazonCloudWatch")
+            or r.get("canonical") == "cloudwatch"
         ),
     ),
     (
@@ -325,6 +326,7 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "OpenSearch")
             or _ilike(r["product"], "Elasticsearch")
+            or r.get("canonical") == "opensearch"
         ),
     ),
     (
@@ -348,6 +350,7 @@ RULES = [
                 _ilike(r["product"], "Elastic Compute")
                 or _ilike(r["product"], "EC2")
                 or _ilike(r["product"], "Compute Cloud")
+                or r.get("canonical") == "ec2"
                 or _has_instance_type(r["operation"])
                 or _has_instance_type(r["usage_type"])
             )
@@ -441,6 +444,7 @@ RULES = [
                 or _ilike(r["product"], "Aurora")
                 or _ilike(r["product"], "DocumentDB")
                 or _ilike(r["product"], "MemoryDB")
+                or r.get("canonical") in ("rds", "aurora", "documentdb", "memorydb")
             )
             # Aurora Serverless v2 bills in ACU-Hrs; include alongside instance Hrs.
             # ElastiCache excluded — has its own static elasticache handler below.
@@ -474,6 +478,7 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "Elastic File System")
             or _ilike(r["product"], "AmazonEFS")
+            or r.get("canonical") == "efs"
         ),
     ),
     (
@@ -485,11 +490,23 @@ RULES = [
             _ilike(r["product"], "FSx")
             or _ilike(r["product"], "AmazonFSx")
             or _ilike(r["product"], "Amazon FSx")
+            or r.get("canonical") == "fsx"
         ),
     ),
     (
         "block_storage",
         lambda r: (
+            # MSK (Kafka) broker storage is ordinary disk billed in GB-Mo — price
+            # it as storage, not as a Kafka broker-hour. CUR carries usage_type
+            # "Kafka.Storage..." (caught by the generic "Storage" branch below),
+            # but PDF/flat bills leave usage_type blank and put the signal in
+            # operation ("$0.12 per GB-Mo for storage ...") — without this those
+            # rows fall to misc. Broker-hour rows (unit=Hrs, "broker hour" in
+            # operation) do NOT match here and flow on to the msk rule.
+            (r.get("canonical") == "msk"
+             and ((r.get("unit") or "").lower() in ("gb-mo", "gb month", "gb-month")
+                  or _re(f"{r.get('usage_type', '')} {r.get('operation', '')}", r"storage")))
+            or
             # Confirmed real: rows with product="Amazon Elastic Block Store"
             # whose operation text unambiguously describes an S3-ONLY storage
             # class ("One Zone-Infrequent Access", "Glacier", etc. — EBS has
@@ -568,6 +585,7 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "DataTransfer")
             or _ilike(r["product"], "Data Transfer")
+            or r.get("canonical") == "datatransfer"
             # PDF/flat bills use product="Bandwidth" for native EC2 internet egress.
             # Only route here when the operation describes a real data-transfer charge.
             or (r.get("product", "").strip() == "Bandwidth"
@@ -620,6 +638,7 @@ RULES = [
             _ilike(r["product"], "X-Ray")
             or _ilike(r["product"], "AmazonXRay")
             or _ilike(r["product"], "XRay")
+            or r.get("canonical") == "xray"
         ),
     ),
     (
@@ -636,6 +655,7 @@ RULES = [
                 or _ilike(r["product"], "AmazonDirectConnect")
                 or _ilike(r["product"], "GlobalAccelerator")
                 or _ilike(r["product"], "Global Accelerator")
+                or r.get("canonical") in ("directconnect", "globalaccelerator", "eks")
                 # EKS cluster management fee: $0.10/hr → GKE cluster mgmt fee (exact parity)
                 or _ilike(r["product"], "Elastic Container Service for Kubernetes")
                 or _ilike(r["product"], "AmazonEKS")
@@ -698,6 +718,7 @@ RULES = [
                 # Must be caught here so it doesn't fall to misc → LLM misroute.
                 or _ilike(r["product"], "Amazon API Gateway")
                 or _ilike(r["product"], "AmazonApiGateway")
+                or r.get("canonical") == "apigateway"
                 # S3 Intelligent-Tiering, lifecycle, and miscellaneous S3 charges
                 # with blank usage_type / unit fall here rather than to misc.
                 # map_per_request() handles them as Cloud Storage passthroughs.
@@ -744,6 +765,7 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "ElastiCache")
             or _ilike(r["product"], "AmazonElastiCache")
+            or r.get("canonical") == "elasticache"
         ),
     ),
     (
@@ -756,14 +778,21 @@ RULES = [
                 _ilike(r["product"], "Managed Streaming for Apache Kafka")
                 or _ilike(r["product"], "AmazonMSK")
                 or _ilike(r["product"], "MSK")
+                or r.get("canonical") == "msk"
             )
-            and _re(r.get("usage_type", ""), r"Kafka\.[a-z]")
-            # PDF/flat-CSV bills leave pricing_unit blank (same gap acknowledged
-            # elsewhere in this file, e.g. the block_storage exclusion above) —
-            # a genuine MSK broker-hours row from one of those formats would fail
-            # this positive check and get silently misrouted to the wrong
-            # mechanic group. Accept blank alongside the explicit hour units.
-            and r.get("pricing_unit", "").lower() in ("hrs", "hours", "hr", "")
+            # Broker-hours (compute) only — storage GB-Mo rows are caught earlier
+            # by block_storage. CUR carries the broker signal in usage_type
+            # ("Kafka.t3..."); PDF/flat bills leave usage_type blank and carry it
+            # in operation ("... per broker hour for Kafka.t3.small ..."), so
+            # check both or PDF broker rows fall to misc.
+            and (
+                _re(r.get("usage_type", ""), r"Kafka\.[a-z]")
+                or _re(r.get("operation", ""), r"broker[\s-]hour|Kafka\.[a-z]")
+            )
+            # PDF/flat-CSV bills leave the unit blank — _is_hourly_unit accepts ""
+            # alongside the explicit hour units, while still excluding GB-Mo
+            # storage rows (which belong to block_storage, matched above).
+            and _is_hourly_unit(r["unit"])
         ),
     ),
     (
@@ -777,6 +806,7 @@ RULES = [
             or _ilike(r["product"], "AmazonGuardDuty")
             or _ilike(r["product"], "Security Hub")
             or _ilike(r["product"], "SecurityHub")
+            or r.get("canonical") in ("guardduty", "securityhub")
         ),
     ),
     (
@@ -792,6 +822,7 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "Inspector")
             or _ilike(r["product"], "AmazonInspector")
+            or r.get("canonical") == "inspector"
         ),
     ),
     (
@@ -812,6 +843,7 @@ RULES = [
             _ilike(r["product"], "Managed Workflows for Apache Airflow")
             or _ilike(r["product"], "AmazonMWAA")
             or _ilike(r["product"], "MWAA")
+            or r.get("canonical") == "mwaa"
         ),
     ),
     (
@@ -850,7 +882,7 @@ RULES = [
         # misc/LLM unchanged, per that matrix design.
         "dynamodb_storage",
         lambda r: (
-            (_ilike(r["product"], "DynamoDB") or _ilike(r["product"], "AmazonDynamoDB"))
+            (_ilike(r["product"], "DynamoDB") or _ilike(r["product"], "AmazonDynamoDB") or r.get("canonical") == "dynamodb")
             and _re(r.get("usage_type", ""), r"TimedStorage-ByteHrs|TimedPITRStorage-ByteHrs")
         ),
     ),
@@ -863,7 +895,7 @@ RULES = [
         # those correctly as ordinary egress.
         "shield",
         lambda r: (
-            (_ilike(r["product"], "Shield") or _ilike(r["product"], "AWSShield"))
+            (_ilike(r["product"], "Shield") or _ilike(r["product"], "AWSShield") or r.get("canonical") == "shield")
             and _re(r.get("usage_type", ""), r"Monthly-?Fee")
         ),
     ),
@@ -879,6 +911,7 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "QuickSight")
             or _ilike(r["product"], "AmazonQuickSight")
+            or r.get("canonical") == "quicksight"
         ),
     ),
     (
@@ -889,6 +922,7 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "Redshift")
             or _ilike(r["product"], "AmazonRedshift")
+            or r.get("canonical") == "redshift"
         ),
     ),
     (
@@ -898,6 +932,7 @@ RULES = [
         lambda r: (
             _ilike(r["product"], "Athena")
             or _ilike(r["product"], "AmazonAthena")
+            or r.get("canonical") == "athena"
         ),
     ),
     (
@@ -909,6 +944,7 @@ RULES = [
             (
                 _ilike(r["product"], "Kinesis")
                 or _ilike(r["product"], "AmazonKinesis")
+                or r.get("canonical") == "kinesis"
             )
             and (_is_hourly_unit(r.get("unit")) or (r.get("unit") or "").lower() in ("shard-hrs", "shardhours"))
         ),
@@ -923,6 +959,7 @@ RULES = [
             or _ilike(r["product"], "ElasticMapReduce")
             or _ilike(r["product"], "AmazonEMR")
             or _ilike(r["product"], "Amazon EMR")
+            or r.get("canonical") == "emr"
         ),
     ),
     (
@@ -948,7 +985,7 @@ RULES = [
         # trusting pricing_unit alone to always say "DPU-Hour".
         "glue",
         lambda r: (
-            (_ilike(r["product"], "Glue") or _ilike(r["product"], "AWSGlue"))
+            (_ilike(r["product"], "Glue") or _ilike(r["product"], "AWSGlue") or r.get("canonical") == "glue")
             and (
                 _re(r.get("unit", ""), r"DPU-?Hour")
                 or _re(r.get("usage_type", ""), r"DPU-?Hour")
@@ -977,6 +1014,7 @@ RULES = [
             (
                 _ilike(r["product"], "Route 53")
                 or _re(r.get("usage_type", ""), r"Route53|DNS-Queries")
+                or r.get("canonical") == "route53"
             )
             and not _ilike(r["product"], "Application Recovery Controller")
         ),
@@ -988,7 +1026,7 @@ RULES = [
         # The existing Cloud Armor mapping logic in map_per_request handles these.
         "per_request",
         lambda r: (
-            _re(r.get("product", ""), r"AWS WAF")
+            (_re(r.get("product", ""), r"AWS WAF") or r.get("canonical") == "waf")
             and not _re(r.get("usage_type", "") + r.get("operation", ""),
                         r"WebACL-Hour|Rule-Hour|Web ACL|WAF Rule|\bMonth\b")
         ),
@@ -998,7 +1036,7 @@ RULES = [
         # PDF bills leave unit=None; matched by product + "Month" in operation.
         "flat_hourly",
         lambda r: (
-            _re(r.get("product", ""), r"AWS WAF")
+            (_re(r.get("product", ""), r"AWS WAF") or r.get("canonical") == "waf")
             and _re(r.get("operation", ""), r"\bMonth\b")
         ),
     ),
@@ -1014,7 +1052,8 @@ RULES = [
                     # substring. Some CUR exports do legitimately shorten the
                     # product name to bare "Amazon S3" though, so word-boundary
                     # match "S3" as a whole token, not a substring.
-                    (_re(r["product"], r"\bS3\b") or _ilike(r["product"], "Simple Storage"))
+                    (_re(r["product"], r"\bS3\b") or _ilike(r["product"], "Simple Storage")
+                     or r.get("canonical") == "s3")
                     and not _ilike(r["product"], "Lambda")
                 )
                 # Confirmed real: a row with product="Amazon Elastic Block
@@ -1086,7 +1125,7 @@ RULES = [
         lambda r: (
             bool(r["product"])
             and not re.match(r'^(amazon|aws)\b', r["product"], re.IGNORECASE)
-            and canonical_service(r["product"]) is None
+            and canonical_service(r["product"], r.get("product_code")) is None
         ),
     ),
 ]
@@ -1159,6 +1198,34 @@ def _misc_reason(row: dict) -> str:
     product = row.get("product") or ""
     usage_type = row.get("usage_type") or ""
     unit = row.get("unit") or ""
+
+    # DATA GAP: the service IS known (canonical resolved from product_code/name),
+    # but the bill row carries no charge-type signal at all — unit AND operation
+    # blank, and usage_type absent or a rolled-up "<region>-Usage:NA" placeholder.
+    # We know WHICH service, not WHAT KIND of charge, so no mechanic can price it.
+    # Flag it explicitly (data_gap=True) so the job run reports the service and the
+    # missing fields instead of a silent, unexplained misc.
+    canonical = row.get("canonical")
+    operation = row.get("operation") or ""
+    _ut = usage_type.strip().lower()
+    degenerate_ut = (not _ut) or _ut.endswith(":na")
+    if canonical and not unit.strip() and not operation.strip() and degenerate_ut:
+        return json.dumps({
+            "why": (f"service identified as '{canonical}' but the bill row has no "
+                    f"charge-type detail (unit, operation blank; usage_type={usage_type!r})"),
+            "service_hint": canonical,
+            "data_gap": True,
+            "missing_fields": ["unit", "operation", "usage_type_detail"],
+            "recommended_strategy": "passthrough",
+            "mapping_guidance": (
+                f"Identity is known ({canonical}) but this is an aggregated/rolled-up bill line "
+                f"with no unit, operation, or granular usage_type, so the charge TYPE "
+                f"(instance-hours vs storage vs request) cannot be determined from the source "
+                f"bill. Passthrough at cost parity, mapping_confidence=0.3, and note in "
+                f"mapping-notes.md that the source bill lacked line-item detail for this "
+                f"{canonical} charge."
+            ),
+        })
 
     # Accelerator / specialized silicon (Inferentia, Trainium, GPU) → NEVER a
     # CPU VM. No like-for-like GCP equivalent (GCP uses TPUs / different GPUs),
@@ -1321,8 +1388,10 @@ def main():
         print("Added column mechanic_group to aws_li_catalog.")
 
     # --- Load rows ---
-    # billing_format may be absent in DBs ingested before this column was added
+    # billing_format / product_code may be absent in DBs ingested before those
+    # columns were added — fall back to NULL so classification still runs.
     bf_expr = "billing_format" if "billing_format" in existing_cols else "NULL AS billing_format"
+    pc_expr = "product_code" if "product_code" in existing_cols else "NULL AS product_code"
     rows = con.execute(
         f"""
         SELECT
@@ -1338,7 +1407,8 @@ def main():
             instance_vcpus,
             instance_ram_gb,
             instance_count,
-            {bf_expr}
+            {bf_expr},
+            {pc_expr}
         FROM aws_li_catalog
         """
     ).fetchall()
@@ -1347,7 +1417,7 @@ def main():
         "aws_li_key", "product", "usage_type", "operation",
         "unit", "line_item_type", "pricing_model", "aws_amortized_cost",
         "instance_type", "instance_vcpus", "instance_ram_gb", "instance_count",
-        "billing_format",
+        "billing_format", "product_code",
     ]
 
     # --- Determine once, bill-wide, whether ignoring RIFee/SavingsPlanRecurringFee/
@@ -1365,12 +1435,24 @@ def main():
     # --- Classify ---
     updates: list[tuple[str, str]] = []
     misc_reasons: dict[str, str] = {}   # aws_li_key → why it landed in misc
+    data_gaps: list[tuple[str, str, float]] = []  # (canonical, product, cost) — known service, no charge-type detail
     for raw in rows:
         row = dict(zip(col_names, raw))
+        # Authoritative service identity (product_code-first, name fallback),
+        # consumed by the rules below instead of each rule re-sniffing the
+        # free-text product name. Identity is resolved once, here.
+        row["canonical"] = canonical_service(row.get("product"), row.get("product_code"))
         group = classify(row)
         updates.append((group, row["aws_li_key"]))
         if group == "misc":
-            misc_reasons[row["aws_li_key"]] = _misc_reason(row)
+            reason = _misc_reason(row)
+            misc_reasons[row["aws_li_key"]] = reason
+            try:
+                if json.loads(reason).get("data_gap"):
+                    data_gaps.append((row.get("canonical") or "?", row.get("product") or "",
+                                      float(row.get("aws_amortized_cost") or 0)))
+            except (ValueError, TypeError):
+                pass
 
     # Bulk update
     con.executemany(
@@ -1409,6 +1491,29 @@ def main():
     print("-" * 70)
     print(f"{'TOTAL':<25} {total_rows:>8}  {'100.0%':>8}  {total_spend:>14,.2f}  {'100.0%':>8}")
 
+    # --- Data-gap report: known service, but the bill lacks charge-type detail ---
+    # These rows are NOT a classification failure — the source bill rolled them up
+    # with no unit/operation/granular usage_type, so no mechanic can price them.
+    # Surface them in the job run (and a file the report can read) so the operator
+    # sees exactly which spend could not be projected and why.
+    if data_gaps:
+        gap_total = sum(c for _, _, c in data_gaps)
+        print(f"\nDATA GAPS: {len(data_gaps)} row(s), ${gap_total:,.2f} — service identified "
+              f"but the bill has no charge-type detail (unit/operation/usage_type missing):")
+        for canon, prod, cost in sorted(data_gaps, key=lambda x: -x[2]):
+            print(f"  ${cost:>12,.2f}  {canon:<16} {prod[:50]}")
+        try:
+            gap_path = _safe_path(os.path.dirname(db_path), "data_gaps.json")
+            with open(gap_path, "w", encoding="utf-8") as _gf:
+                json.dump(
+                    {"count": len(data_gaps), "total_cost": round(gap_total, 2),
+                     "rows": [{"canonical": c, "product": p, "cost": round(co, 2)}
+                              for c, p, co in sorted(data_gaps, key=lambda x: -x[2])]},
+                    _gf, indent=2,
+                )
+        except Exception as _e:  # pragma: no cover - best-effort reporting
+            print(f"  (could not write data_gaps.json: {_e})")
+
     # --- Gate: misc > 15% of total spend ---
     misc_pct = 100.0 * misc_spend / total_spend if total_spend else 0.0
     if misc_pct > 15.0:
@@ -1433,7 +1538,7 @@ def main():
             )
 
     # --- Emit phase2_manifest.json alongside the DB ---
-    import os, collections
+    import collections  # os is already imported at module scope
     manifest: dict[str, list] = collections.defaultdict(list)
     row_data_full = con.execute(
         """

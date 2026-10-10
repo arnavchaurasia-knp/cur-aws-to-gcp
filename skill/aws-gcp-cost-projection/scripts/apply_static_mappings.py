@@ -3012,7 +3012,7 @@ def map_per_request(rows):
         # collision risk above: canonical_service is exact-alias-keyed, not a
         # substring match, so "Amazon Simple Queue Service APS3-..." still
         # resolves to "sqs", never "s3".
-        if "simple storage" in product or canonical_service(product) == "s3":
+        if "simple storage" in product or canonical_service(product, r.get("product_code")) == "s3":
             ut = (r.get("usage_type") or "").lower()
             op = (r.get("operation") or "").lower()
             blob = ut + " " + op
@@ -3356,7 +3356,7 @@ def map_block_storage(rows):
             is_managed_db = (
                 any(k in product for k in
                     ("rds", "relational", "aurora", "documentdb", "memorydb", "elasticache"))
-                or canonical_service(product) in ("rds", "aurora", "documentdb", "memorydb", "elasticache")
+                or canonical_service(product, r.get("product_code")) in ("rds", "aurora", "documentdb", "memorydb", "elasticache")
             )
             gp3_like = "gp3" in blob.lower() or "gp2" in blob.lower()
             
@@ -3525,7 +3525,7 @@ def map_block_storage(rows):
         is_managed_db = (
             any(k in product for k in
                 ("rds", "relational", "aurora", "documentdb", "memorydb", "elasticache"))
-            or canonical_service(product) in ("rds", "aurora", "documentdb", "memorydb", "elasticache")
+            or canonical_service(product, r.get("product_code")) in ("rds", "aurora", "documentdb", "memorydb", "elasticache")
         )
 
         # Aurora/RDS per-I/O request charges: billed as "N million I/O requests".
@@ -7484,11 +7484,18 @@ def main():
     print(f"SKU cache: {RESOLVED_SKUS_FILE}")
     con = duckdb.connect(db_path)
 
-    rows = con.execute("""
+    # product_code (authoritative CUR lineItem/ProductCode) lets canonical_service
+    # key on the stable code first; guard for DBs created before the column existed.
+    _has_code = any(
+        c[1].lower() == "product_code"
+        for c in con.execute("PRAGMA table_info('aws_li_catalog')").fetchall()
+    )
+    _pc_expr = "product_code" if _has_code else "NULL AS product_code"
+    rows = con.execute(f"""
         SELECT aws_li_key, mechanic_group, product, usage_type, pricing_unit AS unit,
                aws_amortized_cost, aws_region AS region, gcp_region, operation, volume_type,
                total_usage, instance_type, instance_ram_gb, deployment_option, database_engine,
-               pricing_model
+               pricing_model, {_pc_expr}
         FROM aws_li_catalog
         WHERE mechanic_group IN
               ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer',
@@ -7501,7 +7508,7 @@ def main():
     cols = ["aws_li_key", "mechanic_group", "product", "usage_type", "unit",
             "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type",
             "total_usage", "instance_type", "instance_ram_gb", "deployment_option", "database_engine",
-            "pricing_model"]
+            "pricing_model", "product_code"]
     by_group: dict[str, list] = {g: [] for g in
                                  ("flat_hourly", "object_storage", "per_request",
                                   "block_storage", "data_transfer", "non_workload", "cloudwatch", "msk",

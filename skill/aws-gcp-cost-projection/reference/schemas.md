@@ -21,6 +21,7 @@ CREATE TABLE aws_raw AS
 CREATE TABLE aws_li_catalog (
     aws_li_key              VARCHAR PRIMARY KEY,   -- md5 of the dedup tuple
     product                 VARCHAR,               -- AWS Service (e.g. "Elastic Compute Cloud")
+    product_code            VARCHAR,               -- CUR lineItem/ProductCode (e.g. "AmazonEC2"); authoritative stable key aws_normalizer keys on; NULL/'' on PDF/flat bills that carry no code
     aws_region              VARCHAR,               -- raw AWS region string from input
     gcp_region              VARCHAR,               -- mapped equivalent (you derive)
     usage_type              VARCHAR,               -- AWS usage_type / "Custom Usage Type" — Cost-Explorer rollup string, not row-distinguishing

@@ -123,8 +123,15 @@ def main():
         sys.exit(0)
 
     con = duckdb.connect(db)
+    # product_code (authoritative CUR lineItem/ProductCode) lets canonical_service
+    # key on the stable code first; COALESCE guards DBs created before the column.
+    has_code = any(
+        r[1].lower() == "product_code"
+        for r in con.execute("PRAGMA table_info('aws_li_catalog')").fetchall()
+    )
+    code_expr = "c.product_code" if has_code else "NULL"
     rows = con.execute(
-        "SELECT DISTINCT c.product, c.usage_type, "
+        f"SELECT DISTINCT c.product, {code_expr} AS product_code, c.usage_type, "
         "       BOOL_OR(c.mechanic_group IN ("
         + ",".join("?" for _ in DETERMINISTIC_GROUPS) +
         "       )) OVER (PARTITION BY c.product, c.usage_type) AS is_deterministic "
@@ -138,8 +145,8 @@ def main():
     cs_rule_cache = {}
     review_updates, keep_updates, ignore_updates = [], [], []
     stats = {"review": 0, "keep": 0, "ignore": 0, "unmatched": 0, "protected": 0}
-    for (product, usage_type, is_deterministic) in rows:
-        cs_product = canonical_service(product)
+    for (product, product_code, usage_type, is_deterministic) in rows:
+        cs_product = canonical_service(product, product_code)
         rule = next(
             (r for r in rules if _rule_matches(r, product, usage_type, cs_product, cs_rule_cache)),
             None,

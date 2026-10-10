@@ -1,0 +1,8 @@
+{
+  "_meta": {
+    "description": "Learned product-name -> AWS service code map, authored by scripts/resolve_unknown_product_codes.py's tier-3 agy pass for no-code bills (PDF/CSV/spreadsheet). Self-building: every accepted entry is validated against data/aws-product-codes.json's closed set. Safe to commit; grows across bills so the model is asked less over time.",
+    "key": "lower-cased product name as it appears on the bill",
+    "value": "authoritative AWS service code (= CUR lineItem/ProductCode)"
+  },
+  "names": {}
+}

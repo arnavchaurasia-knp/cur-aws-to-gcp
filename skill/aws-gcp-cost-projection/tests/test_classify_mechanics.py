@@ -262,3 +262,65 @@ def test_nat_gateway_pdf_format_blank_unit_still_routes_to_flat_hourly():
     r = row(product="Amazon Elastic Compute Cloud",
             usage_type="NatGateway-Hours", operation="NatGateway", unit="")
     assert classify(r) == "flat_hourly"
+
+
+# ---------------------------------------------------------------------------
+# MSK (Kafka) — broker-hours vs storage charge-type split
+# (regression: PDF/flat MSK rows fell to misc — gate-verified on real bills)
+# ---------------------------------------------------------------------------
+
+def test_msk_broker_hours_cur_goes_to_msk():
+    r = row(product="Amazon Managed Streaming for Apache Kafka",
+            usage_type="AP-SOUTHEAST-1-Usage:kafka.t3", unit="Hrs", canonical="msk")
+    assert classify(r) == "msk"
+
+
+def test_msk_broker_hours_pdf_blank_usage_type_goes_to_msk():
+    # PDF leaves usage_type blank; the broker signal lives in operation.
+    r = row(product="Amazon Managed Streaming for Apache Kafka",
+            usage_type="", unit="Hrs",
+            operation="$0.0578 per broker hour for Kafka.t3.small in Singapore",
+            canonical="msk")
+    assert classify(r) == "msk"
+
+
+def test_msk_storage_pdf_goes_to_block_storage_not_misc():
+    # PDF MSK storage: GB-Mo, usage_type blank, signal in operation.
+    r = row(product="Amazon Managed Streaming for Apache Kafka",
+            usage_type="", unit="GB-Mo",
+            operation="$0.12 per GB-Mo for storage in Singapore (1,648 GB-Mo)",
+            canonical="msk")
+    assert classify(r) == "block_storage"
+
+
+def test_msk_storage_cur_goes_to_block_storage():
+    r = row(product="Amazon Managed Streaming for Apache Kafka",
+            usage_type="Kafka.Storage.GB", unit="GB-Mo", canonical="msk")
+    assert classify(r) == "block_storage"
+
+
+# ---------------------------------------------------------------------------
+# Data-gap surfacing: known service, but bill has no charge-type detail
+# ---------------------------------------------------------------------------
+import json as _json
+from classify_mechanics import _misc_reason
+
+
+def test_degenerate_known_service_row_flagged_as_data_gap():
+    # Rolled-up RDS line: identity known, but unit/operation blank and
+    # usage_type is a "<region>-Usage:NA" placeholder -> cannot be priced.
+    r = row(product="Amazon Relational Database Service",
+            usage_type="AP-SOUTHEAST-1-Usage:NA", operation="", unit="",
+            canonical="rds")
+    assert classify(r) == "misc"
+    reason = _json.loads(_misc_reason(r))
+    assert reason.get("data_gap") is True
+    assert reason.get("service_hint") == "rds"
+
+
+def test_detailed_row_is_not_a_data_gap():
+    # A normal EC2 instance row is classifiable -> not misc, not a data gap.
+    r = row(product="Amazon Elastic Compute Cloud",
+            usage_type="BoxUsage:m5.large", operation="RunInstances", unit="Hrs",
+            canonical="ec2")
+    assert classify(r) == "compute_breakdown"

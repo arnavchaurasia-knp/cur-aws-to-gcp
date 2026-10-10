@@ -114,6 +114,15 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"  • Do NOT read or write projection.duckdb. Do NOT read the raw input file directly — " +
 				"the manifest is the complete source of truth. Do NOT use search_web.\n" +
 				"  • STOP after writing projection-audit/normalized_bill.csv. Nothing else.",
+			// Tier-3 of Layer 1: no-code bills (PDF/CSV/spreadsheet) carry a service
+			// NAME but no lineItem/ProductCode. resolve_unknown_product_codes.py
+			// backfills product_code — cache + deterministic canonical first, a
+			// batched agy pass only for the residue — so these bills key on the
+			// same stable code as CUR. Optional ("?"): it exits 0 on any miss and
+			// no-ops when agy is absent, so it can never fail ingestion.
+			PostLLMScripts: []string{
+				"?scripts/resolve_unknown_product_codes.py $DB",
+			},
 			CheckName: "ingestion_nonempty",
 			CheckSQL:  "SELECT (count(*)=0)::int FROM aws_li_catalog",
 		},

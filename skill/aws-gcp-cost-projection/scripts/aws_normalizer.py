@@ -41,6 +41,34 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 _ALIASES: dict[str, str] = _cfg("aws-aliases").get("aliases", {})
 
+# ---------------------------------------------------------------------------
+# Authoritative service-code map: AWS service code (= CUR line_item_product_code)
+# -> canonical_service key. Loaded from data/aws-product-codes.json, which is a
+# closed set generated from the AWS Price List bulk index (see
+# scripts/refresh_aws_product_codes.py). Keyed case-insensitively.
+#
+# The product CODE is the stable key: "AmazonEC2" has meant AmazonEC2 for a
+# decade, across every CUR/DBR vintage, and new services appear in the index
+# the day they launch. Keying on it first turns the open-ended free-text alias
+# problem into a bounded, authoritative lookup. The free-text alias path below
+# stays as the fallback for bills that carry no product code (PDF invoices,
+# Cost Explorer CSV exports).
+# ---------------------------------------------------------------------------
+_CODE_MAP: dict[str, str] = {
+    str(k).lower(): v for k, v in _cfg("aws-product-codes").get("codes", {}).items()
+}
+
+
+def canonical_from_code(product_code: str | None) -> str | None:
+    """Return the canonical service key for an AWS service code, or None.
+
+    This is the authoritative, deterministic path: the code is an exact member
+    of a closed, AWS-published set. No substring/boundary heuristics needed.
+    """
+    if not product_code:
+        return None
+    return _CODE_MAP.get(product_code.strip().lower())
+
 # PDF bills embed region codes and charge-type suffixes directly in the product
 # field, e.g. "Amazon Elastic Container Service APS3-Fargate-GB-Hours". Strip
 # these before alias lookup.
@@ -78,8 +106,23 @@ _SHORT_ALIAS_RES = {
 }
 
 
-def canonical_service(product: str | None) -> str | None:
-    """Return the canonical service key for a product name, or None if unknown."""
+def canonical_service(
+    product: str | None, product_code: str | None = None
+) -> str | None:
+    """Return the canonical service key for a row, or None if unknown.
+
+    Resolution order:
+      1. product_code via the authoritative AWS code map (deterministic, stable
+         across bill vintages) — covers every machine-readable CUR/DBR bill.
+      2. the free-text product NAME via the alias dict + heuristics below —
+         the fallback for PDF/CSV bills that carry no product code.
+
+    product_code is optional so every existing caller that passes only the name
+    keeps working unchanged.
+    """
+    by_code = canonical_from_code(product_code)
+    if by_code is not None:
+        return by_code
     if not product:
         return None
     full_lower = product.lower()
@@ -119,16 +162,24 @@ def main():
     if "canonical_service" not in existing_cols:
         con.execute("ALTER TABLE aws_li_catalog ADD COLUMN canonical_service TEXT")
 
+    # product_code is the authoritative stable key (ingest.py persists it from
+    # lineItem/ProductCode). Older DBs / PDF bills may not have the column or may
+    # leave it blank — fall back to the free-text product name in that case.
+    has_code_col = "product_code" in existing_cols
+    code_select = "product_code" if has_code_col else "NULL AS product_code"
     rows = con.execute(
-        "SELECT aws_li_key, product, aws_amortized_cost FROM aws_li_catalog"
+        f"SELECT aws_li_key, product, {code_select}, aws_amortized_cost FROM aws_li_catalog"
     ).fetchall()
 
     updates: list[tuple[str | None, str]] = []
     unrecognized: dict[str, float] = collections.defaultdict(float)
+    resolved_by_code = 0
 
-    for key, product, cost in rows:
-        cs = canonical_service(product)
+    for key, product, product_code, cost in rows:
+        cs = canonical_service(product, product_code)
         updates.append((cs, key))
+        if cs is not None and canonical_from_code(product_code) is not None:
+            resolved_by_code += 1
         if cs is None and (cost or 0) > 0:
             unrecognized[product or ""] += cost or 0
 
@@ -140,10 +191,12 @@ def main():
 
     recognized = sum(1 for _, k in updates if _ is not None)
     print(f"aws_normalizer: stamped canonical_service on {len(updates)} rows "
-          f"({recognized} recognized, {len(updates)-recognized} unknown)")
+          f"({recognized} recognized, {len(updates)-recognized} unknown; "
+          f"{resolved_by_code} via authoritative product_code)")
 
     if unrecognized:
-        print("\nUNRECOGNIZED PRODUCT NAMES (add to _ALIASES in aws_normalizer.py):")
+        print("\nUNRECOGNIZED PRODUCT NAMES (no product_code match; add a curated "
+              "override to data/aws-aliases.json or check the row's product name):")
         print(f"  {'spend':>10}  product")
         for prod, spend in sorted(unrecognized.items(), key=lambda kv: -kv[1])[:20]:
             print(f"  ${spend:>9,.2f}  {prod[:80]}")

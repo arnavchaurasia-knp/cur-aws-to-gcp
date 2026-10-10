@@ -56,3 +56,33 @@ def test_aggregated_bill_presented_as_is_no_fabrication(tmp_path):
 
     # Total reconciles to the bill (no cost lost or invented).
     assert abs(sum(r[3] for r in rows) - 4930.50) < 0.01
+
+
+def test_aggregated_rows_carry_no_inferred_metadata(tmp_path):
+    # The bill states no OS/license/deployment/per-component unit for an aggregated
+    # row, so none must be inferred onto it (that would invent data). Verify those
+    # fields stay empty/NULL rather than being defaulted to Linux/License
+    # Included/Single-AZ/a guessed pricing_unit.
+    (tmp_path / "input.csv").write_text(
+        "Month,Service,Usage (with Units),Cost (USD)\n"
+        "2026-06,Amazon EC2,730 Hrs; 1000 GB-Month,4812.00\n",
+        encoding="utf-8",
+    )
+    subprocess.run([sys.executable, _INGEST], cwd=str(tmp_path),
+                   env={**os.environ, "SKILL_DIR": _SKILL},
+                   capture_output=True, text=True, timeout=120)
+    con = duckdb.connect(str(tmp_path / "projection-audit" / "projection.duckdb"), read_only=True)
+    try:
+        row = con.execute(
+            "SELECT operating_system, license_model, deployment_option, pricing_unit, "
+            "instance_type, instance_vcpus FROM aws_li_catalog WHERE product='Amazon EC2'"
+        ).fetchone()
+    finally:
+        con.close()
+    os_name, lic, deploy, p_unit, itype, vcpus = row
+    assert not os_name, f"OS was inferred onto an aggregated row: {os_name!r}"
+    assert not lic, f"license was inferred: {lic!r}"
+    assert not deploy, f"deployment was inferred: {deploy!r}"
+    assert not p_unit, f"pricing_unit was guessed: {p_unit!r}"
+    assert not itype, f"instance_type was fabricated: {itype!r}"
+    assert vcpus is None, f"vcpus were fabricated: {vcpus!r}"

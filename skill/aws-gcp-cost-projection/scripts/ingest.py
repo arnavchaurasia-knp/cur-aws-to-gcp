@@ -1613,7 +1613,16 @@ def main():
         itype = None
         op = operation or ""
         ut = usage_type or ""
-        
+
+        # Aggregated passthrough rows (coarse "Usage (with Units)" export) carry
+        # only real bill data — service, total cost, raw usage string. The bill
+        # states no OS / license / deployment / instance type / per-component unit
+        # for them, so skip all inference here: stamping defaults (Linux, License
+        # Included, Single-AZ, a guessed pricing_unit) would invent data the bill
+        # does not contain. The bill is the only source of truth.
+        if usage_type == "AggregatedUsage":
+            continue
+
         # 1. Infer OS
         if not os_name:
             if "windows" in op.lower() or "windows" in ut.lower():

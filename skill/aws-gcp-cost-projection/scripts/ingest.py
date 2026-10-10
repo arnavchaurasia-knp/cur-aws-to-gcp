@@ -1129,189 +1129,32 @@ def main():
                 if not usages:
                     continue
                     
-                total_weight = 0.0
-                weights = []
-                for val, unit in usages:
-                    u_lower = unit.lower()
-                    weight = 1.0
-                    if service == "Amazon EC2":
-                        if "hr" in u_lower: weight = 8.5
-                        elif "gb" in u_lower: weight = 1.5
-                    elif service == "Amazon RDS":
-                        if "acu" in u_lower: weight = 8.0
-                        elif "gb" in u_lower: weight = 1.5
-                        elif "io" in u_lower: weight = 0.5
-                    elif service == "Amazon S3":
-                        if "hr" in u_lower: weight = 4.0
-                        elif "gb" in u_lower: weight = 4.0
-                        else: weight = 0.2
-                    elif service == "Amazon VPC":
-                        if "hr" in u_lower: weight = 8.5
-                        elif "gb" in u_lower: weight = 1.5
-                    elif service == "AWS KMS":
-                        if "key" in u_lower: weight = 9.0
-                        elif "request" in u_lower: weight = 1.0
-                    elif service == "Amazon Route 53":
-                        if "zone" in u_lower: weight = 6.0
-                        elif "quer" in u_lower: weight = 4.0
-                    weights.append(weight)
-                    total_weight += weight
-                    
-                for i, (val, unit) in enumerate(usages):
-                    w = weights[i] / total_weight if total_weight > 0 else (1.0 / len(usages))
-                    allocated_cost = row_cost * w
-                    
-                    prod_mapped = service
-                    ut_mapped = unit
-                    op_mapped = unit
-                    p_unit = unit
-                    is_wl = True
-                    pm = "OnDemand"
-                    lit = "Usage"
-                    proj_note = None
-                    
-                    if "gb-month" in unit.lower() or "gb-mo" in unit.lower():
-                        p_unit = "GB-Mo"
-                    elif "hr" in unit.lower():
-                        p_unit = "Hrs"
-                    elif "request" in unit.lower():
-                        p_unit = "Requests"
-                    elif "quer" in unit.lower():
-                        p_unit = "Queries"
-                        
-                    if service == "Amazon EC2":
-                        prod_mapped = "Amazon Elastic Compute Cloud"
-                        if "hr" in unit.lower():
-                            ut_mapped = "BoxUsage:t3.medium"
-                            op_mapped = "BoxUsage:t3.medium"
-                            p_unit = "Hrs"
-                        elif "gb" in unit.lower():
-                            prod_mapped = "Amazon Elastic Block Store"
-                            ut_mapped = "EBS:VolumeUsage.gp3"
-                            op_mapped = "gp3 volume storage"
-                            p_unit = "GB-Mo"
-                    elif service == "Amazon RDS":
-                        if "acu" in unit.lower():
-                            prod_mapped = "Amazon Aurora"
-                            ut_mapped = "ACU-Hrs"
-                            op_mapped = "Aurora Serverless v2"
-                            p_unit = "ACU-Hrs"
-                        elif "gb" in unit.lower():
-                            prod_mapped = "Amazon Relational Database Service"
-                            ut_mapped = "RDS:GP2-Storage"
-                            op_mapped = "GP2 Storage"
-                            p_unit = "GB-Mo"
-                        elif "io" in unit.lower():
-                            prod_mapped = "Amazon Relational Database Service"
-                            ut_mapped = "RDS:StorageIOPS"
-                            op_mapped = "Storage IOPS - million I/O requests"
-                            p_unit = "IOs"
-                    elif service == "Amazon S3":
-                        if "gb" in unit.lower() or "gb-month" in unit.lower():
-                            prod_mapped = "Amazon Simple Storage Service"
-                            ut_mapped = "TimedStorage-ByteHrs"
-                            op_mapped = "StandardStorage"
-                            p_unit = "GB-Mo"
-                        elif "secret" in unit.lower():
-                            prod_mapped = "AWS Secrets Manager"
-                            ut_mapped = "SecretsManager"
-                            op_mapped = "Secrets"
-                            p_unit = "Secrets"
-                        elif "request" in unit.lower():
-                            prod_mapped = "Amazon Simple Storage Service"
-                            ut_mapped = "APIRequests"
-                            op_mapped = "PutRequests"
-                            p_unit = "Requests"
-                        elif "acu" in unit.lower():
-                            prod_mapped = "Amazon Aurora"
-                            ut_mapped = "ACU-Hrs"
-                            op_mapped = "Aurora Serverless v2"
-                            p_unit = "ACU-Hrs"
-                        elif "obj" in unit.lower():
-                            prod_mapped = "Amazon Simple Storage Service"
-                            ut_mapped = "Obj-Month"
-                            op_mapped = "Object Storage"
-                            p_unit = "GB-Mo"
-                        elif "hr" in unit.lower():
-                            prod_mapped = "Amazon Elastic Compute Cloud"
-                            ut_mapped = "BoxUsage:t3.medium"
-                            op_mapped = "BoxUsage:t3.medium"
-                            p_unit = "Hrs"
-                        elif "lambda-gb" in unit.lower():
-                            prod_mapped = "AWS Lambda"
-                            ut_mapped = "Lambda-GB-Second"
-                            op_mapped = "Lambda-GB-Second"
-                            p_unit = "GB-Mo"
-                        elif "invoc" in unit.lower():
-                            prod_mapped = "AWS Lambda"
-                            ut_mapped = "Lambda"
-                            op_mapped = "Invocations"
-                            p_unit = "Requests"
-                        elif "page" in unit.lower():
-                            prod_mapped = "Other"
-                            ut_mapped = "Pages"
-                            op_mapped = "Pages"
-                            p_unit = "Pages"
-                    elif service == "Amazon VPC":
-                        prod_mapped = "Amazon Elastic Compute Cloud"
-                        if "gb" in unit.lower():
-                            ut_mapped = "NatGateway-Bytes"
-                            op_mapped = "NatGateway-Bytes"
-                            p_unit = "GB"
-                        elif "hr" in unit.lower():
-                            ut_mapped = "NatGateway-Hours"
-                            op_mapped = "NatGateway-Hours"
-                            p_unit = "Hrs"
-                    elif service == "Amazon EKS":
-                        prod_mapped = "Amazon Elastic Container Service for Kubernetes"
-                        ut_mapped = "EKS-Hours"
-                        op_mapped = "EKS-Hours"
-                        p_unit = "Hrs"
-                    elif service == "Amazon Bedrock":
-                        prod_mapped = "Amazon Bedrock"
-                        ut_mapped = "Bedrock"
-                        op_mapped = "Bedrock"
-                        p_unit = "Units"
-                    elif service == "AWS KMS":
-                        prod_mapped = "AWS Key Management Service"
-                        if "key" in unit.lower():
-                            ut_mapped = "KMS"
-                            op_mapped = "Keys"
-                            p_unit = "Keys"
-                        elif "request" in unit.lower():
-                            ut_mapped = "KMS"
-                            op_mapped = "Requests"
-                            p_unit = "Requests"
-                    elif service == "Amazon Route 53":
-                        prod_mapped = "Amazon Route 53"
-                        if "zone" in unit.lower():
-                            ut_mapped = "Route53-HostedZone"
-                            op_mapped = "HostedZone"
-                            p_unit = "HostedZones"
-                        elif "quer" in unit.lower():
-                            ut_mapped = "Route53-Queries"
-                            op_mapped = "Queries"
-                            p_unit = "Queries"
-                    elif service == "Elastic Load Balancing":
-                        prod_mapped = "Elastic Load Balancing"
-                        ut_mapped = "LoadBalancerUsage"
-                        op_mapped = "LCU-Hrs"
-                        p_unit = "LCU-Hrs"
-                    elif service == "USE1-APIRequest":
-                        prod_mapped = "Other"
-                        ut_mapped = "APIRequest"
-                        op_mapped = "Requests"
-                        p_unit = "Requests"
-                    
-                    group_key = (prod_mapped, ut_mapped, op_mapped, "global", pm, lit, is_wl, proj_note, p_unit)
-                    if group_key not in aggregated:
-                        aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0}
-                    aggregated[group_key]["total_usage"] += val
-                    aggregated[group_key]["row_cost"] += allocated_cost
+                # FAITHFUL REPRESENTATION - the bill is the only source of
+                # truth. This aggregated export gives ONE total cost per
+                # service plus a combined usage string, with NO per-component
+                # cost and NO instance type. Splitting the cost by assumed
+                # ratios, or stamping a default instance type (t3.medium),
+                # would invent data the bill does not contain. So emit the row
+                # exactly as presented - one row per service at its real cost,
+                # raw usage string preserved - as a passthrough that cannot be
+                # projected per-resource without fabricating data.
+                usage_clean = "; ".join(f"{v:g} {u}".strip() for v, u in usages)
+                note = ("Aggregated bill row: source gives only a per-service "
+                        f"total cost with combined usage ('{usage_clean[:160]}') "
+                        "and no per-component cost or instance type. Presented "
+                        "as-is (passthrough); not projectable per-resource "
+                        "without fabricating data.")
+                group_key = (service, "AggregatedUsage", usage_clean, "global",
+                             "OnDemand", "Usage", True, note, "")
+                if group_key not in aggregated:
+                    aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0}
+                aggregated[group_key]["row_cost"] += row_cost
 
             for gk, val in aggregated.items():
                 prod, ut, op, aws_reg, pm, lit, is_wl, proj_note, p_unit = gk
-                cost = max(val["row_cost"], 0.001) if val["total_usage"] > 0 else 0.0
+                # Faithful cost: the real per-service total from the bill
+                # (do not gate on total_usage, which is 0 for aggregated rows).
+                cost = val["row_cost"]
                 
                 # Must hash ALL fields of group_key, not a subset — otherwise two
                 # distinct aggregation buckets that differ only in a field left out

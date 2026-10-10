@@ -721,6 +721,7 @@ def main():
             "line_item_unblended_cost":   "lineitem_unblendedcost",
             "line_item_blended_cost":     "lineitem_blendedcost",
             "line_item_net_unblended_cost": "lineitem_netunblendedcost",
+            "pricing_public_on_demand_cost": "pricing_publicondemandcost",
             "product_region_code":        "product_region",
             "pricing_term":               "pricing_term",
             "pricing_unit":               "pricing_unit",
@@ -792,6 +793,28 @@ def main():
     if is_raw_cur:
         cost_col = c(['lineitem/unblendedcost', 'unblendedcost'])
         if cost_col == "NULL": cost_col = c(['lineitem/blendedcost'])
+        # GROSS basis (Finding B, policy-decided): workload is compared at AWS
+        # on-demand/list cost (pre SP/RI/EDP discount) vs GCP on-demand. The gross
+        # figure lives in pricing/publicOnDemandCost. Discount/commitment rows keep
+        # their actual (unblended) amount and are surfaced separately. If the gross
+        # column is absent (thin CUR export), fall back to unblended (gross==net).
+        gross_col = c(['pricing/publicondemandcost', 'publicondemandcost'])
+        if gross_col == "NULL":
+            gross_col = cost_col
+        # A row is projectable workload iff it is real usage AND not a marketplace/
+        # support third-party line. SavingsPlanCoveredUsage is now workload — under
+        # gross basis it is real usage at list price (previously excluded as $0 net).
+        _lit = c(['lineitem/lineitemtype', 'lineitemtype'])
+        _pc = c(['lineitem/productcode', 'productcode'])
+        _marketplace = (
+            f"({_pc} IN ('AWSMarketplace','AWSSupport','Support') "
+            f"OR {_pc} ILIKE '%Marketplace%' OR {_pc} ILIKE '%AWSMP%' "
+            f"OR {_pc} ILIKE '%Support%' OR {_lit} ILIKE '%Marketplace%')"
+        )
+        _workload_expr = (
+            f"({_lit} IN ('Usage','DiscountedUsage','SavingsPlanCoveredUsage') "
+            f"AND NOT {_marketplace})"
+        )
     else:
         cost_col = c(['cost_($)', 'cost'])
 
@@ -837,18 +860,15 @@ def main():
                     COALESCE({c(['product/region', 'region'])}, '') as aws_region,
                     COALESCE({c(['pricing/term', 'term'])}, 'OnDemand') as pricing_model,
                     COALESCE({c(['lineitem/lineitemtype', 'lineitemtype'])}, '') as line_item_type,
-                    CASE 
-                        WHEN {c(['lineitem/lineitemtype', 'lineitemtype'])} IN ('Tax','RIFee','SavingsPlanUpfrontFee','SavingsPlanRecurringFee','SavingsPlanNegation','SavingsPlanCoveredUsage','Refund','Credit','EdpDiscount','PrivateRateDiscount','BundledDiscount') THEN FALSE
-                        WHEN {c(['lineitem/productcode', 'productcode'])} IN ('AWSMarketplace', 'AWSSupport', 'Support')
-                          OR {c(['lineitem/productcode', 'productcode'])} ILIKE '%Marketplace%'
-                          OR {c(['lineitem/productcode', 'productcode'])} ILIKE '%AWSMP%'
-                          OR {c(['lineitem/productcode', 'productcode'])} ILIKE '%Support%'
-                          OR {c(['lineitem/lineitemtype', 'lineitemtype'])} ILIKE '%Marketplace%' THEN FALSE
-                        WHEN {c(['lineitem/lineitemtype', 'lineitemtype'])} IN ('Usage','DiscountedUsage') THEN TRUE
-                        ELSE FALSE
-                    END as is_workload,
+                    CASE WHEN {_workload_expr} THEN TRUE ELSE FALSE END as is_workload,
                     CAST(COALESCE({c(['lineitem/usageamount', 'usageamount'])}, '0') AS DOUBLE) as row_usage,
-                    CAST(COALESCE({cost_col}, '0') AS DOUBLE) as row_cost,
+                    -- GROSS basis: workload rows carry on-demand/list cost
+                    -- (publicOnDemandCost); discount/commitment rows keep their
+                    -- actual (unblended) amount for the separate savings section.
+                    CASE WHEN {_workload_expr}
+                         THEN CAST(COALESCE({gross_col}, '0') AS DOUBLE)
+                         ELSE CAST(COALESCE({cost_col}, '0') AS DOUBLE)
+                    END as row_cost,
                     COALESCE({c(['product/licensemodel', 'licensemodel'])}, '') as license_model,
                     COALESCE({c(['product/operatingsystem', 'operatingsystem'])}, '') as operating_system,
                     COALESCE({c(['product/databaseengine', 'databaseengine'])}, '') as database_engine,
@@ -884,6 +904,36 @@ def main():
                      license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit
         """
         conn.execute(sql)
+
+        # Implicit on-demand/private-rate discount: workload rows now carry GROSS
+        # (publicOnDemandCost), but AWS actually charged the (lower) unblended rate.
+        # That per-row gap has no line item of its own, so without it the catalog
+        # would not reconcile to the real invoice. Re-add the gap as one explicit
+        # discount row (is_workload=FALSE) so: gross_workload + all discounts =
+        # actual paid. Only meaningful when a distinct gross column exists.
+        if gross_col != cost_col:
+            gap = conn.execute(
+                f"SELECT COALESCE(SUM(CAST(COALESCE({gross_col},'0') AS DOUBLE) "
+                f"- CAST(COALESCE({cost_col},'0') AS DOUBLE)), 0) "
+                f"FROM aws_raw WHERE {_lit} != 'Tax' AND {_workload_expr}"
+            ).fetchone()[0] or 0.0
+            if abs(gap) > 0.005:
+                import hashlib as _hl
+                disc_key = _hl.sha256(b"aws-ondemand-rate-discount").hexdigest()
+                conn.execute(
+                    """
+                    INSERT INTO aws_li_catalog (
+                        aws_li_key, product, usage_type, operation, aws_region, gcp_region,
+                        pricing_model, line_item_type, is_workload, total_usage,
+                        aws_amortized_cost, projection_note
+                    ) VALUES (?, 'AWS On-Demand/Private-Rate Discount', 'Discount', 'Discount',
+                              'global', 'global', 'OnDemand', 'Discount', false, 1, ?, ?)
+                    """,
+                    [disc_key, -float(gap),
+                     "Negotiated/private-rate discount baked into unblended rates "
+                     "(gross publicOnDemandCost minus actual unblended across workload "
+                     "rows) — surfaced here so AWS gross reconciles to the actual invoice."],
+                )
     else:
         # ── Cloud-billing spreadsheet export format ────────────────────────────
         # Columns: Category, Subcategory, Meter, Consumed, Cost, Unit Price,
@@ -1751,25 +1801,30 @@ def main():
             "db.t4g.xlarge": { "vcpus": 4, "ram_gb": 16.0, "arch": "arm64" }
         }
         
+        # Instance type lives in `operation` on PDF/flat bills but in `usage_type`
+        # on raw CUR (operation="RunInstances", usage_type="...BoxUsage:g4ad.8xlarge")
+        # — search BOTH. Keying only on `operation` left instance_vcpus/ram_gb/
+        # workload_class/instance_count NULL for every compute row on CUR bills.
+        itext = f"{op} {ut}"
         if "RDS" in product or "Aurora" in product or "Relational Database" in product:
-            m = re.search(r'(db\.[a-z0-9]+\.[a-z0-9]+)', op, re.IGNORECASE)
+            m = re.search(r'(db\.[a-z0-9]+\.[a-z0-9]+)', itext, re.IGNORECASE)
             if m: itype = m.group(1).lower()
         elif "ElastiCache" in product:
-            m = re.search(r'(cache\.[a-z0-9]+\.[a-z0-9]+)', op, re.IGNORECASE)
+            m = re.search(r'(cache\.[a-z0-9]+\.[a-z0-9]+)', itext, re.IGNORECASE)
             if m:
                 itype = m.group(1).lower()
             else:
                 m2 = re.search(r'([A-Z][0-9][A-Za-z0-9]*)\s+(Micro|Small|Medium|Large|XLarge|[0-9]+XLarge)\s+Cache',
-                               op, re.IGNORECASE)
+                               itext, re.IGNORECASE)
                 if m2:
                     fam  = m2.group(1).lower()
                     size = m2.group(2).lower()
                     itype = f"cache.{fam}.{size}"
         elif "OpenSearch" in product or "Elasticsearch" in product:
-            m = re.search(r'([a-z0-9]+\.[a-z0-9]+\.search)', op, re.IGNORECASE)
+            m = re.search(r'([a-z0-9]+\.[a-z0-9]+\.search)', itext, re.IGNORECASE)
             if m: itype = m.group(1).lower()
         elif "Managed Streaming for Apache Kafka" in product or "MSK" in product:
-            m = re.search(r'(kafka\.[a-z0-9]+\.[a-z0-9]+)', op, re.IGNORECASE)
+            m = re.search(r'(kafka\.[a-z0-9]+\.[a-z0-9]+)', itext, re.IGNORECASE)
             if m: itype = m.group(1).lower()
         elif "Elastic Compute Cloud" in product or "EC2" in product:
             # Match the instance-type SHAPE (family+gen+size, e.g. "t2.xlarge",
@@ -1779,12 +1834,16 @@ def main():
             # words + a hyphen in between), which the old positional regex missed
             # entirely, leaving instance_type NULL and losing deterministic
             # core+RAM (and Spot-discount) pricing for every Spot row.
-            m = re.search(r'\b([a-z][0-9][a-z0-9]*\.[a-z0-9]+)\b', op, re.IGNORECASE)
+            # After a "<region>-BoxUsage:" (or Spot/Heavy) prefix the rest of the
+            # token IS the instance type — grab it whole so accelerator families
+            # (inf1, trn1) and hyphenated "-flex" shapes (c8i-flex, m7i-flex) are
+            # captured too, not just the strict family+gen+size pattern.
+            m = re.search(r'(?:BoxUsage|SpotUsage|HeavyUsage):([a-z0-9][a-z0-9.\-]*\.[a-z0-9]+)', itext, re.IGNORECASE)
             if m:
                 itype = m.group(1).lower()
             else:
-                m = re.search(r'(?:BoxUsage|SpotUsage):(\S+)', op)
-                if m: itype = m.group(1)
+                m = re.search(r'\b([a-z][0-9][a-z0-9]*\.[a-z0-9]+)\b', itext, re.IGNORECASE)
+                if m: itype = m.group(1).lower()
                 
         if not itype: continue
 

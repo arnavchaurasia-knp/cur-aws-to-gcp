@@ -337,23 +337,61 @@ def _load_excel(conn, path):
         try:
             conn.execute(setup)
             conn.execute(f"CREATE TABLE aws_raw AS {query}")
+            # The spatial (GDAL) reader will "succeed" on a plain .xlsx but stamp a
+            # junk OGC_FID/geom column instead of the bill's real columns — if we
+            # accepted that, the working openpyxl reader below would never run and
+            # the bill would die as "unrecognized format". Reject such a result so
+            # the loop falls through to openpyxl.
+            _cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_raw')").fetchall()}
+            if "ogc_fid" in _cols or "geom" in _cols or "geometry" in _cols or len(_cols) < 2:
+                conn.execute("DROP TABLE IF EXISTS aws_raw")
+                continue
             return
         except Exception:
             conn.execute("DROP TABLE IF EXISTS aws_raw")
 
-    # openpyxl fallback — handles files with corrupt styles.xml that DuckDB rejects
+    # openpyxl fallback — handles files DuckDB's readers reject. Load rows DIRECTLY
+    # into DuckDB (parameterized INSERT), NOT via a temp-CSV round-trip: writing a
+    # 29k-row sheet back out as CSV and re-parsing it is fragile (cells with commas/
+    # quotes/newlines make DuckDB's CSV parser reach "an invalid state"), which
+    # previously sank real .xlsx bills. A direct insert has no CSV parsing to break.
     try:
-        import openpyxl, csv as _csv, tempfile
-        wb = openpyxl.load_workbook(path, data_only=True)
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
         ws = wb.active
-        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False,
-                                          newline="", encoding="utf-8")
-        w = _csv.writer(tmp)
-        for row in ws.iter_rows(values_only=True):
-            w.writerow(["" if v is None else str(v) for v in row])
-        tmp.close()
-        conn.execute(f"CREATE TABLE aws_raw AS SELECT * FROM read_csv_auto('{tmp.name}', ALL_VARCHAR=TRUE, header=TRUE)")
-        log.info(f"Excel: loaded via openpyxl fallback ({ws.max_row} rows)")
+        row_iter = ws.iter_rows(values_only=True)
+        header = next(row_iter, None)
+        if not header:
+            raise ValueError("empty worksheet")
+        # Clean + de-duplicate column names (DuckDB rejects blank/duplicate columns).
+        names, seen = [], {}
+        for i, h in enumerate(header):
+            nm = (str(h).strip() if h is not None else "") or f"col{i}"
+            if nm in seen:
+                seen[nm] += 1
+                nm = f"{nm}_{seen[nm]}"
+            else:
+                seen[nm] = 0
+            names.append(nm)
+        width = len(names)
+        cols_ddl = ", ".join(f'"{n}" VARCHAR' for n in names)
+        conn.execute("DROP TABLE IF EXISTS aws_raw")
+        conn.execute(f"CREATE TABLE aws_raw ({cols_ddl})")
+        placeholders = ",".join("?" for _ in names)
+        batch, n = [], 0
+        for row in row_iter:
+            vals = list(row) + [None] * width  # pad ragged rows
+            batch.append(["" if v is None else str(v) for v in vals[:width]])
+            if len(batch) >= 5000:
+                conn.executemany(f"INSERT INTO aws_raw VALUES ({placeholders})", batch)
+                n += len(batch); batch = []
+        if batch:
+            conn.executemany(f"INSERT INTO aws_raw VALUES ({placeholders})", batch)
+            n += len(batch)
+        wb.close()
+        if n == 0:
+            raise ValueError("worksheet has a header but no data rows")
+        log.info(f"Excel: loaded via openpyxl direct insert ({n} rows, {width} cols)")
         return
     except Exception as e:
         conn.execute("DROP TABLE IF EXISTS aws_raw")

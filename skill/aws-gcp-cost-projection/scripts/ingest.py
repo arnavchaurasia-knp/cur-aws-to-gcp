@@ -186,6 +186,37 @@ def _fail(msg):
     sys.exit(1)
 
 
+def check_faithfulness(cat_rows, cat_total, reference_total):
+    """Faithfulness invariants for the extraction layer (universal, all formats).
+
+    Returns an error string if the catalog is not a faithful representation of the
+    bill, else None. Pure/typed so it is unit-testable without running ingestion.
+
+    Invariants:
+      EMPTY_BILL        — zero priceable rows survived extraction.
+      NON_FINITE_TOTAL  — a cost column parsed to NaN/inf.
+      COST_RECONCILE    — catalog total drifted from the pre-materiality reference
+                          (dedup preserves cost; materiality deletes then re-adds
+                          the same sum), so no spend may be lost or invented.
+    """
+    import math
+    if cat_rows == 0:
+        return ("Empty bill: no line items were extracted into the catalog. The input "
+                "parsed but produced zero priceable rows (all rows were tax/blank, or "
+                "the layout was not recognized). Check the input file.")
+    if not math.isfinite(cat_total):
+        return (f"Catalog cost total is not finite ({cat_total!r}) — a cost column "
+                f"parsed to NaN/inf. Refusing to emit a corrupt catalog.")
+    tol = max(0.01, abs(reference_total) * 1e-6)
+    drift = abs(cat_total - reference_total)
+    if drift > tol:
+        return (f"Cost reconciliation failed: catalog total ${cat_total:,.2f} does not "
+                f"match the extracted bill total ${reference_total:,.2f} "
+                f"(drift ${drift:,.2f} > ${tol:,.2f}). The dedup/materiality pipeline "
+                f"lost or added spend — this would corrupt every downstream total.")
+    return None
+
+
 def _try_llm_normalization(fail_reason):
     """Run prepare_ingest_fallback.py to dump a preview, then call `agy` with a
     one-shot normalization prompt. Writes normalized_bill.csv if successful.
@@ -1813,6 +1844,15 @@ def main():
     fmt = "raw_cur" if is_raw_cur else "flat_csv"
     conn.execute("UPDATE aws_li_catalog SET billing_format = ?", (fmt,))
 
+    # Faithfulness reference: the freshly-built catalog total (ex-tax) BEFORE the
+    # materiality filter. Dedup is a cost-preserving GROUP BY SUM, so this equals
+    # the faithful sum of every non-tax line item on the bill. The materiality
+    # filter below deletes low-value rows and re-adds their sum as one row, so the
+    # final catalog total must still equal this — asserted before "Ingest complete".
+    _bill_reference_total = conn.execute(
+        "SELECT COALESCE(SUM(aws_amortized_cost), 0.0) FROM aws_li_catalog"
+    ).fetchone()[0]
+
     # ── Materiality filter ────────────────────────────────────────────────────
     # 1. Drop zero-cost rows. Negative costs are credits/refunds — always kept.
     zero_dropped = conn.execute(
@@ -1900,6 +1940,24 @@ def main():
             f"as a single reconciliation row"
         )
 
+    # ── Faithfulness invariants (typed, universal) ──────────────────────────────
+    # These are the extraction layer's output guarantees. A violation means the
+    # pipeline silently lost or invented spend — fail loudly rather than hand a
+    # wrong bill to the mapping phase. _fail_direct writes failure.txt and exits
+    # (no LLM retry): an empty or non-reconciling catalog is not a format the LLM
+    # fallback can rescue.
+    cat_rows, cat_total = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(aws_amortized_cost), 0.0) FROM aws_li_catalog"
+    ).fetchone()
+
+    err = check_faithfulness(cat_rows, cat_total, _bill_reference_total)
+    if err:
+        _fail_direct(err)
+
+    log.info(
+        f"Faithfulness OK: {cat_rows} catalog rows, total ${cat_total:,.2f} "
+        f"reconciles to extracted bill total ${_bill_reference_total:,.2f}"
+    )
     log.info(f"Ingest complete. billing_format={fmt!r}")
 
 if __name__ == "__main__":

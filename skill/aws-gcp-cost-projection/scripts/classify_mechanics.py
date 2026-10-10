@@ -230,6 +230,7 @@ RULES = [
                 _ilike(r["product"], "Elastic Compute")
                 or _ilike(r["product"], "EC2")
                 or _ilike(r["product"], "Compute Cloud")
+                or r.get("canonical") == "ec2"
             )
             and (
                 _re(r["usage_type"], r"running Windows")
@@ -257,6 +258,7 @@ RULES = [
                 _ilike(r["product"], "Elastic Compute")
                 or _ilike(r["product"], "EC2")
                 or _ilike(r["product"], "Compute Cloud")
+                or r.get("canonical") == "ec2"
             )
             and (
                 # HeavyUsage: (alongside BoxUsage:) is AWS's own usage_type
@@ -296,6 +298,7 @@ RULES = [
                 _ilike(r["product"], "Elastic Compute")
                 or _ilike(r["product"], "EC2")
                 or _ilike(r["product"], "Compute Cloud")
+                or r.get("canonical") == "ec2"
             )
             # Graviton families all contain 'g' in the family name (t4g, c6g, m7g…).
             # HeavyUsage: (a Reserved Instance's recurring per-hour RIFee, alongside
@@ -864,7 +867,8 @@ RULES = [
         # SKU — see map_ssm_parameter_store() for the full reasoning.
         "ssm_parameter_store",
         lambda r: (
-            (_ilike(r["product"], "Systems Manager") or _ilike(r["product"], "AWSSystemsManager"))
+            (_ilike(r["product"], "Systems Manager") or _ilike(r["product"], "AWSSystemsManager")
+             or r.get("canonical") == "systemsmanager")
             and _re(r.get("usage_type", ""), r"PS-(?:Advanced-)?Param")
         ),
     ),

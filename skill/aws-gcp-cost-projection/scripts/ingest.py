@@ -133,14 +133,51 @@ DESCRIPTIVE_REGION_MAP = {
 def _reject_non_aws(cols, conn):
     """Detect clearly non-AWS files and fail early with a useful message."""
     cols_lower = {c.lower() for c in cols}
-    # Azure billing exports (usage-based or EA portal)
-    if any(k in cols_lower for k in ("subscriptionid", "subscription id", "meterid",
-                                      "billingaccountid", "billingaccountname",
-                                      "chargestart", "effectiveprice")):
+    # Azure billing exports (usage-based / EA portal / cost-management CSV).
+    # Broadened signatures beyond the EA ones.
+    _azure_cols = ("subscriptionid", "subscription id", "subscriptionname", "meterid",
+                   "metercategory", "metersubcategory", "meterregion", "unitofmeasure",
+                   "billingaccountid", "billingaccountname", "chargestart", "effectiveprice",
+                   "resourcegroup", "resourcegroupname", "costinbillingcurrency",
+                   "billingcurrency", "partnumber", "consumedservice")
+    # Exact column matches (EA/cost-management exports).
+    _azure_hit = any(k in cols_lower for k in _azure_cols)
+    # Substring matches — Azure usage CSVs use descriptive phrase headers AWS
+    # never uses (confirmed real: "Part number and service name", "Net unit price
+    # currency", "Amount used currency"). "part number" alone is decisive; the
+    # price/amount-currency phrasing is an Azure tell when it co-occurs with usage.
+    _cols_blob = " | ".join(cols_lower)
+    if "part number" in _cols_blob:
+        _azure_hit = True
+    if ("net unit price" in _cols_blob or "amount used" in _cols_blob) and "metric" in _cols_blob:
+        _azure_hit = True
+    if _azure_hit:
         conn.execute("DROP TABLE IF EXISTS aws_raw")
         _fail_direct("This looks like an Azure billing export, not an AWS bill. "
-                     "This tool projects AWS costs to GCP — please upload an AWS "
+                     "This tool projects AWS costs to GCP - please upload an AWS "
                      "Cost & Usage Report (CUR), Cost Explorer CSV, or estimated-bill PDF.")
+    # Some Azure/other exports put a key-value preamble BEFORE the real header,
+    # so the provider markers land in CELL VALUES, not column names (confirmed on
+    # a real Azure usage export: columns were ['Cloud account', '<name>'] and the
+    # first column's values were 'Subscription ID', 'Part number and service name',
+    # ...). Scan the first column's leading values for strong, AWS-absent markers.
+    try:
+        first = cols[0]
+        vals = conn.execute(
+            f'SELECT LOWER(CAST("{first}" AS VARCHAR)) FROM aws_raw LIMIT 60'
+        ).fetchall()
+        blob = " ".join(v[0] for v in vals if v and v[0])
+        azure_markers = sum(m in blob for m in
+                            ("subscription id", "part number", "meter", "resource group",
+                             "billing period", "cost center"))
+        if "subscription id" in blob and azure_markers >= 2:
+            conn.execute("DROP TABLE IF EXISTS aws_raw")
+            _fail_direct("This looks like an Azure (or other non-AWS) billing export with a "
+                         "key-value preamble, not an AWS bill. This tool projects AWS costs "
+                         "to GCP - please upload an AWS Cost & Usage Report (CUR), Cost "
+                         "Explorer CSV, or estimated-bill PDF.")
+    except Exception:
+        pass  # detection is best-effort; never let it crash ingestion
     # VMware vCenter RVTools export
     if any(k in cols_lower for k in ("vm", "powerstate", "vcpu", "provisionedmb",
                                       "inusemb", "datacenter")):
@@ -1310,12 +1347,15 @@ def main():
             _required = ["Description", "Usage Quantity", "Amount in USD"]
             _missing = [c for c in _required if c not in col_names]
             if _missing:
-                raise SystemExit(
+                # _fail (not raise SystemExit): attempts the LLM-normalization
+                # fallback for odd-but-valid layouts, and ALWAYS writes failure.txt
+                # so the Go watcher's readFailureReason has a reason to surface.
+                _fail(
                     "Unrecognized bill format: this file doesn't match AWS CUR, the AWS "
                     "PDF-export layout, the Category/Meter/Cost spreadsheet layout, or the "
                     f"flat-CSV layout (missing column(s): {', '.join(_missing)}). "
                     f"Actual columns found: {col_names}. "
-                    "This tool projects AWS billing data to GCP — verify the uploaded file "
+                    "This tool projects AWS billing data to GCP - verify the uploaded file "
                     "is an AWS billing export, not another cloud provider's."
                 )
             desc_idx = col_names.index("Description")

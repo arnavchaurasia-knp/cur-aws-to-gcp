@@ -120,7 +120,13 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// batched agy pass only for the residue — so these bills key on the
 			// same stable code as CUR. Optional ("?"): it exits 0 on any miss and
 			// no-ops when agy is absent, so it can never fail ingestion.
+			// Layer 1 identity, wired in order: aws_normalizer stamps
+			// canonical_service (code-first, name fallback) on every row;
+			// resolve_unknown_product_codes then backfills product_code +
+			// canonical for no-code bills. Both are optional ("?") and no-op
+			// safely, so neither can fail ingestion.
 			PostLLMScripts: []string{
+				"?scripts/aws_normalizer.py $DB",
 				"?scripts/resolve_unknown_product_codes.py $DB",
 			},
 			CheckName: "ingestion_nonempty",

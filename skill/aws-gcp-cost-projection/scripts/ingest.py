@@ -1464,9 +1464,14 @@ def main():
                     else:
                         usage_type = "VPC"
                 else:
-                    product = "Other"
-                    usage_type = "Other"
-                    
+                    # Unknown service: do NOT silently relabel to "Other" and
+                    # passthrough — that hides the row and loses its identity. Keep
+                    # the bill's real description verbatim as the product so
+                    # canonical_service / the Phase-2 LLM can still resolve it, and
+                    # flag it (below) so it surfaces for review. Surface, don't bury.
+                    product = desc.strip() or "Unknown service"
+                    usage_type = "UnrecognizedService"
+
                 is_workload = True
                 if any(k in desc_lower for k in [
                     "covered by compute savings plans",
@@ -1482,9 +1487,15 @@ def main():
                     is_workload = False
                     
                 projection_note = None
+                if usage_type == "UnrecognizedService":
+                    projection_note = ("Unrecognized service in 4-column bill: no keyword "
+                                       "matched, so the bill's description is kept verbatim as "
+                                       "the service (not bucketed as 'Other') for resolution/"
+                                       "review downstream.")
+                    usage_type = ""
                 if "reserved instance applied" in desc_lower:
                     projection_note = 'AWS rate is RI-amortized; compare GCP CUD, not OD'
-                    
+
                 group_key = (product, usage_type, desc, region, pricing_model, line_item_type, is_workload, projection_note, pricing_unit)
                 if group_key not in aggregated:
                     aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0}

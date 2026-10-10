@@ -932,7 +932,19 @@ def main():
                     ) as product,
                     COALESCE({c(['lineitem/usagetype', 'usagetype'])}, '') as usage_type,
                     COALESCE({c(['lineitem/operation', 'operation'])}, '') as operation,
-                    COALESCE({c(['product/region', 'region'])}, '') as aws_region,
+                    -- Region fallback chain (Finding K): AWS leaves product_region_code
+                    -- blank on data-transfer rows and carries the region in
+                    -- product_from_region_code / product_location instead; ingest read
+                    -- only the primary column, silently dropping those to 'global'.
+                    -- Fall back through the other real region columns (both region
+                    -- CODES and display NAMES map downstream), excluding SP 'Any'.
+                    COALESCE(
+                        NULLIF({c(['product/region', 'region'])}, ''),
+                        NULLIF({c(['product_from_region_code', 'product/fromregioncode'])}, ''),
+                        NULLIF({c(['product_location', 'product/location'])}, ''),
+                        NULLIF(NULLIF({c(['savings_plan_region', 'savingsplan/region'])}, ''), 'Any'),
+                        ''
+                    ) as aws_region,
                     COALESCE({c(['pricing/term', 'term'])}, 'OnDemand') as pricing_model,
                     COALESCE({c(['lineitem/lineitemtype', 'lineitemtype'])}, '') as line_item_type,
                     CASE WHEN {_workload_expr} THEN TRUE ELSE FALSE END as is_workload,

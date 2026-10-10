@@ -45,6 +45,24 @@ from aws_normalizer import canonical_service as _canonical_service
 
 log = get_logger("ingest")
 
+
+def _sql_num(col_expr: str) -> str:
+    """SQL fragment that robustly parses a possibly-messy numeric cell to DOUBLE.
+
+    Real exports carry accounting negatives "(150.00)", currency symbols, thousands
+    separators, and junk cells (N/A, -, blank). A bare CAST(... AS DOUBLE) throws a
+    ConversionException on any of these and aborts the WHOLE ingest with no
+    failure.txt (Finding Q). This cleans the cell (accounting parens -> minus, strip
+    everything but digits/./-) and uses TRY_CAST so one bad cell can never crash the
+    run — it just resolves to 0.0.
+    """
+    return (
+        "COALESCE(TRY_CAST(NULLIF(REGEXP_REPLACE("
+        f"REPLACE(REPLACE(TRIM(CAST({col_expr} AS VARCHAR)), '(', '-'), ')', ''), "
+        "'[^0-9.+-]', '', 'g'), '') AS DOUBLE), 0.0)"
+    )
+
+
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 DATA_DIR = os.path.join(os.environ.get("SKILL_DIR", ""), "data")
@@ -130,6 +148,38 @@ DESCRIPTIVE_REGION_MAP = {
 }
 
 
+def _check_currency(cols, conn):
+    """Fail loudly on a non-USD bill (Finding M, safety slice).
+
+    The tool projects USD AWS costs to USD GCP prices. A bill denominated in
+    another currency (e.g. an INR CUR) was ingested as if the numbers were USD —
+    silently off by the FX rate (~80x for INR), with no conversion and no warning.
+    Full FX conversion is a separate decision; this at least refuses to produce a
+    confidently-wrong projection, naming the currency so the user knows why.
+    """
+    cl = {c.lower(): c for c in cols}
+    cur_cols = [cl[k] for k in (
+        "line_item_currency_code", "lineitem/currencycode", "pricing_currency",
+        "pricing/currency", "currency") if k in cl]
+    for col in cur_cols:
+        try:
+            vals = conn.execute(
+                f'SELECT DISTINCT UPPER(TRIM(CAST("{col}" AS VARCHAR))) FROM aws_raw'
+            ).fetchall()
+        except Exception:
+            continue
+        codes = {v[0] for v in vals if v[0] not in (None, "")}
+        foreign = {c for c in codes if c not in ("USD", "US DOLLAR")}
+        if foreign and "USD" not in codes:
+            conn.execute("DROP TABLE IF EXISTS aws_raw")
+            _fail_direct(
+                f"This bill is denominated in {', '.join(sorted(foreign))}, not USD. "
+                "This tool compares USD AWS costs to USD GCP prices, so a non-USD bill "
+                "would be mis-projected by the exchange rate (no FX conversion is applied). "
+                "Please upload a USD bill, or convert the amounts to USD first.")
+            return
+
+
 def _reject_non_aws(cols, conn):
     """Detect clearly non-AWS files and fail early with a useful message."""
     cols_lower = {c.lower() for c in cols}
@@ -200,7 +250,7 @@ def _reject_non_aws(cols, conn):
 
 def _fail_direct(msg):
     """Write failure.txt and exit without attempting LLM fallback."""
-    with open(os.path.join(JOB_DIR, "failure.txt"), "w") as f:
+    with open(os.path.join(JOB_DIR, "failure.txt"), "w", encoding="utf-8") as f:
         f.write(msg)
     log.error(f"INGEST FAILURE: {msg}")
     sys.exit(1)
@@ -217,7 +267,7 @@ def _fail(msg):
             log.info("LLM normalization succeeded — re-running ingest with normalized_bill.csv")
             os.execv(sys.executable, [sys.executable] + sys.argv)
             # execv replaces the process; line below never reached
-    with open(os.path.join(JOB_DIR, "failure.txt"), "w") as f:
+    with open(os.path.join(JOB_DIR, "failure.txt"), "w", encoding="utf-8") as f:
         f.write(msg)
     log.error(f"INGEST FAILURE: {msg}")
     sys.exit(1)
@@ -756,7 +806,7 @@ def main():
         inputs = glob.glob(os.path.join(JOB_DIR, "input.*"))
     if not inputs:
         msg = "No input file found."
-        with open(os.path.join(JOB_DIR, "failure.txt"), "w") as f:
+        with open(os.path.join(JOB_DIR, "failure.txt"), "w", encoding="utf-8") as f:
             f.write(msg)
         log.error(f"INGEST FAILURE: {msg}")
         sys.exit(1)
@@ -771,6 +821,8 @@ def main():
 
     # Detect non-AWS files early with a clear message
     _reject_non_aws(cols, conn)
+    # Refuse a non-USD bill rather than silently mis-project it by the FX rate.
+    _check_currency(cols, conn)
 
     # Parquet data-lake CUR uses underscores (line_item_product_code) while the
     # CSV CUR uses slashes (lineItem/ProductCode). Detect both.
@@ -948,13 +1000,13 @@ def main():
                     COALESCE({c(['pricing/term', 'term'])}, 'OnDemand') as pricing_model,
                     COALESCE({c(['lineitem/lineitemtype', 'lineitemtype'])}, '') as line_item_type,
                     CASE WHEN {_workload_expr} THEN TRUE ELSE FALSE END as is_workload,
-                    CAST(COALESCE({c(['lineitem/usageamount', 'usageamount'])}, '0') AS DOUBLE) as row_usage,
+                    {_sql_num(c(['lineitem/usageamount', 'usageamount']))} as row_usage,
                     -- GROSS basis: workload rows carry on-demand/list cost
                     -- (publicOnDemandCost); discount/commitment rows keep their
                     -- actual (unblended) amount for the separate savings section.
                     CASE WHEN {_workload_expr}
-                         THEN CAST(COALESCE({gross_col}, '0') AS DOUBLE)
-                         ELSE CAST(COALESCE({cost_col}, '0') AS DOUBLE)
+                         THEN {_sql_num(gross_col)}
+                         ELSE {_sql_num(cost_col)}
                     END as row_cost,
                     COALESCE({c(['product/licensemodel', 'licensemodel'])}, '') as license_model,
                     COALESCE({c(['product/operatingsystem', 'operatingsystem'])}, '') as operating_system,
@@ -1000,8 +1052,7 @@ def main():
         # actual paid. Only meaningful when a distinct gross column exists.
         if gross_col != cost_col:
             gap = conn.execute(
-                f"SELECT COALESCE(SUM(CAST(COALESCE({gross_col},'0') AS DOUBLE) "
-                f"- CAST(COALESCE({cost_col},'0') AS DOUBLE)), 0) "
+                f"SELECT COALESCE(SUM({_sql_num(gross_col)} - {_sql_num(cost_col)}), 0) "
                 f"FROM aws_raw WHERE {_lit} != 'Tax' AND {_workload_expr}"
             ).fetchone()[0] or 0.0
             if abs(gap) > 0.005:
@@ -1576,8 +1627,8 @@ def main():
                               OR {c(['description'])} ILIKE '%AWS Support%' THEN FALSE
                             ELSE TRUE
                         END AS is_workload,
-                        CAST(REPLACE(COALESCE({c(['usage_quantity'])}, '0'), ',', '') AS DOUBLE) AS row_usage,
-                        CAST(REPLACE(COALESCE({cost_col}, '0'), ',', '')              AS DOUBLE) AS row_cost,
+                        {_sql_num(c(['usage_quantity']))} AS row_usage,
+                        {_sql_num(cost_col)}              AS row_cost,
                         CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%'
                               OR {c(['description'])} ILIKE '%reserved instances%'
                               OR {c(['service'])} ILIKE '%reserved instances%'

@@ -148,15 +148,12 @@ DESCRIPTIVE_REGION_MAP = {
 }
 
 
-def _check_currency(cols, conn):
-    """Fail loudly on a non-USD bill (Finding M, safety slice).
+def _detect_foreign_currency(cols, conn):
+    """Return the bill's currency code if it is a single non-USD currency, else None.
 
-    The tool projects USD AWS costs to USD GCP prices. A bill denominated in
-    another currency (e.g. an INR CUR) was ingested as if the numbers were USD —
-    silently off by the FX rate (~80x for INR), with no conversion and no warning.
-    Full FX conversion is a separate decision; this at least refuses to produce a
-    confidently-wrong projection, naming the currency so the user knows why.
-    """
+    The tool compares USD AWS costs to USD GCP prices, so a non-USD bill (e.g. an
+    INR CUR) must be converted or it is silently off by the FX rate (~80x for INR).
+    This only reports the currency; main() converts it (see _fetch_fx_rate)."""
     cl = {c.lower(): c for c in cols}
     cur_cols = [cl[k] for k in (
         "line_item_currency_code", "lineitem/currencycode", "pricing_currency",
@@ -170,14 +167,42 @@ def _check_currency(cols, conn):
             continue
         codes = {v[0] for v in vals if v[0] not in (None, "")}
         foreign = {c for c in codes if c not in ("USD", "US DOLLAR")}
+        if foreign and "USD" not in codes and len(foreign) == 1:
+            return next(iter(foreign))
         if foreign and "USD" not in codes:
+            # Mixed foreign currencies — can't convert sensibly; refuse.
             conn.execute("DROP TABLE IF EXISTS aws_raw")
             _fail_direct(
-                f"This bill is denominated in {', '.join(sorted(foreign))}, not USD. "
-                "This tool compares USD AWS costs to USD GCP prices, so a non-USD bill "
-                "would be mis-projected by the exchange rate (no FX conversion is applied). "
-                "Please upload a USD bill, or convert the amounts to USD first.")
-            return
+                f"This bill mixes multiple non-USD currencies ({', '.join(sorted(foreign))}). "
+                "Please upload a single-currency bill.")
+    return None
+
+
+def _fetch_fx_rate(code):
+    """Live FX: units of `code` per 1 USD (e.g. INR -> ~83). Returns float or None.
+
+    Used only for the rare non-USD bill, so a live lookup (rates move daily) is the
+    right call here, unlike the static spec/code tables. Tries a couple of free,
+    no-auth endpoints; returns None on any failure so the caller can fail loudly
+    rather than convert with a bad rate."""
+    import json as _json
+    import urllib.request
+    code = code.upper()
+    endpoints = [
+        f"https://open.er-api.com/v6/latest/USD",
+        f"https://api.exchangerate.host/latest?base=USD&symbols={code}",
+    ]
+    for url in endpoints:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "ingest-fx"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = _json.loads(resp.read())
+            rate = (data.get("rates") or {}).get(code)
+            if rate and float(rate) > 0:
+                return float(rate)
+        except Exception:
+            continue
+    return None
 
 
 def _reject_non_aws(cols, conn):
@@ -821,8 +846,8 @@ def main():
 
     # Detect non-AWS files early with a clear message
     _reject_non_aws(cols, conn)
-    # Refuse a non-USD bill rather than silently mis-project it by the FX rate.
-    _check_currency(cols, conn)
+    # Detect a non-USD bill now; convert to USD after the catalog is built (below).
+    _foreign_ccy = _detect_foreign_currency(cols, conn)
 
     # Parquet data-lake CUR uses underscores (line_item_product_code) while the
     # CSV CUR uses slashes (lineItem/ProductCode). Detect both.
@@ -1018,7 +1043,18 @@ def main():
                     -- (lineItem/ProductCode), e.g. "AmazonEC2". Already read above
                     -- for the product-name fallback and is_workload; now persisted
                     -- as its own column so aws_normalizer.py can key on it.
-                    COALESCE({c(['lineitem/productcode', 'productcode'])}, '') as product_code
+                    COALESCE({c(['lineitem/productcode', 'productcode'])}, '') as product_code,
+                    -- Billing month (Finding N): without it in the dedup key, a
+                    -- multi-month CUR collapses each line item across months, so one
+                    -- instance running 2 months looks like 2 instances (instance_count
+                    -- doubles, billing_days defaults wrong). Truncate to YYYY-MM so
+                    -- each month is its own catalog row. Blank on single-period/Hive
+                    -- reads degrades to today's behavior.
+                    COALESCE(
+                        LEFT(CAST({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS VARCHAR), 7),
+                        LEFT(CAST({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS VARCHAR), 7),
+                        ''
+                    ) as billing_month
                 FROM aws_raw
                 WHERE {c(['lineitem/lineitemtype', 'lineitemtype'])} != 'Tax'
             )
@@ -1029,7 +1065,7 @@ def main():
                 product_code
             )
             SELECT
-                md5(product || usage_type || operation || aws_region || pricing_model || line_item_type || CAST(is_workload AS VARCHAR) || license_model || operating_system || database_engine || deployment_option || volume_type || pricing_unit) as key,
+                md5(product || usage_type || operation || aws_region || pricing_model || line_item_type || CAST(is_workload AS VARCHAR) || license_model || operating_system || database_engine || deployment_option || volume_type || pricing_unit || billing_month) as key,
                 product, usage_type, operation, aws_region, NULL as gcp_region, pricing_model, line_item_type, is_workload,
                 SUM(row_usage) as total_usage,
                 SUM(row_cost) as aws_amortized_cost,
@@ -1040,7 +1076,8 @@ def main():
                 max(product_code) as product_code
             FROM _raw_flat
             GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload,
-                     license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit
+                     license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,
+                     billing_month
         """
         conn.execute(sql)
 
@@ -1669,7 +1706,23 @@ def main():
                 GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload, projection_note
             """
             conn.execute(sql)
-    
+
+    # 4b. Currency conversion (Finding M): if the bill is non-USD, convert every
+    # cost to USD now — before enrichment computes per-unit rates and before the
+    # faithfulness reference is captured, so everything downstream is in USD. The
+    # rate is fetched live (rates move daily; only non-USD bills hit this). If the
+    # rate can't be fetched, fail loudly rather than mis-project.
+    if _foreign_ccy:
+        _rate = _fetch_fx_rate(_foreign_ccy)
+        if not _rate or _rate <= 0:
+            _fail_direct(
+                f"This bill is in {_foreign_ccy}, not USD, and the USD exchange rate "
+                f"could not be fetched to convert it. Re-run with network access, or "
+                f"upload a USD bill / pre-convert the amounts.")
+        conn.execute("UPDATE aws_li_catalog SET aws_amortized_cost = aws_amortized_cost / ?", [_rate])
+        log.info(f"Currency: converted {_foreign_ccy} -> USD at {_rate} {_foreign_ccy}/USD "
+                 f"(live rate); all costs are now USD.")
+
     # 5. Map Regions
     catalog_rows = conn.execute("SELECT aws_li_key, aws_region, usage_type FROM aws_li_catalog").fetchall()
     for row in catalog_rows:

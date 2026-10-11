@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "purpose": "AWS AI-accelerator instance -> accelerator family + chip count. Used by family_mapper.map_tpu_row to size the Cloud TPU mapping. VERIFY counts against aws.amazon.com EC2 instance pages before trusting.",
+    "source": "aws.amazon.com/ec2/instance-types/{inf1,inf2,trn1,trn2}",
+    "checked": "2026-10"
+  },
+  "chips": {
+    "inf1.xlarge": {"family": "inferentia1", "chips": 1},
+    "inf1.2xlarge": {"family": "inferentia1", "chips": 1},
+    "inf1.6xlarge": {"family": "inferentia1", "chips": 4},
+    "inf1.24xlarge": {"family": "inferentia1", "chips": 16},
+    "inf2.xlarge": {"family": "inferentia2", "chips": 1},
+    "inf2.8xlarge": {"family": "inferentia2", "chips": 1},
+    "inf2.24xlarge": {"family": "inferentia2", "chips": 6},
+    "inf2.48xlarge": {"family": "inferentia2", "chips": 12},
+    "trn1.2xlarge": {"family": "trainium1", "chips": 1},
+    "trn1.32xlarge": {"family": "trainium1", "chips": 16},
+    "trn1n.32xlarge": {"family": "trainium1", "chips": 16},
+    "trn2.3xlarge": {"family": "trainium2", "chips": 1},
+    "trn2.48xlarge": {"family": "trainium2", "chips": 16},
+    "trn2u.48xlarge": {"family": "trainium2", "chips": 16}
+  }
+}

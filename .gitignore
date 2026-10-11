@@ -43,6 +43,9 @@ NOTES.md
 # Temp
 /tmp/
 *.tmp
+__pycache__/
+*.pyc
+personal_intelligence_agent/
 
 # Extracted bill CSVs and scripts
 bill_line_items.csv

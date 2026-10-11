@@ -7,21 +7,21 @@ Usage:
     python3 classify_mechanics.py <projection.duckdb>
 
 Rules applied in order (first match wins):
-  1. compute_windows  (Windows EC2 — static mapper handles core+RAM+license)
-  2. compute_arm      (Graviton/ARM EC2 — C4A where available, N2D fallback via catalog)
-  3. compute_breakdown
-  4. managed_db
-  5. block_storage
-  6. data_transfer
-  7. flat_hourly
-  8. per_request
-  9. object_storage
-  10. commitment_discount
-  11. misc (fallback)
+    negative_cost, commitment_discount, cloudwatch, non_workload,
+    compute_windows, compute_burstable, compute_arm, opensearch,
+    compute_breakdown, rds_extended_support, managed_db, efs, fsx,
+    block_storage, data_transfer, xray, flat_hourly, per_request,
+    elasticache, msk, guardduty, inspector, mwaa, ssm_parameter_store,
+    dynamodb_storage, shield, quicksight, redshift, athena, kinesis,
+    emr, glue, per_request (route53), per_request (waf), flat_hourly (waf),
+    object_storage, marketplace_thirdparty, misc.
+
+Order is load-bearing — see per-rule comments for 'must come before X' constraints.
 
 Exits 0 on success. Prints WARNING if misc > 15% of total aws_amortized_cost.
 """
 
+import functools
 import json
 import sys
 import re
@@ -56,16 +56,23 @@ def _safe_path(base: str, *parts: str) -> str:
 # test_fn(row: dict) -> bool
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=512)
+def _compiled(pattern: str):
+    return re.compile(pattern, re.IGNORECASE)
+
+def _norm(s: str | None) -> str:
+    return re.sub(r'\s+', ' ', (s or '').replace('\xa0', ' ')).strip()
+
 def _ilike(value: str | None, pattern: str) -> bool:
     """Case-insensitive substring match (SQL ILIKE '%pattern%' semantics)."""
     if value is None:
         return False
-    return pattern.lower() in value.lower()
+    return pattern.lower() in _norm(value).lower()
 
 def _re(value: str | None, pattern: str) -> bool:
     if value is None:
         return False
-    return bool(re.search(pattern, value, re.IGNORECASE))
+    return bool(_compiled(pattern).search(_norm(value)))
 
 # AWS's own `pricing/unit` field spells "hourly" inconsistently across services
 # and bill formats: "Hrs" (most EC2 rows), lowercase "hours", and — confirmed
@@ -98,7 +105,7 @@ def _is_hourly_unit(unit: str | None) -> bool:
 # architectural change and mis-prices badly. They are routed to misc for a
 # passthrough + manual-review verdict instead.
 def _is_accelerator(row) -> bool:
-    txt = f"{row.get('instance_type') or ''} {row.get('operation') or ''}".lower()
+    txt = f"{row.get('instance_type') or ''} {row.get('operation') or ''} {row.get('usage_type') or ''}".lower()
     if "inferentia" in txt or "trainium" in txt:
         return True
     return bool(re.search(r'\b(inf\d|trn\d|dl\d|p[2-5]|g[3-6]|vt\d)[a-z0-9]*\.', txt))
@@ -106,7 +113,7 @@ def _is_accelerator(row) -> bool:
 def _has_instance_type(text: str | None) -> bool:
     if not text:
         return False
-    return bool(re.search(r'\b(?:db\.|cache\.|kafka\.)?[a-z]\d[a-z0-9]*\.[a-z0-9]+\b', text, re.IGNORECASE))
+    return bool(re.search(r'\b(?:db\.|cache\.|kafka\.)?[a-z]+\d[a-z0-9-]*\.(nano|micro|small|medium|large|metal|\d*xlarge)\b', text, re.IGNORECASE))
 
 # Set once per job by main() before classify() is ever called (module-level,
 # same pattern as _FAMILY_RATE_CACHE-style caches elsewhere in this pipeline):
@@ -132,7 +139,6 @@ def _has_instance_type(text: str | None) -> bool:
 # usage_type regardless of the HeavyUsage/BoxUsage prefix — confirmed via
 # family_mapper.py's _resolve_instance_type(), which isn't anchored to any
 # specific prefix literal).
-_BILL_HAS_DISCOUNTED_USAGE = True  # safe default: preserves old behavior if unset
 
 
 RULES = [
@@ -149,7 +155,7 @@ RULES = [
         "commitment_discount",
         lambda r: (
             (
-                _BILL_HAS_DISCOUNTED_USAGE
+                r.get("_bill_has_discounted_usage", True)
                 and (
                     r["line_item_type"] in ("RIFee", "SavingsPlanRecurringFee")
                     or r["pricing_model"] in ("Reserved", "SavingsPlan")
@@ -378,6 +384,8 @@ RULES = [
                 or _ilike(r["product"], "ElasticMapReduce")
                 or _ilike(r["product"], "AmazonEMR")
                 or _ilike(r["product"], "Amazon EMR")
+                or _ilike(r["product"], "SageMaker")
+                or r.get("canonical") == "sagemaker"
             )
             # "Instance-hour" (hyphen) is the PDF-ingestion format
             # ("c7gd.4xlarge Linux/UNIX Spot Instance-hour in ..."); "Instance Hour"
@@ -1134,14 +1142,19 @@ RULES = [
     ),
 ]
 
-def classify(row: dict) -> str:
-    for group, test in RULES:
+def classify_with_trace(row: dict) -> tuple[str, str]:
+    for idx, (group, test) in enumerate(RULES):
         try:
             if test(row):
-                return group
-        except Exception:
-            pass
-    return "misc"
+                return group, f"{group}#{idx}"
+        except Exception as exc:
+            print(f"classify_mechanics: rule {group}#{idx} raised {exc!r}", file=sys.stderr)
+            continue
+    return "misc", "misc"
+
+
+def classify(row: dict) -> str:
+    return classify_with_trace(row)[0]
 
 
 # Canonical field coverage per service keyword — used to annotate misc rows.
@@ -1197,6 +1210,7 @@ def _info_completeness(row: dict) -> str:
     return "minimal"
 
 
+# NOTE: tailored branches are dead (lowercase-key mismatch) — superseded by llm_guidance.build_guidance; retire when wired.
 def _misc_reason(row: dict) -> str:
     """Produce a structured reason dict for a misc-classified row."""
     product = row.get("product") or ""
@@ -1382,7 +1396,7 @@ def main():
         print("ERROR: table aws_li_catalog not found in database.", file=sys.stderr)
         sys.exit(1)
 
-    # --- Add column if missing ---
+    # --- Add columns if missing ---
     existing_cols = {
         r[1].lower()
         for r in con.execute("PRAGMA table_info('aws_li_catalog')").fetchall()
@@ -1390,6 +1404,9 @@ def main():
     if "mechanic_group" not in existing_cols:
         con.execute("ALTER TABLE aws_li_catalog ADD COLUMN mechanic_group TEXT")
         print("Added column mechanic_group to aws_li_catalog.")
+    if "mechanic_rule" not in existing_cols:
+        con.execute("ALTER TABLE aws_li_catalog ADD COLUMN mechanic_rule TEXT")
+        print("Added column mechanic_rule to aws_li_catalog.")
 
     # --- Load rows ---
     # billing_format / product_code may be absent in DBs ingested before those
@@ -1425,31 +1442,42 @@ def main():
     ]
 
     # --- Determine once, bill-wide, whether ignoring RIFee/SavingsPlanRecurringFee/
-    # Reserved-pricing rows is actually safe (see _BILL_HAS_DISCOUNTED_USAGE docstring
-    # above RULES) ---
-    global _BILL_HAS_DISCOUNTED_USAGE
-    _BILL_HAS_DISCOUNTED_USAGE = con.execute(
+    # Reserved-pricing rows is actually safe (see commitment_discount rule docstring) ---
+    bill_has_discounted = con.execute(
         "SELECT count(*) FROM aws_li_catalog WHERE line_item_type = 'DiscountedUsage'"
     ).fetchone()[0] > 0
-    if not _BILL_HAS_DISCOUNTED_USAGE:
+    if not bill_has_discounted:
         print("classify_mechanics: no DiscountedUsage rows found in this bill — "
               "RIFee/SavingsPlanRecurringFee/Reserved-pricing rows will be classified "
               "and priced as real usage instead of ignored as commitment-discount noise.")
 
     # --- Classify ---
-    updates: list[tuple[str, str]] = []
+    try:
+        from llm_guidance import build_guidance
+        from spec_dispatch import dispatch as _spec_dispatch
+        _USE_SPEC_GUIDANCE = True
+    except Exception as _exc:
+        print(f"classify_mechanics: build_guidance unavailable ({_exc!r}); "
+              f"falling back to _misc_reason", file=sys.stderr)
+        _USE_SPEC_GUIDANCE = False
+
+    updates: list[tuple[str, str, str]] = []
     misc_reasons: dict[str, str] = {}   # aws_li_key → why it landed in misc
     data_gaps: list[tuple[str, str, float]] = []  # (canonical, product, cost) — known service, no charge-type detail
     for raw in rows:
         row = dict(zip(col_names, raw))
+        row["_bill_has_discounted_usage"] = bill_has_discounted
         # Authoritative service identity (product_code-first, name fallback),
         # consumed by the rules below instead of each rule re-sniffing the
         # free-text product name. Identity is resolved once, here.
         row["canonical"] = canonical_service(row.get("product"), row.get("product_code"))
-        group = classify(row)
-        updates.append((group, row["aws_li_key"]))
+        group, rule_label = classify_with_trace(row)
+        updates.append((group, rule_label, row["aws_li_key"]))
         if group == "misc":
-            reason = _misc_reason(row)
+            if _USE_SPEC_GUIDANCE:
+                reason = json.dumps(build_guidance(row, _spec_dispatch(row)), default=str)
+            else:
+                reason = _misc_reason(row)
             misc_reasons[row["aws_li_key"]] = reason
             try:
                 if json.loads(reason).get("data_gap"):
@@ -1458,9 +1486,16 @@ def main():
             except (ValueError, TypeError):
                 pass
 
+    # Validate mechanic_group against known rule groups
+    known_groups = {group for group, _ in RULES} | {"misc"}
+    written_groups = {g for g, _, _ in updates}
+    unknown_groups = written_groups - known_groups
+    if unknown_groups:
+        print(f"WARNING: classify_mechanics assigned unknown mechanic_group(s): {sorted(unknown_groups)}", file=sys.stderr)
+
     # Bulk update
     con.executemany(
-        "UPDATE aws_li_catalog SET mechanic_group = ? WHERE aws_li_key = ?",
+        "UPDATE aws_li_catalog SET mechanic_group = ?, mechanic_rule = ? WHERE aws_li_key = ?",
         updates,
     )
     con.commit()

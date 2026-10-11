@@ -96,6 +96,38 @@ The same `if/elif` chain is order-sensitive and substring-based, with documented
 ## Note on FINDING C (refined): which failure paths write failure.txt
 Verified: the explicit non-AWS rejections (`_reject_non_aws`→`_fail_direct`) DO write `failure.txt` (VMware test wrote it correctly). The GENERIC "unrecognized format" `raise SystemExit(...)` at `~L1200` and the Azure-usage file do NOT. So the gap is specifically the generic unrecognized-format and Excel-fail paths — make those write `failure.txt` too.
 
+---
+# THIRD-PASS FINDINGS (practical / edge-case bugs, with repro)
+
+## FINDING Q (🔴): one malformed cost/usage cell crashes the WHOLE ingest (no failure.txt)
+**Repro:** a flat 6-col CSV with an accounting-style credit `"(150.00)"` in the Cost column →
+`_duckdb.ConversionException: Could not convert string '(150.00)' to DOUBLE` at `ingest.py:~1597`, unhandled traceback, **no rows, no failure.txt, job dies ugly.**
+**Root cause:** the raw-CUR path (`~L782-783`) and the 6-col flat path use bare `CAST(... AS DOUBLE)` on cost/usage. Any non-numeric cell — accounting negatives `(x)`, a stray currency symbol, `N/A`, `-`, a thousands format the REPLACE doesn't cover — aborts the entire job. (The 4-col Python path and the spreadsheet path are safe because they use `try/except` / `TRY_CAST`; the raw-CUR and 6-col SQL paths are NOT.)
+**Fix:** use `TRY_CAST` everywhere for cost/usage (NULL→0), and strip `()`→negative, currency symbols, and whitespace first. One bad cell must never kill the run.
+
+## FINDING M (🔴): no currency handling — non-USD bills are treated as USD
+**Repro:** a flat bill with cost `369600` (INR) ingests as `$369,600.00` with no warning. The CUR columns `line_item_currency_code` / `pricing_currency` are **ignored** (the only "currency" references in ingest are Azure column-name detectors, not actual handling).
+**Why it matters:** many customers (incl. Indian/EU — note easebuzz is an Indian company) export bills in local currency; the projection would be off by the FX rate (~80x for INR). Fix: detect the billing currency, and either convert to USD (with a stated rate) or refuse with a clear message. Never assume USD.
+
+## FINDING N (🟠): multi-month CUR collapses months; billing_days/instance_count then wrong
+The raw-CUR dedup GROUP BY has **no billing-period/date field** in the key, so a CUR spanning 2+ months sums the same line item across months into one row. Then `billing_days` inference only accepts rows with 670–745 hours (≈28–31 days) and otherwise defaults to 30, and `instance_count = total_usage/(billing_days*24)`. A single instance running 2 months (~1,460 h) → not in the window → billing_days=30 → instance_count≈2 (looks like 2 instances). Distorts count, effective rate, and the monthly framing on any multi-month upload. Fix: carry the billing period, and either scope to one month or annualize explicitly.
+
+## FINDING P (🟡): materiality filter collapses the long tail into one passthrough row
+The filter drops the cheapest rows whose cumulative sum ≤ 1% of spend and re-adds them as a single "Ingestion Materiality Adjustment" passthrough (easebuzz: **1,942 line items → one $3,268 row**). Cost reconciles, but those small-but-real services (e.g. a $40 Lambda, $30 Route 53) are never mapped to GCP — they're passthrough at AWS cost, permanently capping mapping coverage at ~99% and hiding long-tail services. Consider a count-aware or per-service floor instead of a flat 1% cumulative cut.
+
+## FINDING O (🟡): loose encoding — mojibake in user-facing messages
+The "unrecognized format" message renders an em-dash as `�` (seen in test output). Ensure UTF-8 throughout (file reads and the failure strings).
+
+## Note: these compound with earlier findings
+Q + C: a crash with no failure.txt means the watcher shows no reason. M + G: the currency columns are among the authoritative columns ingest already ignores. N + the billing_days heuristic are the same root (no date awareness).
+
+## FINDING R (🔴): zip/multi-part CUR silently ingests only ONE file — the rest are dropped
+**Evidence:** real AWS CUR 2.0 / Data Exports are delivered as a DIRECTORY of parquet part-files, partitioned by month: `aws_bill/data/BILLING_PERIOD=2026-07/bill-data-00001.snappy.parquet` + `BILLING_PERIOD=2026-08/...`. Ingested individually: July = 113 rows / $5,206, August = 97 rows / $1,238. But the zip handler (`ingest.py:~784-786`) does `cands.sort(reverse=True); _read_into_aws_raw(conn, cands[0][1])` — it ingests **only the single largest file**. So a user who zips their CUR export gets only July; **August ($1,238 ≈ 19% of the 2-month total) silently vanishes** — no error, no warning.
+**Why it's bad:** this is exactly how AWS ships CUR for any non-trivial account — multiple part files per month (00001, 00002, …) and/or multiple months. Large bills are split across many parquet parts, so this can drop the MAJORITY of spend with no indication. Fix: when a zip/dir contains multiple CUR part-files (same schema), read and UNION ALL of them (`read_parquet([...])` / glob), not just the biggest. Ties to FINDING N (multi-month) — carry/period-aware.
+
+## Note: PDF parser looks solid
+Tested AWS Abbott.pdf ($1,231) and June_GAI.pdf ($853): both extracted, materiality-filtered, and passed the faithfulness reconciliation (catalog total == extracted bill total). No PDF-specific bug found in this pass.
+
 ## Your task
 1. Reproduce each finding with your own ingest run (at minimum: easebuzz + test-bill + the Azure reject).
 2. Fix A, B (to the decided spec: gross-vs-gross, discounts separate, format-independent), C, D, E.

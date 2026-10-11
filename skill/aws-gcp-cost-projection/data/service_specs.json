@@ -1,0 +1,2867 @@
+{
+  "_meta": {
+    "purpose": "Per-service charge-type specification registry (Layer-1.5). ONE uniform schema for every AWS service: given a row whose service identity is already resolved (canonical_service, product_code-first), this declares the service's charge-types, how each is recognised, which reusable pricing mechanic prices it, and which fields it needs for full context. Replaces the greedy global regex rules in classify_mechanics.py with explicit per-service dispatch. The mechanic vocabulary (compute_breakdown/block_storage/...) is UNCHANGED — this only changes HOW a row's mechanic is chosen (per-service + explicit) instead of by global pattern order.",
+    "status": "SEED — ec2 + rds only. Faithfully carried over from classify_mechanics.py RULES (each charge_type cites its source_rule). Field names grounded in the authoritative AWS CUR data dictionary. NOT YET consumed by any script. classify_mechanics.py still owns classification until the dispatch engine lands (see docs/SERVICE_SPECS_DESIGN.md migration plan). Grow one service at a time, ranked by spend.",
+    "schema_version": 2,
+    "evidence_source": "Service seeding order = global spend ranking across all 75 historical job DBs (AGENTS.md global_sku_audit). Field names from AWS CUR product/line_item/pricing columns (https://docs.aws.amazon.com/cur/latest/userguide/table-dictionary-cur2-product.html) cross-checked against the columns ingest.py actually parses.",
+    "dispatch_model": "canonical_service (identity, done) -> service_specs[canonical] -> test charge_types in order, FIRST MATCH WINS (same semantics as today's rule chain, but scoped to one service) -> assign (charge_type, mechanic) + compute field_state over the charge_type's fields. A row whose service has no spec here falls back to the legacy generic mechanic rules.",
+    "match_vocabulary": {
+      "_note": "A charge_type matches when ALL present predicates are true. All regex are case-insensitive (re.IGNORECASE). Omitted predicates are ignored. This is a declarative mirror of the _ilike/_re/_is_hourly_unit helpers in classify_mechanics.py.",
+      "product_re": "regex over product",
+      "usage_type_re": "regex over usage_type (CUR lineItem/UsageType)",
+      "operation_re": "regex over operation (CUR lineItem/Operation)",
+      "any_field_re": "regex over '<usage_type> <operation> <product>' concatenation (for PDF/flat bills where the signal location varies)",
+      "exclude_usage_type_re": "row does NOT match if this hits usage_type",
+      "exclude_operation_re": "row does NOT match if this hits operation",
+      "unit_in": "pricing_unit (lowercased) is in this list",
+      "unit_hourly": "true => _is_hourly_unit(unit): unit in {hrs,hours,hour,hr,accelerator-hours,''} — '' included because PDF/flat bills leave unit blank",
+      "pricing_model_in": "pricing_model in this list (OnDemand|Spot|Reserved|SavingsPlan|Committed)",
+      "line_item_type_in": "line_item_type in this list",
+      "cost_lt_zero": "true => aws_amortized_cost < 0",
+      "is_accelerator": "true => _is_accelerator(row): Inferentia/Trainium/Habana/GPU family token"
+    },
+    "mechanic_vocabulary": {
+      "_note": "Output contract — unchanged from classify_mechanics.py so apply_static_mappings.py / family_mapper.py need no changes. 'ignore' and 'passthrough' are terminal (no GCP SKU math).",
+      "compute_breakdown": "x86/GPU EC2 & self-host-on-GCE: core+RAM (+accelerator) SKU breakdown (family_mapper).",
+      "compute_windows": "EC2 running Windows: core+RAM+Windows-license components (static mapper).",
+      "compute_burstable": "t2/t3/t3a/t4g EC2 -> E2 (static mapper).",
+      "compute_arm": "Graviton EC2 -> C4A, N2D fallback (static mapper).",
+      "managed_db": "DB INSTANCE hours (RDS/Aurora/DocumentDB/MemoryDB) -> Cloud SQL/AlloyDB sizing (LLM + family_mapper).",
+      "block_storage": "GB-Mo capacity (EBS, DB storage/backup, MSK storage) -> Persistent Disk / Cloud SQL storage.",
+      "data_transfer": "egress/inter-zone/inter-region -> network egress SKUs.",
+      "flat_hourly": "fixed hourly fees (NAT-hours, LB, EIP, EKS mgmt, DirectConnect).",
+      "per_request": "per-call charges -> Pub/Sub / Cloud Run requests / passthrough.",
+      "object_storage": "S3 storage-class GB-Mo -> GCS.",
+      "rds_extended_support": "post-EOL engine surcharge -> Cloud SQL Extended Support vCPU SKU (or ignore if none).",
+      "ignore": "not a real GCP cost (credits, CPU credits, taxes) -> $0.",
+      "passthrough": "known service, no fair GCP conversion -> carry AWS cost, manual review.",
+      "negative_cost": "GLOBAL pre-filter label (credits/refunds/negations) — applied before per-service dispatch.",
+      "commitment_discount": "GLOBAL pre-filter label (RIFee/SP recurring/EDP) — applied before per-service dispatch.",
+      "non_workload": "GLOBAL pre-filter label (marketplace/support/tax, EC2 CPU credits) — applied before per-service dispatch.",
+      "opensearch": "Service-specific mechanic_group (dedicated static mapper for opensearch).",
+      "redshift": "Service-specific mechanic_group (dedicated static mapper for redshift).",
+      "elasticache": "Service-specific mechanic_group (dedicated static mapper for elasticache).",
+      "msk": "Service-specific mechanic_group (dedicated static mapper for msk).",
+      "emr": "Service-specific mechanic_group (dedicated static mapper for emr).",
+      "athena": "Service-specific mechanic_group (dedicated static mapper for athena).",
+      "glue": "Service-specific mechanic_group (dedicated static mapper for glue).",
+      "kinesis": "Service-specific mechanic_group (dedicated static mapper for kinesis).",
+      "quicksight": "Service-specific mechanic_group (dedicated static mapper for quicksight).",
+      "shield": "Service-specific mechanic_group (dedicated static mapper for shield).",
+      "dynamodb_storage": "Service-specific mechanic_group (dedicated static mapper for dynamodb_storage).",
+      "efs": "Service-specific mechanic_group (dedicated static mapper for efs).",
+      "fsx": "Service-specific mechanic_group (dedicated static mapper for fsx).",
+      "guardduty": "Service-specific mechanic_group (dedicated static mapper for guardduty).",
+      "inspector": "Service-specific mechanic_group (dedicated static mapper for inspector).",
+      "xray": "Service-specific mechanic_group (dedicated static mapper for xray).",
+      "cloudwatch": "Service-specific mechanic_group (dedicated static mapper for cloudwatch).",
+      "mwaa": "Service-specific mechanic_group (dedicated static mapper for mwaa)."
+    },
+    "field_descriptor": {
+      "_note": "Each field: name (internal), cur_column (authoritative AWS CUR attribute it comes from, legacy slash form as ingest.py uses; null = AWS does not expose it in the bill at all), source (where we REALISTICALLY obtain the value), required.",
+      "cur_column": "The AWS CUR column/attribute. null means AWS never bills this field — it MUST be enriched (api/llm).",
+      "source_enum": {
+        "cur": "present in the bill (ingest.py parses the cur_column directly).",
+        "table": "cur_column may be present but we derive authoritatively from a bundled table (ec2-instance-types.json / rds-instance-types.json / instance-specs.json) keyed by instance type.",
+        "api": "not in CUR; requires a live API / catalog sweep (gcp_sweep.py / AWS spec).",
+        "llm": "inferable only by LLM when cur+table+api all miss; cached to data/enriched_specs.json with confidence; lowest trust. NEVER overwrites a 'cur' value."
+      }
+    }
+  },
+  "ec2": {
+    "display": "Amazon Elastic Compute Cloud",
+    "product_codes": [
+      "AmazonEC2"
+    ],
+    "charge_types": [
+      {
+        "id": "cpu_credits",
+        "description": "t2/t3/t4g burstable CPU-credit charges. GCP E2 has no burst-credit billing model.",
+        "match": {
+          "any_field_re": "CPUCredits?"
+        },
+        "mechanic": "non_workload",
+        "fields": [],
+        "source_rule": "non_workload (CPUCredits branch)",
+        "notes": "Faithful label = 'non_workload' (what classify_mechanics returns today). Downstream pricing outcome is $0/ignore. Checked across usage_type AND product: PDF bills carry 'T3ACPUCredits' in product with usage_type blank. NOTE: in the pipeline this is caught by the GLOBAL non_workload pre-filter before per-service dispatch — this entry documents EC2's charge-type taxonomy completely and is defensive."
+      },
+      {
+        "id": "instance_hour_windows",
+        "description": "EC2 instance-hours running Windows — needs core+RAM+Windows Server license.",
+        "match": {
+          "unit_hourly": true,
+          "any_field_re": "running Windows|Windows",
+          "is_accelerator": false
+        },
+        "mechanic": "compute_windows",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "vcpus",
+            "cur_column": "product/vCPU",
+            "source": "table",
+            "required": true
+          },
+          {
+            "name": "ram_gb",
+            "cur_column": "product/memory",
+            "source": "table",
+            "required": true
+          },
+          {
+            "name": "operating_system",
+            "cur_column": "product/operatingSystem",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "license_model",
+            "cur_column": "product/licenseModel",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "tenancy",
+            "cur_column": "product/tenancy",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "pricing_model",
+            "cur_column": "pricing/term",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "compute_windows"
+      },
+      {
+        "id": "instance_hour_burstable",
+        "description": "Burstable t2/t3/t3a/t4g instance-hours -> E2. Must precede graviton so t4g lands here.",
+        "match": {
+          "unit_hourly": true,
+          "usage_type_re": "(?:BoxUsage|HeavyUsage):t[234][ag]?\\.",
+          "exclude_usage_type_re": "running Windows",
+          "exclude_operation_re": "Windows"
+        },
+        "fallback_match": {
+          "unit_hourly": true,
+          "operation_re": "t[234][ag]?\\.(nano|micro|small|medium|large|\\d*xlarge)",
+          "exclude_usage_type_re": "running Windows"
+        },
+        "mechanic": "compute_burstable",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "vcpus",
+            "cur_column": "product/vCPU",
+            "source": "table",
+            "required": true
+          },
+          {
+            "name": "ram_gb",
+            "cur_column": "product/memory",
+            "source": "table",
+            "required": true
+          },
+          {
+            "name": "pricing_model",
+            "cur_column": "pricing/term",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "compute_burstable",
+        "notes": "fallback_match handles PDF/flat bills (usage_type blank, type in operation)."
+      },
+      {
+        "id": "instance_hour_graviton",
+        "description": "Graviton/ARM instance-hours (family token contains 'g') -> C4A, N2D fallback.",
+        "match": {
+          "unit_hourly": true,
+          "usage_type_re": "(?:BoxUsage|HeavyUsage):[a-z]\\d[a-z0-9]*g[a-z0-9]*\\.",
+          "is_accelerator": false,
+          "exclude_usage_type_re": "running Windows",
+          "exclude_operation_re": "Windows"
+        },
+        "mechanic": "compute_arm",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "vcpus",
+            "cur_column": "product/vCPU",
+            "source": "table",
+            "required": true
+          },
+          {
+            "name": "ram_gb",
+            "cur_column": "product/memory",
+            "source": "table",
+            "required": true
+          },
+          {
+            "name": "physical_processor",
+            "cur_column": "product/physicalProcessor",
+            "source": "table",
+            "required": true
+          },
+          {
+            "name": "pricing_model",
+            "cur_column": "pricing/term",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "compute_arm"
+      },
+      {
+        "id": "instance_hour",
+        "description": "General x86 (and GPU) instance-hours -> core+RAM (+accelerator) breakdown. family_mapper branches on is_gpu for p/g/vt families.",
+        "match": {
+          "unit_hourly": true,
+          "usage_type_re": "BoxUsage|SpotUsage|ReservedInstances|running Linux|HeavyUsage",
+          "exclude_usage_type_re": "running Windows"
+        },
+        "fallback_match": {
+          "unit_hourly": true,
+          "operation_re": "Instance[\\s-]hour|hourly fee per Linux/UNIX|per On Demand \\w+.*Instance"
+        },
+        "mechanic": "compute_breakdown",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "vcpus",
+            "cur_column": "product/vCPU",
+            "source": "table",
+            "required": true
+          },
+          {
+            "name": "ram_gb",
+            "cur_column": "product/memory",
+            "source": "table",
+            "required": true
+          },
+          {
+            "name": "physical_processor",
+            "cur_column": "product/physicalProcessor",
+            "source": "table",
+            "required": true
+          },
+          {
+            "name": "gpu_model",
+            "cur_column": null,
+            "source": "table",
+            "required": false
+          },
+          {
+            "name": "gpu_count",
+            "cur_column": null,
+            "source": "table",
+            "required": false
+          },
+          {
+            "name": "operating_system",
+            "cur_column": "product/operatingSystem",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "tenancy",
+            "cur_column": "product/tenancy",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "pricing_model",
+            "cur_column": "pricing/term",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "compute_breakdown",
+        "notes": "Inferentia/Trainium (inf*/trn*) are handled by family_mapper's TPU branch (map_tpu_row -> Cloud TPU v5e, chip-count parity); dl* (Gaudi) stays no-equivalent passthrough. gpu_model/gpu_count have no CUR column — enriched from the instance table / gcp-model-config.json."
+      },
+      {
+        "id": "ebs_storage",
+        "description": "EBS volumes & snapshots (gp2/gp3/io1/io2/sc1/st1) billed GB-Mo.",
+        "match": {
+          "usage_type_re": "EBS:Volume|EBS:Snapshot|gp2|gp3|io1|io2|sc1|st1"
+        },
+        "fallback_match": {
+          "operation_re": "\\((?:gp2|gp3|io1|io2|sc1|st1)\\)\\s+provisioned storage|snapshot data stored|provisioned (?:IOPS|MiBps)-month of (?:gp2|gp3|io1|io2)"
+        },
+        "mechanic": "block_storage",
+        "fields": [
+          {
+            "name": "volume_type",
+            "cur_column": "product/volumeType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "storage_media",
+            "cur_column": "product/storageMedia",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "iops",
+            "cur_column": null,
+            "source": "api",
+            "required": false
+          },
+          {
+            "name": "throughput_mibps",
+            "cur_column": null,
+            "source": "api",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "block_storage (EBS branch)",
+        "notes": "EBS provisioned IOPS/throughput are billed on separate line items (own usage_type), not as attributes of the capacity row — 'iops' here is the volume's provisioned IOPS for sizing, which CUR does not expose per-row; enrich if needed."
+      },
+      {
+        "id": "data_transfer",
+        "description": "EC2/VPC data transfer out / NAT data processed / native Bandwidth egress.",
+        "match": {
+          "usage_type_re": "DataTransfer|Data Transfer|NatGateway-Bytes|Out-Bytes|In-Bytes"
+        },
+        "fallback_match": {
+          "operation_re": "data transfer (out|in)|per gb.{0,30}transfer|LCU-Hrs?|capacity unit-hour"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "direction",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "from_region",
+            "cur_column": "product/fromRegionCode",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "to_region",
+            "cur_column": "product/toRegionCode",
+            "source": "cur",
+            "required": false
+          }
+        ],
+        "source_rule": "data_transfer (EC2/Bandwidth branch); direction derived by classify_transfer.py from usage_type"
+      },
+      {
+        "id": "nat_and_flat_hourly",
+        "description": "NAT gateway-hours, Elastic IP, public IPv4, VPN connection-hours — fixed hourly fees.",
+        "match": {
+          "usage_type_re": "NatGateway-Hours|ElasticIP|IPAddress|PublicIPv4|VPN-Connections|VPNConnection"
+        },
+        "mechanic": "flat_hourly",
+        "fields": [
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": false
+          }
+        ],
+        "source_rule": "flat_hourly (EC2 networking branch)"
+      }
+    ]
+  },
+  "rds": {
+    "display": "Amazon Relational Database Service",
+    "product_codes": [
+      "AmazonRDS"
+    ],
+    "charge_types": [
+      {
+        "id": "extended_support",
+        "description": "Post-EOL engine-version surcharge (e.g. ExtendedSupport:Yr1-Yr2:MySQL8.0). Must precede instance_hour/storage.",
+        "match": {
+          "usage_type_re": "ExtendedSupport:"
+        },
+        "mechanic": "rds_extended_support",
+        "fields": [
+          {
+            "name": "engine",
+            "cur_column": "product/databaseEngine",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "engine_version",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "vcpu_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "rds_extended_support",
+        "notes": "engine_version lives in the usage_type suffix (ExtendedSupport:Yr1-Yr2:MySQL8.0), not a dedicated CUR column. map_rds_extended_support() decides map-vs-ignore per version against the Cloud SQL Extended Support SKU catalog (MySQL 8.0 has no GCP SKU today -> ignore)."
+      },
+      {
+        "id": "instance_hour",
+        "description": "DB instance-hours (incl Aurora Serverless v2 ACU-Hr, RI/SP-covered). -> Cloud SQL sizing.",
+        "match": {
+          "unit_in": [
+            "hrs",
+            "hours",
+            "hour",
+            "hr",
+            "acu-hrs",
+            "acu-hours",
+            "acu-hr"
+          ]
+        },
+        "fallback_match": {
+          "any_field_re": "InstanceUsage:|RDS:Proxy|Aurora:ServerlessV2"
+        },
+        "also_match_line_item_type_in": [
+          "DiscountedUsage",
+          "SavingsPlanCoveredUsage"
+        ],
+        "mechanic": "managed_db",
+        "fields": [
+          {
+            "name": "db_instance_class",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "vcpus",
+            "cur_column": "product/vCPU",
+            "source": "table",
+            "required": true
+          },
+          {
+            "name": "ram_gb",
+            "cur_column": "product/memory",
+            "source": "table",
+            "required": true
+          },
+          {
+            "name": "engine",
+            "cur_column": "product/databaseEngine",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "engine_edition",
+            "cur_column": "product/databaseEdition",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "deployment_option",
+            "cur_column": "product/deploymentOption",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "license_model",
+            "cur_column": "product/licenseModel",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "pricing_model",
+            "cur_column": "pricing/term",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "managed_db",
+        "notes": "Unit gate is critical: GB-Mo storage rows must NOT match here (sending them to the instance-sizing path priced GB at $/hr = 10,000x inflation). Storage falls to the 'storage' charge_type below. Deployment_option (Multi-AZ) doubles the real footprint — must be carried for capacity reconciliation."
+      },
+      {
+        "id": "provisioned_iops",
+        "description": "Provisioned GP3/io IOPS-month. Cloud SQL bundles IOPS into storage price.",
+        "match": {
+          "any_field_re": "iops-month|IOPS-Mo|provisioned (?:IOPS|GP3 IOPS)"
+        },
+        "mechanic": "block_storage",
+        "fields": [
+          {
+            "name": "iops",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": false
+          }
+        ],
+        "source_rule": "block_storage (managed-db non-Hrs branch) + final_mapping_sanity_check.py",
+        "notes": "Faithful label = 'block_storage' (what classify_mechanics returns today). The IGNORE pricing decision (gp3 IOPS included in pd-balanced capacity) is made DOWNSTREAM by map_block_storage/final_mapping_sanity_check, not at classification. io2 IOPS is a separate case (pd-extreme DOES bill IOPS) — flagged for review, not yet split. Having its own charge_type keeps the distinction visible for when the downstream ignore becomes spec-driven."
+      },
+      {
+        "id": "backup",
+        "description": "RDS backup/snapshot storage (GB-Mo). Tested before 'storage' so backup rows (which contain 'storage' text) get the backup charge_type.",
+        "match": {
+          "any_field_re": "backup|snapshot"
+        },
+        "mechanic": "block_storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": false
+          }
+        ],
+        "source_rule": "block_storage (managed-db backup branch)"
+      },
+      {
+        "id": "storage",
+        "description": "RDS storage capacity (GB-Mo), non-hourly unit -> Cloud SQL storage SKU.",
+        "match": {
+          "any_field_re": "gb-mo|storage"
+        },
+        "exclude_when": {
+          "unit_hourly": true
+        },
+        "mechanic": "block_storage",
+        "fields": [
+          {
+            "name": "storage_type",
+            "cur_column": "product/volumeType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "block_storage (managed-db storage branch)"
+      }
+    ]
+  },
+  "s3": {
+    "display": "Amazon Simple Storage Service",
+    "product_codes": [
+      "AmazonS3"
+    ],
+    "charge_types": [
+      {
+        "id": "s3_data_transfer",
+        "description": "S3 egress / cross-region transfer.",
+        "match": {
+          "usage_type_re": "DataTransfer|Out-Bytes|In-Bytes"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "direction",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "from_region",
+            "cur_column": "product/fromRegionCode",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "to_region",
+            "cur_column": "product/toRegionCode",
+            "source": "cur",
+            "required": false
+          }
+        ],
+        "source_rule": "data_transfer (global, runs before object_storage/per_request)"
+      },
+      {
+        "id": "s3_storage",
+        "description": "S3 storage by class (Standard/IA/Glacier/Deep Archive) billed GB-Mo.",
+        "any_of": [
+          {
+            "unit_in": [
+              "gb-mo",
+              "gb month",
+              "gb-month"
+            ],
+            "exclude_operation_re": "Request|Retrieval|Data Returned|Select"
+          },
+          {
+            "usage_type_re": "TimedStorage|ByteHrs"
+          },
+          {
+            "operation_re": "Infrequent Access|Glacier|Intelligent-Tiering|Deep Archive",
+            "exclude_operation_re": "Request|Data Returned|Select"
+          }
+        ],
+        "mechanic": "object_storage",
+        "fields": [
+          {
+            "name": "storage_class",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "object_storage"
+      },
+      {
+        "id": "s3_requests",
+        "description": "S3 request/retrieval/misc charges (catch-all for remaining S3 rows).",
+        "match": {},
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "request_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "requests",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": false
+          }
+        ],
+        "source_rule": "per_request (S3 branch; storage excluded above so only non-storage S3 rows reach here)"
+      }
+    ]
+  },
+  "datatransfer": {
+    "display": "AWS Data Transfer",
+    "product_codes": [
+      "AWSDataTransfer"
+    ],
+    "charge_types": [
+      {
+        "id": "data_transfer",
+        "description": "Inter-region / internet egress.",
+        "match": {},
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "direction",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "from_region",
+            "cur_column": "product/fromRegionCode",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "to_region",
+            "cur_column": "product/toRegionCode",
+            "source": "cur",
+            "required": false
+          }
+        ],
+        "source_rule": "data_transfer (product DataTransfer branch); direction via classify_transfer.py"
+      }
+    ]
+  },
+  "opensearch": {
+    "display": "Amazon OpenSearch Service",
+    "product_codes": [
+      "AmazonES"
+    ],
+    "charge_types": [
+      {
+        "id": "opensearch_data_transfer",
+        "description": "OpenSearch network data transfer (egress/ingress) -> shared data_transfer pricer.",
+        "match": {
+          "usage_type_re": "DataTransfer|Out-Bytes|In-Bytes"
+        },
+        "fallback_match": {
+          "operation_re": "data transfer (out|in)|per gb.{0,30}transfer"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "direction",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "data_transfer (was swallowed by opensearch_all in classify_mechanics; registry yields to shared mechanic)"
+      },
+      {
+        "id": "opensearch_storage",
+        "description": "OpenSearch EBS storage, provisioned IOPS, and snapshots -> shared block_storage pricer.",
+        "any_of": [
+          {
+            "usage_type_re": "Storage|Snapshot|IOPS"
+          },
+          {
+            "unit_in": [
+              "gb-mo",
+              "gb month",
+              "gb-month"
+            ]
+          }
+        ],
+        "exclude_when": {
+          "unit_hourly": true
+        },
+        "mechanic": "block_storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "block_storage (was swallowed by opensearch_all in classify_mechanics; registry yields to shared mechanic)"
+      },
+      {
+        "id": "opensearch_compute",
+        "description": "Core OpenSearch instance-hours -> dedicated opensearch static mapper.",
+        "match": {},
+        "mechanic": "opensearch",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "vcpus",
+            "cur_column": "product/vCPU",
+            "source": "table",
+            "required": false
+          },
+          {
+            "name": "ram_gb",
+            "cur_column": "product/memory",
+            "source": "table",
+            "required": false
+          },
+          {
+            "name": "storage_gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "opensearch (core instance rows)"
+      }
+    ]
+  },
+  "redshift": {
+    "display": "Amazon Redshift",
+    "product_codes": [
+      "AmazonRedshift"
+    ],
+    "charge_types": [
+      {
+        "id": "redshift_all",
+        "description": "Node-hours -> BQ slot-hours; storage/backup passthrough (static mapper decides).",
+        "match": {},
+        "mechanic": "redshift",
+        "fields": [
+          {
+            "name": "node_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "node_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "redshift"
+      }
+    ]
+  },
+  "elasticache": {
+    "display": "Amazon ElastiCache",
+    "product_codes": [
+      "AmazonElastiCache"
+    ],
+    "charge_types": [
+      {
+        "id": "elasticache_all",
+        "description": "Node-hours -> Memorystore GiB-h (node RAM from instance table).",
+        "match": {},
+        "mechanic": "elasticache",
+        "fields": [
+          {
+            "name": "node_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "node_ram_gb",
+            "cur_column": "product/memory",
+            "source": "table",
+            "required": false
+          },
+          {
+            "name": "engine",
+            "cur_column": "product/cacheEngine",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "node_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "elasticache"
+      }
+    ]
+  },
+  "msk": {
+    "display": "Amazon Managed Streaming for Apache Kafka",
+    "product_codes": [
+      "AmazonMSK"
+    ],
+    "charge_types": [
+      {
+        "id": "msk_storage",
+        "description": "Broker storage GB-Mo -> Persistent Disk.",
+        "any_of": [
+          {
+            "unit_in": [
+              "gb-mo",
+              "gb month",
+              "gb-month"
+            ]
+          },
+          {
+            "any_field_re": "storage"
+          }
+        ],
+        "mechanic": "block_storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "block_storage (msk branch, runs before data_transfer/msk)"
+      },
+      {
+        "id": "msk_data_transfer",
+        "description": "MSK data transfer.",
+        "match": {
+          "usage_type_re": "DataTransfer|Out-Bytes|In-Bytes"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "direction",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "data_transfer"
+      },
+      {
+        "id": "msk_broker_hours",
+        "description": "Broker compute-hours -> self-hosted GCE.",
+        "match": {
+          "unit_hourly": true
+        },
+        "any_of": [
+          {
+            "usage_type_re": "Kafka\\.[a-z]"
+          },
+          {
+            "operation_re": "broker[\\s-]hour|Kafka\\.[a-z]"
+          }
+        ],
+        "mechanic": "msk",
+        "fields": [
+          {
+            "name": "broker_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "broker_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "msk"
+      }
+    ]
+  },
+  "emr": {
+    "display": "Amazon EMR",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "emr_all",
+        "description": "EMR per-instance surcharge / management rows -> Dataproc formula. (Worker EC2 cost comes via EC2 compute_breakdown separately.)",
+        "match": {},
+        "mechanic": "emr",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "node_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "emr (product excluded from compute_breakdown so these reach emr)"
+      }
+    ]
+  },
+  "athena": {
+    "display": "Amazon Athena",
+    "product_codes": [
+      "AmazonAthena"
+    ],
+    "charge_types": [
+      {
+        "id": "athena_all",
+        "description": "Per-TB-scanned -> BQ on-demand ($/TB).",
+        "match": {},
+        "mechanic": "athena",
+        "fields": [
+          {
+            "name": "tb_scanned",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "athena"
+      }
+    ]
+  },
+  "glue": {
+    "display": "AWS Glue",
+    "product_codes": [
+      "AWSGlue"
+    ],
+    "charge_types": [
+      {
+        "id": "glue_dpu_hours",
+        "description": "ETL/Crawler DPU-hours -> Dataproc formula.",
+        "any_of": [
+          {
+            "unit_re": "DPU-?Hour"
+          },
+          {
+            "usage_type_re": "DPU-?Hour"
+          }
+        ],
+        "mechanic": "glue",
+        "fields": [
+          {
+            "name": "dpu_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "glue (scoped to DPU-hour rows; Catalog-Storage/Request rows fall to misc)"
+      }
+    ]
+  },
+  "kinesis": {
+    "display": "Amazon Kinesis",
+    "product_codes": [
+      "AmazonKinesis"
+    ],
+    "charge_types": [
+      {
+        "id": "kinesis_data_volume",
+        "description": "Data-volume (Requests/Count) -> Pub/Sub message delivery.",
+        "any_of": [
+          {
+            "unit_in": [
+              "requests",
+              "count",
+              "lambda-gb-second"
+            ]
+          },
+          {
+            "usage_type_re": "Requests|Invocations"
+          },
+          {
+            "product_re": "Requests|Invocations"
+          }
+        ],
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "requests",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (runs before kinesis)"
+      },
+      {
+        "id": "kinesis_shard_hours",
+        "description": "Shard-hours -> Pub/Sub throughput.",
+        "any_of": [
+          {
+            "unit_hourly": true
+          },
+          {
+            "unit_in": [
+              "shard-hrs",
+              "shardhours"
+            ]
+          }
+        ],
+        "mechanic": "kinesis",
+        "fields": [
+          {
+            "name": "shard_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "kinesis"
+      }
+    ]
+  },
+  "quicksight": {
+    "display": "Amazon QuickSight",
+    "product_codes": [
+      "AmazonQuickSight"
+    ],
+    "charge_types": [
+      {
+        "id": "quicksight_requests",
+        "description": "Count/Requests-unit rows yield to the global per_request rule (which precedes the quicksight rule in RULES order).",
+        "any_of": [
+          {
+            "unit_in": [
+              "requests",
+              "count",
+              "lambda-gb-second"
+            ]
+          },
+          {
+            "usage_type_re": "Requests|Invocations"
+          }
+        ],
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "requests",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (precedes quicksight in RULES)"
+      },
+      {
+        "id": "quicksight_all",
+        "description": "Author/Reader, Standard/Enterprise per-user or per-session.",
+        "match": {},
+        "mechanic": "quicksight",
+        "fields": [
+          {
+            "name": "role_edition",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "users_or_sessions",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "quicksight"
+      }
+    ]
+  },
+  "shield": {
+    "display": "AWS Shield",
+    "product_codes": [
+      "AWSShield"
+    ],
+    "charge_types": [
+      {
+        "id": "shield_monthly_fee",
+        "description": "Shield Advanced $3,000/mo subscription -> Cloud Armor Enterprise.",
+        "match": {
+          "usage_type_re": "Monthly-?Fee"
+        },
+        "mechanic": "shield",
+        "fields": [
+          {
+            "name": "months",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "shield (scoped to Monthly-Fee; Shield-tagged egress rows -> data_transfer fallback)"
+      }
+    ]
+  },
+  "dynamodb": {
+    "display": "Amazon DynamoDB",
+    "product_codes": [
+      "AmazonDynamoDB"
+    ],
+    "charge_types": [
+      {
+        "id": "dynamodb_throughput",
+        "description": "DynamoDB RCU/WCU throughput charges -> Firestore / Bigtable / Spanner.",
+        "any_of": [
+          {
+            "usage_type_re": "ReadRequestUnits|WriteRequestUnits|ReadCapacityUnit|WriteCapacityUnit"
+          },
+          {
+            "unit_in": [
+              "rcu",
+              "wcu"
+            ]
+          }
+        ],
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "units",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "llm_guidance": {
+          "gcp_target": "Firestore / Bigtable / Spanner",
+          "strategy": "map",
+          "confidence_max": 0.5,
+          "guidance": "Decision rule: GetItem/PutItem/Query/Scan → Firestore; BatchWrite/high-volume throughput → Bigtable; transactional/ACID workloads → Cloud Spanner. Conversion assumption: 1 RCU ≈ 1 doc read, 1 WCU ≈ 1 doc write. rcu/wcu/table_mode not in CUR — infer workload scale from total_usage."
+        },
+        "source_rule": "misc (DynamoDB throughput rows deliberately guided to Firestore/Bigtable/Spanner)"
+      },
+      {
+        "id": "dynamodb_storage",
+        "description": "Table/PITR storage GB-Mo -> Firestore storage.",
+        "match": {
+          "usage_type_re": "TimedStorage-ByteHrs|TimedPITRStorage-ByteHrs"
+        },
+        "mechanic": "dynamodb_storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "dynamodb_storage (RCU/WCU throughput rows deliberately fall to misc/LLM)"
+      }
+    ]
+  },
+  "efs": {
+    "display": "Amazon Elastic File System",
+    "product_codes": [
+      "AmazonEFS"
+    ],
+    "charge_types": [
+      {
+        "id": "efs_all",
+        "description": "EFS Standard/IA GB-Mo -> Filestore.",
+        "match": {},
+        "mechanic": "efs",
+        "fields": [
+          {
+            "name": "storage_class",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "efs (runs before block_storage so EFS 'Storage' rows don't hit the generic rule)"
+      }
+    ]
+  },
+  "fsx": {
+    "display": "Amazon FSx",
+    "product_codes": [
+      "AmazonFSx"
+    ],
+    "charge_types": [
+      {
+        "id": "fsx_all",
+        "description": "FSx Lustre/Windows/ONTAP GB-Mo -> Filestore High Scale/Enterprise.",
+        "match": {},
+        "mechanic": "fsx",
+        "fields": [
+          {
+            "name": "fsx_type",
+            "cur_column": "product/fileSystemType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "fsx (runs before block_storage)"
+      }
+    ]
+  },
+  "guardduty": {
+    "display": "Amazon GuardDuty",
+    "product_codes": [
+      "AmazonGuardDuty"
+    ],
+    "charge_types": [
+      {
+        "id": "guardduty_all",
+        "description": "Per-GB-analyzed / per-asset -> Security Command Center (passthrough label).",
+        "match": {},
+        "mechanic": "guardduty",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "guardduty"
+      }
+    ]
+  },
+  "securityhub": {
+    "display": "AWS Security Hub",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "securityhub_all",
+        "description": "Per-GB-analyzed / per-asset -> Security Command Center (passthrough label).",
+        "match": {},
+        "mechanic": "guardduty",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "guardduty"
+      }
+    ]
+  },
+  "inspector": {
+    "display": "Amazon Inspector",
+    "product_codes": [
+      "AmazonInspector"
+    ],
+    "charge_types": [
+      {
+        "id": "inspector_requests",
+        "description": "Count/Requests-unit rows yield to the global per_request rule (which precedes inspector in RULES order; Inspector is NOT in per_request's exclusion list).",
+        "any_of": [
+          {
+            "unit_in": [
+              "requests",
+              "count",
+              "lambda-gb-second"
+            ]
+          },
+          {
+            "usage_type_re": "Requests|Invocations"
+          }
+        ],
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "requests",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (precedes inspector in RULES)"
+      },
+      {
+        "id": "inspector_all",
+        "description": "Per-resource-scanned -> SCC Premium (passthrough label).",
+        "match": {},
+        "mechanic": "inspector",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "inspector"
+      }
+    ]
+  },
+  "xray": {
+    "display": "AWS X-Ray",
+    "product_codes": [
+      "AWSXRay"
+    ],
+    "charge_types": [
+      {
+        "id": "xray_all",
+        "description": "Traces ingested -> Cloud Trace ingestion.",
+        "match": {},
+        "mechanic": "xray",
+        "fields": [
+          {
+            "name": "traces",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "xray (runs before per_request; unit=Count)"
+      }
+    ]
+  },
+  "cloudwatch": {
+    "display": "Amazon CloudWatch",
+    "product_codes": [
+      "AmazonCloudWatch"
+    ],
+    "charge_types": [
+      {
+        "id": "cloudwatch_all",
+        "description": "Logs ingest / metrics / alarms / dashboards -> Cloud Logging+Monitoring.",
+        "match": {},
+        "mechanic": "cloudwatch",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "cloudwatch"
+      }
+    ]
+  },
+  "mwaa": {
+    "display": "Amazon Managed Workflows for Apache Airflow",
+    "product_codes": [
+      "AmazonMWAA"
+    ],
+    "charge_types": [
+      {
+        "id": "mwaa_all",
+        "description": "Environment/Worker-class hours -> Cloud Composer (honest passthrough).",
+        "match": {},
+        "mechanic": "mwaa",
+        "fields": [
+          {
+            "name": "environment_class",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "mwaa"
+      }
+    ]
+  },
+  "route53": {
+    "display": "Amazon Route 53",
+    "product_codes": [
+      "AmazonRoute53"
+    ],
+    "charge_types": [
+      {
+        "id": "route53_dns",
+        "description": "Hosted zones / DNS queries -> Cloud DNS.",
+        "exclude_when": {
+          "product_re": "Application Recovery Controller"
+        },
+        "match": {},
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "zone_or_query",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Route 53 branch; ARC excluded -> service_map passthrough)"
+      }
+    ]
+  },
+  "eks": {
+    "display": "Amazon Elastic Kubernetes Service",
+    "product_codes": [
+      "AmazonEKS"
+    ],
+    "charge_types": [
+      {
+        "id": "eks_cluster_hours",
+        "description": "Cluster management $0.10/hr -> GKE cluster mgmt fee (exact parity).",
+        "match": {
+          "unit_hourly": true
+        },
+        "mechanic": "flat_hourly",
+        "fields": [
+          {
+            "name": "cluster_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "flat_hourly (EKS branch)"
+      }
+    ]
+  },
+  "lambda": {
+    "display": "AWS Lambda",
+    "product_codes": [
+      "AWSLambda"
+    ],
+    "charge_types": [
+      {
+        "id": "lambda_metered",
+        "description": "GB-seconds (compute) and requests/invocations -> Cloud Run. Ephemeral-storage GB-Mo rows are NOT matched here (excluded from block/object storage too) and fall through to misc, exactly as today.",
+        "any_of": [
+          {
+            "unit_in": [
+              "lambda-gb-second",
+              "requests",
+              "count"
+            ]
+          },
+          {
+            "usage_type_re": "Requests|Invocations"
+          },
+          {
+            "product_re": "Lambda[- ]GB[- ]Second"
+          }
+        ],
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "metric",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Lambda-GB-Second / requests branches)"
+      }
+    ]
+  },
+  "elb": {
+    "display": "Elastic Load Balancing",
+    "product_codes": [
+      "AWSELB"
+    ],
+    "charge_types": [
+      {
+        "id": "elb_data",
+        "description": "LCU / processed-bytes -> data processing egress.",
+        "any_of": [
+          {
+            "usage_type_re": "LCUUsage|LoadBalancer-Bytes"
+          },
+          {
+            "operation_re": "LCU-Hrs?|capacity unit-hour"
+          }
+        ],
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "lcu_or_gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "data_transfer (LCU branch, precedes flat_hourly)"
+      },
+      {
+        "id": "elb_hours",
+        "description": "Load balancer hours -> forwarding rules.",
+        "match": {
+          "unit_hourly": true
+        },
+        "any_of": [
+          {
+            "usage_type_re": "LoadBalancerUsage"
+          },
+          {
+            "operation_re": "LoadBalancer"
+          }
+        ],
+        "mechanic": "flat_hourly",
+        "fields": [
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "flat_hourly (LoadBalancerUsage branch)"
+      }
+    ]
+  },
+  "sqs": {
+    "display": "Amazon Simple Queue Service",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "sqs_requests",
+        "description": "Per-request/message charges -> per_request mechanic.",
+        "match": {},
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "metric",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (product Requests branch)"
+      }
+    ]
+  },
+  "sns": {
+    "display": "Amazon Simple Notification Service",
+    "product_codes": [
+      "AmazonSNS"
+    ],
+    "charge_types": [
+      {
+        "id": "sns_requests",
+        "description": "Per-request/message charges -> per_request mechanic.",
+        "match": {},
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "metric",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (product Requests branch)"
+      }
+    ]
+  },
+  "apigateway": {
+    "display": "Amazon API Gateway",
+    "product_codes": [
+      "AmazonApiGateway"
+    ],
+    "charge_types": [
+      {
+        "id": "apigateway_requests",
+        "description": "Per-request/message charges -> per_request mechanic.",
+        "match": {},
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "metric",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (API Gateway branch)"
+      }
+    ]
+  },
+  "directconnect": {
+    "display": "AWS Direct Connect",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "dc_data",
+        "description": "Direct Connect data transfer.",
+        "match": {
+          "usage_type_re": "DataTransfer|Out-Bytes|In-Bytes"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "data_transfer (precedes flat_hourly)"
+      },
+      {
+        "id": "dc_port_hours",
+        "description": "Port / hosted-connection hours -> Dedicated Interconnect.",
+        "match": {
+          "unit_hourly": true
+        },
+        "mechanic": "flat_hourly",
+        "fields": [
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "flat_hourly (Direct Connect branch)"
+      }
+    ]
+  },
+  "globalaccelerator": {
+    "display": "AWS Global Accelerator",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "ga_data",
+        "description": "GA data-transfer-premium.",
+        "match": {
+          "usage_type_re": "DataTransfer|Out-Bytes|In-Bytes"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "data_transfer (precedes flat_hourly)"
+      },
+      {
+        "id": "ga_fixed_fee",
+        "description": "Accelerator fixed hourly fee.",
+        "match": {
+          "unit_hourly": true
+        },
+        "mechanic": "flat_hourly",
+        "fields": [
+          {
+            "name": "accelerator_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "flat_hourly (Global Accelerator branch; unit 'accelerator-hours')"
+      }
+    ]
+  },
+  "waf": {
+    "display": "AWS WAF",
+    "product_codes": [
+      "awswaf"
+    ],
+    "charge_types": [
+      {
+        "id": "waf_fixed_hourly",
+        "description": "WebACL-Hour / Rule-Hour fixed fees -> Cloud Armor policy/rule.",
+        "any_of": [
+          {
+            "usage_type_re": "WebACL-Hour|Rule-Hour"
+          },
+          {
+            "operation_re": "Web ACL|WAF Rule"
+          }
+        ],
+        "mechanic": "flat_hourly",
+        "fields": [
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "flat_hourly (WAF WebACL/Rule branch; precedes per_request)"
+      },
+      {
+        "id": "waf_monthly",
+        "description": "BotControl / AntiDDoS monthly fees.",
+        "match": {
+          "operation_re": "\\bMonth\\b"
+        },
+        "mechanic": "flat_hourly",
+        "fields": [
+          {
+            "name": "months",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "flat_hourly (WAF Month branch)"
+      },
+      {
+        "id": "waf_requests",
+        "description": "Per-request WAF charges -> Cloud Armor requests.",
+        "exclude_when": {
+          "any_field_re": "WebACL-Hour|Rule-Hour|Web ACL|WAF Rule|\\bMonth\\b"
+        },
+        "match": {},
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "requests",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (WAF request branch)"
+      }
+    ]
+  },
+  "memorydb": {
+    "display": "Amazon MemoryDB",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "instance_hour",
+        "description": "Node/instance-hours -> managed DB sizing.",
+        "match": {
+          "unit_in": [
+            "hrs",
+            "hours",
+            "hour",
+            "hr"
+          ]
+        },
+        "also_match_line_item_type_in": [
+          "DiscountedUsage",
+          "SavingsPlanCoveredUsage"
+        ],
+        "mechanic": "managed_db",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "vcpus",
+            "cur_column": "product/vCPU",
+            "source": "table",
+            "required": false
+          },
+          {
+            "name": "ram_gb",
+            "cur_column": "product/memory",
+            "source": "table",
+            "required": false
+          },
+          {
+            "name": "pricing_model",
+            "cur_column": "pricing/term",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "managed_db"
+      },
+      {
+        "id": "storage",
+        "description": "Storage/backup GB-Mo -> Persistent Disk / managed storage.",
+        "any_of": [
+          {
+            "any_field_re": "gb-mo|storage|backup|snapshot"
+          }
+        ],
+        "exclude_when": {
+          "unit_hourly": true
+        },
+        "mechanic": "block_storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "block_storage (managed-db branch)"
+      }
+    ]
+  },
+  "documentdb": {
+    "display": "Amazon DocumentDB",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "instance_hour",
+        "description": "Node/instance-hours -> managed DB sizing.",
+        "match": {
+          "unit_in": [
+            "hrs",
+            "hours",
+            "hour",
+            "hr"
+          ]
+        },
+        "also_match_line_item_type_in": [
+          "DiscountedUsage",
+          "SavingsPlanCoveredUsage"
+        ],
+        "mechanic": "managed_db",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "vcpus",
+            "cur_column": "product/vCPU",
+            "source": "table",
+            "required": false
+          },
+          {
+            "name": "ram_gb",
+            "cur_column": "product/memory",
+            "source": "table",
+            "required": false
+          },
+          {
+            "name": "pricing_model",
+            "cur_column": "pricing/term",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "managed_db"
+      },
+      {
+        "id": "storage",
+        "description": "Storage/backup GB-Mo -> Persistent Disk / managed storage.",
+        "any_of": [
+          {
+            "any_field_re": "gb-mo|storage|backup|snapshot"
+          }
+        ],
+        "exclude_when": {
+          "unit_hourly": true
+        },
+        "mechanic": "block_storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "block_storage (managed-db branch)"
+      }
+    ]
+  },
+  "cognito": {
+    "display": "Amazon Cognito",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "cognito_all",
+        "description": "Auth requests / MAU -> Identity Platform (MAU ~= requests/20).",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "metric",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (excluded from per_request; _misc_reason gives Identity Platform MAU guidance)",
+        "llm_guidance": {
+          "gcp_target": "Identity Platform",
+          "strategy": "map",
+          "confidence_max": 0.45,
+          "formula": "MAU ≈ total_usage ÷ 20",
+          "guidance": "CUR bills auth requests, not MAU — estimate MAU and document the assumption."
+        }
+      }
+    ]
+  },
+  "ses": {
+    "display": "Amazon Simple Email Service",
+    "product_codes": [
+      "AmazonSES"
+    ],
+    "charge_types": [
+      {
+        "id": "ses_all",
+        "description": "Emails sent/received -> no GCP equivalent, passthrough.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "metric",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "emails",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (excluded from per_request)",
+        "llm_guidance": {
+          "gcp_target": "(no GCP equivalent)",
+          "strategy": "passthrough",
+          "confidence_max": 0.3,
+          "guidance": "no GCP managed email-send equivalent; passthrough at cost parity."
+        }
+      }
+    ]
+  },
+  "sagemaker": {
+    "display": "Amazon SageMaker",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "sagemaker_all",
+        "description": "Training/inference/notebook/volume -> Vertex AI (service_map review). SageMaker is explicitly excluded from block_storage, so its volume rows also land in misc.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "component",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (no dedicated rule; service_map -> Vertex AI review)",
+        "llm_guidance": {
+          "gcp_target": "Vertex AI",
+          "strategy": "review",
+          "confidence_max": 0.4,
+          "guidance": "service_map forces Vertex AI; training/inference/notebook/volume all route there; do not size a CPU VM."
+        }
+      }
+    ]
+  },
+  "dms": {
+    "display": "AWS Database Migration Service",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "dms_data_transfer",
+        "description": "DMS data transfer.",
+        "match": {
+          "usage_type_re": "DataTransfer|Out-Bytes|In-Bytes"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "data_transfer (precedes misc)"
+      },
+      {
+        "id": "dms_all",
+        "description": "Replication-instance hours -> misc; GCP DMS is free for homogeneous migrations, service_map decides.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "engine",
+            "cur_column": "product/databaseEngine",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (no BoxUsage signal -> not compute_breakdown; service_map review)",
+        "llm_guidance": {
+          "gcp_target": "Database Migration Service",
+          "strategy": "review",
+          "confidence_max": 0.4,
+          "guidance": "GCP Database Migration Service is free for homogeneous migrations; passthrough replication-instance hours, flag for review."
+        }
+      }
+    ]
+  },
+  "backup": {
+    "display": "AWS Backup",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "backup_storage",
+        "description": "Backup vault storage GB-Mo -> PD/GCS snapshot (generic Storage rule, AWS Backup not excluded).",
+        "any_of": [
+          {
+            "any_field_re": "storage"
+          },
+          {
+            "unit_in": [
+              "gb-mo",
+              "gb month",
+              "gb-month"
+            ]
+          }
+        ],
+        "exclude_when": {
+          "unit_hourly": true
+        },
+        "mechanic": "block_storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "source_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "block_storage (generic Storage rule)"
+      },
+      {
+        "id": "backup_other",
+        "description": "Non-storage backup charges -> misc.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "metric",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "(no GCP equivalent)",
+          "strategy": "passthrough",
+          "confidence_max": 0.3,
+          "guidance": "non-storage backup charges have no clean GCP equivalent; passthrough."
+        }
+      }
+    ]
+  },
+  "cloudtrail": {
+    "display": "AWS CloudTrail",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "cloudtrail_events",
+        "description": "Paid events (Count/Requests unit) -> per_request (service_map -> Cloud Logging review).",
+        "any_of": [
+          {
+            "unit_in": [
+              "count",
+              "requests"
+            ]
+          },
+          {
+            "usage_type_re": "Requests|Invocations"
+          }
+        ],
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "event_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "events",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (unit Count/Requests)"
+      },
+      {
+        "id": "cloudtrail_other",
+        "description": "Blank-unit / free-tier event rows -> misc.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "event_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "Cloud Logging",
+          "strategy": "review",
+          "confidence_max": 0.4,
+          "guidance": "event→log-volume conversion has no reliable basis; passthrough until a sizing model exists."
+        }
+      }
+    ]
+  },
+  "ssm": {
+    "display": "AWS Systems Manager",
+    "product_codes": [],
+    "_dispatch_note": "canonical_service('AWS Systems Manager') is currently None, so these specs do NOT dispatch — the row is classified by the legacy product-match ssm_parameter_store rule. Add a 'systems manager'->'ssm' alias to data/aws-aliases.json to enable spec dispatch. Fields documented here for completeness.",
+    "charge_types": [
+      {
+        "id": "ssm_parameter_store",
+        "description": "Parameter Store (PS-Param / PS-Advanced-Param) -> Secret Manager.",
+        "match": {
+          "product_re": "Systems Manager|AWSSystemsManager",
+          "usage_type_re": "PS-(?:Advanced-)?Param"
+        },
+        "mechanic": "ssm_parameter_store",
+        "fields": [
+          {
+            "name": "param_tier",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "ssm_parameter_store"
+      },
+      {
+        "id": "ssm_other",
+        "description": "Automation/Session/Patch/Inventory -> no GCP equivalent, misc.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "metric",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "(no GCP equivalent)",
+          "strategy": "passthrough",
+          "confidence_max": 0.3,
+          "guidance": "SSM Automation/Session/Patch/Inventory have no GCP equivalent; passthrough."
+        }
+      }
+    ]
+  },
+  "vpc": {
+    "display": "Amazon Virtual Private Cloud",
+    "product_codes": [
+      "AmazonVPC"
+    ],
+    "charge_types": [
+      {
+        "id": "vpc_tgw_data",
+        "description": "Transit Gateway data processed -> inter-zone/region egress.",
+        "match": {
+          "usage_type_re": "TransitGateway-Bytes|TransitGatewayVPC-Bytes|TransitGatewayVPN-Bytes"
+        },
+        "fallback_match": {
+          "operation_re": "TransitGateway-Bytes"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "data_transfer (TransitGateway-Bytes)"
+      },
+      {
+        "id": "vpc_tgw_hours",
+        "description": "Transit Gateway attachment-hours -> NCC hub.",
+        "match": {
+          "usage_type_re": "TransitGateway-Hours|TransitGatewayVPC-Hours|TransitGatewayVPN-Hours"
+        },
+        "mechanic": "flat_hourly",
+        "fields": [
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "flat_hourly (TransitGateway-Hours)"
+      },
+      {
+        "id": "vpc_other",
+        "description": "VPC endpoints / PrivateLink / other -> misc (service_map -> PSC passthrough).",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (service_map -> Private Service Connect)",
+        "llm_guidance": {
+          "gcp_target": "Private Service Connect",
+          "strategy": "review",
+          "confidence_max": 0.4,
+          "guidance": "VPC endpoints/PrivateLink → PSC; passthrough until a PSC pricer exists."
+        }
+      }
+    ]
+  }
+}

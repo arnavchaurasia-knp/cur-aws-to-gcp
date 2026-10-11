@@ -1,0 +1,17 @@
+{
+  "_meta": {
+    "purpose": "Single source of truth for universal LLM mapping guardrails. Every LLM mapping/misc prompt is assembled from `universal` below plus the row's per-charge-type llm_guidance in service_specs.json. Edit guardrails HERE only. Hard enforcement of these rules stays in merge_mappings.py (phantom-SKU filter) and validate_fix.py (echo/null/passthrough gates) — those are the backstop and are intentionally separate.",
+    "version": 1
+  },
+  "universal": [
+    "Never fabricate a GCP SKU ID. Use only IDs returned by scripts/find-sku.sh. Invented IDs are stripped downstream and the row will fail its gate.",
+    "Never alter, recompute, round, or 'correct' any aws_* source value (aws_amortized_cost, total_usage, usage_type, operation, region). You map; you never change the bill.",
+    "When you cannot derive a fair GCP price, set strategy='passthrough' at the AWS cost — EXACTLY ONE row, break_down=false. Never split a passthrough into core/ram/components (N components = N x cost).",
+    "passthrough is never silent: in projection_note state the row is carried at AWS cost and is NOT a real GCP estimate.",
+    "Every mapped row's projection_note must cite the mechanism or assumption used.",
+    "Set mapping_confidence honestly. If the row's guidance gives confidence_max, do not exceed it.",
+    "Do not use web search. Do not query projection.duckdb directly. SKU lookups go through scripts/find-sku.sh only.",
+    "Never map an accelerator / GPU / specialized-silicon row (Inferentia, Trainium, p/g/vt families) to a general-purpose CPU VM — that hides the architecture change. Passthrough + manual review instead.",
+    "Never invent instance counts, replication factors, disk sizes, node counts, or any quantity not present in the row or its extracted footprint."
+  ]
+}

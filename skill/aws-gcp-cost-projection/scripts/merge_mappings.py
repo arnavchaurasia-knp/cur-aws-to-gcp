@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 merge_mappings.py — Bulk-INSERT all mechanic-group mapping temp files into
 aws_li_to_gcp_li in one transaction.
@@ -47,6 +47,7 @@ except Exception:
 # each — see apply_rates.py's comments at the same section.)
 _SYNTHETIC_SKUS |= {
     "GCP-LOOKER-STUDIO-PRO-USER",
+    "TPU-V5E-ONDEMAND",
 }
 
 # Columns that can appear in a mapping JSON object.

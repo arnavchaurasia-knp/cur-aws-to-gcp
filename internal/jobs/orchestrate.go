@@ -268,6 +268,10 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"  • DO NOT run merge_mappings.py — the orchestrator runs it after you finish.\n" +
 				"  • DO NOT query projection.duckdb with python3 -c or run_command. Read manifest only.\n" +
 				"  • DO NOT use search_web or any web browsing tool — all SKU lookups must use scripts/find-sku.sh only.\n" +
+				"  • For every `misc` row, follow `misc_annotation.guidance` and the recommended\n" +
+				"    `strategy`/`confidence_max` in it, and you MUST obey every rule in\n" +
+				"    `misc_annotation.guardrails` (never fabricate a SKU, never alter aws_* values,\n" +
+				"    passthrough = one row, cite the mechanism). Do not exceed `confidence_max`.\n" +
 				"  • STOP after writing the 3 _mappings.json files and mapping-notes.md. Nothing else.",
 			CheckName: "mapping_coverage",
 			CheckSQL: "SELECT count(*) FROM aws_li_catalog c WHERE NOT EXISTS " +

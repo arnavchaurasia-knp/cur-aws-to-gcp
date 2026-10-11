@@ -1,0 +1,20 @@
+{
+  "_meta": {
+    "purpose": "Pinned GCP Cloud TPU on-demand per-chip-hour rates. Catalog lacks on-demand TPU SKUs, so pinned like egress-rates.json. VERIFY at cloud.google.com/tpu/pricing.",
+    "generation": "v5e",
+    "checked": "2026-10"
+  },
+  "synthetic_sku_id": "TPU-V5E-ONDEMAND",
+  "gcp_sku_name": "Cloud TPU v5e (on-demand, per chip-hour)",
+  "default_usd_per_chip_hour": 1.20,
+  "by_region": {
+    "us-central1": 1.20,
+    "us-east5": 1.20,
+    "us-west1": 1.20,
+    "us-west4": 1.20,
+    "us-south1": 1.416,
+    "europe-west1": 1.32,
+    "europe-west4": 1.56,
+    "asia-southeast1": 1.56
+  }
+}

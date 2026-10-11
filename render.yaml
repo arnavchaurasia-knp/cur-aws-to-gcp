@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: cur-web
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/auth/me
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: WEB_ROOT
+        value: /app/frontend/dist
+      - key: DATA_DIR
+        value: /data
+      - key: DEV_AUTH_BYPASS
+        value: "true"
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: APP_BASE_URL
+        sync: false

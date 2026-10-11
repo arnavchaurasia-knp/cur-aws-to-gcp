@@ -104,6 +104,11 @@ EC2_TYPES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
 with open(EC2_TYPES_PATH) as f:
     _EC2_TYPES = json.load(f)
 
+from config_loader import load_data_config
+_ACCEL_CHIPS_CFG = load_data_config("accelerator-chips")
+_ACCEL_CHIPS = _ACCEL_CHIPS_CFG.get("chips", {})
+_TPU_RATES_CFG = load_data_config("tpu-rates")
+
 _ACCEL_RE = re.compile(r'^(\d+)x\s+NVIDIA\s+(?:Tesla\s+)?([A-Za-z0-9]+)(?:\s+(\d+)GB)?$', re.IGNORECASE)
 
 
@@ -625,6 +630,89 @@ def _no_gpu_equivalent_entry(r, aws_key, gcp_region, vcpus, ram, why):
         })
     return entries
 
+def _accel_kind(parsed, itype):
+    prefix = (parsed.get("prefix") or "").lower() if parsed else ""
+    raw_itype = (itype or "").lower()
+    if prefix.startswith(("inf", "trn")) or raw_itype.startswith(("inf", "trn")):
+        return "tpu_mappable"
+    return "other"
+
+
+def _compute_mapper_kind(parsed, itype):
+    """Decide which compute mapper handles a compute_breakdown row:
+    'tpu' (Inferentia/Trainium), 'gpu' (accelerated g/p families), or 'gce'
+    (general CPU). Extracted from the dispatch loop so the decision is
+    unit-testable and the is_gpu reference can never go undefined again."""
+    if _accel_kind(parsed, itype) == "tpu_mappable":
+        return "tpu"
+    prefix = parsed.get("prefix") if parsed else None
+    if _AWS_WORKLOAD.get(prefix) == "accelerated":
+        return "gpu"
+    return "gce"
+
+
+def map_tpu_row(r, parsed, itype):
+    aws_key = r["aws_li_key"]
+    gcp_region = r.get("gcp_region") or "us-central1"
+    raw_itype = (itype or r.get("instance_type") or "").strip().lower()
+
+    # Look up chip count & family
+    chip_entry = _ACCEL_CHIPS.get(raw_itype)
+    assumed_count = False
+    if chip_entry:
+        chips = chip_entry.get("chips", 1)
+        family = chip_entry.get("family", "accelerator")
+    else:
+        chips = 1
+        assumed_count = True
+        family = "accelerator"
+        if raw_itype.startswith("inf"):
+            family = "inferentia"
+        elif raw_itype.startswith("trn"):
+            family = "trainium"
+
+    # Friendly capitalized family name
+    family_display = family.capitalize()
+
+    # Look up rate
+    synth_sku_id = _TPU_RATES_CFG.get("synthetic_sku_id", "TPU-V5E-ONDEMAND")
+    sku_name = _TPU_RATES_CFG.get("gcp_sku_name", "Cloud TPU v5e (on-demand, per chip-hour)")
+    by_region = _TPU_RATES_CFG.get("by_region", {})
+    default_rate = _TPU_RATES_CFG.get("default_usd_per_chip_hour")
+    rate = by_region.get(gcp_region, default_rate)
+
+    strategy = "map" if rate is not None else "passthrough"
+
+    note_parts = [
+        f"Mapped 1 AWS {family_display} chip -> 1 Cloud TPU v5e chip (chip-count parity, {chips} chips). "
+        "PRICE assumption only, NOT a verified performance equivalence — no public Inferentia/Trainium-vs-TPU "
+        "benchmark exists (checked 2026-10). TPU v5e per-chip rate bundles the host VM, so no separate CPU/RAM line. "
+        "Migration requires recompiling models from AWS Neuron SDK to GCP XLA/JAX; treat as directional."
+    ]
+    if assumed_count:
+        note_parts.append(" chip count assumed = 1 (instance not in accelerator-chips.json).")
+
+    projection_note = "".join(note_parts)
+
+    entry = {
+        "aws_li_key": aws_key,
+        "gcp_service": "Cloud TPU",
+        "gcp_sku_id": synth_sku_id,
+        "gcp_sku_name": sku_name,
+        "component": "accelerator",
+        "strategy": strategy,
+        "unit_from": "instance-hour",
+        "unit_to": "chip-hour",
+        "unit_multiplier": float(chips),
+        "gcp_region": gcp_region,
+        "mapping_confidence": 0.3,
+        "projection_note": projection_note,
+        "is_workload": True,
+        "break_down": False,
+    }
+
+    return [entry]
+
 
 def map_gpu_row(r, parsed):
     prefix = parsed["prefix"]
@@ -941,8 +1029,10 @@ def main():
         if not parsed:
             continue
             
-        is_gpu = _AWS_WORKLOAD.get(parsed["prefix"]) == "accelerated"
-        if is_gpu:
+        kind = _compute_mapper_kind(parsed, itype)
+        if kind == "tpu":
+            res = map_tpu_row(r, parsed, itype)
+        elif kind == "gpu":
             res = map_gpu_row(r, parsed)
         else:
             res = map_gce_row(r, parsed)

@@ -1,0 +1,44 @@
+{
+  "_meta": {
+    "purpose": "Single source of truth for is_workload. ingest.py's per-format derivations all read THIS. Edit here only.",
+    "pattern_notes": "nonworkload_patterns are case-insensitive SUBSTRING matches (ILIKE '%p%' in SQL; 'p in blob' in Python) — safe for multi-word phrases and concatenated product-code/line-item tokens (AWSMarketplace, AWSSupport, savingsplanrecurringfee). nonworkload_word_patterns are small regex fragments matched with WORD BOUNDARIES (\\bp\\b, case-insensitive) — for short words that would false-match inside longer words (tax→syntax/taxonomy, credit→accredited). DO NOT add bare 'savings plan' or 'reserved instance': those match COVERED-USAGE rows ('Reserved Instance applied', 'covered by Compute Savings Plans') which are REAL workload (DiscountedUsage / SavingsPlanCoveredUsage). Match the FEE phrasings instead (recurring/upfront/negation/rifee)."
+  },
+  "workload_line_item_types": [
+    "Usage",
+    "DiscountedUsage",
+    "SavingsPlanCoveredUsage"
+  ],
+  "nonworkload_patterns": [
+    "marketplace",
+    "awsmp",
+    "aws marketplace",
+    "awssupport",
+    "savingsplanrecurringfee",
+    "savingsplanupfrontfee",
+    "savingsplannegation",
+    "savings plan recurring",
+    "savings plan upfront",
+    "savings plan negation",
+    "recurring monthly fee",
+    "upfront fee",
+    "no upfront fee",
+    "rifee",
+    "ri fee",
+    "edp discount",
+    "enterprise discount program",
+    "private rate",
+    "private pricing",
+    "bundled discount",
+    "distributor discount",
+    "solution provider",
+    "registrar",
+    "late fee",
+    "ocb late fee"
+  ],
+  "nonworkload_word_patterns": [
+    "taxe?s?",
+    "credits?",
+    "refunds?",
+    "support"
+  ]
+}

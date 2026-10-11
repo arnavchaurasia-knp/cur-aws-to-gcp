@@ -19,6 +19,45 @@ DATA_DIR = os.path.join(os.environ.get("SKILL_DIR", ""), "data")
 CATALOG_DB = os.path.join(DATA_DIR, "catalog.duckdb")
 
 
+def _load_tpu_rates():
+    """Pinned Cloud TPU on-demand rates (data/tpu-rates.json). Catalog has no
+    on-demand TPU SKU, so family_mapper.map_tpu_row emits a synthetic SKU whose
+    rate is injected here, same pattern as EGRESS_SKUS / Looker Studio."""
+    try:
+        with open(os.path.join(DATA_DIR, "tpu-rates.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+_TPU_RATES = _load_tpu_rates()
+_TPU_SKU_ID = _TPU_RATES.get("synthetic_sku_id", "TPU-V5E-ONDEMAND")
+
+
+def inject_tpu_rates(conn):
+    """Insert the pinned TPU v5e on-demand rate into gcp_sku_rates for every
+    configured region plus a 'global' fallback (so the projection view's
+    COALESCE(regional, global, any) always resolves). Injects OnDemand only;
+    Reserved/Spot/CUD TPU columns are not pinned and will fall back."""
+    if not _TPU_RATES:
+        return
+    sku = _TPU_RATES.get("synthetic_sku_id", "TPU-V5E-ONDEMAND")
+    name = _TPU_RATES.get("gcp_sku_name", "Cloud TPU v5e (on-demand, per chip-hour)")
+    rows = dict(_TPU_RATES.get("by_region", {}))
+    default = _TPU_RATES.get("default_usd_per_chip_hour")
+    if default is not None:
+        rows.setdefault("global", default)
+    for region, rate in rows.items():
+        conn.execute(
+            """
+            INSERT INTO gcp_sku_rates VALUES
+            (?, 'Cloud TPU', ?, 'Compute', 'TPU', 'OnDemand', ?, 'chip-hour', ?, 'canonical-tpu', 'https://cloud.google.com/tpu/pricing')
+            ON CONFLICT DO NOTHING
+            """,
+            (sku, name, region, rate),
+        )
+
+
 def load_cud_pct():
     """Load CUD multipliers from data/cud_pct.json, falling back to the dict above."""
     json_path = os.path.join(DATA_DIR, "cud_pct.json")
@@ -543,7 +582,9 @@ def main():
 
     # Synthetic egress SKU IDs are injected directly into gcp_sku_rates below —
     # they are never in catalog.duckdb, so exclude them from the "not found" report.
-    synthetic_ids = {sku_id for sku_id, _, _ in EGRESS_SKUS.values()}
+    synthetic_ids = {sku_id for sku_id, _, _ in EGRESS_SKUS.values()} | {
+        "GCP-LOOKER-STUDIO-PRO-USER", _TPU_SKU_ID,
+    }
     found_skus = {k[0] for k in sku_tiers}
     for sku_id in sku_ids:
         if sku_id not in found_skus and sku_id not in synthetic_ids:
@@ -737,6 +778,11 @@ def main():
          9.0, 'canonical-looker-studio-pro', 'https://cloud.google.com/looker-studio/pricing')
         ON CONFLICT DO NOTHING
     """)
+
+    # Cloud TPU v5e (per chip-hour): pinned on-demand rate for Inferentia/Trainium
+    # rows mapped by family_mapper.map_tpu_row(). No on-demand TPU SKU exists in the
+    # bundled catalog, so inject it the same way egress / Looker Studio are injected.
+    inject_tpu_rates(conn)
 
     # Cloud Logging Log Ingestion: NOT injected as a pseudo-SKU — the real
     # catalog SKU "Log Storage cost" (143F-A1B0-E0BE) already carries the

@@ -324,3 +324,35 @@ def test_detailed_row_is_not_a_data_gap():
             usage_type="BoxUsage:m5.large", operation="RunInstances", unit="Hrs",
             canonical="ec2")
     assert classify(r) == "compute_breakdown"
+
+
+# ---------------------------------------------------------------------------
+# FIX 8, 9, 10 regressions & coverage
+# ---------------------------------------------------------------------------
+
+def test_has_instance_type_tightened():
+    from classify_mechanics import _has_instance_type
+    assert _has_instance_type("m5.xlarge") is True
+    assert _has_instance_type("db.r5.large") is True
+    assert _has_instance_type("c6gd.4xlarge") is True
+    assert _has_instance_type("t3.medium") is True
+    assert _has_instance_type("v2.0") is False
+    assert _has_instance_type("h264.profile") is False
+    assert _has_instance_type("tier1.foo") is False
+
+
+def test_pdf_whitespace_and_nbsp_normalization():
+    # PDF bills with non-breaking spaces (\xa0) or double spaces still match
+    r = row(product="Amazon\xa0Elastic  Compute\xa0Cloud",
+            usage_type="APS3-BoxUsage:m5.xlarge", operation="RunInstances", unit="Hrs",
+            canonical="ec2")
+    assert classify(r) == "compute_breakdown"
+
+
+def test_sagemaker_instance_excluded_from_compute_breakdown():
+    # SageMaker ML instance-hour row must route to misc (not compute_breakdown)
+    r = row(product="Amazon SageMaker",
+            usage_type="APS3-ml.p4d.24xlarge-Hour", operation="RunInstance", unit="Hrs",
+            canonical="sagemaker", instance_type="ml.p4d.24xlarge")
+    assert classify(r) == "misc"
+

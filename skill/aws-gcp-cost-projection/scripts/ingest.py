@@ -42,8 +42,42 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from log_utils import get_logger
 from region_prefix import decode_region_prefix
 from aws_normalizer import canonical_service as _canonical_service
+from config_loader import load_data_config as _cfg
 
 log = get_logger("ingest")
+
+_WL_CFG = _cfg("workload_classification")
+_WL_TYPES = set(_WL_CFG.get("workload_line_item_types", ["Usage", "DiscountedUsage", "SavingsPlanCoveredUsage"]))
+# Substring patterns (safe for multi-word phrases + concatenated product-code tokens).
+_NONWL_PATTERNS = _WL_CFG.get("nonworkload_patterns", [])
+# Word-boundary patterns (short words that would false-match inside longer words,
+# e.g. tax->syntax, credit->accredited). Matched with \b...\b, case-insensitive.
+_NONWL_WORD_PATTERNS = _WL_CFG.get("nonworkload_word_patterns", [])
+_NONWL_WORD_RES = [re.compile(r'\b' + wp + r'\b', re.IGNORECASE) for wp in _NONWL_WORD_PATTERNS]
+
+def _is_workload_py(line_item_type, *text_fields):
+    """Python-path verdict (PDF / usage-units parsers)."""
+    blob = " ".join((t or "") for t in text_fields).lower()
+    if any(p in blob for p in _NONWL_PATTERNS):
+        return False
+    if any(rx.search(blob) for rx in _NONWL_WORD_RES):
+        return False
+    if line_item_type and line_item_type not in _WL_TYPES:
+        return False          # authoritative enum says non-consumption
+    return True
+
+def _nonworkload_sql(*col_exprs):
+    """Build a SQL boolean that is TRUE when the row is NON-workload, from the
+    pattern list — so the spreadsheet/flat-CSV SQL CASEs stay in sync with the JSON.
+    Substring patterns use ILIKE; short word patterns use word-boundary regexp so
+    e.g. 'tax' does not match 'syntax'."""
+    ors = []
+    for col in col_exprs:
+        for p in _NONWL_PATTERNS:
+            ors.append(f"{col} ILIKE '%{p}%'")
+        for wp in _NONWL_WORD_PATTERNS:
+            ors.append(f"regexp_matches({col}, '\\b{wp}\\b', 'i')")
+    return "(" + " OR ".join(ors) + ")" if ors else "(FALSE)"
 
 
 def _sql_num(col_expr: str) -> str:
@@ -958,11 +992,7 @@ def main():
         # gross basis it is real usage at list price (previously excluded as $0 net).
         _lit = c(['lineitem/lineitemtype', 'lineitemtype'])
         _pc = c(['lineitem/productcode', 'productcode'])
-        _marketplace = (
-            f"({_pc} IN ('AWSMarketplace','AWSSupport','Support') "
-            f"OR {_pc} ILIKE '%Marketplace%' OR {_pc} ILIKE '%AWSMP%' "
-            f"OR {_pc} ILIKE '%Support%' OR {_lit} ILIKE '%Marketplace%')"
-        )
+        _marketplace = _nonworkload_sql(_pc, _lit)
         _workload_expr = (
             f"({_lit} IN ('Usage','DiscountedUsage','SavingsPlanCoveredUsage') "
             f"AND NOT {_marketplace})"
@@ -1152,13 +1182,7 @@ def main():
                             ELSE 'Usage'
                         END                            AS line_item_type,
                         CASE
-                            WHEN {cat_col} ILIKE '%support%'
-                              OR {cat_col} ILIKE '%marketplace%'
-                              OR {cat_col} ILIKE '%AWSMP%'
-                              OR {cat_col} ILIKE '%tax%'
-                              OR {cat_col} ILIKE '%Savings Plans%'
-                              OR {cat_col} ILIKE '%Registrar%'
-                              THEN FALSE
+                            WHEN {_nonworkload_sql(cat_col, meter_col)} THEN FALSE
                             ELSE TRUE
                         END                            AS is_workload,
                         COALESCE(TRY_CAST({consumed_col if consumed_col != 'NULL' else '0'} AS DOUBLE), 0) AS total_usage,
@@ -1282,8 +1306,9 @@ def main():
                         "and no per-component cost or instance type. Presented "
                         "as-is (passthrough); not projectable per-resource "
                         "without fabricating data.")
+                is_wl = _is_workload_py(None, service, usage_clean)
                 group_key = (service, "AggregatedUsage", usage_clean, "global",
-                             "OnDemand", "Usage", True, note, "")
+                             "OnDemand", "Usage", is_wl, note, "")
                 if group_key not in aggregated:
                     aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0}
                 aggregated[group_key]["row_cost"] += row_cost
@@ -1572,19 +1597,7 @@ def main():
                     product = desc.strip() or "Unknown service"
                     usage_type = "UnrecognizedService"
 
-                is_workload = True
-                if any(k in desc_lower for k in [
-                    "covered by compute savings plans",
-                    "covered by ec2 instance savings plans",
-                    "covered by reserved instances",
-                    "committed", "upfront", "no upfront fee",
-                    "recurring monthly fee", "edp discount",
-                    "enterprise discount program", "private pricing discount",
-                    "private rate", "solution provider", "bundled discount",
-                    "refund", "credit", "marketplace", "awsmp", "support",
-                    "aws support", "tax", "late fee", "ocb late fee"
-                ]) or any(k in product.lower() for k in ["marketplace", "awsmp", "support", "tax"]):
-                    is_workload = False
+                is_workload = _is_workload_py(None, desc, product)
                     
                 projection_note = None
                 if usage_type == "UnrecognizedService":
@@ -1642,26 +1655,7 @@ def main():
                               OR {c(['service'])} ILIKE '%reserved instances%'
                              THEN 'DiscountedUsage' ELSE 'Usage' END AS line_item_type,
                         CASE
-                            WHEN {c(['description'])} ILIKE '%covered by Compute Savings Plans%'
-                              OR {c(['description'])} ILIKE '%covered by EC2 Instance Savings Plans%'
-                              OR {c(['description'])} ILIKE '%covered by Reserved Instances%'
-                              OR {c(['description'])} ILIKE '%committed%upfront%'
-                              OR {c(['description'])} ILIKE '%No upfront fee%'
-                              OR {c(['description'])} ILIKE '%Recurring monthly fee%'
-                              OR {c(['description'])} ILIKE '%EDP Discount%'
-                              OR {c(['description'])} ILIKE '%Enterprise Discount Program%'
-                              OR {c(['service'])} ILIKE '%Enterprise Discount Program%'
-                              OR {c(['description'])} ILIKE '%Private Pricing Discount%'
-                              OR {c(['description'])} ILIKE '%Private Rate%'
-                              OR {c(['description'])} ILIKE '%Solution Provider%'
-                              OR {c(['description'])} ILIKE '%Bundled Discount%'
-                              OR {c(['description'])} ILIKE '%Refund%'
-                              OR {c(['description'])} ILIKE '%Credit%'
-                              OR {c(['service'])} ILIKE '%Marketplace%'
-                              OR {c(['service'])} ILIKE '%AWSMP%'
-                              OR {c(['service'])} ILIKE '%Support%'
-                              OR {c(['description'])} ILIKE '%Marketplace%'
-                              OR {c(['description'])} ILIKE '%AWS Support%' THEN FALSE
+                            WHEN {_nonworkload_sql(c(['service']), c(['description']))} THEN FALSE
                             ELSE TRUE
                         END AS is_workload,
                         {_sql_num(c(['usage_quantity']))} AS row_usage,

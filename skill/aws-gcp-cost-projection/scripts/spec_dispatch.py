@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""
+spec_dispatch.py — the per-service charge-type dispatch engine (Layer-1.5).
+
+Reads data/service_specs.json and classifies a row by:
+    1. service identity (canonical_service, product_code-first)   [Layer 1]
+    2. per-service charge_type (first-match-wins WITHIN the service)
+    3. -> (mechanic, charge_type, fields, field_state)
+
+This is the replacement engine for the per-service portion of
+classify_mechanics.py's flat global rule chain. It does NOT yet own
+classification in the pipeline — it runs in shadow/parity mode first
+(see tests/test_spec_dispatch.py and docs/SERVICE_SPECS_DESIGN.md).
+
+Global, service-agnostic exclusion rules (negative_cost, commitment_discount,
+non_workload) are NOT re-implemented here — they stay in classify_mechanics.py
+and run as a pre-filter before dispatch. classify_via_specs() wires the two
+together so parity can be measured against classify_mechanics.classify().
+
+Pure library + CLI. No DB writes. Import `dispatch` / `classify_via_specs`.
+"""
+from __future__ import annotations
+import os
+import re
+import sys
+import json
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config_loader import load_data_config as _cfg
+
+# Reuse the exact helpers + exclusion rules from classify_mechanics so the two
+# engines can never drift on hourly-unit / accelerator / exclusion semantics.
+import classify_mechanics as _cm
+from aws_normalizer import canonical_service as _canonical_service
+
+# ---------------------------------------------------------------------------
+# Spec registry
+# ---------------------------------------------------------------------------
+_SPECS_RAW: dict = _cfg("service_specs")
+SPECS: dict = {k: v for k, v in _SPECS_RAW.items() if not k.startswith("_")}
+
+# Global exclusion rules (service-agnostic) that run BEFORE per-service dispatch,
+# in the same order classify_mechanics applies them. Pulled by name from its
+# RULES list so there is a single source of truth for their logic.
+_EXCLUSION_ORDER = ["negative_cost", "commitment_discount", "non_workload"]
+_EXCLUSION_TESTS = {
+    name: test for name, test in _cm.RULES if name in _EXCLUSION_ORDER
+}
+
+
+# ---------------------------------------------------------------------------
+# Predicate evaluation
+# ---------------------------------------------------------------------------
+def _f(row: dict, name: str) -> str:
+    return row.get(name) or ""
+
+
+def _any_text(row: dict) -> str:
+    return f"{_f(row, 'usage_type')} {_f(row, 'operation')} {_f(row, 'product')}"
+
+
+def _eval_block(block: dict, row: dict) -> bool:
+    """Return True iff ALL predicates in `block` hold (logical AND).
+
+    An empty block is vacuously True. Unknown predicate keys fail closed
+    (return False) so a typo in the spec can never silently widen a match."""
+    for key, val in block.items():
+        if key == "product_re":
+            if not re.search(val, _f(row, "product"), re.IGNORECASE):
+                return False
+        elif key == "usage_type_re":
+            if not re.search(val, _f(row, "usage_type"), re.IGNORECASE):
+                return False
+        elif key == "operation_re":
+            if not re.search(val, _f(row, "operation"), re.IGNORECASE):
+                return False
+        elif key == "any_field_re":
+            if not re.search(val, _any_text(row), re.IGNORECASE):
+                return False
+        elif key == "exclude_usage_type_re":
+            if re.search(val, _f(row, "usage_type"), re.IGNORECASE):
+                return False
+        elif key == "exclude_operation_re":
+            if re.search(val, _f(row, "operation"), re.IGNORECASE):
+                return False
+        elif key == "product_re_not":
+            if re.search(val, _f(row, "product"), re.IGNORECASE):
+                return False
+        elif key == "unit_in":
+            if (row.get("unit") or "").strip().lower() not in [str(x).lower() for x in val]:
+                return False
+        elif key == "unit_not_in":
+            if (row.get("unit") or "").strip().lower() in [str(x).lower() for x in val]:
+                return False
+        elif key == "unit_re":
+            if not re.search(val, row.get("unit") or "", re.IGNORECASE):
+                return False
+        elif key == "unit_hourly":
+            if _cm._is_hourly_unit(row.get("unit")) != bool(val):
+                return False
+        elif key == "pricing_model_in":
+            if row.get("pricing_model") not in val:
+                return False
+        elif key == "line_item_type_in":
+            if row.get("line_item_type") not in val:
+                return False
+        elif key == "cost_lt_zero":
+            if ((row.get("aws_amortized_cost") or 0) < 0) != bool(val):
+                return False
+        elif key == "is_accelerator":
+            if _cm._is_accelerator(row) != bool(val):
+                return False
+        else:
+            # Unknown predicate — fail closed and surface it.
+            print(f"spec_dispatch: WARNING unknown predicate '{key}' — failing match closed",
+                  file=sys.stderr)
+            return False
+    return True
+
+
+def _charge_type_matches(ct: dict, row: dict) -> bool:
+    # exclude_when short-circuits the whole charge_type.
+    exclude_when = ct.get("exclude_when")
+    if exclude_when and _eval_block(exclude_when, row):
+        return False
+    # Base = match (AND of its predicates; absent => vacuously True).
+    base = _eval_block(ct.get("match", {}), row)
+    # any_of = OR of sub-blocks; when present it must also hold.
+    if "any_of" in ct:
+        base = base and any(_eval_block(b, row) for b in ct["any_of"])
+    if base:
+        return True
+    fb = ct.get("fallback_match")
+    if fb and _eval_block(fb, row):
+        return True
+    lit_list = ct.get("also_match_line_item_type_in")
+    if lit_list and row.get("line_item_type") in lit_list:
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Field state (completeness/provenance preview)
+# ---------------------------------------------------------------------------
+# Map a field's declared cur_column to the row key ingest.py actually populates,
+# so we can report whether the value is really present for this row.
+_CUR_COLUMN_TO_ROW_KEY = {
+    "product/instanceType": "instance_type",
+    "product/vCPU": "instance_vcpus",
+    "product/memory": "instance_ram_gb",
+    "lineItem/UsageType": "usage_type",
+    "lineItem/UsageAmount": "total_usage",
+    "lineItem/Operation": "operation",
+    "product/region": "aws_region",
+    "pricing/term": "pricing_model",
+    "product/operatingSystem": "operating_system",
+    "product/licenseModel": "license_model",
+    "product/databaseEngine": "database_engine",
+    "product/deploymentOption": "deployment_option",
+    "product/volumeType": "volume_type",
+}
+
+
+def _field_state(ct: dict, row: dict) -> list[dict]:
+    out = []
+    for fld in ct.get("fields", []):
+        cur_col = fld.get("cur_column")
+        source = fld.get("source")
+        if cur_col is None:
+            status = "not_in_cur"           # AWS never bills it; must enrich
+        elif source == "cur":
+            row_key = _CUR_COLUMN_TO_ROW_KEY.get(cur_col)
+            present = bool(row.get(row_key)) if row_key else False
+            status = "present_in_cur" if present else "missing_in_cur"
+        elif source == "table":
+            status = "derive_from_table"
+        elif source == "api":
+            status = "needs_api"
+        elif source == "llm":
+            status = "needs_llm"
+        else:
+            status = "unknown_source"
+        out.append({"name": fld["name"], "source": source,
+                    "cur_column": cur_col, "required": fld.get("required", False),
+                    "status": status})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+def dispatch(row: dict) -> dict | None:
+    """Per-service dispatch. Returns a result dict, or None when the service
+    has no spec (caller should fall back to the legacy classifier)."""
+    canon = row.get("canonical")
+    if canon is None:
+        canon = _canonical_service(row.get("product"), row.get("product_code"))
+    spec = SPECS.get(canon)
+    if not spec:
+        return None
+    for ct in spec.get("charge_types", []):
+        if _charge_type_matches(ct, row):
+            return {
+                "service": canon,
+                "charge_type": ct["id"],
+                "mechanic": ct["mechanic"],
+                "fields": ct.get("fields", []),
+                "field_state": _field_state(ct, row),
+            }
+    return None
+
+
+def classify_via_specs(row: dict) -> str:
+    """Full classification path used for parity testing and eventual cutover:
+    global exclusion pre-filters -> per-service dispatch -> legacy fallback.
+    Returns a mechanic_group label directly comparable to
+    classify_mechanics.classify(row)."""
+    for name in _EXCLUSION_ORDER:
+        test = _EXCLUSION_TESTS.get(name)
+        if test is not None:
+            try:
+                if test(row):
+                    return name
+            except Exception:
+                pass
+    d = dispatch(row)
+    if d is not None:
+        return d["mechanic"]
+    return _cm.classify(row)
+
+
+# ---------------------------------------------------------------------------
+# CLI: explain a single synthetic row, or self-check the registry loads.
+# ---------------------------------------------------------------------------
+def main(argv: list[str]) -> int:
+    print(f"spec_dispatch: loaded {len(SPECS)} service spec(s): {sorted(SPECS)}")
+    for svc, spec in SPECS.items():
+        ids = [c["id"] for c in spec.get("charge_types", [])]
+        print(f"  {svc:<8} charge_types: {ids}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

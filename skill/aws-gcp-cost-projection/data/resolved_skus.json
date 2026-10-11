@@ -500,7 +500,7 @@
   },
   "Cloud Storage|Standard Storage|us-east1": {
     "resource_group": "MultiRegionalStorage",
-    "sku_id": "1CAF-511D-F4EA",
+    "sku_id": "0D5D-6E23-4250",
     "unit": "GiBy.mo"
   },
   "Cloud Storage|Standard Storage|us-east4": {
@@ -541,11 +541,6 @@
     "sku_id": "10F0-EE60-26C7",
     "unit": "h"
   },
-  "Compute Engine|A2 Instance Core|europe-west1": {
-    "resource_group": "CPU",
-    "sku_id": "833D-F28B-BCD2",
-    "unit": "h"
-  },
   "Compute Engine|A2 Instance Core|us-east4": {
     "resource_group": "CPU",
     "sku_id": "5EF9-7776-45FD",
@@ -554,11 +549,6 @@
   "Compute Engine|A2 Instance Ram|asia-southeast1": {
     "resource_group": "RAM",
     "sku_id": "03D0-B47F-1938",
-    "unit": "GiBy.h"
-  },
-  "Compute Engine|A2 Instance Ram|europe-west1": {
-    "resource_group": "RAM",
-    "sku_id": "933C-9C81-5D7F",
     "unit": "GiBy.h"
   },
   "Compute Engine|A2 Instance Ram|us-east4": {
@@ -635,11 +625,6 @@
     "sku_id": "EE26-575A-FC62",
     "unit": "h"
   },
-  "Compute Engine|C3D Instance Core|asia-south2": {
-    "resource_group": "CPU",
-    "sku_id": "05B0-1D39-C97B",
-    "unit": "h"
-  },
   "Compute Engine|C3D Instance Core|asia-southeast1": "1102-0B94-379D",
   "Compute Engine|C3D Instance Core|europe-west1": {
     "resource_group": "CPU",
@@ -652,11 +637,6 @@
     "unit": "h"
   },
   "Compute Engine|C3D Instance Ram|asia-south1": "768F-D051-26AD",
-  "Compute Engine|C3D Instance Ram|asia-south2": {
-    "resource_group": "RAM",
-    "sku_id": "C965-F24F-2036",
-    "unit": "GiBy.h"
-  },
   "Compute Engine|C3D Instance Ram|asia-southeast1": "FF0E-72DF-B5C5",
   "Compute Engine|C3D Instance Ram|europe-west1": {
     "resource_group": "RAM",
@@ -1063,7 +1043,7 @@
   "Compute Engine|Storage PD Capacity|asia-south1": "320C-7688-1A62",
   "Compute Engine|Storage PD Capacity|asia-southeast1": "0572-568A-4FC4",
   "Compute Engine|Storage PD Capacity|us-east4": "8AF1-1146-E7DA",
-  "Compute Engine|Storage PD Snapshot|asia-south1": "A0EA-3B8B-0794",
+  "Compute Engine|Storage PD Snapshot|asia-south1": "6E69-DD68-8DCA",
   "Compute Engine|Storage PD Snapshot|asia-south2": {
     "resource_group": "PDSnapshot",
     "sku_id": "246B-6075-A49D",
@@ -1071,26 +1051,16 @@
   },
   "Compute Engine|Storage PD Snapshot|asia-southeast1": {
     "resource_group": "PDSnapshot",
-    "sku_id": "EC5A-D05B-E188",
+    "sku_id": "6E69-DD68-8DCA",
     "unit": "GiBy.mo"
   },
   "Compute Engine|Storage PD Snapshot|us-east4": {
     "resource_group": "PDSnapshot",
-    "sku_id": "3FB1-991D-37F5",
+    "sku_id": "34CF-7D88-5D40",
     "unit": "GiBy.mo"
-  },
-  "Compute Engine|T2A Arm Instance Core|asia-south1": {
-    "resource_group": "CPU",
-    "sku_id": "21FA-D397-3735",
-    "unit": "h"
   },
   "Compute Engine|T2A Arm Instance Core|asia-southeast1": "21FA-D397-3735",
   "Compute Engine|T2A Arm Instance Core|us-central1": "7F42-2C35-6872",
-  "Compute Engine|T2A Arm Instance Ram|asia-south1": {
-    "resource_group": "RAM",
-    "sku_id": "761E-277E-41F6",
-    "unit": "GiBy.h"
-  },
   "Compute Engine|T2A Arm Instance Ram|asia-southeast1": "761E-277E-41F6",
   "Compute Engine|T2D AMD Instance Core|asia-south1": "7B25-FFC2-42EE",
   "Compute Engine|T2D AMD Instance Ram|asia-south1": {

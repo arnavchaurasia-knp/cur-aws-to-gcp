@@ -162,6 +162,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"?scripts/calibrate_confidence.py $DB",
 				"?scripts/reconcile_capacity.py $DB",
 				"?scripts/verify_golden_mappings.py $DB",
+				"?scripts/ensure_full_coverage.py $DB",
 			},
 			Prompt: "Phase 2 — LLM mapping only. Strict protocol, no deviations.\n\n" +
 				"WORKING DIRECTORY: your job's absolute directory is <<JOB_DIR>>. Every\n" +
@@ -1499,6 +1500,11 @@ def run_phase(ph):
     sql = ph.get("check_sql")
     if sql:
         v = gate(sql)
+        if v and v > 0 and ph.get("check_name") == "mapping_coverage":
+            # Deterministically backstop unmapped rows before deciding whether to invoke LLM
+            run_script("?scripts/ensure_full_coverage.py $DB")
+            v = gate(sql)
+
         if v is None:
             log("gate %%s: could not evaluate (skipping)" %% ph.get("check_name", "?"))
         elif v > 0:

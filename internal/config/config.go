@@ -67,6 +67,14 @@ func (c *Config) DBPath() string  { return c.DataDir + "/cur-web.db" }
 func LoadFromEnv() (*Config, error) {
 	devBypass := os.Getenv("DEV_AUTH_BYPASS") == "true"
 
+	if devBypass && os.Getenv("APP_BASE_URL") == "" {
+		if renderURL := os.Getenv("RENDER_EXTERNAL_URL"); renderURL != "" {
+			_ = os.Setenv("APP_BASE_URL", renderURL)
+		} else {
+			_ = os.Setenv("APP_BASE_URL", "http://localhost:8080")
+		}
+	}
+
 	required := []string{"SESSION_SECRET", "APP_BASE_URL"}
 	if !devBypass {
 		required = append(required,

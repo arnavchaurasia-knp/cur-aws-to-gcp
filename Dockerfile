@@ -34,6 +34,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
+    jq \
+    gzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install required Python dependencies

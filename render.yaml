@@ -12,6 +12,8 @@ services:
         value: /app/frontend/dist
       - key: DATA_DIR
         value: /data
+      - key: SKILL_DIR
+        value: /app/skill/aws-gcp-cost-projection
       - key: DEV_AUTH_BYPASS
         value: "true"
       - key: SESSION_SECRET

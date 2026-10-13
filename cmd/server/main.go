@@ -143,7 +143,7 @@ func main() {
 
 	// Authenticated routes
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(sm))
+		r.Use(auth.Middleware(sm, cfg.DevAuthBypass))
 		r.Get("/api/auth/me", oauthH.Me)
 		r.Post("/api/jobs", jobHandler.Create)
 		r.Get("/api/jobs", jobHandler.List)

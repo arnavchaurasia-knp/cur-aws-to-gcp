@@ -17,6 +17,6 @@ services:
       - key: DEV_AUTH_BYPASS
         value: "true"
       - key: SESSION_SECRET
-        generateValue: true
+        value: "cur-web-session-secret-key-at-least-32-bytes-long-12345"
       - key: APP_BASE_URL
         sync: false

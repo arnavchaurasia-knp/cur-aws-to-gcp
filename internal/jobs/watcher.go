@@ -264,6 +264,8 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 	w.db.IncrementJobAttempts(jobID)
 	w.db.UpdateJobRunning(jobID)
 
+	_ = os.Remove(filepath.Join(jobDir, "orchestrator.lock"))
+
 	pid, err := w.spawner.Start(jobDir, job.InputExt, "")
 	if err != nil {
 		w.db.UpdateJobFailed(jobID, "retry spawn failed: "+err.Error())

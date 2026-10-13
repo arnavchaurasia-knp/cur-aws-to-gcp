@@ -685,6 +685,15 @@ def _pid_alive(pid):
         os.kill(pid, 0)
     except OSError:
         return False
+    # On Linux, verify that this PID is actually running run_all.py or python,
+    # not another recycled process in the container
+    try:
+        if os.path.exists("/proc/%%d/cmdline" %% pid):
+            cmd = open("/proc/%%d/cmdline" %% pid, "rb").read().decode("utf-8", "ignore")
+            if "run_all.py" not in cmd:
+                return False
+    except Exception:
+        pass
     return True
 
 if os.path.exists(LOCK_PATH):

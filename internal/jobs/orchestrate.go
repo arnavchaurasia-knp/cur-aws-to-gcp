@@ -151,7 +151,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			//   3. reconcile_capacity.py — upsize any break_down rows where GCP vCPU/RAM
 			//      < AWS spec to enforce the never-underprovision guarantee
 			PostLLMScripts: []string{
-				"scripts/merge_mappings.py $DB projection-audit/mappings",
+				"?scripts/merge_mappings.py $DB projection-audit/mappings",
 				// Service Classification Engine: force the canonical GCP target per
 				// data/service_map.json so mappings are deterministic, not per-row
 				// LLM guesses (CloudTrail->Cloud Logging, EMR->Dataproc, etc.).

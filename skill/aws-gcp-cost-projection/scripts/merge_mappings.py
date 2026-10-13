@@ -242,13 +242,14 @@ def main() -> None:
     for r in rows:
         records.append(tuple(r.get(col) for col in COLUMNS))
 
-    placeholders = ", ".join(["?"] * len(COLUMNS))
-    col_list = ", ".join(COLUMNS)
-    con.executemany(
-        f"INSERT INTO aws_li_to_gcp_li ({col_list}) VALUES ({placeholders})",
-        records,
-    )
-    con.commit()
+    if records:
+        placeholders = ", ".join(["?"] * len(COLUMNS))
+        col_list = ", ".join(COLUMNS)
+        con.executemany(
+            f"INSERT INTO aws_li_to_gcp_li ({col_list}) VALUES ({placeholders})",
+            records,
+        )
+        con.commit()
 
     # Per-group summary
     stats = con.execute("""

@@ -494,10 +494,6 @@ def main():
         WHERE m.gcp_sku_id IS NOT NULL
     """).fetchall()
 
-    if not skus_used:
-        log.info("No SKUs to fill rates for — nothing to do")
-        return
-
     # Clear existing rate table just in case
     conn.execute("""
         CREATE TABLE IF NOT EXISTS gcp_sku_rates (
@@ -516,6 +512,11 @@ def main():
         )
     """)
     conn.execute("DELETE FROM gcp_sku_rates")
+
+    if not skus_used:
+        log.info("No SKUs to fill rates for — nothing to do")
+        create_projection_view(conn)
+        return
 
     # Load all needed SKU rates from catalog.duckdb in one indexed batch query.
     # Replaces per-SKU gzip file scanning (O(N) per lookup) with a single JOIN

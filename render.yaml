@@ -4,7 +4,7 @@ services:
     env: docker
     plan: free
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /api/auth/me
+    healthCheckPath: /health
     envVars:
       - key: PORT
         value: 8080

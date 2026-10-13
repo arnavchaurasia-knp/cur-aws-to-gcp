@@ -17,6 +17,7 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
   const [file, setFile] = useState<File | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [jobs, setJobs] = useState<Job[]>([])
+  const [error, setError] = useState<string | null>(null)
   const nav = useNavigate()
 
   useEffect(() => { listJobs().then(setJobs) }, [])
@@ -24,9 +25,12 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
   const submit = async () => {
     if (!file || !prospect.trim()) return
     setSubmitting(true)
+    setError(null)
     try {
       const { id } = await createJob(file, prospect.trim())
       nav(`/jobs/${id}`)
+    } catch (err: any) {
+      setError(err?.message || 'Upload failed')
     } finally {
       setSubmitting(false)
     }
@@ -56,6 +60,12 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
             <label htmlFor="bill-upload" className="text-xs uppercase tracking-wider text-gray-400">AWS bill — CUR export, Cost Explorer CSV, Parquet, ZIP, or console PDF</label>
             <DropZone file={file} onChange={setFile} inputId="bill-upload" />
           </div>
+          {error && (
+            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400 anim-fade-in-up">
+              {error}
+            </div>
+          )}
+
           <div className="anim-fade-in-up delay-250">
             <button onClick={submit} disabled={!ready}
               className={`w-full py-3 rounded-lg font-medium text-white transition-all duration-200

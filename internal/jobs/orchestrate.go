@@ -837,10 +837,12 @@ def run_agy(prompt, phase_label=""):
     # Node CLI mode so it behaves like the agy CLI. This is a no-op on Linux/Mac
     # where agy is a plain binary.
     agy_env = os.environ.copy()
-    agy_env["ELECTRON_RUN_AS_NODE"] = "1"
     try:
         with open(os.path.join(JOB_DIR, "agy.log"), "a") as lf:
             rc = subprocess.run(args, cwd=JOB_DIR, stdout=lf, stderr=lf, env=agy_env).returncode
+    except FileNotFoundError:
+        log("ERROR: agy CLI binary not found on PATH or at " + AGY)
+        rc = 127
     finally:
         stop.set()
     elapsed = int(time.time() - t0)

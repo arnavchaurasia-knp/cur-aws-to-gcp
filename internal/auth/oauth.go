@@ -159,9 +159,10 @@ func (h *OAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	var info struct {
-		Email string `json:"email"`
-		Name  string `json:"name"`
-		HD    string `json:"hd"`
+		Email   string `json:"email"`
+		Name    string `json:"name"`
+		HD      string `json:"hd"`
+		Picture string `json:"picture"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		http.Error(w, "decode failed", http.StatusInternalServerError)
@@ -201,7 +202,7 @@ func (h *OAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.sm.Set(w, &Session{Email: info.Email, Name: info.Name, Role: role})
+	h.sm.Set(w, &Session{Email: info.Email, Name: info.Name, Picture: info.Picture, Role: role})
 
 	http.SetCookie(w, &http.Cookie{Name: "oauth_next", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: h.sm.Secure()})
 	http.Redirect(w, r, next, http.StatusTemporaryRedirect)
@@ -209,7 +210,7 @@ func (h *OAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 func (h *OAuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	h.sm.Clear(w)
-	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *OAuthHandler) Me(w http.ResponseWriter, r *http.Request) {
@@ -218,6 +219,7 @@ func (h *OAuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"email":    sess.Email,
 		"name":     sess.Name,
+		"picture":  sess.Picture,
 		"is_admin": sess.IsAdmin(h.adminEmails),
 	})
 }

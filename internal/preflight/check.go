@@ -2,6 +2,7 @@ package preflight
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,9 +13,15 @@ import (
 // Check verifies that the host has everything the server needs before it
 // starts accepting jobs.
 func Check() error {
-	// 1. agy on PATH
-	if _, err := exec.LookPath("agy"); err != nil {
-		return fmt.Errorf("agy not found on PATH: %w", err)
+	// 1. agy — honour AGY_PATH env var (same resolution as the spawner) before
+	// falling back to PATH lookup.
+	agyPath := os.Getenv("AGY_PATH")
+	if agyPath != "" {
+		if _, err := os.Stat(agyPath); err != nil {
+			return fmt.Errorf("AGY_PATH=%q not found: %w", agyPath, err)
+		}
+	} else if _, err := exec.LookPath("agy"); err != nil {
+		return fmt.Errorf("agy not found on PATH (set AGY_PATH in .env to use a specific binary): %w", err)
 	}
 	// 2. skill installed — uses the same resolution logic as the spawner
 	skillDir := skill.ResolveDir()
@@ -25,17 +32,18 @@ func Check() error {
 			skillMD, skillDir, err,
 		)
 	}
-	// 3. required tools for the skill pipeline
+	// 3. required tools for the skill pipeline — warn only; server still starts
+	// so auth and UI work even without the full pipeline toolchain.
 	for _, tool := range []string{"python3", "duckdb", "jq", "gzip"} {
 		if _, err := exec.LookPath(tool); err != nil {
-			return fmt.Errorf("required tool %q not found on PATH: %w", tool, err)
+			log.Printf("WARNING: preflight: %q not found on PATH — job pipeline will fail, auth/UI unaffected", tool)
 		}
 	}
-	// 4. key scripts are readable (catches missing rsync or permission issues early)
+	// 4. key scripts are readable
 	for _, rel := range []string{"scripts/ingest.py", "scripts/validate_fix.py"} {
 		p := filepath.Join(skillDir, rel)
 		if _, err := os.Stat(p); err != nil {
-			return fmt.Errorf("required skill script not found: %s: %w", p, err)
+			log.Printf("WARNING: preflight: skill script not found: %s — job pipeline will fail, auth/UI unaffected", p)
 		}
 	}
 	return nil

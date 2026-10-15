@@ -30,7 +30,10 @@ the established honest fallback here, not a new pattern.
 
 Idempotent. Never fatal — prints what it backstopped and exits 0.
 """
+import json
+import os
 import sys
+
 try:
     import duckdb
 except Exception as e:  # pragma: no cover
@@ -51,53 +54,123 @@ NOTE = "[backstop] LLM left this row unmapped after retry — carried at AWS cos
 _IGNORE_GROUPS = ("commitment_discount", "negative_cost")
 
 
+def _is_ignore(is_workload, mechanic_group, cost):
+    # Authoritative: non-workload cost never lands on the GCP side.
+    if not bool(is_workload):
+        return True
+    # Belt-and-suspenders: known ignore groups even if is_workload got stamped true.
+    if mechanic_group in _IGNORE_GROUPS:
+        return True
+    # A negative cost (refund/credit) mis-grouped into misc must not become a
+    # negative GCP passthrough that silently offsets the total.
+    if (cost or 0) < 0:
+        return True
+    return False
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(0)
     db = sys.argv[1]
-    con = duckdb.connect(db)
 
-    rows = con.execute("""
-        SELECT c.aws_li_key, c.gcp_region, c.is_workload, c.aws_amortized_cost,
-               c.product, c.mechanic_group
-        FROM aws_li_catalog c
-        WHERE NOT EXISTS (SELECT 1 FROM aws_li_to_gcp_li m WHERE m.aws_li_key = c.aws_li_key)
-    """).fetchall()
+    try:
+        con = duckdb.connect(db)
 
-    if not rows:
-        print("ensure_full_coverage: no gaps found, nothing to do")
+        rows = con.execute("""
+            SELECT c.aws_li_key, c.gcp_region, c.is_workload, c.aws_amortized_cost,
+                   c.product, c.mechanic_group
+            FROM aws_li_catalog c
+            WHERE NOT EXISTS (SELECT 1 FROM aws_li_to_gcp_li m WHERE m.aws_li_key = c.aws_li_key)
+        """).fetchall()
+
+        if not rows:
+            print("ensure_full_coverage: no gaps found, nothing to do")
+            sys.exit(0)
+
+        records = [
+            (
+                aws_li_key,
+                "Non-workload / Commitment (ignored)" if _is_ignore(is_workload, mechanic_group, cost) else "Manual Review — Unmapped",
+                None, None, None,
+                "ignore" if _is_ignore(is_workload, mechanic_group, cost) else "passthrough",
+                1.0, gcp_region, NOTE, 0.10, bool(is_workload), False,
+            )
+            for (aws_li_key, gcp_region, is_workload, cost, product, mechanic_group) in rows
+        ]
+        try:
+            con.executemany(
+                """
+                INSERT INTO aws_li_to_gcp_li
+                    (aws_li_key, gcp_service, gcp_sku_id, gcp_sku_name, gcp_sku_unit,
+                     strategy, unit_multiplier, gcp_region, projection_note,
+                     mapping_confidence, is_workload, break_down)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                records,
+            )
+            con.commit()
+        except Exception as _insert_err:
+            sys.stderr.write(f"ensure_full_coverage: non-fatal error ({_insert_err}); skipping DB INSERT\n")
+
+        total_cost = sum(r[3] or 0 for r in rows)
+        ignored_n = sum(1 for r in rows if _is_ignore(r[2], r[5], r[3]))
+        zero_n = sum(1 for r in rows if (r[3] or 0) == 0)
+        passthrough_n = len(rows) - ignored_n
+        print(f"ensure_full_coverage: backstopped {len(rows)} row(s) totaling "
+              f"${total_cost:,.2f} ({ignored_n} as ignore/commitment, "
+              f"{passthrough_n} as passthrough/Manual Review; {zero_n} zero-cost) — loud, not silent:")
+        for aws_li_key, _region, is_workload, cost, product, mechanic_group in sorted(rows, key=lambda r: -(r[3] or 0))[:20]:
+            tag = "ignore" if _is_ignore(is_workload, mechanic_group, cost) else "passthrough"
+            print(f"  {aws_li_key[:12]}  ${cost or 0:>10,.2f}  [{tag}]  {product}")
+
+        # FIX-3: Surface backstopped rows in data_gaps.json next to the DB
+        try:
+            gaps_path = os.path.join(os.path.dirname(os.path.abspath(db)), "data_gaps.json")
+            existing_data = None
+            existing_rows = []
+            if os.path.exists(gaps_path):
+                with open(gaps_path, "r", encoding="utf-8") as _gf:
+                    existing_data = json.load(_gf)
+                if isinstance(existing_data, dict):
+                    existing_rows = existing_data.get("rows", [])
+                elif isinstance(existing_data, list):
+                    existing_rows = existing_data
+
+            existing_keys = {
+                r.get("aws_li_key") for r in existing_rows
+                if isinstance(r, dict) and "aws_li_key" in r
+            }
+
+            for aws_li_key, _region, is_workload, cost, product, mechanic_group in rows:
+                if aws_li_key not in existing_keys:
+                    resolution = "ignore" if _is_ignore(is_workload, mechanic_group, cost) else "passthrough"
+                    existing_rows.append({
+                        "aws_li_key": aws_li_key,
+                        "product": product,
+                        "cost": round(cost or 0.0, 2),
+                        "mechanic_group": mechanic_group,
+                        "reason": "LLM left row unmapped after Phase 2 retry",
+                        "resolution": resolution,
+                        "source": "ensure_full_coverage.py",
+                    })
+                    existing_keys.add(aws_li_key)
+
+            if isinstance(existing_data, list):
+                out = existing_rows
+            else:
+                out = {
+                    "count": len(existing_rows),
+                    "total_cost": round(sum(r.get("cost", 0.0) for r in existing_rows if isinstance(r, dict)), 2),
+                    "rows": existing_rows,
+                }
+            with open(gaps_path, "w", encoding="utf-8") as _gf:
+                json.dump(out, _gf, indent=2)
+        except Exception as _ge:
+            sys.stderr.write(f"ensure_full_coverage: warning: could not write data_gaps.json ({_ge})\n")
+
+    except Exception as e:
+        sys.stderr.write(f"ensure_full_coverage: non-fatal error ({e}); skipping\n")
         sys.exit(0)
-
-    records = [
-        (
-            aws_li_key,
-            "Non-workload / Commitment (ignored)" if mechanic_group in _IGNORE_GROUPS else "Manual Review — Unmapped",
-            None, None, None,
-            "ignore" if mechanic_group in _IGNORE_GROUPS else "passthrough",
-            1.0, gcp_region, NOTE, 0.10, bool(is_workload), False,
-        )
-        for (aws_li_key, gcp_region, is_workload, _cost, _product, mechanic_group) in rows
-    ]
-    con.executemany(
-        """
-        INSERT INTO aws_li_to_gcp_li
-            (aws_li_key, gcp_service, gcp_sku_id, gcp_sku_name, gcp_sku_unit,
-             strategy, unit_multiplier, gcp_region, projection_note,
-             mapping_confidence, is_workload, break_down)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        records,
-    )
-    con.commit()
-
-    total_cost = sum(r[3] or 0 for r in rows)
-    ignored_n = sum(1 for r in rows if r[5] in _IGNORE_GROUPS)
-    print(f"ensure_full_coverage: backstopped {len(rows)} row(s) totaling "
-          f"${total_cost:,.2f} ({ignored_n} as ignore/commitment, "
-          f"{len(rows) - ignored_n} as passthrough/Manual Review) — loud, not silent:")
-    for aws_li_key, _region, _wl, cost, product, mechanic_group in sorted(rows, key=lambda r: -(r[3] or 0))[:20]:
-        tag = "ignore" if mechanic_group in _IGNORE_GROUPS else "passthrough"
-        print(f"  {aws_li_key[:12]}  ${cost or 0:>10,.2f}  [{tag}]  {product}")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,11 @@ from field_state import (
     build_field_state_map, data_confidence_from_state_map,
 )
 
+try:
+    from aws_normalizer import canonical_service
+except (ImportError, ModuleNotFoundError):
+    canonical_service = lambda *_a: None
+
 
 # ---------------------------------------------------------------------------
 # Contract definition
@@ -37,6 +42,13 @@ class ServiceContract:
 # One contract per service. These define what the engine actually needs —
 # not what would be nice to have, but what will produce a wrong answer if absent.
 CONTRACTS: dict[str, ServiceContract] = {
+
+    "_default": ServiceContract(
+        service="_default",
+        critical_fields=["region"],
+        important_fields=[],
+        optional_fields=[],
+    ),
 
     "EC2": ServiceContract(
         service="EC2",
@@ -156,7 +168,7 @@ def validate_contract(service: str, profile: dict) -> ContractResult:
     Returns a ContractResult. If passed=False, the pipeline should route
     the row to the outlier flow rather than attempting mapping.
     """
-    contract = CONTRACTS.get(service) or CONTRACTS.get("EC2")  # fallback
+    contract = CONTRACTS.get(service) or CONTRACTS["_default"]  # fallback
     all_fields = (contract.critical_fields
                   + contract.important_fields
                   + contract.optional_fields)
@@ -226,12 +238,29 @@ _PRODUCT_TO_CONTRACT: dict[str, str] = {
     "EKS": "EKS",
 }
 
+_CANONICAL_TO_CONTRACT: dict[str, str] = {
+    "ec2": "EC2",
+    "rds": "RDS",
+    "elasticache": "ElastiCache",
+    "msk": "MSK",
+    "opensearch": "OpenSearch",
+    "lambda": "Lambda",
+    "eks": "EKS",
+}
+
 _BURSTABLE_PREFIXES = ("t2.", "t3.", "t3a.", "t4g.")
 
 
 def _resolve_contract_key(product: str, row: dict) -> str:
     """Return the contract key for a catalog row."""
-    base = _PRODUCT_TO_CONTRACT.get(product, "EC2")
+    base = _PRODUCT_TO_CONTRACT.get(product)
+    if not base:
+        canon = canonical_service(product, row.get("product_code"))
+        if canon:
+            base = _CANONICAL_TO_CONTRACT.get(canon)
+    if not base:
+        base = "_default"
+
     if base == "EC2":
         instance_type = (row.get("instance_type") or "").lower()
         if any(instance_type.startswith(p) for p in _BURSTABLE_PREFIXES):
@@ -279,11 +308,12 @@ def validate_all_contracts(db_path: str) -> dict:
         except Exception:
             pass  # column may already exist in some DuckDB versions without IF NOT EXISTS
 
-    # Fetch all rows as dicts. DuckDB returns results as list-of-tuples; use
-    # fetchdf() for convenience.
-    df = con.execute("SELECT * FROM aws_li_catalog").fetchdf()
+    # Fetch all rows as dicts without pandas dependency.
+    cur = con.execute("SELECT * FROM aws_li_catalog")
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
 
-    total_rows = len(df)
+    total_rows = len(rows)
     contract_failures = 0
     unavailable_field_rows = 0
     details_by_service: dict[str, dict] = {}
@@ -291,8 +321,8 @@ def validate_all_contracts(db_path: str) -> dict:
     # Collect updates to apply in bulk.
     updates: list[tuple[str | None, str | None, int]] = []  # (issues_json, avail, rowid)
 
-    for idx, row in df.iterrows():
-        row_dict = row.to_dict()
+    for idx, row_vals in enumerate(rows):
+        row_dict = dict(zip(cols, row_vals))
         product = str(row_dict.get("product") or "")
         contract_key = _resolve_contract_key(product, row_dict)
 

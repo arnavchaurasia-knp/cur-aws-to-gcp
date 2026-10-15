@@ -194,6 +194,24 @@ def test_tailored_branches_actually_fire():
         assert len(g.get("guardrails", [])) >= len(lg.UNIVERSAL_GUARDRAILS)
 
 
+def test_cost_only_blank_row_guidance():
+    # Blank row with cost > 0 and no canonical or detail (H-5)
+    r_blank = {
+        "product": "Unrecognized Item",
+        "aws_amortized_cost": 250.0,
+        "usage_type": "",
+        "operation": "",
+        "unit": "",
+        "instance_type": None,
+        "canonical": None,
+    }
+    g = lg.build_guidance(r_blank, None)
+    assert g.get("data_gap") is True
+    assert g.get("strategy") == "passthrough"
+    assert g.get("confidence_max") <= 0.2
+    assert "could not be classified" in g.get("why", "")
+
+
 def test_accelerator_detector_usage_type():
     # inf2 carried only in usage_type, instance_type is None
     r_acc = {
@@ -207,6 +225,40 @@ def test_accelerator_detector_usage_type():
     g = lg.build_guidance(r_acc, sd.dispatch(r_acc))
     assert g["strategy"] == "passthrough"
     assert g["manual_review"] is True
+
+
+def test_curated_misc_service_context():
+    # 1. Seeded service by canonical identity
+    r_cr = {
+        "canonical": "cleanrooms",
+        "product": "AWS Clean Rooms",
+        "usage_type": "Query-Bytes",
+        "aws_amortized_cost": 250.0,
+    }
+    g_cr = lg.build_guidance(r_cr, None)
+    assert g_cr["gcp_target"] == "BigQuery analysis"
+    assert g_cr["confidence_max"] == 0.5
+    assert "Clean Rooms" in g_cr["guidance"]
+
+    # 2. Seeded service by product name substring
+    r_bedrock = {
+        "product": "Amazon Bedrock",
+        "usage_type": "Tokens",
+        "aws_amortized_cost": 150.0,
+    }
+    g_bedrock = lg.build_guidance(r_bedrock, None)
+    assert g_bedrock["gcp_target"] == "Vertex AI Model Garden"
+    assert g_bedrock["confidence_max"] == 0.5
+
+    # 3. Unseeded unknown service gets generic fallback
+    r_unk = {
+        "product": "CompletelyUnknownServiceXYZ",
+        "usage_type": "CustomCalls",
+        "aws_amortized_cost": 150.0,
+    }
+    g_unk = lg.build_guidance(r_unk, None)
+    assert g_unk["gcp_target"] == "(unknown)"
+    assert g_unk["confidence_max"] == 0.6
 
 
 def main():

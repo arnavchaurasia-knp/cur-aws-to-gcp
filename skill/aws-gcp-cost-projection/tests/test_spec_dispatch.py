@@ -417,9 +417,9 @@ CASES = [
     ("cloudtrail_blank",
      _row(product="AWS CloudTrail", usage_type="APS3-FreeEventsRecorded", unit=""),
      "misc", "cloudtrail_other"),
-    ("ssm_parameter_store",
+    ("ssm_parameter_store_name_only",
      _row(product="AWS Systems Manager", usage_type="APS3-PS-Advanced-Param", unit="Hrs"),
-     "ssm_parameter_store", None),  # canonical None -> dispatch None -> legacy rule
+     "ssm_parameter_store", "ssm_parameter_store"),
     ("vpc_tgw_hours",
      _row(product="Amazon Virtual Private Cloud", product_code="AmazonVPC",
           usage_type="APS3-TransitGateway-Hours", unit="Hrs"),
@@ -432,6 +432,101 @@ CASES = [
      _row(product="Amazon Virtual Private Cloud", product_code="AmazonVPC",
           usage_type="APS3-VpcEndpoint-Hours", unit="Hrs"),
      "misc", "vpc_other"),
+    # ---- SSM ----
+    ("ssm_parameter_store_with_code",
+     _row(product="AWS Systems Manager", product_code="AWSSystemsManager",
+          usage_type="APS3-PS-Advanced-Param", unit="Months"),
+     "ssm_parameter_store", "ssm_parameter_store"),
+    ("ssm_other",
+     _row(product="AWS Systems Manager", product_code="AWSSystemsManager",
+          usage_type="APS3-Automation-Step", unit="Steps"),
+     "misc", "ssm_other"),
+    # ---- ECS & Fargate ----
+    ("ecs_fargate_vcpu",
+     _row(product="Amazon Elastic Container Service", product_code="AmazonECS",
+          usage_type="APS3-Fargate-vCPU-Hours:perCPU", unit="Hrs"),
+     "per_request", "ecs_fargate_vcpu"),
+    ("ecs_fargate_memory",
+     _row(product="Amazon Elastic Container Service", product_code="AmazonECS",
+          usage_type="APS3-Fargate-GB-Hours", unit="GB-Hours"),
+     "per_request", "ecs_fargate_memory"),
+    ("fargate_memory",
+     _row(product="Amazon Elastic Container Service APS3-Fargate-GB-Hours",
+          usage_type="APS3-Fargate-GB-Hours", unit="GB-Hours"),
+     "per_request", "fargate_memory"),
+    # ---- ECR ----
+    ("ecr_storage",
+     _row(product="Amazon Elastic Container Registry", product_code="AmazonECR",
+          usage_type="APS3-ECR-ByteHrs", unit="GB-Mo"),
+     "misc", "ecr_storage"),
+    ("ecr_data_transfer",
+     _row(product="Amazon Elastic Container Registry", product_code="AmazonECR",
+          usage_type="APS3-DataTransfer-Out-Bytes", unit="GB"),
+     "data_transfer", "ecr_data_transfer"),
+    # ---- KMS ----
+    ("kms_keys",
+     _row(product="AWS Key Management Service", product_code="awskms",
+          usage_type="APS3-KMS-Keys", unit="Key-Months"),
+     "misc", "kms_keys"),
+    ("kms_requests",
+     _row(product="AWS Key Management Service", product_code="awskms",
+          usage_type="APS3-KMS-Requests", unit="Requests"),
+     "per_request", "kms_requests"),
+    # ---- Secrets Manager ----
+    ("secretsmanager_secrets",
+     _row(product="AWS Secrets Manager", product_code="AWSSecretsManager",
+          usage_type="APS3-Secret-Mo", unit="Secret-Months"),
+     "misc", "secretsmanager_secrets"),
+    ("secretsmanager_api",
+     _row(product="AWS Secrets Manager", product_code="AWSSecretsManager",
+          usage_type="APS3-APIRequests", unit="Requests"),
+     "per_request", "secretsmanager_api"),
+    # ---- Step Functions ----
+    ("states_transitions",
+     _row(product="AWS Step Functions", product_code="AmazonStates",
+          usage_type="APS3-StateTransition", unit="Transitions"),
+     "misc", "states_transitions"),
+    # ---- Certificate Manager ----
+    ("acm_private_ca",
+     _row(product="AWS Certificate Manager", product_code="AWSCertificateManager",
+          usage_type="APS3-PrivateCA-Active", unit="Months"),
+     "misc", "acm_private_ca"),
+    # ---- Bedrock ----
+    ("bedrock_tokens",
+     _row(product="Amazon Bedrock", product_code="AmazonBedrock",
+          usage_type="APS3-Titan-Text-G1-Tokens", unit="1000 Tokens"),
+     "misc", "bedrock_tokens"),
+    # ---- EventBridge ----
+    ("events_requests",
+     _row(product="Amazon EventBridge", product_code="AWSEvents",
+          usage_type="APS3-CustomEvents", unit="Requests"),
+     "per_request", "events_requests"),
+    ("events_other",
+     _row(product="Amazon EventBridge", product_code="AWSEvents",
+          usage_type="APS3-CustomEvents", unit="Events"),
+     "misc", "events_other"),
+    # ---- AppSync ----
+    ("appsync_requests",
+     _row(product="AWS AppSync", product_code="AWSAppSync",
+          usage_type="APS3-Query-Requests", unit="Requests"),
+     "per_request", "appsync_requests"),
+    # ---- Amazon MQ ----
+    ("mq_broker_hours",
+     _row(product="Amazon MQ", product_code="AmazonMQ",
+          usage_type="APS3-Broker-Hours:mq.t3.micro", unit="Hrs"),
+     "misc", "mq_broker_hours"),
+    # ---- Deliberate improvements over legacy misc (free services -> $0 ignore).
+    #      These DIVERGE from classify_mechanics (which returns misc) on purpose;
+    #      registered in EXPECTED_DIVERGENCES below so shadow-diff treats the
+    #      cutover flip (misc -> ignore) as intended, not a regression. ----
+    ("ecs_management",
+     _row(product="Amazon Elastic Container Service", product_code="AmazonECS",
+          usage_type="APS3-ECS-Cluster-Hours", operation="ECS cluster management", unit="Hrs"),
+     "ignore", "ecs_management"),
+    ("acm_public_cert",
+     _row(product="AWS Certificate Manager", product_code="AWSCertificateManager",
+          usage_type="APS3-PublicCertificate", unit=""),
+     "ignore", "acm_public_cert"),
 ]
 
 
@@ -441,12 +536,18 @@ CASES = [
 import pytest
 
 
-# Cases that deliberately diverge from legacy classify_mechanics (NEW-4):
-# Greedy service rules swallowed egress/storage rows into the service mechanic;
-# service_specs.json yields them to shared data_transfer / block_storage mechanics.
+# Cases that deliberately diverge from legacy classify_mechanics:
+# - NEW-4: greedy service rules swallowed egress/storage rows into the service
+#   mechanic; service_specs.json yields them to shared data_transfer/block_storage.
+# - Registry free-service improvements: ACM public certs and the ECS control plane
+#   are free on AWS (and GCP), so the spec routes them to `ignore` ($0) instead of
+#   the legacy `misc`-guess. Correct improvement; registered so the misc->ignore
+#   flip at cutover is treated as intended, not a regression.
 EXPECTED_DIVERGENCES = {
     "opensearch_data_transfer": "data_transfer",
     "opensearch_storage": "block_storage",
+    "ecs_management": "ignore",
+    "acm_public_cert": "ignore",
 }
 
 

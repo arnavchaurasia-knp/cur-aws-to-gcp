@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 merge_mappings.py — Bulk-INSERT all mechanic-group mapping temp files into
-aws_li_to_gcp_li in one transaction.
+aws_li_to_gcp_li in one atomic transaction with strict validation and SKU guardrails.
 
 Usage:
     python3 merge_mappings.py <projection.duckdb> <mappings_dir>
@@ -9,54 +9,41 @@ Usage:
 The mappings_dir must contain one or more <group>_mappings.json files, each
 a JSON array of mapping objects matching the aws_li_to_gcp_li schema.
 
-Exits 0 on success. Exits 1 if any expected group file is missing — the
-orchestrator should retry the missing group's agent before merging.
+Exits 0 on success. If any expected group file is missing, logs a warning and
+proceeds with available files (missing groups are recorded in merge_report.json,
+and downstream ensure_full_coverage.py acts as the backstop).
 """
+
+from __future__ import annotations
 
 import json
 import os
 import sys
+from collections import defaultdict
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 import duckdb
 
-CATALOG_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "catalog.duckdb")
-
-# Synthetic SKU IDs that are never in catalog.duckdb (they're injected by apply_rates.py).
-# Must be whitelisted here so the phantom-SKU filter does NOT null them out — they
-# carry correct deterministic rates and must not be silently replaced by word-overlap
-# catalog matches that produce wrong rates (e.g. 2x egress).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-try:
-    from egress_rates import EGRESS_SKUS as _EGRESS_SKUS
-    _SYNTHETIC_SKUS = {sku_id for sku_id, _, _ in _EGRESS_SKUS.values()}
-except Exception:
-    _SYNTHETIC_SKUS = set()
+from synthetic_skus import SYNTHETIC_SKU_IDS
+from resolve_sku import (
+    get_valid_catalog_services,
+    get_valid_catalog_skus,
+    resolve_intent_to_sku,
+    CATALOG_DB,
+)
 
-# Every other synthetic ID apply_rates.py injects directly into gcp_sku_rates
-# (never present in catalog.duckdb's `skus` table by construction) must be
-# whitelisted here too, or this filter treats it as a phantom LLM-fabricated
-# ID and nulls it out, then apply_rates.py's word-overlap fallback silently
-# re-resolves it against the wrong catalog SKU instead. GCP-LOOKER-STUDIO-
-# PRO-USER is the only one left — Looker Studio Pro is billed as a separate
-# SaaS product genuinely outside GCP's Cloud Billing Catalog, so there's no
-# real catalog SKU it could ever resolve to dynamically. (Cloud Logging's
-# two synthetic IDs were removed once a real catalog SKU was found for
-# each — see apply_rates.py's comments at the same section.)
-_SYNTHETIC_SKUS |= {
-    "GCP-LOOKER-STUDIO-PRO-USER",
-    "TPU-V5E-ONDEMAND",
-}
-
-# Columns that can appear in a mapping JSON object.
-# Order matches the INSERT statement below.
+# Columns that appear in a mapping record.
+# Order matches the INSERT statement.
+# M-3: gcp_sku_unit is explicitly included so mapped units are preserved.
 COLUMNS = [
     "aws_li_key",
     "gcp_service",
     "gcp_sku_id",
     "gcp_sku_name",
+    "gcp_sku_unit",
     "component",
     "strategy",
     "unit_multiplier",
@@ -66,34 +53,115 @@ COLUMNS = [
     "is_workload",
     "break_down",
     "gcp_machine_type",
+    "is_assumption",
+    "assumption_note",
 ]
 
 
-def load_mappings(mappings_dir: str) -> tuple[list[dict], list[str]]:
-    """Return (all_rows, missing_groups).
+def _coerce_bool(val: any, default: bool = False) -> bool:
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    s = str(val).strip().lower()
+    if s in ("true", "1", "yes", "t"):
+        return True
+    if s in ("false", "0", "no", "f", ""):
+        return False
+    return default
 
-    missing_groups is non-empty when the manifest lists a group but its
-    *_mappings.json file does not exist yet (agent didn't finish).
+
+def validate_row(
+    r: dict, valid_li_keys: set[str] | None = None
+) -> tuple[dict | None, str | None]:
+    """Validate a single mapping row and coerce types (M-2).
+    Returns (clean_row, None) on success or (None, reason) on failure.
     """
-    # Discover which groups were dispatched via the manifest
+    if not isinstance(r, dict):
+        return None, "row_is_not_a_dict"
+
+    raw_key = r.get("aws_li_key")
+    if not raw_key or not str(raw_key).strip():
+        return None, "missing_aws_li_key"
+
+    clean_key = str(raw_key).strip()
+    if valid_li_keys is not None and clean_key not in valid_li_keys:
+        return None, f"orphan_key:{clean_key}"
+
+    strategy = r.get("strategy")
+    if not strategy or not str(strategy).strip():
+        return None, "missing_strategy"
+
+    clean_strategy = str(strategy).strip()
+
+    # Coerce unit_multiplier
+    raw_mult = r.get("unit_multiplier")
+    if raw_mult is None or raw_mult == "":
+        clean_mult = 1.0
+    else:
+        try:
+            clean_mult = float(raw_mult)
+        except (ValueError, TypeError):
+            return None, f"invalid_unit_multiplier:{raw_mult}"
+
+    # Coerce mapping_confidence
+    raw_conf = r.get("mapping_confidence")
+    if raw_conf is None or raw_conf == "":
+        clean_conf = 0.5
+    else:
+        try:
+            clean_conf = float(raw_conf)
+        except (ValueError, TypeError):
+            clean_conf = 0.5
+
+    clean_row = {
+        "aws_li_key": clean_key,
+        "gcp_service": str(r.get("gcp_service")).strip() if r.get("gcp_service") is not None else None,
+        "gcp_sku_id": str(r.get("gcp_sku_id")).strip() if r.get("gcp_sku_id") is not None else None,
+        "gcp_sku_name": str(r.get("gcp_sku_name")).strip() if r.get("gcp_sku_name") is not None else None,
+        "gcp_sku_unit": str(r.get("gcp_sku_unit")).strip() if r.get("gcp_sku_unit") is not None else None,
+        "component": str(r.get("component")).strip() if r.get("component") is not None else None,
+        "strategy": clean_strategy,
+        "unit_multiplier": clean_mult,
+        "gcp_region": str(r.get("gcp_region")).strip() if r.get("gcp_region") is not None else None,
+        "projection_note": str(r.get("projection_note")).strip() if r.get("projection_note") is not None else None,
+        "mapping_confidence": clean_conf,
+        "is_workload": _coerce_bool(r.get("is_workload"), default=True),
+        "break_down": _coerce_bool(r.get("break_down"), default=False),
+        "gcp_machine_type": str(r.get("gcp_machine_type")).strip() if r.get("gcp_machine_type") is not None else None,
+        "is_assumption": _coerce_bool(r.get("is_assumption"), default=False),
+        "assumption_note": (
+            str(r.get("assumption_note") or r.get("assumption") or "").strip() or None
+        ),
+    }
+
+    return clean_row, None
+
+
+def load_mappings(mappings_dir: str) -> tuple[list[dict], list[str]]:
+    """Return (all_rows, missing_groups)."""
     manifest_path = os.path.join(os.path.dirname(mappings_dir.rstrip("/")), "phase2_manifest.json")
     expected_groups: list[str] = []
     if os.path.exists(manifest_path):
-        manifest = json.load(open(manifest_path))
-        expected_groups = [
-            g for g, meta in manifest.items()
-            if not g.startswith("_") and isinstance(meta, dict) and meta.get("needs_llm", True)
-        ]
+        try:
+            manifest = json.load(open(manifest_path, encoding="utf-8"))
+            expected_groups = [
+                g for g, meta in manifest.items()
+                if not g.startswith("_") and isinstance(meta, dict) and meta.get("needs_llm", True)
+            ]
+        except Exception:
+            pass
 
     all_rows: list[dict] = []
     missing: list[str] = []
 
-    # Load all *_mappings.json files present
     found_files = sorted(f for f in os.listdir(mappings_dir) if f.endswith("_mappings.json"))
     for fname in found_files:
         path = os.path.join(mappings_dir, fname)
         try:
-            rows = json.load(open(path))
+            rows = json.load(open(path, encoding="utf-8"))
             if not isinstance(rows, list):
                 print(f"WARNING: {fname} is not a JSON array — skipping", file=sys.stderr)
                 continue
@@ -101,7 +169,6 @@ def load_mappings(mappings_dir: str) -> tuple[list[dict], list[str]]:
         except Exception as e:
             print(f"WARNING: could not read {fname}: {e}", file=sys.stderr)
 
-    # Check for groups expected but absent
     found_groups = {f.replace("_mappings.json", "") for f in found_files}
     for g in expected_groups:
         if g not in found_groups:
@@ -126,14 +193,20 @@ def ensure_table(con: duckdb.DuckDBPyConnection) -> None:
             mapping_confidence  DOUBLE,
             is_workload         BOOLEAN,
             break_down          BOOLEAN,
-            gcp_machine_type    TEXT
+            gcp_machine_type    TEXT,
+            is_assumption       BOOLEAN,
+            assumption_note     TEXT
         )
     """)
-    # Idempotent column add for DBs created before gcp_machine_type existed —
-    # same pattern as aws_normalizer.py's canonical_service column add.
     existing_cols = {r[1].lower() for r in con.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+    if "gcp_sku_unit" not in existing_cols:
+        con.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN gcp_sku_unit TEXT")
     if "gcp_machine_type" not in existing_cols:
         con.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN gcp_machine_type TEXT")
+    if "is_assumption" not in existing_cols:
+        con.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN is_assumption BOOLEAN")
+    if "assumption_note" not in existing_cols:
+        con.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN assumption_note TEXT")
 
 
 def main() -> None:
@@ -148,65 +221,135 @@ def main() -> None:
         print(f"ERROR: mappings dir not found: {mappings_dir}", file=sys.stderr)
         sys.exit(1)
 
-    rows, missing = load_mappings(mappings_dir)
+    raw_rows, missing = load_mappings(mappings_dir)
 
     if missing:
         print(f"WARNING: {len(missing)} group(s) have no mapping file — proceeding with available files:", file=sys.stderr)
         for g in missing:
             print(f"  missing: {g}_mappings.json", file=sys.stderr)
 
-    if not rows:
-        print("WARNING: no mapping rows found in any file — aws_li_to_gcp_li will be empty.")
-
     con = duckdb.connect(db_path)
     ensure_table(con)
 
-    # Truncate existing mappings so re-runs are idempotent
-    con.execute("DELETE FROM aws_li_to_gcp_li")
+    # Referential integrity check: load valid line item keys and mechanic groups from aws_li_catalog
+    valid_li_keys: set[str] = set()
+    li_mechanic_groups: dict[str, str] = {}
+    try:
+        tables = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
+        if "aws_li_catalog" in tables:
+            cols = {c[1] for c in con.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+            if "mechanic_group" in cols:
+                for k, mg in con.execute("SELECT aws_li_key, mechanic_group FROM aws_li_catalog").fetchall():
+                    if k:
+                        valid_li_keys.add(k)
+                        if mg:
+                            li_mechanic_groups[k] = mg
+            else:
+                valid_li_keys = {r[0] for r in con.execute("SELECT aws_li_key FROM aws_li_catalog").fetchall() if r[0]}
+    except Exception as e:
+        print(f"WARNING: could not query aws_li_catalog for key validation: {e}", file=sys.stderr)
 
-    # Validate SKU IDs against catalog — null out any that don't exist.
-    # The LLM occasionally fabricates SKU IDs; phantom IDs silently produce
-    # NULL projected costs that only surface in detect_outliers query E/I.
-    valid_skus: set[str] = set()
-    if os.path.exists(CATALOG_DB):
-        try:
-            cat = duckdb.connect(CATALOG_DB, read_only=True)
-            valid_skus = {r[0] for r in cat.execute("SELECT sku_id FROM skus").fetchall()}
-            cat.close()
-        except Exception as e:
-            print(f"WARNING: could not load catalog for SKU validation: {e}", file=sys.stderr)
+    # Validate rows (M-2)
+    clean_rows: list[dict] = []
+    rejected: list[dict] = []
+    orphan_keys_count = 0
 
-    nulled = 0
-    if valid_skus:
-        for r in rows:
-            sku = r.get("gcp_sku_id")
-            if sku and sku not in valid_skus and sku not in _SYNTHETIC_SKUS:
-                print(f"  INVALID SKU nulled: {sku!r} on {r.get('aws_li_key')} "
-                      f"({r.get('gcp_sku_name', '')}) — not in catalog", file=sys.stderr)
+    for r in raw_rows:
+        clean, reason = validate_row(r, valid_li_keys if valid_li_keys else None)
+        if clean is not None:
+            clean_rows.append(clean)
+        else:
+            rejected.append({"aws_li_key": r.get("aws_li_key"), "reason": reason})
+            if reason and reason.startswith("orphan_key"):
+                orphan_keys_count += 1
+
+    if rejected:
+        print(f"REJECTED {len(rejected)} mapping rows: {len(rejected)} invalid or orphan rows", file=sys.stderr)
+
+    # C-1 / G-1: Check catalog availability (fail-closed tracking)
+    valid_skus = get_valid_catalog_skus()
+    valid_services = get_valid_catalog_services()
+    sku_validation_ran = bool(valid_skus)
+
+    if not sku_validation_ran:
+        print("WARNING: catalog.duckdb unavailable or empty — SKU validation skipped (sku_validation_ran=false)", file=sys.stderr)
+
+    # C-1c: If catalog unavailable, fail-closed by capping confidence on all SKU-bearing rows
+    unvalidated_skus_count = 0
+    if not sku_validation_ran:
+        for r in clean_rows:
+            if r.get("strategy") in ("map", "break_down") and r.get("gcp_sku_id"):
+                r["mapping_confidence"] = min(r.get("mapping_confidence", 0.5), 0.5)
+                note = "[sku-unvalidated: catalog unavailable]"
+                existing = r.get("projection_note") or ""
+                if note not in existing:
+                    r["projection_note"] = f"{existing} {note}".strip()
+                unvalidated_skus_count += 1
+
+    # G-1 & G-1b: Intent resolution and SKU validation
+    nulled_count = 0
+    for r in clean_rows:
+        svc = r.get("gcp_service")
+        # Validate gcp_service against catalog if available
+        if valid_services and svc and svc not in valid_services:
+            if r.get("strategy") in ("map", "break_down"):
+                r["strategy"] = "passthrough"
                 r["gcp_sku_id"] = None
-                nulled += 1
-        if nulled:
-            print(f"  {nulled} phantom SKU ID(s) nulled — apply_rates.py will fall back to passthrough.")
+                r["mapping_confidence"] = min(r.get("mapping_confidence", 0.5), 0.4)
+                note = f"[invalid-service: '{svc}' not in catalog services; downgraded to passthrough]"
+                r["projection_note"] = f"{r.get('projection_note') or ''} {note}".strip()
 
-    # --- Deduplication pass 1: exact (aws_li_key, component) duplicates ---
-    # The LLM occasionally emits duplicate rows for the same (key, component).
-    # Keep the last occurrence (most specific) to avoid multiplying costs.
+        # Handle SKU ID resolution / guardrail
+        if r.get("strategy") in ("map", "break_down"):
+            sku = r.get("gcp_sku_id")
+            if not sku and r.get("gcp_sku_name"):
+                # G-1 & G-1b: Resolve intent (service + sku_name + region) deterministically with unit check
+                res = resolve_intent_to_sku(
+                    svc,
+                    r.get("gcp_sku_name"),
+                    r.get("gcp_region"),
+                    expected_unit=r.get("gcp_sku_unit"),
+                    mechanic_group=li_mechanic_groups.get(r.get("aws_li_key")),
+                    component=r.get("component"),
+                )
+                if res.sku_id:
+                    r["gcp_sku_id"] = res.sku_id
+                    if not r.get("gcp_sku_unit") and res.unit:
+                        r["gcp_sku_unit"] = res.unit
+                    if res.note:
+                        r["mapping_confidence"] = min(r.get("mapping_confidence", 0.5), 0.5)
+                        r["projection_note"] = f"{r.get('projection_note') or ''} {res.note}".strip()
+                else:
+                    # Unit mismatch or no matching SKU -> passthrough + loud note
+                    r["strategy"] = "passthrough"
+                    r["gcp_sku_id"] = None
+                    r["mapping_confidence"] = min(r.get("mapping_confidence", 0.5), 0.4)
+                    note = res.note or f"[no-catalog-sku: no catalog SKU for '{r.get('gcp_sku_name')}'; downgraded to passthrough]"
+                    r["projection_note"] = f"{r.get('projection_note') or ''} {note}".strip()
+            elif sku:
+                # Existing SKU ID -> validate against catalog / synthetic whitelist
+                if sku_validation_ran and sku not in valid_skus and sku not in SYNTHETIC_SKU_IDS:
+                    print(f"  INVALID SKU nulled: {sku!r} on {r.get('aws_li_key')} — not in catalog", file=sys.stderr)
+                    r["gcp_sku_id"] = None
+                    r["strategy"] = "passthrough"
+                    r["mapping_confidence"] = min(r.get("mapping_confidence", 0.5), 0.4)
+                    note = f"[fabricated-sku: '{sku}' not in catalog; downgraded to passthrough]"
+                    r["projection_note"] = f"{r.get('projection_note') or ''} {note}".strip()
+                    nulled_count += 1
+
+    # Deduplication pass 1: exact (aws_li_key, component) duplicates
     seen: dict[tuple, dict] = {}
-    for r in rows:
+    deduped_exact_count = 0
+    for r in clean_rows:
         key = (r.get("aws_li_key"), r.get("component"))
+        if key in seen:
+            deduped_exact_count += 1
         seen[key] = r
-    rows = list(seen.values())
+    deduped_rows = list(seen.values())
 
-    # --- Deduplication pass 2: break_down + all-passthrough collapse ---
-    # When the LLM self-hosts a service (OpenSearch/MSK → GCE) but sets every
-    # break_down component to strategy='passthrough', each component independently
-    # returns aws_amortized_cost in the projection view → N× multiplication.
-    # Fix: if every row for a given aws_li_key has break_down=True and
-    # strategy='passthrough', collapse them all to a single non-break_down
-    # passthrough row (preserving gcp_service and the first projection_note).
-    from collections import defaultdict
+    # Deduplication pass 2: break_down + all-passthrough collapse
     by_key: dict[str, list[dict]] = defaultdict(list)
-    for r in rows:
+    for r in deduped_rows:
         by_key[r.get("aws_li_key")].append(r)
 
     collapsed_rows: list[dict] = []
@@ -230,28 +373,54 @@ def main() -> None:
         else:
             collapsed_rows.extend(group)
 
-    if collapsed_count:
-        print(
-            f"  {collapsed_count} aws_li_key(s) had all-passthrough break_down — collapsed to avoid N× cost multiplication.",
-            file=sys.stderr,
-        )
-    rows = collapsed_rows
-
     # Build tuples in column order
     records = []
-    for r in rows:
-        records.append(tuple(r.get(col) for col in COLUMNS))
+    for r in collapsed_rows:
+        row_dict = dict(r)
+        if not row_dict.get("assumption_note") and row_dict.get("assumption"):
+            row_dict["assumption_note"] = row_dict["assumption"]
+        records.append(tuple(row_dict.get(col) for col in COLUMNS))
 
-    if records:
-        placeholders = ", ".join(["?"] * len(COLUMNS))
-        col_list = ", ".join(COLUMNS)
-        con.executemany(
-            f"INSERT INTO aws_li_to_gcp_li ({col_list}) VALUES ({placeholders})",
-            records,
-        )
-        con.commit()
+    # M-1: Atomic transaction (never DELETE before records are proven insertable)
+    con.execute("BEGIN TRANSACTION")
+    try:
+        con.execute("DELETE FROM aws_li_to_gcp_li")
+        if records:
+            placeholders = ", ".join(["?"] * len(COLUMNS))
+            col_list = ", ".join(COLUMNS)
+            con.executemany(
+                f"INSERT INTO aws_li_to_gcp_li ({col_list}) VALUES ({placeholders})",
+                records,
+            )
+        con.execute("COMMIT")
+    except Exception as e:
+        con.execute("ROLLBACK")
+        con.close()
+        print(f"FATAL: merge failed during atomic insert: {e}", file=sys.stderr)
+        raise
 
-    # Per-group summary
+    # M-5: Emit structured merge report
+    audit_dir = os.path.dirname(os.path.abspath(db_path))
+    report_path = os.path.join(audit_dir, "merge_report.json")
+    report_data = {
+        "inserted": len(records),
+        "rejected": len(rejected),
+        "nulled_skus": nulled_count,
+        "deduped_exact": deduped_exact_count,
+        "collapsed_breakdown": collapsed_count,
+        "orphan_keys": orphan_keys_count,
+        "sku_validation_ran": sku_validation_ran,
+        "unvalidated_skus": unvalidated_skus_count,
+        "missing_groups": missing,
+        "rejected_detail": rejected,
+    }
+    try:
+        with open(report_path, "w", encoding="utf-8") as rf:
+            json.dump(report_data, rf, indent=2)
+    except Exception as e:
+        print(f"WARNING: could not write merge_report.json: {e}", file=sys.stderr)
+
+    # Summary stats
     stats = con.execute("""
         SELECT
             m.mechanic_group,
@@ -260,7 +429,7 @@ def main() -> None:
         JOIN aws_li_catalog m USING (aws_li_key)
         GROUP BY m.mechanic_group
         ORDER BY mapped_rows DESC
-    """).fetchall()
+    """).fetchall() if valid_li_keys else []
 
     total = sum(r[1] for r in stats)
     print(f"\n{'mechanic_group':<25}  {'mapped_rows':>12}")
@@ -271,7 +440,7 @@ def main() -> None:
     print(f"{'TOTAL':<25}  {total:>12}")
 
     con.close()
-    print(f"\nMerge complete. {total} rows inserted into aws_li_to_gcp_li.")
+    print(f"\nMerge complete. {len(records)} rows inserted into aws_li_to_gcp_li.")
     sys.exit(0)
 
 

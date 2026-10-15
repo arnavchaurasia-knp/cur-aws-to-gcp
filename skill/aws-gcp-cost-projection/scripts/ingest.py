@@ -43,6 +43,11 @@ from log_utils import get_logger
 from region_prefix import decode_region_prefix
 from aws_normalizer import canonical_service as _canonical_service
 from config_loader import load_data_config as _cfg
+from currency_utils import (
+    detect_currency_and_rate,
+    save_currency_info,
+    load_currency_info,
+)
 
 log = get_logger("ingest")
 
@@ -183,60 +188,40 @@ DESCRIPTIVE_REGION_MAP = {
 
 
 def _detect_foreign_currency(cols, conn):
-    """Return the bill's currency code if it is a single non-USD currency, else None.
-
-    The tool compares USD AWS costs to USD GCP prices, so a non-USD bill (e.g. an
-    INR CUR) must be converted or it is silently off by the FX rate (~80x for INR).
-    This only reports the currency; main() converts it (see _fetch_fx_rate)."""
+    """Detect bill currency and FX rate (H-6). Returns currency info dict."""
     cl = {c.lower(): c for c in cols}
     cur_cols = [cl[k] for k in (
         "line_item_currency_code", "lineitem/currencycode", "pricing_currency",
-        "pricing/currency", "currency") if k in cl]
+        "pricing/currency", "currency", "bill/billingcurrency", "bill_billing_currency"
+    ) if k in cl]
+    col_vals = []
     for col in cur_cols:
         try:
             vals = conn.execute(
                 f'SELECT DISTINCT UPPER(TRIM(CAST("{col}" AS VARCHAR))) FROM aws_raw'
             ).fetchall()
+            col_vals.extend(v[0] for v in vals if v[0] not in (None, ""))
         except Exception:
             continue
-        codes = {v[0] for v in vals if v[0] not in (None, "")}
-        foreign = {c for c in codes if c not in ("USD", "US DOLLAR")}
-        if foreign and "USD" not in codes and len(foreign) == 1:
-            return next(iter(foreign))
-        if foreign and "USD" not in codes:
-            # Mixed foreign currencies — can't convert sensibly; refuse.
-            conn.execute("DROP TABLE IF EXISTS aws_raw")
-            _fail_direct(
-                f"This bill mixes multiple non-USD currencies ({', '.join(sorted(foreign))}). "
-                "Please upload a single-currency bill.")
-    return None
 
+    sample_text = ""
+    for col in ("description", "lineitem/lineitemdescription", "item_description", "service"):
+        if col in cl:
+            try:
+                rows = conn.execute(f'SELECT "{cl[col]}" FROM aws_raw LIMIT 20').fetchall()
+                sample_text += " " + " ".join(str(r[0] or "") for r in rows)
+            except Exception:
+                pass
 
-def _fetch_fx_rate(code):
-    """Live FX: units of `code` per 1 USD (e.g. INR -> ~83). Returns float or None.
+    codes = {c for c in col_vals if c not in ("USD", "US DOLLAR")}
+    if len(codes) > 1:
+        # Mixed foreign currencies — can't convert sensibly; refuse.
+        conn.execute("DROP TABLE IF EXISTS aws_raw")
+        _fail_direct(
+            f"This bill mixes multiple non-USD currencies ({', '.join(sorted(codes))}). "
+            "Please upload a single-currency bill.")
 
-    Used only for the rare non-USD bill, so a live lookup (rates move daily) is the
-    right call here, unlike the static spec/code tables. Tries a couple of free,
-    no-auth endpoints; returns None on any failure so the caller can fail loudly
-    rather than convert with a bad rate."""
-    import json as _json
-    import urllib.request
-    code = code.upper()
-    endpoints = [
-        f"https://open.er-api.com/v6/latest/USD",
-        f"https://api.exchangerate.host/latest?base=USD&symbols={code}",
-    ]
-    for url in endpoints:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "ingest-fx"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = _json.loads(resp.read())
-            rate = (data.get("rates") or {}).get(code)
-            if rate and float(rate) > 0:
-                return float(rate)
-        except Exception:
-            continue
-    return None
+    return detect_currency_and_rate(raw_text=sample_text, column_values=col_vals)
 
 
 def _reject_non_aws(cols, conn):
@@ -420,7 +405,7 @@ Write the CSV now."""
 
     try:
         result = subprocess.run(
-            [agy_bin, "--print-only", "--model", os.environ.get("AGY_MODEL", "gemini-3.5-flash")],
+            [agy_bin, "--print-only", "--model", os.environ.get("AGY_MODEL", "gemini-3.8-flash")],
             input=prompt, text=True, capture_output=True,
             cwd=JOB_DIR, timeout=120,
         )
@@ -683,9 +668,18 @@ def _load_pdf(conn, path):
         return
     import csv as _csv
 
-    items = []            # (service, region, description, qty, cost)
-    cur_service, cur_region = "", ""
+    items = []            # (service, region, custom_usage_type, description, qty, cost, billing_month)
+    cur_service, cur_region, cur_month = "", "", ""
     stated_pretax = 0.0   # sum of the PDF's own "Total pre-tax USD X" lines
+    _PDF_DATE_RE = re.compile(r'\b(20\d\d)[-/](0[1-9]|1[0-2])\b')
+    _PDF_MONTH_YEAR_RE = re.compile(
+        r'\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[,\s]+(20\d\d)\b',
+        re.IGNORECASE,
+    )
+    _PDF_MONTH_MAP = {
+        'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'may': '05', 'jun': '06',
+        'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12'
+    }
     try:
         with pdfplumber.open(path) as pdf:
             for page in pdf.pages:
@@ -693,6 +687,14 @@ def _load_pdf(conn, path):
                     ln = raw.strip()
                     if not ln:
                         continue
+                    dm = _PDF_DATE_RE.search(ln)
+                    if dm:
+                        cur_month = f"{dm.group(1)}-{dm.group(2)}"
+                    else:
+                        mym = _PDF_MONTH_YEAR_RE.search(ln)
+                        if mym:
+                            mn = _PDF_MONTH_MAP.get(mym.group(1).lower()[:3], "01")
+                            cur_month = f"{mym.group(2)}-{mn}"
                     # The PDF states its own post-discount pre-tax total(s). We
                     # trust that instead of parsing the parenthetical EDP/credit
                     # lines (which recap at several granularities and double-count).
@@ -710,7 +712,7 @@ def _load_pdf(conn, path):
                         svc = _pdf_canonical_service(cur_service, desc.strip())
                         items.append((svc, cur_region, "",
                                       f"{desc.strip()} ({qty} {unit})",
-                                      qty.replace(",", ""), amt.replace(",", "")))
+                                      qty.replace(",", ""), amt.replace(",", ""), cur_month))
                         continue
                     h = _PDF_HDR_RE.match(ln)
                     if h:
@@ -786,14 +788,14 @@ def _load_pdf(conn, path):
         items.append(("Enterprise Discount Program", "", "",
                       f"Enterprise Discount Program & credits "
                       f"(reconcile gross USD {gross:,.2f} to stated pre-tax USD {stated_pretax:,.2f})",
-                      "0", f"{adj}"))
+                      "0", f"{adj}", cur_month))
         log.info(f"PDF: reconciled gross ${gross:,.2f} -> stated pre-tax ${stated_pretax:,.2f} "
               f"(discount adjustment ${adj:,.2f})")
 
     tmp_csv = os.path.join(JOB_DIR, "input_from_pdf.csv")
     with open(tmp_csv, "w", newline="", encoding="utf-8") as fh:
         w = _csv.writer(fh)
-        w.writerow(["Service", "Region", "Custom Usage Type", "Description", "Usage Quantity", "Cost ($)"])
+        w.writerow(["Service", "Region", "Custom Usage Type", "Description", "Usage Quantity", "Cost ($)", "Billing Month"])
         w.writerows(items)
     log.info(f"PDF: extracted {len(items)} line items")
     conn.execute(f"CREATE TABLE aws_raw AS SELECT * FROM read_csv_auto('{tmp_csv}', ALL_VARCHAR=TRUE, header=TRUE)")
@@ -880,8 +882,9 @@ def main():
 
     # Detect non-AWS files early with a clear message
     _reject_non_aws(cols, conn)
-    # Detect a non-USD bill now; convert to USD after the catalog is built (below).
-    _foreign_ccy = _detect_foreign_currency(cols, conn)
+    # Detect bill currency and FX rate (H-6); saved to DB & currency.json
+    _currency_info = _detect_foreign_currency(cols, conn)
+    save_currency_info(JOB_DIR, _currency_info, conn)
 
     # Parquet data-lake CUR uses underscores (line_item_product_code) while the
     # CSV CUR uses slashes (lineItem/ProductCode). Detect both.
@@ -967,13 +970,19 @@ def main():
             pricing_unit VARCHAR,
             workload_class VARCHAR,
             billing_format VARCHAR,
-            product_code VARCHAR
+            product_code VARCHAR,
+            billing_month VARCHAR,
+            aws_amortized_cost_native DOUBLE,
+            currency VARCHAR
         )
     """)
     # product_code (= CUR lineItem/ProductCode) is the authoritative stable key
     # aws_normalizer.py keys canonical_service on. Guard for DBs created before
     # this column existed (fresh jobs get it from the CREATE above).
     conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS product_code VARCHAR")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS billing_month VARCHAR")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS aws_amortized_cost_native DOUBLE")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS currency VARCHAR")
 
     # Reconcile sum helper
     if is_raw_cur:
@@ -1081,6 +1090,8 @@ def main():
                     -- each month is its own catalog row. Blank on single-period/Hive
                     -- reads degrades to today's behavior.
                     COALESCE(
+                        strftime(COALESCE(try_cast({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS DATE), try_strptime(CAST({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS VARCHAR), '%m/%d/%Y'), try_strptime(CAST({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS VARCHAR), '%m/%d/%y')), '%Y-%m'),
+                        strftime(COALESCE(try_cast({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS DATE), try_strptime(CAST({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS VARCHAR), '%m/%d/%Y'), try_strptime(CAST({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS VARCHAR), '%m/%d/%y')), '%Y-%m'),
                         LEFT(CAST({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS VARCHAR), 7),
                         LEFT(CAST({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS VARCHAR), 7),
                         ''
@@ -1092,7 +1103,7 @@ def main():
                 aws_li_key, product, usage_type, operation, aws_region, gcp_region,
                 pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost,
                 license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,
-                product_code
+                product_code, billing_month
             )
             SELECT
                 md5(product || usage_type || operation || aws_region || pricing_model || line_item_type || CAST(is_workload AS VARCHAR) || license_model || operating_system || database_engine || deployment_option || volume_type || pricing_unit || billing_month) as key,
@@ -1102,8 +1113,9 @@ def main():
                 license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,
                 -- product_code is functionally constant within a dedup group (it is
                 -- 1:1 with product); carried via max() so it is NOT part of the md5
-                -- dedup key — aws_li_key stays byte-identical to before this change.
-                max(product_code) as product_code
+                -- dedup key (the md5 dedup key includes billing_month to keep months distinct).
+                max(product_code) as product_code,
+                billing_month
             FROM _raw_flat
             GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload,
                      license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,
@@ -1152,12 +1164,13 @@ def main():
             consumed_col = c(['consumed'])
             cost_col_raw = c(['cost'])
             loc_col  = c(['location'])
+            date_col = c(['billingperiodstartdate', 'bill_billing_period_start_date', 'date', 'month', 'period', 'billing_period', 'start_date', 'usage_start_date', 'billing_month'])
 
             sql = f"""
                 INSERT INTO aws_li_catalog (
                     aws_li_key, product, usage_type, operation, aws_region, gcp_region,
                     pricing_model, line_item_type, is_workload,
-                    total_usage, aws_amortized_cost, pricing_unit
+                    total_usage, aws_amortized_cost, pricing_unit, billing_month
                 )
                 WITH _raw AS (
                     SELECT
@@ -1217,21 +1230,27 @@ def main():
                               OR {meter_col} ILIKE '%ByteHrs%'
                               OR {meter_col} ILIKE '%TimedStorage%'       THEN 'GB-Mo'
                             ELSE ''
-                        END                            AS pricing_unit
+                        END                            AS pricing_unit,
+                        COALESCE(
+                            strftime(COALESCE(try_cast({date_col} AS DATE), try_strptime(CAST({date_col} AS VARCHAR), '%m/%d/%Y'), try_strptime(CAST({date_col} AS VARCHAR), '%m/%d/%y')), '%Y-%m'),
+                            LEFT(CAST({date_col} AS VARCHAR), 7),
+                            ''
+                        )                              AS billing_month
                     FROM aws_raw
                     WHERE COALESCE(TRY_CAST({cost_col_raw} AS DOUBLE), 0) != 0
                 )
                 SELECT
-                    md5(product || usage_type || operation || aws_region || pricing_model || line_item_type || CAST(is_workload AS VARCHAR)) AS aws_li_key,
+                    md5(product || usage_type || operation || aws_region || pricing_model || line_item_type || CAST(is_workload AS VARCHAR) || billing_month) AS aws_li_key,
                     product, usage_type, operation, aws_region,
                     NULL AS gcp_region,
                     pricing_model, line_item_type, is_workload,
                     SUM(total_usage)  AS total_usage,
                     SUM(row_cost)     AS aws_amortized_cost,
-                    pricing_unit
+                    pricing_unit,
+                    billing_month
                 FROM _raw
                 GROUP BY product, usage_type, operation, aws_region,
-                         pricing_model, line_item_type, is_workload, pricing_unit
+                         pricing_model, line_item_type, is_workload, pricing_unit, billing_month
             """
             conn.execute(sql)
             log.info("Loaded spreadsheet-export format (Category/Meter/Cost columns)")
@@ -1250,6 +1269,7 @@ def main():
             aggregated = {}
             for row in raw_rows:
                 month = row[month_idx]
+                b_month = str(month or '')[:7]
                 service = row[service_idx]
                 usage_str = row[usage_idx]
                 cost_str = row[cost_idx]
@@ -1261,8 +1281,7 @@ def main():
                             row_cost = float(str(cost_str).replace(",", "").replace("$", "").strip())
                         except ValueError:
                             pass
-                    aws_li_key = hashlib.md5(f"Tax/OtherTax{month}".encode('utf-8')).hexdigest()
-                    group_key = ("Tax/Other", "Tax", "Tax", "global", "OnDemand", "Tax", False, None, "")
+                    group_key = ("Tax/Other", "Tax", "Tax", "global", "OnDemand", "Tax", False, None, "", b_month)
                     if group_key not in aggregated:
                         aggregated[group_key] = {"total_usage": 1.0, "row_cost": 0.0}
                     aggregated[group_key]["row_cost"] += row_cost
@@ -1308,13 +1327,13 @@ def main():
                         "without fabricating data.")
                 is_wl = _is_workload_py(None, service, usage_clean)
                 group_key = (service, "AggregatedUsage", usage_clean, "global",
-                             "OnDemand", "Usage", is_wl, note, "")
+                             "OnDemand", "Usage", is_wl, note, "", b_month)
                 if group_key not in aggregated:
                     aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0}
                 aggregated[group_key]["row_cost"] += row_cost
 
             for gk, val in aggregated.items():
-                prod, ut, op, aws_reg, pm, lit, is_wl, proj_note, p_unit = gk
+                prod, ut, op, aws_reg, pm, lit, is_wl, proj_note, p_unit, b_month = gk
                 # Faithful cost: the real per-service total from the bill
                 # (do not gate on total_usage, which is 0 for aggregated rows).
                 cost = val["row_cost"]
@@ -1323,16 +1342,16 @@ def main():
                 # distinct aggregation buckets that differ only in a field left out
                 # here (e.g. projection_note or pricing_unit) collide onto the same
                 # aws_li_key and the INSERT below throws a primary-key violation.
-                key_str = f"{prod}{ut}{op}{aws_reg}{pm}{lit}{str(is_wl)}{proj_note}{p_unit}"
+                key_str = f"{prod}{ut}{op}{aws_reg}{pm}{lit}{str(is_wl)}{proj_note}{p_unit}{b_month}"
                 aws_li_key = hashlib.md5(key_str.encode('utf-8')).hexdigest()
                 
                 conn.execute("""
                     INSERT INTO aws_li_catalog (
                         aws_li_key, product, usage_type, operation, aws_region, gcp_region, 
                         pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost,
-                        projection_note, pricing_unit
-                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
-                """, (aws_li_key, prod, ut, op, aws_reg, pm, lit, is_wl, val["total_usage"], cost, proj_note, p_unit))
+                        projection_note, pricing_unit, billing_month
+                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (aws_li_key, prod, ut, op, aws_reg, pm, lit, is_wl, val["total_usage"], cost, proj_note, p_unit, b_month))
             log.info("Loaded custom flat CSV with semicolon-separated Usage (with Units)")
 
         # Check if "service" column exists in aws_raw
@@ -1368,6 +1387,14 @@ def main():
             region_idx = col_names.index("Region") if "Region" in col_names else None
             usage_idx = col_names.index("Usage Quantity")
             cost_idx = col_names.index("Amount in USD")
+            date_idx = None
+            for _candidate in ("billing_month", "billingmonth", "month", "date", "period", "billing_period", "billingperiodstartdate", "usagestartdate"):
+                for idx, col in enumerate(col_names):
+                    if col.lower().replace("/", "_").replace(" ", "_") == _candidate.replace(" ", "_"):
+                        date_idx = idx
+                        break
+                if date_idx is not None:
+                    break
 
             # Temporary storage to aggregate rows by the same key
             aggregated = {}
@@ -1375,6 +1402,7 @@ def main():
             for row in raw_rows:
                 desc = row[desc_idx]
                 region = row[region_idx] if region_idx is not None else ""
+                b_month = str(row[date_idx] or '')[:7] if date_idx is not None else ""
                 usage_str = row[usage_idx]
                 cost_str = row[cost_idx]
                 
@@ -1609,7 +1637,7 @@ def main():
                 if "reserved instance applied" in desc_lower:
                     projection_note = 'AWS rate is RI-amortized; compare GCP CUD, not OD'
 
-                group_key = (product, usage_type, desc, region, pricing_model, line_item_type, is_workload, projection_note, pricing_unit)
+                group_key = (product, usage_type, desc, region, pricing_model, line_item_type, is_workload, projection_note, pricing_unit, b_month)
                 if group_key not in aggregated:
                     aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0}
                 aggregated[group_key]["total_usage"] += total_usage
@@ -1617,21 +1645,21 @@ def main():
                 
             # Insert aggregated rows
             for gk, val in aggregated.items():
-                prod, ut, op, aws_reg, pm, lit, is_wl, proj_note, p_unit = gk
+                prod, ut, op, aws_reg, pm, lit, is_wl, proj_note, p_unit, b_month = gk
                 # Must hash ALL fields of group_key, not a subset — otherwise two
                 # distinct aggregation buckets that differ only in a field left out
                 # here (e.g. projection_note or pricing_unit) collide onto the same
                 # aws_li_key and the INSERT below throws a primary-key violation.
-                key_str = f"{prod}{ut}{op}{aws_reg}{pm}{lit}{str(is_wl)}{proj_note}{p_unit}"
+                key_str = f"{prod}{ut}{op}{aws_reg}{pm}{lit}{str(is_wl)}{proj_note}{p_unit}{b_month}"
                 aws_li_key = hashlib.md5(key_str.encode('utf-8')).hexdigest()
                 
                 conn.execute("""
                     INSERT INTO aws_li_catalog (
                         aws_li_key, product, usage_type, operation, aws_region, gcp_region, 
                         pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost,
-                        projection_note, pricing_unit
-                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
-                """, (aws_li_key, prod, ut, op, aws_reg, pm, lit, is_wl, val["total_usage"], val["row_cost"], proj_note, p_unit))
+                        projection_note, pricing_unit, billing_month
+                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (aws_li_key, prod, ut, op, aws_reg, pm, lit, is_wl, val["total_usage"], val["row_cost"], proj_note, p_unit, b_month))
         else:
             # CTE pre-computes all CASE expressions from raw columns so the outer
             # GROUP BY only sees already-derived aliases — avoids DuckDB strict-mode
@@ -1643,6 +1671,10 @@ def main():
                         COALESCE({c(['custom_usage_type'])}, '') AS usage_type,
                         COALESCE({c(['description'])}, '')       AS operation,
                         COALESCE({c(['region'])}, '')             AS aws_region,
+                        COALESCE(
+                            LEFT(CAST({c(['billing_month', 'billingmonth', 'bill/billingperiodstartdate', 'bill_billing_period_start_date', 'date', 'month', 'period', 'billing_period', 'start_date', 'usage_start_date'])} AS VARCHAR), 7),
+                            ''
+                        ) AS billing_month,
                         CASE
                             WHEN {c(['service'])} ILIKE '%Spot%' OR {c(['description'])} ILIKE '%Spot Instance%' THEN 'Spot'
                             WHEN {c(['description'])} ILIKE '%reserved instance applied%'
@@ -1683,39 +1715,48 @@ def main():
                       AND COALESCE({c(['service'])}, '') != ''
                       AND NOT regexp_matches(COALESCE({c(['description'])}, ''), '^Amazon [A-Za-z0-9 ]+\\([0-9]+ [A-Za-z]+\\)$')
                 )
-                INSERT INTO aws_li_catalog (aws_li_key, product, usage_type, operation, aws_region, gcp_region, pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost, projection_note)
+                INSERT INTO aws_li_catalog (aws_li_key, product, usage_type, operation, aws_region, gcp_region, pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost, projection_note, billing_month)
                 SELECT
                     md5(product || usage_type || operation || aws_region ||
                         CASE WHEN operation ILIKE '%reserved instance applied%' THEN 'Committed' ELSE 'OnDemand' END ||
                         line_item_type ||
-                        CAST(is_workload AS VARCHAR)
+                        CAST(is_workload AS VARCHAR) ||
+                        billing_month
                     ) AS aws_li_key,
                     product, usage_type, operation, aws_region,
                     NULL AS gcp_region,
                     pricing_model, line_item_type, is_workload,
                     SUM(row_usage)  AS total_usage,
                     SUM(row_cost)   AS aws_amortized_cost,
-                    projection_note
+                    projection_note,
+                    billing_month
                 FROM _flat
-                GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload, projection_note
+                GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload, projection_note, billing_month
             """
             conn.execute(sql)
 
-    # 4b. Currency conversion (Finding M): if the bill is non-USD, convert every
-    # cost to USD now — before enrichment computes per-unit rates and before the
-    # faithfulness reference is captured, so everything downstream is in USD. The
-    # rate is fetched live (rates move daily; only non-USD bills hit this). If the
-    # rate can't be fetched, fail loudly rather than mis-project.
-    if _foreign_ccy:
-        _rate = _fetch_fx_rate(_foreign_ccy)
-        if not _rate or _rate <= 0:
-            _fail_direct(
-                f"This bill is in {_foreign_ccy}, not USD, and the USD exchange rate "
-                f"could not be fetched to convert it. Re-run with network access, or "
-                f"upload a USD bill / pre-convert the amounts.")
-        conn.execute("UPDATE aws_li_catalog SET aws_amortized_cost = aws_amortized_cost / ?", [_rate])
-        log.info(f"Currency: converted {_foreign_ccy} -> USD at {_rate} {_foreign_ccy}/USD "
-                 f"(live rate); all costs are now USD.")
+    # 4b. Multi-currency (Directive 1): normalize aws_amortized_cost to USD internally,
+    # and store native bill amounts in aws_amortized_cost_native with the currency code.
+    # Everything downstream reads aws_amortized_cost in USD and needs no FX knowledge.
+    # The final report converts from USD into the bill's currency at display time.
+    curr_code = (_currency_info.get("currency") or "USD").upper() if _currency_info else "USD"
+    fx_rate = float(_currency_info.get("fx_rate", 1.0)) if _currency_info else 1.0
+
+    # Initialize native cost and currency for all rows
+    conn.execute("UPDATE aws_li_catalog SET aws_amortized_cost_native = aws_amortized_cost, currency = ?", [curr_code])
+
+    if curr_code != "USD" and fx_rate > 0:
+        # Convert native currency to USD in aws_amortized_cost
+        conn.execute("UPDATE aws_li_catalog SET aws_amortized_cost = aws_amortized_cost / ?", [fx_rate])
+        # Update currency_info to mark that aws_cost_currency in the DB is now USD
+        _currency_info["aws_cost_currency"] = "USD"
+        _currency_info["aws_fx_rate"] = fx_rate
+        save_currency_info(JOB_DIR, _currency_info, conn)
+        log.info(
+            f"Multi-currency (Directive 1): Normalized bill costs from {curr_code} to USD "
+            f"at rate {fx_rate:g} ({_currency_info.get('label', '')}). Native amounts stored in "
+            f"aws_amortized_cost_native; internal pipeline runs purely in USD."
+        )
 
     # 5. Map Regions
     catalog_rows = conn.execute("SELECT aws_li_key, aws_region, usage_type FROM aws_li_catalog").fetchall()
@@ -2024,20 +2065,22 @@ def main():
             # cost parity (never invents a GCP price for it).
             import hashlib
             recon_key = hashlib.sha256(b"ingestion-materiality-adjustment").hexdigest()
+            mat_bmonth_row = conn.execute("SELECT billing_month FROM aws_li_catalog WHERE billing_month IS NOT NULL AND billing_month != '' LIMIT 1").fetchone()
+            mat_bmonth = mat_bmonth_row[0] if mat_bmonth_row else ''
             conn.execute(
                 """
                 INSERT INTO aws_li_catalog (
                     aws_li_key, product, usage_type, operation, aws_region, gcp_region,
                     pricing_model, line_item_type, is_workload, total_usage,
-                    aws_amortized_cost, projection_note, billing_format
+                    aws_amortized_cost, projection_note, billing_format, billing_month
                 ) VALUES (?, 'Ingestion Materiality Adjustment', 'Aggregate', 'Aggregate',
-                          'global', 'global', 'OnDemand', 'Usage', false, 1, ?, ?, ?)
+                          'global', 'global', 'OnDemand', 'Usage', false, 1, ?, ?, ?, ?)
                 """,
                 [recon_key, low_mat_cost,
                  f"Sum of {low_mat_dropped} line item(s) dropped by the ingestion "
                  f"materiality filter (each individually < 1% of bill cumulative) — "
                  f"re-added as one row so the bill total always reconciles.",
-                 fmt],
+                 fmt, mat_bmonth],
             )
 
     total_dropped = zero_dropped + low_mat_dropped

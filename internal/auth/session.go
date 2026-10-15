@@ -22,6 +22,7 @@ const cookieTTL = 8 * time.Hour
 type Session struct {
 	Email    string `json:"email"`
 	Name     string `json:"name"`
+	Picture  string `json:"picture,omitempty"`
 	// Role is the RBAC role resolved from the `users` table at login time
 	// ("viewer", "admin", "facets"). May be empty for sessions issued before
 	// this field existed (decoded from an old cookie) — treat empty as
@@ -36,6 +37,10 @@ type Session struct {
 // case-insensitive on the session side.
 func (s *Session) IsAdmin(adminEmails []string) bool {
 	if s == nil {
+		return false
+	}
+	// Admin is restricted to @facets.cloud accounts.
+	if !s.IsFacetsEmployee() {
 		return false
 	}
 	if s.Role == "admin" {

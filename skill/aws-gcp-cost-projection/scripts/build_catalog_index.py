@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 build_catalog_index.py — Pure-Python, cross-platform replacement for
 build-catalog-index.sh.  Builds data/catalog.duckdb from the bundled
@@ -21,8 +21,8 @@ FINAL_PATH = os.path.join(DATA_DIR, "catalog.duckdb")
 
 
 def build():
-    # Build into a temp directory to avoid AV / server locking the WAL mid-write.
-    tmp_dir    = tempfile.mkdtemp()
+    # Build into a temp directory on the same filesystem as DATA_DIR to allow atomic os.replace
+    tmp_dir = tempfile.mkdtemp(dir=DATA_DIR)
     index_path = os.path.join(tmp_dir, "catalog.duckdb")
     try:
         con = duckdb.connect(index_path)
@@ -98,18 +98,19 @@ def build():
             # with the move — DuckDB will replay the WAL on next open.
             print(f"  build_catalog: checkpoint warning (continuing): {e}", file=sys.stderr)
 
-        # Move finished DB (+ WAL if present) to the skill data dir.
-        # Moving the WAL alongside the main file lets DuckDB recover on next open.
+        # Close connection so DuckDB releases any OS file locks before atomic swap
+        con.close()
+
+        # Atomic swap: replace destination directly so readers see old-then-new
         for suffix in ("", ".wal"):
             src = index_path + suffix
             dst = FINAL_PATH + suffix
-            if os.path.exists(dst):
-                try:
-                    os.remove(dst)
-                except Exception:
-                    pass
             if os.path.exists(src):
-                shutil.move(src, dst)
+                try:
+                    os.replace(src, dst)
+                except Exception:
+                    # Fallback for environments with locked handles
+                    shutil.move(src, dst)
 
         print(f"  build_catalog: done — {total} SKUs written to {FINAL_PATH}")
     finally:

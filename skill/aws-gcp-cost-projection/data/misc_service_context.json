@@ -1,0 +1,86 @@
+{
+  "cleanrooms": {
+    "gcp_target": "BigQuery analysis",
+    "billing_model": "per-query/analysis",
+    "caveats": "Clean Rooms queries translate to BigQuery on-demand analysis; reservation models differ",
+    "confidence_max": 0.5,
+    "guidance": "Map AWS Clean Rooms analysis queries to BigQuery on-demand analysis ($6.25/TB) or passthrough if query volume is unavailable."
+  },
+  "bedrock": {
+    "gcp_target": "Vertex AI Model Garden",
+    "billing_model": "per-token",
+    "caveats": "Foundation model pricing is token-based; compare equivalent model sizes (e.g. Claude vs Gemini)",
+    "confidence_max": 0.5,
+    "guidance": "Map Amazon Bedrock token consumption to Google Cloud Vertex AI Gemini API pricing."
+  },
+  "appsync": {
+    "gcp_target": "Cloud Endpoints / API Gateway",
+    "billing_model": "per-query",
+    "caveats": "Managed GraphQL on AWS; GCP uses API Gateway or Cloud Run with GraphQL server",
+    "confidence_max": 0.5,
+    "guidance": "Map AWS AppSync query and real-time subscription operations to GCP API Gateway request rates ($3.00/million calls)."
+  },
+  "mq": {
+    "gcp_target": "Compute Engine (self-hosted RabbitMQ) / Cloud Tasks",
+    "billing_model": "broker-hours",
+    "caveats": "No direct 1:1 serverless managed ActiveMQ/RabbitMQ on GCP; self-host or use Cloud Tasks",
+    "confidence_max": 0.5,
+    "guidance": "Amazon MQ broker-hours map to equivalent Compute Engine e2-standard VM hours or Cloud Tasks."
+  },
+  "keyspaces": {
+    "gcp_target": "Cloud Bigtable",
+    "billing_model": "capacity/request",
+    "caveats": "Managed Apache Cassandra on AWS; Cloud Bigtable is the standard GCP wide-column NoSQL analogue",
+    "confidence_max": 0.5,
+    "guidance": "Map Amazon Keyspaces read/write throughput units and storage to Cloud Bigtable node and storage pricing."
+  },
+  "eventbridge": {
+    "gcp_target": "Eventarc",
+    "billing_model": "per-event",
+    "caveats": "Eventarc routes events across GCP services with native Pub/Sub backing",
+    "confidence_max": 0.6,
+    "guidance": "Map Amazon EventBridge event bus ingest to Google Cloud Eventarc routing fees ($0.60/million events)."
+  },
+  "rekognition": {
+    "gcp_target": "Cloud Vision API",
+    "billing_model": "per-image/per-minute",
+    "caveats": "Vision API prices per feature detection operation",
+    "confidence_max": 0.5,
+    "guidance": "Map Amazon Rekognition image and video analysis to Google Cloud Vision API feature units ($1.50/1,000 units)."
+  },
+  "translate": {
+    "gcp_target": "Cloud Translation API",
+    "billing_model": "per-character",
+    "caveats": "Character volume pricing with standard translation tier",
+    "confidence_max": 0.6,
+    "guidance": "Map Amazon Translate characters to Google Cloud Translation API ($20/million characters)."
+  },
+  "polly": {
+    "gcp_target": "Cloud Text-to-Speech",
+    "billing_model": "per-character",
+    "caveats": "Standard vs Neural voices have different per-million character tiers",
+    "confidence_max": 0.6,
+    "guidance": "Map Amazon Polly character synthesis to Google Cloud Text-to-Speech API ($4.00/million characters for standard, $16.00/million for Journey/Neural)."
+  },
+  "textract": {
+    "gcp_target": "Document AI",
+    "billing_model": "per-page",
+    "caveats": "Document extraction per page model",
+    "confidence_max": 0.5,
+    "guidance": "Map Amazon Textract page extraction to Google Cloud Document AI OCR / Form parser per-page pricing ($1.50-$30/1,000 pages)."
+  },
+  "comprehend": {
+    "gcp_target": "Cloud Natural Language API",
+    "billing_model": "per-unit",
+    "caveats": "Text analysis billed per 1,000-character units",
+    "confidence_max": 0.5,
+    "guidance": "Map Amazon Comprehend analysis units to Google Cloud Natural Language API request pricing."
+  },
+  "connect": {
+    "gcp_target": "Contact Center AI Platform",
+    "billing_model": "per-minute",
+    "caveats": "Telephony and agent seat models vary widely across clouds",
+    "confidence_max": 0.4,
+    "guidance": "Map Amazon Connect cloud contact center minutes to Google Cloud Contact Center AI (CCAI) or passthrough at cost parity."
+  }
+}

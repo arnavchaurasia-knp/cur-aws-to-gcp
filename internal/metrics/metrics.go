@@ -9,4 +9,5 @@ var (
 	JobsDone      = expvar.NewInt("jobs_done")
 	JobsFailed    = expvar.NewInt("jobs_failed")
 	JobsRetried   = expvar.NewInt("jobs_retried")
+	JobsCancelled = expvar.NewInt("jobs_cancelled")
 )

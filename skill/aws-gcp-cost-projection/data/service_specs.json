@@ -1,7 +1,7 @@
 {
   "_meta": {
-    "purpose": "Per-service charge-type specification registry (Layer-1.5). ONE uniform schema for every AWS service: given a row whose service identity is already resolved (canonical_service, product_code-first), this declares the service's charge-types, how each is recognised, which reusable pricing mechanic prices it, and which fields it needs for full context. Replaces the greedy global regex rules in classify_mechanics.py with explicit per-service dispatch. The mechanic vocabulary (compute_breakdown/block_storage/...) is UNCHANGED — this only changes HOW a row's mechanic is chosen (per-service + explicit) instead of by global pattern order.",
-    "status": "SEED — ec2 + rds only. Faithfully carried over from classify_mechanics.py RULES (each charge_type cites its source_rule). Field names grounded in the authoritative AWS CUR data dictionary. NOT YET consumed by any script. classify_mechanics.py still owns classification until the dispatch engine lands (see docs/SERVICE_SPECS_DESIGN.md migration plan). Grow one service at a time, ranked by spend.",
+    "purpose": "Per-service charge-type specification registry (Layer-1.5). ONE uniform schema for every AWS service: given a row whose service identity is already resolved (canonical_service, product_code-first), this declares the service's charge-types, how each is recognised, which reusable pricing mechanic prices it, and which fields it needs for full context. Replaces the greedy global regex rules in classify_mechanics.py with explicit per-service dispatch. The mechanic vocabulary (compute_breakdown/block_storage/...) is UNCHANGED \u2014 this only changes HOW a row's mechanic is chosen (per-service + explicit) instead of by global pattern order.",
+    "status": "SEED \u2014 ec2 + rds only. Faithfully carried over from classify_mechanics.py RULES (each charge_type cites its source_rule). Field names grounded in the authoritative AWS CUR data dictionary. NOT YET consumed by any script. classify_mechanics.py still owns classification until the dispatch engine lands (see docs/SERVICE_SPECS_DESIGN.md migration plan). Grow one service at a time, ranked by spend.",
     "schema_version": 2,
     "evidence_source": "Service seeding order = global spend ranking across all 75 historical job DBs (AGENTS.md global_sku_audit). Field names from AWS CUR product/line_item/pricing columns (https://docs.aws.amazon.com/cur/latest/userguide/table-dictionary-cur2-product.html) cross-checked against the columns ingest.py actually parses.",
     "dispatch_model": "canonical_service (identity, done) -> service_specs[canonical] -> test charge_types in order, FIRST MATCH WINS (same semantics as today's rule chain, but scoped to one service) -> assign (charge_type, mechanic) + compute field_state over the charge_type's fields. A row whose service has no spec here falls back to the legacy generic mechanic rules.",
@@ -14,14 +14,14 @@
       "exclude_usage_type_re": "row does NOT match if this hits usage_type",
       "exclude_operation_re": "row does NOT match if this hits operation",
       "unit_in": "pricing_unit (lowercased) is in this list",
-      "unit_hourly": "true => _is_hourly_unit(unit): unit in {hrs,hours,hour,hr,accelerator-hours,''} — '' included because PDF/flat bills leave unit blank",
+      "unit_hourly": "true => _is_hourly_unit(unit): unit in {hrs,hours,hour,hr,accelerator-hours,''} \u2014 '' included because PDF/flat bills leave unit blank",
       "pricing_model_in": "pricing_model in this list (OnDemand|Spot|Reserved|SavingsPlan|Committed)",
       "line_item_type_in": "line_item_type in this list",
       "cost_lt_zero": "true => aws_amortized_cost < 0",
       "is_accelerator": "true => _is_accelerator(row): Inferentia/Trainium/Habana/GPU family token"
     },
     "mechanic_vocabulary": {
-      "_note": "Output contract — unchanged from classify_mechanics.py so apply_static_mappings.py / family_mapper.py need no changes. 'ignore' and 'passthrough' are terminal (no GCP SKU math).",
+      "_note": "Output contract \u2014 unchanged from classify_mechanics.py so apply_static_mappings.py / family_mapper.py need no changes. 'ignore' and 'passthrough' are terminal (no GCP SKU math).",
       "compute_breakdown": "x86/GPU EC2 & self-host-on-GCE: core+RAM (+accelerator) SKU breakdown (family_mapper).",
       "compute_windows": "EC2 running Windows: core+RAM+Windows-license components (static mapper).",
       "compute_burstable": "t2/t3/t3a/t4g EC2 -> E2 (static mapper).",
@@ -35,9 +35,9 @@
       "rds_extended_support": "post-EOL engine surcharge -> Cloud SQL Extended Support vCPU SKU (or ignore if none).",
       "ignore": "not a real GCP cost (credits, CPU credits, taxes) -> $0.",
       "passthrough": "known service, no fair GCP conversion -> carry AWS cost, manual review.",
-      "negative_cost": "GLOBAL pre-filter label (credits/refunds/negations) — applied before per-service dispatch.",
-      "commitment_discount": "GLOBAL pre-filter label (RIFee/SP recurring/EDP) — applied before per-service dispatch.",
-      "non_workload": "GLOBAL pre-filter label (marketplace/support/tax, EC2 CPU credits) — applied before per-service dispatch.",
+      "negative_cost": "GLOBAL pre-filter label (credits/refunds/negations) \u2014 applied before per-service dispatch.",
+      "commitment_discount": "GLOBAL pre-filter label (RIFee/SP recurring/EDP) \u2014 applied before per-service dispatch.",
+      "non_workload": "GLOBAL pre-filter label (marketplace/support/tax, EC2 CPU credits) \u2014 applied before per-service dispatch.",
       "opensearch": "Service-specific mechanic_group (dedicated static mapper for opensearch).",
       "redshift": "Service-specific mechanic_group (dedicated static mapper for redshift).",
       "elasticache": "Service-specific mechanic_group (dedicated static mapper for elasticache).",
@@ -59,7 +59,7 @@
     },
     "field_descriptor": {
       "_note": "Each field: name (internal), cur_column (authoritative AWS CUR attribute it comes from, legacy slash form as ingest.py uses; null = AWS does not expose it in the bill at all), source (where we REALISTICALLY obtain the value), required.",
-      "cur_column": "The AWS CUR column/attribute. null means AWS never bills this field — it MUST be enriched (api/llm).",
+      "cur_column": "The AWS CUR column/attribute. null means AWS never bills this field \u2014 it MUST be enriched (api/llm).",
       "source_enum": {
         "cur": "present in the bill (ingest.py parses the cur_column directly).",
         "table": "cur_column may be present but we derive authoritatively from a bundled table (ec2-instance-types.json / rds-instance-types.json / instance-specs.json) keyed by instance type.",
@@ -83,11 +83,11 @@
         "mechanic": "non_workload",
         "fields": [],
         "source_rule": "non_workload (CPUCredits branch)",
-        "notes": "Faithful label = 'non_workload' (what classify_mechanics returns today). Downstream pricing outcome is $0/ignore. Checked across usage_type AND product: PDF bills carry 'T3ACPUCredits' in product with usage_type blank. NOTE: in the pipeline this is caught by the GLOBAL non_workload pre-filter before per-service dispatch — this entry documents EC2's charge-type taxonomy completely and is defensive."
+        "notes": "Faithful label = 'non_workload' (what classify_mechanics returns today). Downstream pricing outcome is $0/ignore. Checked across usage_type AND product: PDF bills carry 'T3ACPUCredits' in product with usage_type blank. NOTE: in the pipeline this is caught by the GLOBAL non_workload pre-filter before per-service dispatch \u2014 this entry documents EC2's charge-type taxonomy completely and is defensive."
       },
       {
         "id": "instance_hour_windows",
-        "description": "EC2 instance-hours running Windows — needs core+RAM+Windows Server license.",
+        "description": "EC2 instance-hours running Windows \u2014 needs core+RAM+Windows Server license.",
         "match": {
           "unit_hourly": true,
           "any_field_re": "running Windows|Windows",
@@ -347,7 +347,7 @@
           }
         ],
         "source_rule": "compute_breakdown",
-        "notes": "Inferentia/Trainium (inf*/trn*) are handled by family_mapper's TPU branch (map_tpu_row -> Cloud TPU v5e, chip-count parity); dl* (Gaudi) stays no-equivalent passthrough. gpu_model/gpu_count have no CUR column — enriched from the instance table / gcp-model-config.json."
+        "notes": "Inferentia/Trainium (inf*/trn*) are handled by family_mapper's TPU branch (map_tpu_row -> Cloud TPU v5e, chip-count parity); dl* (Gaudi) stays no-equivalent passthrough. gpu_model/gpu_count have no CUR column \u2014 enriched from the instance table / gcp-model-config.json."
       },
       {
         "id": "ebs_storage",
@@ -398,7 +398,7 @@
           }
         ],
         "source_rule": "block_storage (EBS branch)",
-        "notes": "EBS provisioned IOPS/throughput are billed on separate line items (own usage_type), not as attributes of the capacity row — 'iops' here is the volume's provisioned IOPS for sizing, which CUR does not expose per-row; enrich if needed."
+        "notes": "EBS provisioned IOPS/throughput are billed on separate line items (own usage_type), not as attributes of the capacity row \u2014 'iops' here is the volume's provisioned IOPS for sizing, which CUR does not expose per-row; enrich if needed."
       },
       {
         "id": "data_transfer",
@@ -440,7 +440,7 @@
       },
       {
         "id": "nat_and_flat_hourly",
-        "description": "NAT gateway-hours, Elastic IP, public IPv4, VPN connection-hours — fixed hourly fees.",
+        "description": "NAT gateway-hours, Elastic IP, public IPv4, VPN connection-hours \u2014 fixed hourly fees.",
         "match": {
           "usage_type_re": "NatGateway-Hours|ElasticIP|IPAddress|PublicIPv4|VPN-Connections|VPNConnection"
         },
@@ -584,7 +584,7 @@
           }
         ],
         "source_rule": "managed_db",
-        "notes": "Unit gate is critical: GB-Mo storage rows must NOT match here (sending them to the instance-sizing path priced GB at $/hr = 10,000x inflation). Storage falls to the 'storage' charge_type below. Deployment_option (Multi-AZ) doubles the real footprint — must be carried for capacity reconciliation."
+        "notes": "Unit gate is critical: GB-Mo storage rows must NOT match here (sending them to the instance-sizing path priced GB at $/hr = 10,000x inflation). Storage falls to the 'storage' charge_type below. Deployment_option (Multi-AZ) doubles the real footprint \u2014 must be carried for capacity reconciliation."
       },
       {
         "id": "provisioned_iops",
@@ -608,7 +608,7 @@
           }
         ],
         "source_rule": "block_storage (managed-db non-Hrs branch) + final_mapping_sanity_check.py",
-        "notes": "Faithful label = 'block_storage' (what classify_mechanics returns today). The IGNORE pricing decision (gp3 IOPS included in pd-balanced capacity) is made DOWNSTREAM by map_block_storage/final_mapping_sanity_check, not at classification. io2 IOPS is a separate case (pd-extreme DOES bill IOPS) — flagged for review, not yet split. Having its own charge_type keeps the distinction visible for when the downstream ignore becomes spec-driven."
+        "notes": "Faithful label = 'block_storage' (what classify_mechanics returns today). The IGNORE pricing decision (gp3 IOPS included in pd-balanced capacity) is made DOWNSTREAM by map_block_storage/final_mapping_sanity_check, not at classification. io2 IOPS is a separate case (pd-extreme DOES bill IOPS) \u2014 flagged for review, not yet split. Having its own charge_type keeps the distinction visible for when the downstream ignore becomes spec-driven."
       },
       {
         "id": "backup",
@@ -1402,7 +1402,7 @@
           "gcp_target": "Firestore / Bigtable / Spanner",
           "strategy": "map",
           "confidence_max": 0.5,
-          "guidance": "Decision rule: GetItem/PutItem/Query/Scan → Firestore; BatchWrite/high-volume throughput → Bigtable; transactional/ACID workloads → Cloud Spanner. Conversion assumption: 1 RCU ≈ 1 doc read, 1 WCU ≈ 1 doc write. rcu/wcu/table_mode not in CUR — infer workload scale from total_usage."
+          "guidance": "Decision rule: GetItem/PutItem/Query/Scan \u2192 Firestore; BatchWrite/high-volume throughput \u2192 Bigtable; transactional/ACID workloads \u2192 Cloud Spanner. Conversion assumption: 1 RCU \u2248 1 doc read, 1 WCU \u2248 1 doc write. rcu/wcu/table_mode not in CUR \u2014 infer workload scale from total_usage."
         },
         "source_rule": "misc (DynamoDB throughput rows deliberately guided to Firestore/Bigtable/Spanner)"
       },
@@ -2394,8 +2394,8 @@
           "gcp_target": "Identity Platform",
           "strategy": "map",
           "confidence_max": 0.45,
-          "formula": "MAU ≈ total_usage ÷ 20",
-          "guidance": "CUR bills auth requests, not MAU — estimate MAU and document the assumption."
+          "formula": "MAU \u2248 total_usage \u00f7 20",
+          "guidance": "CUR bills auth requests, not MAU \u2014 estimate MAU and document the assumption."
         }
       }
     ]
@@ -2699,15 +2699,16 @@
           "gcp_target": "Cloud Logging",
           "strategy": "review",
           "confidence_max": 0.4,
-          "guidance": "event→log-volume conversion has no reliable basis; passthrough until a sizing model exists."
+          "guidance": "event\u2192log-volume conversion has no reliable basis; passthrough until a sizing model exists."
         }
       }
     ]
   },
   "ssm": {
     "display": "AWS Systems Manager",
-    "product_codes": [],
-    "_dispatch_note": "canonical_service('AWS Systems Manager') is currently None, so these specs do NOT dispatch — the row is classified by the legacy product-match ssm_parameter_store rule. Add a 'systems manager'->'ssm' alias to data/aws-aliases.json to enable spec dispatch. Fields documented here for completeness.",
+    "product_codes": [
+      "AWSSystemsManager"
+    ],
     "charge_types": [
       {
         "id": "ssm_parameter_store",
@@ -2859,7 +2860,971 @@
           "gcp_target": "Private Service Connect",
           "strategy": "review",
           "confidence_max": 0.4,
-          "guidance": "VPC endpoints/PrivateLink → PSC; passthrough until a PSC pricer exists."
+          "guidance": "VPC endpoints/PrivateLink \u2192 PSC; passthrough until a PSC pricer exists."
+        }
+      }
+    ]
+  },
+  "ecs": {
+    "display": "Amazon Elastic Container Service",
+    "product_codes": [
+      "AmazonECS"
+    ],
+    "charge_types": [
+      {
+        "id": "ecs_fargate_vcpu",
+        "description": "Fargate vCPU-Hours -> GKE Autopilot pod CPU requests.",
+        "match": {
+          "usage_type_re": "Fargate-vCPU"
+        },
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "vcpu_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Fargate vCPU -> GKE Autopilot)"
+      },
+      {
+        "id": "ecs_fargate_memory",
+        "description": "Fargate GB-Hours -> GKE Autopilot pod memory requests.",
+        "match": {
+          "usage_type_re": "Fargate-GB-Hours"
+        },
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "gb_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Fargate GB-Hours -> GKE Autopilot)"
+      },
+      {
+        "id": "ecs_fargate_any",
+        "description": "Any other Fargate compute row -> GKE Autopilot.",
+        "match": {
+          "any_field_re": "fargate"
+        },
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Fargate)"
+      },
+      {
+        "id": "ecs_management",
+        "description": "ECS control plane fee is $0 on EC2 launch type (GKE standard fee mapped on EKS rows).",
+        "match": {
+          "usage_type_re": "Cluster-Hours|Management"
+        },
+        "mechanic": "ignore",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "ignore (ECS control plane is free)"
+      },
+      {
+        "id": "ecs_other",
+        "description": "Other ECS container charges -> GKE / Cloud Run.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "Google Kubernetes Engine",
+          "strategy": "review",
+          "confidence_max": 0.6,
+          "guidance": "Amazon ECS workload tasks map to Google Kubernetes Engine (GKE) or Cloud Run."
+        }
+      }
+    ]
+  },
+  "fargate": {
+    "display": "AWS Fargate",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "fargate_vcpu",
+        "description": "Fargate vCPU-Hours -> GKE Autopilot pod CPU requests.",
+        "match": {
+          "usage_type_re": "vCPU"
+        },
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "vcpu_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Fargate vCPU -> GKE Autopilot)"
+      },
+      {
+        "id": "fargate_memory",
+        "description": "Fargate GB-Hours -> GKE Autopilot pod memory requests.",
+        "match": {
+          "usage_type_re": "GB-Hours|Memory"
+        },
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "gb_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Fargate GB-Hours -> GKE Autopilot)"
+      },
+      {
+        "id": "fargate_other",
+        "description": "Other Fargate charges -> GKE Autopilot pod resources.",
+        "match": {},
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Fargate)"
+      }
+    ]
+  },
+  "ecr": {
+    "display": "Amazon Elastic Container Registry",
+    "product_codes": [
+      "AmazonECR"
+    ],
+    "charge_types": [
+      {
+        "id": "ecr_data_transfer",
+        "description": "ECR data transfer out -> network egress.",
+        "match": {
+          "usage_type_re": "DataTransfer|Data-Transfer"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "data_transfer"
+      },
+      {
+        "id": "ecr_storage",
+        "description": "ECR repository storage (ByteHrs) -> Artifact Registry ($0.10/GB-month).",
+        "match": {
+          "usage_type_re": "ByteHrs|Storage"
+        },
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (Artifact Registry storage $0.10/GB)",
+        "llm_guidance": {
+          "gcp_target": "Artifact Registry",
+          "strategy": "review",
+          "confidence_max": 0.8,
+          "guidance": "Amazon ECR repository storage maps directly to Google Cloud Artifact Registry ($0.10/GB-month)."
+        }
+      },
+      {
+        "id": "ecr_other",
+        "description": "Other ECR operations -> Artifact Registry.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "Artifact Registry",
+          "strategy": "review",
+          "confidence_max": 0.7,
+          "guidance": "Amazon ECR operations map to Google Cloud Artifact Registry."
+        }
+      }
+    ]
+  },
+  "kms": {
+    "display": "AWS Key Management Service",
+    "product_codes": [
+      "awskms",
+      "AmazonKMS"
+    ],
+    "charge_types": [
+      {
+        "id": "kms_requests",
+        "description": "KMS cryptographic requests -> Cloud KMS operations ($0.03/10k).",
+        "match": {
+          "unit_in": [
+            "requests",
+            "count"
+          ],
+          "usage_type_re": "Requests"
+        },
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "requests",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Cloud KMS cryptographic operations $0.03/10k)"
+      },
+      {
+        "id": "kms_keys",
+        "description": "KMS customer keys -> Cloud KMS active key versions ($1.00/key/mo parity).",
+        "match": {
+          "usage_type_re": "Keys|Key-Months"
+        },
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "key_months",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (Cloud KMS active key versions $1.00/key/month vs $1.00 AWS)",
+        "llm_guidance": {
+          "gcp_target": "Cloud Key Management Service (KMS)",
+          "strategy": "review",
+          "confidence_max": 0.85,
+          "guidance": "AWS KMS customer-managed keys map 1:1 to Cloud KMS active key versions ($1.00/key/month vs $1.00 on AWS)."
+        }
+      },
+      {
+        "id": "kms_other",
+        "description": "Other KMS operations -> Cloud KMS.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "Cloud Key Management Service (KMS)",
+          "strategy": "review",
+          "confidence_max": 0.75,
+          "guidance": "AWS KMS key storage and cryptographic operations map to Google Cloud KMS."
+        }
+      }
+    ]
+  },
+  "secretsmanager": {
+    "display": "AWS Secrets Manager",
+    "product_codes": [
+      "AWSSecretsManager"
+    ],
+    "charge_types": [
+      {
+        "id": "secretsmanager_api",
+        "description": "Secrets Manager API calls -> Secret Manager access operations ($0.03/10k).",
+        "match": {
+          "unit_in": [
+            "requests",
+            "count"
+          ],
+          "usage_type_re": "API|Requests"
+        },
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "requests",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Secret Manager access operations $0.03/10k)"
+      },
+      {
+        "id": "secretsmanager_secrets",
+        "description": "Secrets Manager stored secrets -> Secret Manager active secret versions ($0.06/version/mo vs AWS $0.40/secret).",
+        "match": {
+          "usage_type_re": "Secret|Secret-Mo"
+        },
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "secret_months",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (Secret Manager secret versions $0.06/version/month vs AWS $0.40/secret)",
+        "llm_guidance": {
+          "gcp_target": "Secret Manager",
+          "strategy": "review",
+          "confidence_max": 0.85,
+          "guidance": "AWS Secrets Manager ($0.40/secret/mo) maps to Google Cloud Secret Manager ($0.06/active version/mo + $0.03/10k access ops)."
+        }
+      },
+      {
+        "id": "secretsmanager_other",
+        "description": "Other Secrets Manager charges -> Secret Manager.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "Secret Manager",
+          "strategy": "review",
+          "confidence_max": 0.75,
+          "guidance": "AWS Secrets Manager storage and access map to GCP Secret Manager."
+        }
+      }
+    ]
+  },
+  "states": {
+    "display": "AWS Step Functions",
+    "product_codes": [
+      "AmazonStates"
+    ],
+    "charge_types": [
+      {
+        "id": "states_transitions",
+        "description": "Step Functions state transitions -> Cloud Workflows steps ($0.01/1k steps vs AWS $0.025/1k transitions).",
+        "match": {
+          "usage_type_re": "StateTransition|Transition"
+        },
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "transitions",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (Cloud Workflows steps $0.01/1k steps vs AWS $0.025/1k transitions)",
+        "llm_guidance": {
+          "gcp_target": "Cloud Workflows",
+          "strategy": "review",
+          "confidence_max": 0.82,
+          "guidance": "AWS Step Functions state transitions ($0.025/1k) map to Google Cloud Workflows execution steps ($0.01/1k steps; first 5k/month free)."
+        }
+      },
+      {
+        "id": "states_other",
+        "description": "Other Step Functions workflow executions -> Cloud Workflows.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "Cloud Workflows",
+          "strategy": "review",
+          "confidence_max": 0.75,
+          "guidance": "AWS Step Functions workflow executions map to Google Cloud Workflows."
+        }
+      }
+    ]
+  },
+  "acm": {
+    "display": "AWS Certificate Manager",
+    "product_codes": [
+      "AWSCertificateManager",
+      "ACM"
+    ],
+    "charge_types": [
+      {
+        "id": "acm_private_ca",
+        "description": "ACM Private CA ($400/mo) -> GCP Certificate Authority Service ($20-$200/mo tier).",
+        "match": {
+          "usage_type_re": "PrivateCA|Private-CA"
+        },
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "months",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (ACM Private CA $400/mo -> GCP CAS $20-$200/mo tier)",
+        "llm_guidance": {
+          "gcp_target": "Certificate Authority Service",
+          "strategy": "review",
+          "confidence_max": 0.7,
+          "guidance": "ACM Private CA ($400/mo) maps to GCP Certificate Authority Service (CAS); passthrough until dedicated CAS pricer exists."
+        }
+      },
+      {
+        "id": "acm_public_cert",
+        "description": "ACM public SSL/TLS certificates -> free on both clouds ($0).",
+        "match": {
+          "usage_type_re": "Public|Certificate"
+        },
+        "mechanic": "ignore",
+        "fields": [
+          {
+            "name": "cert_count",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "ignore (ACM public certs free on both AWS and GCP)"
+      },
+      {
+        "id": "acm_other",
+        "description": "Other Certificate Manager charges -> Certificate Manager.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "Certificate Manager",
+          "strategy": "review",
+          "confidence_max": 0.75,
+          "guidance": "AWS Certificate Manager maps to Google Cloud Certificate Manager."
+        }
+      }
+    ]
+  },
+  "bedrock": {
+    "display": "Amazon Bedrock",
+    "product_codes": [
+      "AmazonBedrock",
+      "AmazonBedrockService"
+    ],
+    "charge_types": [
+      {
+        "id": "bedrock_tokens",
+        "description": "Bedrock foundation models token consumption -> Vertex AI Gemini API.",
+        "match": {
+          "usage_type_re": "Token|Tokens|ModelInvocation"
+        },
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "token_count",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (Bedrock foundation models -> Vertex AI Gemini token pricing)",
+        "llm_guidance": {
+          "gcp_target": "Vertex AI Model Garden",
+          "strategy": "review",
+          "confidence_max": 0.5,
+          "guidance": "Map Amazon Bedrock token consumption to Google Cloud Vertex AI Gemini API pricing."
+        }
+      },
+      {
+        "id": "bedrock_other",
+        "description": "Other Bedrock AI workloads -> Vertex AI.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "Vertex AI Model Garden",
+          "strategy": "review",
+          "confidence_max": 0.5,
+          "guidance": "Map Amazon Bedrock generative AI workloads to Google Cloud Vertex AI."
+        }
+      }
+    ]
+  },
+  "events": {
+    "display": "Amazon EventBridge",
+    "product_codes": [
+      "AWSEvents"
+    ],
+    "charge_types": [
+      {
+        "id": "events_requests",
+        "description": "EventBridge custom event bus ingest -> Eventarc routing fees ($0.60/million events).",
+        "match": {
+          "unit_in": [
+            "requests",
+            "count"
+          ],
+          "usage_type_re": "Requests|Events"
+        },
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "event_count",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Eventarc routing fees $0.60/million events)"
+      },
+      {
+        "id": "events_other",
+        "description": "Other EventBridge events -> Eventarc.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "Eventarc",
+          "strategy": "review",
+          "confidence_max": 0.6,
+          "guidance": "Map Amazon EventBridge event bus ingest to Google Cloud Eventarc routing fees ($0.60/million events)."
+        }
+      }
+    ]
+  },
+  "appsync": {
+    "display": "AWS AppSync",
+    "product_codes": [
+      "AWSAppSync"
+    ],
+    "charge_types": [
+      {
+        "id": "appsync_requests",
+        "description": "AppSync GraphQL query / real-time requests -> Cloud Endpoints / API Gateway ($3.00/million calls).",
+        "match": {
+          "unit_in": [
+            "requests",
+            "count"
+          ],
+          "usage_type_re": "Query|Request"
+        },
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "requests",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (API Gateway request rates $3.00/million calls)"
+      },
+      {
+        "id": "appsync_other",
+        "description": "Other AppSync operations -> Cloud Endpoints / API Gateway.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "Cloud Endpoints / API Gateway",
+          "strategy": "review",
+          "confidence_max": 0.5,
+          "guidance": "Map AWS AppSync query and real-time subscription operations to GCP API Gateway request rates ($3.00/million calls)."
+        }
+      }
+    ]
+  },
+  "mq": {
+    "display": "Amazon MQ",
+    "product_codes": [
+      "AmazonMQ"
+    ],
+    "charge_types": [
+      {
+        "id": "mq_broker_hours",
+        "description": "Amazon MQ broker-hours -> Compute Engine self-hosted ActiveMQ/RabbitMQ VM or Cloud Tasks.",
+        "match": {
+          "usage_type_re": "Broker-Hours|BrokerUsage"
+        },
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "broker_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (No managed ActiveMQ/RabbitMQ on GCP; self-host on GCE e2-standard VM or Cloud Tasks)",
+        "llm_guidance": {
+          "gcp_target": "Compute Engine (self-hosted RabbitMQ) / Cloud Tasks",
+          "strategy": "review",
+          "confidence_max": 0.5,
+          "guidance": "Amazon MQ broker-hours map to equivalent Compute Engine e2-standard VM hours or Cloud Tasks."
+        }
+      },
+      {
+        "id": "mq_storage",
+        "description": "Amazon MQ broker storage -> Persistent Disk.",
+        "match": {
+          "usage_type_re": "Storage|ByteHrs"
+        },
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "storage_gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "Compute Engine (Persistent Disk)",
+          "strategy": "review",
+          "confidence_max": 0.6,
+          "guidance": "Amazon MQ broker storage maps to Compute Engine Persistent Disk storage."
+        }
+      },
+      {
+        "id": "mq_other",
+        "description": "Other Amazon MQ charges -> self-hosted GCE broker.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc",
+        "llm_guidance": {
+          "gcp_target": "Compute Engine (self-hosted RabbitMQ) / Cloud Tasks",
+          "strategy": "review",
+          "confidence_max": 0.5,
+          "guidance": "Amazon MQ managed message broker maps to self-hosted GCE broker or Cloud Tasks."
         }
       }
     ]

@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -12,7 +13,7 @@ import (
 // these constants replaced.
 const (
 	// DefaultAGYModel is the `agy --model` alias used when $AGY_MODEL is unset.
-	DefaultAGYModel = "gemini-3.5-flash"
+	DefaultAGYModel = "gemini-3.8-flash"
 	// AGYTimeoutMinutes bounds both agy's per-phase --print-timeout and the
 	// watcher's stale-job timeout. One number so they can never drift apart.
 	AGYTimeoutMinutes = 45
@@ -44,7 +45,7 @@ type Config struct {
 	// at a fixed path and is not on PATH.
 	AGYPath string
 	// AGYModel is the model alias passed to `agy --model`. From
-	// $AGY_MODEL, default "gemini-3.5-flash".
+	// $AGY_MODEL, default "gemini-3.8-flash".
 	AGYModel string
 	// AdminEmails is a comma-separated allow-list from $ADMIN_EMAILS.
 	// Members can see every job (not just their own) via /api/admin/*.
@@ -61,8 +62,9 @@ type Config struct {
 	FacetsLoginEmails []string
 }
 
-func (c *Config) JobsDir() string { return c.DataDir + "/jobs" }
-func (c *Config) DBPath() string  { return c.DataDir + "/cur-web.db" }
+func (c *Config) JobsDir() string     { return c.DataDir + "/jobs" }
+func (c *Config) DBPath() string      { return c.DataDir + "/cur-web.db" }
+func (c *Config) StopAllPath() string { return c.DataDir + "/STOP_ALL" }
 
 func LoadFromEnv() (*Config, error) {
 	devBypass := os.Getenv("DEV_AUTH_BYPASS") == "true"
@@ -79,8 +81,13 @@ func LoadFromEnv() (*Config, error) {
 	if !devBypass {
 		required = append(required,
 			"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI",
-			"RESEND_API_KEY", "RESEND_FROM", "SLACK_WEBHOOK_URL",
 		)
+		// Notification vars are optional locally; warn but don't block startup.
+		for _, k := range []string{"RESEND_API_KEY", "RESEND_FROM", "SLACK_WEBHOOK_URL"} {
+			if os.Getenv(k) == "" {
+				log.Printf("WARNING: %s is not set — email/Slack notifications disabled", k)
+			}
+		}
 	}
 	// ANTIGRAVITY_API_KEY is intentionally NOT in the required list. It must be
 	// set in the host environment (VM-wide on prod, shell on dev) so the

@@ -7,8 +7,10 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from log_utils import get_logger, fatal
-from projection_view import create_projection_view
+from projection_view import create_projection_view, compute_dominant_region
 from egress_rates import EGRESS_SKUS
+from synthetic_skus import SYNTHETIC_SKU_IDS
+from resolve_sku import resolve_intent_to_sku
 from apply_static_mappings import GCP_COMPUTE_ENGINE, CUD_PCT_FALLBACK as _CUD_PCT_FALLBACK
 
 log = get_logger("apply_rates")
@@ -91,76 +93,26 @@ CONTAINER_CODES = {
 }
 
 def blended_rate(tiered_rates, total_qty):
+    if not tiered_rates:
+        return 0.0
     total_cost = 0.0
     for i, tier in enumerate(tiered_rates):
         tier_start = tier.get("startUsageAmount", 0)
         tier_end = tiered_rates[i+1].get("startUsageAmount") if i+1 < len(tiered_rates) else float("inf")
         tier_qty = max(0, min(total_qty, tier_end) - tier_start)
         total_cost += tier_qty * tier.get("rate", 0)
-    return total_cost / total_qty if total_qty > 0 else tiered_rates[-1].get("rate", 0)
-
-def _score_sku_match(description: str, gcp_sku_name: str) -> int:
-    """Score how well a catalog SKU description matches the LLM-provided gcp_sku_name.
-    Higher = better. Uses word-level intersection — no hardcoded rules needed."""
-    desc_words = set(description.lower().split())
-    name_words = set(gcp_sku_name.lower().split())
-    return len(desc_words & name_words)
+    return total_cost / total_qty if total_qty > 0 else tiered_rates[0].get("rate", 0.0)
 
 
-def _resolve_sku_for_row(gcp_service, gcp_sku_name, gcp_region, *_ignored):
-    """Return the best gcp_sku_id for a NULL-sku mapped row using catalog description search.
+# P-14: Canonical GCP internet egress tiers (cumulative monthly GB ladder)
+_INTERNET_EGRESS_TIERS = [
+    {"startUsageAmount": 0, "rate": 0.12},
+    {"startUsageAmount": 1024, "rate": 0.11},
+    {"startUsageAmount": 10240, "rate": 0.08},
+]
 
-    Queries catalog.duckdb (indexed) instead of scanning gzip files. Same word-overlap
-    scoring as before; same free-tier / intra-zone exclusions; same region-preference logic.
-    Extra positional args are accepted but ignored (backwards-compat with old signature).
-    """
-    if not gcp_sku_name or not os.path.exists(CATALOG_DB):
-        return None
 
-    cat = duckdb.connect(CATALOG_DB, read_only=True)
-    try:
-        rows = cat.execute("""
-            SELECT sku_id, description, service_regions
-            FROM skus
-            WHERE service_name = ? AND usage_type = 'OnDemand'
-        """, [gcp_service]).fetchall()
-    finally:
-        cat.close()
-
-    best_exact_score, best_exact_id = (-1, 0), None
-    best_any_score,   best_any_id   = (-1, 0), None
-
-    for sku, desc, regions in rows:
-        dl = desc.lower()
-        if "free tier" in dl or "promotional" in dl or "trial" in dl:
-            continue
-        if "intra zone" in dl or "intra-zone" in dl or "intra region" in dl or "intra-region" in dl:
-            continue
-        score = _score_sku_match(desc, gcp_sku_name)
-        if score <= 0:
-            continue
-        # Composite rank: (word-overlap score, -extra words). Tighter match wins ties.
-        rank = (score, -len(desc.split()))
-        if gcp_region and gcp_region in (regions or []):
-            if rank > best_exact_score or (rank == best_exact_score and (best_exact_id is None or sku < best_exact_id)):
-                best_exact_score, best_exact_id = rank, sku
-        if rank > best_any_score or (rank == best_any_score and (best_any_id is None or sku < best_any_id)):
-            best_any_score, best_any_id = rank, sku
-
-    # `best_exact_id or best_any_id` used to unconditionally prefer ANY
-    # exact-region match over a global SKU, regardless of actual word-overlap
-    # quality — confirmed real: for gcp_sku_name="Cloud Run Functions
-    # Invocations" this picked a regional "Cloud Run functions CPU
-    # (Request-based billing) in asia-south1" SKU (word-overlap score 3, a
-    # completely different billing dimension — per-second CPU time, not
-    # per-invocation count) over the correct GLOBAL "Cloud Run Functions
-    # Invocations" SKU (score 4, an exact description match) purely because
-    # the latter is scoped "global" rather than a specific region. A global
-    # SKU is valid in every region by definition, so region-exactness should
-    # only break a genuine tie, never override a strictly better match.
-    if best_exact_id is not None and best_any_id is not None:
-        return best_exact_id if best_exact_score >= best_any_score else best_any_id
-    return best_exact_id or best_any_id
+# Resolution now routes through resolve_sku.resolve_intent_to_sku (G-1c)
 
 
 import re as _re_mod
@@ -176,6 +128,9 @@ def enforce_accelerator_passthrough(conn):
     single passthrough (manual-review) row — overriding whatever Phase 2/5 did.
     UPDATE-only (no delete): keep the first component row as passthrough, set the
     rest to ignore, so cost = AWS parity once (no break_down double-count)."""
+    cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+    if "is_workload" not in cols:
+        return 0
     rows = conn.execute("""
         SELECT aws_li_key, COALESCE(operation,'')||' '||COALESCE(instance_type,'') sig
         FROM aws_li_catalog WHERE is_workload
@@ -222,6 +177,11 @@ def remap_elasticache_to_memorystore(conn):
     conn.execute("""
         UPDATE aws_li_to_gcp_li SET
             gcp_service = 'Cloud Memorystore for Memcached',
+            gcp_sku_name = CASE
+                WHEN LOWER(COALESCE(component, '')) = 'ram' OR LOWER(COALESCE(gcp_sku_name, '')) LIKE '%ram%'
+                    THEN 'Memorystore for Memcached Custom RAM'
+                ELSE 'Memorystore for Memcached Custom Core'
+            END,
             gcp_sku_id = NULL,
             projection_note = 'ElastiCache → Memorystore for Memcached (cache workload; not Cloud SQL)'
         WHERE aws_li_key IN (
@@ -265,9 +225,13 @@ def fix_managed_db_storage_rows(conn, *_ignored):
     # it slipped through and this function silently overwrote a CORRECT compute
     # mapping with an incorrect storage one. Excluding by usage_type directly is
     # the real fix — it doesn't depend on pricing_unit being populated correctly.
-    rows = conn.execute("""
+    cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+    if "pricing_unit" not in cols:
+        return 0
+    deploy_col = "c.deployment_option" if "deployment_option" in cols else "'' AS deployment_option"
+    rows = conn.execute(f"""
         SELECT m.aws_li_key, m.component, c.gcp_region,
-               c.product, c.usage_type
+               c.product, c.usage_type, {deploy_col}
         FROM aws_li_to_gcp_li m
         JOIN aws_li_catalog c USING (aws_li_key)
         WHERE m.strategy = 'map'
@@ -289,26 +253,33 @@ def fix_managed_db_storage_rows(conn, *_ignored):
     # Group by aws_li_key — a single AWS storage/IO line item can carry both
     # 'core' and 'ram' component rows from the original (wrong) vCPU/RAM mapping.
     by_key = {}
-    for key, component, gcp_region, product, usage_type in rows:
+    for key, component, gcp_region, product, usage_type, deployment_option in rows:
         by_key.setdefault(key, {"components": [], "gcp_region": gcp_region,
-                                 "product": product, "usage_type": usage_type})
+                                 "product": product, "usage_type": usage_type,
+                                 "deployment_option": deployment_option})
         by_key[key]["components"].append(component)
 
     fixed = 0
     for key, info in by_key.items():
         gcp_region, product, usage_type = info["gcp_region"], info["product"], info["usage_type"]
-        is_multi_az = "multi-az" in (usage_type or "").lower()
+        deploy_opt = info.get("deployment_option") or ""
+        blob = f"{product or ''} {usage_type or ''} {deploy_opt}".lower()
+        is_multi_az = "multi-az" in blob or "multiaz" in blob
         tier = "Regional" if is_multi_az else "Zonal"
 
-        # Determine storage engine from product name for SKU precision
-        if "postgresql" in (product or "").lower() or "aurora" in (product or "").lower():
-            storage_sku = f"Cloud SQL for PostgreSQL: {tier} - SSD storage"
-        elif "mysql" in (product or "").lower():
+        # Determine storage engine from product name for SKU precision.
+        # Check MySQL / MariaDB first (AR-E) so "Amazon Aurora (MySQL)" is not
+        # misclassified as PostgreSQL by the "aurora" substring check.
+        prod_lower = (product or "").lower()
+        if "mysql" in prod_lower or "mariadb" in prod_lower:
             storage_sku = f"Cloud SQL for MySQL: {tier} - SSD storage"
+        elif "postgresql" in prod_lower or "aurora" in prod_lower:
+            storage_sku = f"Cloud SQL for PostgreSQL: {tier} - SSD storage"
         else:
             storage_sku = f"Cloud SQL: {tier} - SSD storage"
 
-        new_sku_id = _resolve_sku_for_row("Cloud SQL", storage_sku, gcp_region)
+        res_sql = resolve_intent_to_sku("Cloud SQL", storage_sku, gcp_region, expected_unit="storage-month")
+        new_sku_id = res_sql.sku_id if res_sql else None
 
         # Collapse to a single 'storage' component row — delete any extras
         # (e.g. the leftover 'ram' row) so storage is never billed twice.
@@ -442,13 +413,16 @@ def main():
     remap_elasticache_to_memorystore(conn)
     fix_managed_db_storage_rows(conn)
 
-    # Add rate_source and gcp_sku_unit columns if not yet present (idempotent — safe to re-run)
     try:
         conn.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN rate_source VARCHAR")
     except Exception:
         pass  # column already exists
     try:
         conn.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN gcp_sku_unit VARCHAR")
+    except Exception:
+        pass  # column already exists
+    try:
+        conn.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN component VARCHAR")
     except Exception:
         pass  # column already exists
 
@@ -463,8 +437,11 @@ def main():
 
     # Auto-resolve NULL gcp_sku_id for mapped rows using catalog lookup rules.
     # This prevents Phase 5 from seeing NULL projected cost and wrongly setting passthrough.
-    null_sku_rows = conn.execute("""
-        SELECT m.aws_li_key, m.gcp_service, m.gcp_sku_name, c.gcp_region
+    cat_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+    mg_expr = "c.mechanic_group" if "mechanic_group" in cat_cols else "NULL"
+    null_sku_rows = conn.execute(f"""
+        SELECT m.aws_li_key, m.gcp_service, m.gcp_sku_name, c.gcp_region,
+               m.gcp_sku_unit, {mg_expr}, m.component
         FROM aws_li_to_gcp_li m
         JOIN aws_li_catalog c USING (aws_li_key)
         WHERE m.gcp_sku_id IS NULL
@@ -473,28 +450,71 @@ def main():
 
     resolved = 0
     word_overlap_keys = set()
-    for aws_li_key, gcp_service, gcp_sku_name, gcp_region in null_sku_rows:
-        sku_id = _resolve_sku_for_row(gcp_service, gcp_sku_name, gcp_region)
-        if sku_id:
-            conn.execute(
-                "UPDATE aws_li_to_gcp_li SET gcp_sku_id = ? WHERE aws_li_key = ? AND gcp_sku_id IS NULL",
-                (sku_id, aws_li_key),
-            )
+    for aws_li_key, gcp_service, gcp_sku_name, gcp_region, gcp_sku_unit, mechanic_group, component in null_sku_rows:
+        res = resolve_intent_to_sku(
+            gcp_service,
+            gcp_sku_name,
+            gcp_region,
+            expected_unit=gcp_sku_unit,
+            mechanic_group=mechanic_group,
+            component=component,
+        )
+        comp_filter = "AND component = ?" if component is not None else "AND component IS NULL"
+        comp_args = [component] if component is not None else []
+
+        if res.sku_id:
+            if res.note:
+                conn.execute(
+                    f"""UPDATE aws_li_to_gcp_li 
+                       SET gcp_sku_id = ?,
+                           gcp_sku_unit = COALESCE(?, gcp_sku_unit),
+                           rate_source = COALESCE(rate_source, 'word_overlap'),
+                           projection_note = COALESCE(NULLIF(projection_note, '') || '; ', '') || ?
+                       WHERE aws_li_key = ? AND gcp_sku_id IS NULL {comp_filter}""",
+                    [res.sku_id, res.unit, res.note, aws_li_key] + comp_args,
+                )
+                if "[unit-unverified" in res.note:
+                    conn.execute(
+                        f"UPDATE aws_li_to_gcp_li SET mapping_confidence = LEAST(mapping_confidence, 0.5) WHERE aws_li_key = ? {comp_filter}",
+                        [aws_li_key] + comp_args,
+                    )
+            else:
+                conn.execute(
+                    f"""UPDATE aws_li_to_gcp_li 
+                       SET gcp_sku_id = ?,
+                           gcp_sku_unit = COALESCE(?, gcp_sku_unit),
+                           rate_source = COALESCE(rate_source, 'word_overlap')
+                       WHERE aws_li_key = ? AND gcp_sku_id IS NULL {comp_filter}""",
+                    [res.sku_id, res.unit, aws_li_key] + comp_args,
+                )
             word_overlap_keys.add(aws_li_key)
             resolved += 1
-            log.debug(f"Resolved SKU: {gcp_service} / {gcp_sku_name!r} -> {sku_id}")
+            log.debug(f"Resolved SKU: {gcp_service} / {gcp_sku_name!r} -> {res.sku_id}")
+        else:
+            note = res.note or "[unresolved-sku: no catalog match — passthrough]"
+            conn.execute(
+                f"""UPDATE aws_li_to_gcp_li 
+                   SET strategy = 'passthrough',
+                       rate_source = COALESCE(rate_source, 'no_rate'),
+                       projection_note = COALESCE(NULLIF(projection_note, '') || '; ', '') || ?
+                   WHERE aws_li_key = ? AND gcp_sku_id IS NULL {comp_filter}""",
+                [note, aws_li_key] + comp_args,
+            )
 
     if resolved:
         log.info(f"Auto-resolved {resolved} NULL gcp_sku_id row(s) via catalog word-overlap")
 
     # Get all required SKUs (including any just resolved above)
+    # AR-N: Deduplicate sku_id -> service deterministically via MIN(gcp_service)
     skus_used = conn.execute("""
-        SELECT DISTINCT m.gcp_sku_id, m.gcp_service
+        SELECT m.gcp_sku_id, MIN(m.gcp_service)
         FROM aws_li_to_gcp_li m
         WHERE m.gcp_sku_id IS NOT NULL
+        GROUP BY m.gcp_sku_id
+        ORDER BY m.gcp_sku_id
     """).fetchall()
 
-    # Clear existing rate table just in case
+    # Ensure rate table exists
     conn.execute("""
         CREATE TABLE IF NOT EXISTS gcp_sku_rates (
             gcp_sku_id      VARCHAR,
@@ -511,10 +531,21 @@ def main():
             PRIMARY KEY (gcp_sku_id, pricing_type, region)
         )
     """)
-    conn.execute("DELETE FROM gcp_sku_rates")
 
     if not skus_used:
         log.info("No SKUs to fill rates for — nothing to do")
+        # AR-M: stamp rate_source on early return
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li
+            SET rate_source = 'passthrough'
+            WHERE strategy = 'passthrough' AND rate_source IS NULL
+        """)
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li
+            SET rate_source = 'ignored'
+            WHERE strategy = 'ignore' AND rate_source IS NULL
+        """)
+        conn.execute("UPDATE aws_li_to_gcp_li SET rate_source = 'unknown' WHERE rate_source IS NULL")
         create_projection_view(conn)
         return
 
@@ -528,9 +559,15 @@ def main():
         conn.execute("""
             UPDATE aws_li_to_gcp_li
             SET strategy = 'passthrough',
+                rate_source = 'no_rate',
                 projection_note = COALESCE(projection_note || ' ', '') ||
                     '[no-catalog: catalog.duckdb missing — refresh with scripts/refresh-catalog.sh]'
             WHERE strategy IN ('map', 'break_down')
+        """)
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li
+            SET rate_source = 'no_rate'
+            WHERE rate_source IS NULL
         """)
         count = conn.execute(
             "SELECT COUNT(*) FROM aws_li_to_gcp_li WHERE strategy = 'passthrough' "
@@ -556,429 +593,490 @@ def main():
             FROM skus s
             JOIN tiered_rates t ON t.sku_id = s.sku_id
             WHERE s.sku_id IN ({placeholders})
-              AND s.usage_type IN ('OnDemand', 'Preemptible', 'Commit1Yr', 'Commit3Yr')
+              AND s.usage_type IN ('OnDemand', 'Commit1Yr', 'Commit3Yr')
             ORDER BY s.sku_id, s.usage_type, t.tier_start
         """, sku_ids).fetchall()
     finally:
         cat.close()
 
-    # Group tiers per (sku_id, usage_type); keep one metadata record per key.
-    sku_tiers: dict[tuple, list] = defaultdict(list)
-    sku_meta: dict[tuple, tuple] = {}
-    for sku_id, svc_name, desc, rf, rg, ut, unit, regions, tier_start, rate_usd in catalog_rows:
-        key = (sku_id, ut)
-        sku_tiers[key].append({"startUsageAmount": tier_start, "rate": rate_usd})
-        if key not in sku_meta:
-            sku_meta[key] = (svc_name, desc, rf, rg, unit, regions or [])
-
-    # Pre-fetch max usage per SKU for tiered-rate blending (one query, all SKUs).
-    max_usage_rows = conn.execute("""
-        SELECT m.gcp_sku_id, MAX(c.total_usage)
-        FROM aws_li_to_gcp_li m
-        JOIN aws_li_catalog c USING (aws_li_key)
-        WHERE m.gcp_sku_id IS NOT NULL
-        GROUP BY m.gcp_sku_id
-    """).fetchall()
-    max_usage: dict[str, float] = {r[0]: (r[1] or 0.0) for r in max_usage_rows}
-
-    # Synthetic egress SKU IDs are injected directly into gcp_sku_rates below —
-    # they are never in catalog.duckdb, so exclude them from the "not found" report.
-    synthetic_ids = {sku_id for sku_id, _, _ in EGRESS_SKUS.values()} | {
-        "GCP-LOOKER-STUDIO-PRO-USER", _TPU_SKU_ID,
-    }
-    found_skus = {k[0] for k in sku_tiers}
-    for sku_id in sku_ids:
-        if sku_id not in found_skus and sku_id not in synthetic_ids:
-            log.warning(f"SKU {sku_id} ({sku_to_service.get(sku_id)}) not found in catalog.duckdb — skipping")
-
-    # Insert rates for all pricing types fetched from catalog.
-    # usage_type in catalog maps 1:1 to pricing_type in gcp_sku_rates.
-    for (sku_id, ut), tiers in sku_tiers.items():
-        gcp_service = sku_to_service.get(sku_id, sku_meta[(sku_id, ut)][0])
-        _, desc, rf, rg, unit, regions = sku_meta[(sku_id, ut)]
-
-        if len(tiers) > 1:
-            base_rate = blended_rate(tiers, max_usage.get(sku_id, 0.0))
-        else:
-            base_rate = tiers[0]["rate"]
-
-        # Expand container codes (e.g. 'us' → list of us-* regions).
-        expanded: set[str] = set()
-        for r in regions:
-            if r.lower() in CONTAINER_CODES:
-                expanded.update(CONTAINER_CODES[r.lower()])
-            else:
-                expanded.add(r)
-
-        # ON CONFLICT DO NOTHING: container-code expansion can produce overlapping
-        # regions; the same sku_id may appear in multiple catalog rows.
-        for region in expanded:
-            conn.execute("""
-                INSERT INTO gcp_sku_rates VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT DO NOTHING
-            """, (sku_id, gcp_service, desc, rf, rg, ut, region, unit, base_rate,
-                  "catalog.duckdb", f"catalog.duckdb#{sku_id}"))
-            
-    # Unit consistency check: warn when the unit_multiplier in the mapping assumes
-    # a different billing unit than the actual SKU in the rate catalog.
-    # E.g., a mapper sets unit_multiplier=vcpus thinking SKU is billed per-core-hour (h),
-    # but the actual SKU unit is GiBy.mo — the projected cost would be nonsense.
+    # ── Rate Fill Transaction (AR-C) ──────────────────────────────────────────
+    # Wrap all rate table mutations and downstream view/triage updates in an atomic
+    # transaction. If a crash or error occurs mid-run, the transaction rolls back so
+    # gcp_sku_rates is NOT left empty or partially refilled, preventing zero-rate projections.
+    conn.execute("BEGIN TRANSACTION")
     try:
-        unit_mismatches = conn.execute("""
-            SELECT m.aws_li_key, m.gcp_sku_name, m.gcp_sku_unit, r.unit,
-                   c.product, m.unit_multiplier
+        conn.execute("DELETE FROM gcp_sku_rates")
+
+        # Group tiers per (sku_id, usage_type); keep one metadata record per key.
+        sku_tiers: dict[tuple, list] = defaultdict(list)
+        sku_meta: dict[tuple, tuple] = {}
+        for sku_id, svc_name, desc, rf, rg, ut, unit, regions, tier_start, rate_usd in catalog_rows:
+            key = (sku_id, ut)
+            sku_tiers[key].append({"startUsageAmount": tier_start, "rate": rate_usd})
+            if key not in sku_meta:
+                sku_meta[key] = (svc_name, desc, rf, rg, unit, regions or [])
+
+        # Pre-fetch monthly average usage per SKU for tiered-rate blending (one query, all SKUs).
+        # GCP tier ladders reset monthly, so on multi-month bills we blend at single-month volume (Section F).
+        cols = {r[0] for r in conn.execute("DESCRIBE aws_li_catalog").fetchall()}
+        month_expr = "GREATEST(1, COUNT(DISTINCT NULLIF(c.billing_month, '')))" if "billing_month" in cols else "1"
+        total_usage_rows = conn.execute(f"""
+            SELECT m.gcp_sku_id, SUM(c.total_usage) / {month_expr}
             FROM aws_li_to_gcp_li m
             JOIN aws_li_catalog c USING (aws_li_key)
-            JOIN gcp_sku_rates r ON r.gcp_sku_id = m.gcp_sku_id
-                                AND r.pricing_type = 'OnDemand'
-                                AND r.region = m.gcp_region
-            WHERE m.gcp_sku_unit IS NOT NULL
-              AND m.gcp_sku_unit != r.unit
-            LIMIT 20
+            WHERE m.gcp_sku_id IS NOT NULL
+            GROUP BY m.gcp_sku_id
         """).fetchall()
-        for li_key, sku_name, mapped_unit, rate_unit, product, mult in unit_mismatches:
-            log.warning(f"Unit mismatch: {product} / {sku_name}: "
-                  f"mapper assumed '{mapped_unit}', SKU actually billed per '{rate_unit}' "
-                  f"(unit_multiplier={mult})")
-    except Exception as e:
-        log.warning(f"Unit consistency check failed: {e}")
+        total_usage: dict[str, float] = {r[0]: float(r[1] or 0.0) for r in total_usage_rows}
 
-    # CUD synthesis.
-    # First check how many real Commit rows came from catalog vs. need synthesis.
-    real_cud_count = conn.execute(
-        "SELECT COUNT(*) FROM gcp_sku_rates WHERE pricing_type IN ('Commit1Yr','Commit3Yr') "
-        "AND source = 'catalog.duckdb'"
-    ).fetchone()[0]
-    if real_cud_count:
-        log.info(f"CUD: {real_cud_count} real Commit1Yr/3Yr rows loaded from catalog")
-    else:
-        log.info("CUD: no real Commit rows in catalog — synthesizing from OnDemand × cud_pct.json")
+        # Synthetic SKU IDs are injected directly into gcp_sku_rates below —
+        # they are never in catalog.duckdb, so exclude them from the "not found" report.
+        synthetic_ids = SYNTHETIC_SKU_IDS | {_TPU_SKU_ID}
+        found_skus = {k[0] for k in sku_tiers}
+        for sku_id in sku_ids:
+            if sku_id not in found_skus and sku_id not in synthetic_ids:
+                log.warning(f"SKU {sku_id} ({sku_to_service.get(sku_id)}) not found in catalog.duckdb — skipping")
 
-    # Only synthesize CUD for services that actually appear in this bill's mappings.
-    # Avoids generating thousands of unused CUD rows for services not in the bill.
-    mapped_services = {r[0] for r in conn.execute(
-        "SELECT DISTINCT gcp_service FROM aws_li_to_gcp_li WHERE strategy IN ('map','break_down')"
-    ).fetchall()}
+        # Insert rates for all pricing types fetched from catalog.
+        # usage_type in catalog maps 1:1 to pricing_type in gcp_sku_rates.
+        for (sku_id, ut), tiers in sku_tiers.items():
+            catalog_svc = sku_meta[(sku_id, ut)][0]
+            gcp_service = catalog_svc or sku_to_service.get(sku_id, "")
+            _, desc, rf, rg, unit, regions = sku_meta[(sku_id, ut)]
 
-    # cud_pct.json is the SINGLE source of truth for which services have CUDs and
-    # at what multipliers. Adding a new CUD-eligible service requires only a new entry
-    # in data/cud_pct.json — no Python change here.
-    #
-    # Compute Engine is special: only CPU/RAM/GPU resource_groups are committable.
-    # The fallback block below catches ARM/T2A and other non-standard resource_groups.
-    cud_pct = load_cud_pct()
-    _default_pct = cud_pct.get("DEFAULT", (0.75, 0.60))
+            if len(tiers) > 1:
+                base_rate = blended_rate(tiers, total_usage.get(sku_id, 0.0))
+            else:
+                base_rate = tiers[0]["rate"]
 
-    synthesized_cud = 0
-    for svc, (r1, r3) in cud_pct.items():
-        if svc == "DEFAULT":
-            continue
-        # Skip services not present in this bill — no point generating unused rows.
-        if svc not in mapped_services and svc != GCP_COMPUTE_ENGINE:
-            continue
-        rg_clause = "AND resource_group IN ('CPU','RAM','GPU')" if svc == GCP_COMPUTE_ENGINE else ""
-        for pricing_type, mult in [("Commit1Yr", r1), ("Commit3Yr", r3)]:
-            n = conn.execute(f"""
+            # Expand container codes (e.g. 'us' → list of us-* regions).
+            expanded: set[str] = set()
+            for r in regions:
+                if r.lower() in CONTAINER_CODES:
+                    expanded.update(CONTAINER_CODES[r.lower()])
+                else:
+                    expanded.add(r)
+
+            # ON CONFLICT DO NOTHING: container-code expansion can produce overlapping
+            # regions; the same sku_id may appear in multiple catalog rows.
+            for region in expanded:
+                conn.execute("""
+                    INSERT INTO gcp_sku_rates VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT DO NOTHING
+                """, (sku_id, gcp_service, desc, rf, rg, ut, region, unit, base_rate,
+                      "catalog.duckdb", f"catalog.duckdb#{sku_id}"))
+                
+        # Unit consistency check: demoted to debug (G-1b) because unit validation
+        # is now enforced upfront at resolution time in resolve_intent_to_sku.
+        try:
+            unit_mismatches = conn.execute("""
+                SELECT m.aws_li_key, m.gcp_sku_name, m.gcp_sku_unit, r.unit,
+                       c.product, m.unit_multiplier
+                FROM aws_li_to_gcp_li m
+                JOIN aws_li_catalog c USING (aws_li_key)
+                JOIN gcp_sku_rates r ON r.gcp_sku_id = m.gcp_sku_id
+                                    AND r.pricing_type = 'OnDemand'
+                                    AND r.region = m.gcp_region
+                WHERE m.gcp_sku_unit IS NOT NULL
+                  AND m.gcp_sku_unit != r.unit
+                LIMIT 20
+            """).fetchall()
+            for li_key, sku_name, mapped_unit, rate_unit, product, mult in unit_mismatches:
+                log.debug(f"Unit mismatch: {product} / {sku_name}: "
+                      f"mapper assumed '{mapped_unit}', SKU actually billed per '{rate_unit}' "
+                      f"(unit_multiplier={mult})")
+        except Exception as e:
+            log.debug(f"Unit consistency check failed: {e}")
+
+        # CUD synthesis.
+        # First check how many real Commit rows came from catalog vs. need synthesis.
+        real_cud_count = conn.execute(
+            "SELECT COUNT(*) FROM gcp_sku_rates WHERE pricing_type IN ('Commit1Yr','Commit3Yr') "
+            "AND source = 'catalog.duckdb'"
+        ).fetchone()[0]
+        if real_cud_count:
+            log.info(f"CUD: {real_cud_count} real Commit1Yr/3Yr rows loaded from catalog")
+        else:
+            log.info("CUD: no real Commit rows in catalog — synthesizing from OnDemand × cud_pct.json")
+
+        # Only synthesize CUD for services that actually appear in this bill's mappings.
+        # Avoids generating thousands of unused CUD rows for services not in the bill.
+        mapped_services = {r[0] for r in conn.execute(
+            "SELECT DISTINCT gcp_service FROM aws_li_to_gcp_li WHERE strategy IN ('map','break_down')"
+        ).fetchall()}
+
+        # cud_pct.json is the SINGLE source of truth for which services have CUDs and
+        # at what multipliers. Adding a new CUD-eligible service requires only a new entry
+        # in data/cud_pct.json — no Python change here.
+        cud_pct = load_cud_pct()
+        _default_pct = cud_pct.get("DEFAULT", (0.75, 0.60))
+
+        synthesized_cud = 0
+        for svc, (r1, r3) in cud_pct.items():
+            if svc == "DEFAULT":
+                continue
+            # Skip services not present in this bill — no point generating unused rows.
+            if svc not in mapped_services and svc != GCP_COMPUTE_ENGINE:
+                continue
+            rg_clause = "AND resource_group IN ('CPU','RAM','GPU')" if svc == GCP_COMPUTE_ENGINE else ""
+            for pricing_type, mult in [("Commit1Yr", r1), ("Commit3Yr", r3)]:
+                n = conn.execute(f"""
+                    INSERT INTO gcp_sku_rates
+                    SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
+                           resource_group, '{pricing_type}', region, unit,
+                           rate_usd * ?, 'doc-percentage', 'cud_pct.json'
+                    FROM gcp_sku_rates
+                    WHERE gcp_service = ? AND pricing_type = 'OnDemand'
+                      {rg_clause}
+                    ON CONFLICT DO NOTHING
+                """, [mult, svc]).rowcount
+                synthesized_cud += (n or 0)
+        if synthesized_cud:
+            log.info(f"CUD synthesis: {synthesized_cud} row(s) generated from cud_pct.json percentages")
+
+        # Compute Engine CUD fallback: catch any CPU/RAM/GPU SKUs that missed the main
+        # pass above (e.g. ARM families with non-standard SKU name patterns).
+        r1_ce, r3_ce = cud_pct.get(GCP_COMPUTE_ENGINE, _default_pct)
+        for pricing_type, mult in [("Commit1Yr", r1_ce), ("Commit3Yr", r3_ce)]:
+            conn.execute(f"""
                 INSERT INTO gcp_sku_rates
                 SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
                        resource_group, '{pricing_type}', region, unit,
-                       rate_usd * ?, 'doc-percentage', 'cud_pct.json'
+                       rate_usd * ?, 'doc-percentage-fallback', 'cud_pct.json'
                 FROM gcp_sku_rates
-                WHERE gcp_service = ? AND pricing_type = 'OnDemand'
-                  {rg_clause}
+                WHERE gcp_service = 'Compute Engine' AND pricing_type = 'OnDemand'
+                  AND resource_group IN ('CPU', 'RAM', 'GPU')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM gcp_sku_rates r2
+                      WHERE r2.gcp_sku_id = gcp_sku_rates.gcp_sku_id
+                        AND r2.pricing_type = '{pricing_type}'
+                        AND r2.region = gcp_sku_rates.region
+                  )
                 ON CONFLICT DO NOTHING
-            """, [mult, svc]).rowcount
-            synthesized_cud += (n or 0)
-    if synthesized_cud:
-        log.info(f"CUD synthesis: {synthesized_cud} row(s) generated from cud_pct.json percentages")
+            """, [mult])
 
-    # Compute Engine CUD fallback: catch any CPU/RAM/GPU SKUs that missed the main
-    # pass above (e.g. ARM families with non-standard SKU name patterns). Restrict
-    # strictly to resource_group IN ('CPU','RAM','GPU') — Hyperdisk capacity/IOPS/
-    # throughput, PD snapshots, External IP, and networking SKUs must never receive
-    # a synthesized CUD row; GCP does not offer committed use on those products.
-    r1_ce, r3_ce = cud_pct.get(GCP_COMPUTE_ENGINE, _default_pct)
-    for pricing_type, mult in [("Commit1Yr", r1_ce), ("Commit3Yr", r3_ce)]:
-        conn.execute(f"""
+        # Preemptible rate synthesis removed per WORKORDER Section E (OD-vs-OD).
+
+    # Global fallback (AR-4): for every SKU that has regional rates but no 'global' row,
+        # synthesize a 'global' row using the customer's dominant region's rate if available,
+        # falling back to the average regional rate. This makes the gcp_projection VIEW
+        # resilient to NULL gcp_region in aws_li_catalog while avoiding unweighted skew from
+        # regions the customer never uses.
+        dom_region = compute_dominant_region(conn)
+        conn.execute("""
             INSERT INTO gcp_sku_rates
-            SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
-                   resource_group, '{pricing_type}', region, unit,
-                   rate_usd * ?, 'doc-percentage-fallback', 'cud_pct.json'
-            FROM gcp_sku_rates
-            WHERE gcp_service = 'Compute Engine' AND pricing_type = 'OnDemand'
-              AND resource_group IN ('CPU', 'RAM', 'GPU')
-              AND NOT EXISTS (
-                  SELECT 1 FROM gcp_sku_rates r2
-                  WHERE r2.gcp_sku_id = gcp_sku_rates.gcp_sku_id
-                    AND r2.pricing_type = '{pricing_type}'
-                    AND r2.region = gcp_sku_rates.region
-              )
+            SELECT r.gcp_sku_id, r.gcp_service, r.gcp_sku_name, r.resource_family,
+                   r.resource_group, r.pricing_type, 'global', r.unit,
+                   COALESCE(
+                       MAX(CASE WHEN r.region = ? THEN r.rate_usd END),
+                       AVG(r.rate_usd)
+                   ),
+                   'global-fallback', MIN(r.audit_url)
+            FROM gcp_sku_rates r
+            WHERE r.region != 'global'
+            GROUP BY r.gcp_sku_id, r.gcp_service, r.gcp_sku_name, r.resource_family,
+                     r.resource_group, r.pricing_type, r.unit
+            HAVING NOT EXISTS (
+                SELECT 1 FROM gcp_sku_rates g
+                WHERE g.gcp_sku_id = r.gcp_sku_id
+                  AND g.pricing_type = r.pricing_type
+                  AND g.region = 'global'
+            )
             ON CONFLICT DO NOTHING
-        """, [mult])
+        """, (dom_region,))
 
-    # Preemptible rate synthesis for Compute Engine CPU/RAM SKUs.
-    # GCP Preemptible (and Spot VM) price ≈ 22% of On-Demand in most regions.
-    # Synthesised here so the gcp_projection VIEW can select the correct rate for
-    # rows where pricing_model = 'Spot'.
-    conn.execute("""
-        INSERT INTO gcp_sku_rates
-        SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
-               resource_group, 'Preemptible', region, unit,
-               rate_usd * 0.22, 'preemptible-factor',
-               'https://cloud.google.com/compute/docs/instances/preemptible'
-        FROM gcp_sku_rates
-        WHERE gcp_service = 'Compute Engine' AND pricing_type = 'OnDemand'
-          AND resource_group IN ('CPU', 'RAM', 'GPU')
-        ON CONFLICT DO NOTHING
-    """)
+        # Inject canonical network-egress rates (deterministic, by direction) so the
+        # data_transfer mappings resolve to a stable, correct $/GB instead of a
+        # fuzzy catalog SKU whose rate swings 2x-8x run-to-run. 'global' region so
+        # the VIEW's COALESCE(regional, global) always finds them.
+        for _sku_id, _sku_name, _rate in EGRESS_SKUS.values():
+            if _sku_id == "GCP-EGRESS-INTERNET":
+                eff_usage = total_usage.get(_sku_id)
+                if eff_usage is None:
+                    u_row = conn.execute(f"""
+                        SELECT SUM(c.total_usage) / {month_expr}
+                        FROM aws_li_to_gcp_li m
+                        JOIN aws_li_catalog c USING (aws_li_key)
+                        WHERE m.gcp_sku_id = ? OR m.gcp_sku_name = ?
+                    """, [_sku_id, _sku_name]).fetchone()
+                    eff_usage = float(u_row[0] or 0.0) if u_row else 0.0
+                eff_rate = blended_rate(_INTERNET_EGRESS_TIERS, eff_usage)
+            else:
+                eff_rate = _rate
+            conn.execute("""
+                INSERT INTO gcp_sku_rates VALUES
+                (?, 'Compute Engine', ?, 'Network', 'Egress', 'OnDemand', 'global', 'gibibyte', ?, 'canonical-egress', 'published GCP egress list')
+                ON CONFLICT DO NOTHING
+            """, (_sku_id, _sku_name, eff_rate))
 
-    # Global fallback: for every SKU that has regional rates but no 'global' row,
-    # synthesize a 'global' row by averaging the regional rates. This makes the
-    # gcp_projection VIEW resilient to NULL gcp_region in aws_li_catalog — the
-    # COALESCE(regional, global) fallback in the VIEW will always find a rate.
-    conn.execute("""
-        INSERT INTO gcp_sku_rates
-        SELECT r.gcp_sku_id, r.gcp_service, r.gcp_sku_name, r.resource_family,
-               r.resource_group, r.pricing_type, 'global', r.unit,
-               AVG(r.rate_usd), 'global-fallback', MIN(r.audit_url)
-        FROM gcp_sku_rates r
-        WHERE r.region != 'global'
-        GROUP BY r.gcp_sku_id, r.gcp_service, r.gcp_sku_name, r.resource_family,
-                 r.resource_group, r.pricing_type, r.unit
-        HAVING NOT EXISTS (
-            SELECT 1 FROM gcp_sku_rates g
-            WHERE g.gcp_sku_id = r.gcp_sku_id
-              AND g.pricing_type = r.pricing_type
-              AND g.region = 'global'
-        )
-        ON CONFLICT DO NOTHING
-    """)
-
-    # Inject canonical network-egress rates (deterministic, by direction) so the
-    # data_transfer mappings resolve to a stable, correct $/GB instead of a
-    # fuzzy catalog SKU whose rate swings 2x-8x run-to-run. 'global' region so
-    # the VIEW's COALESCE(regional, global) always finds them.
-    for _sku_id, _sku_name, _rate in EGRESS_SKUS.values():
+        # Looker Studio Pro (per-user): $9/user/mo published list price. Looker
+        # Studio is billed as a SaaS product outside standard Cloud Billing SKUs,
+        # so it is not in the bundled catalog — inject it the same way the egress
+        # rates above are injected, so map_quicksight()'s Author-seat rows resolve
+        # to strategy='map' with a stable, correct $/user rate instead of falling
+        # to passthrough for lack of a catalog SKU.
+        # Rate source: cloud.google.com/looker-studio/pricing (Pro per-user tier).
         conn.execute("""
             INSERT INTO gcp_sku_rates VALUES
-            (?, 'Compute Engine', ?, 'Network', 'Egress', 'OnDemand', 'global', 'gibibyte', ?, 'canonical-egress', 'published GCP egress list')
+            ('GCP-LOOKER-STUDIO-PRO-USER', 'Looker Studio Pro', 'Looker Studio Pro (per user)',
+             'ApplicationServices', 'BusinessIntelligence', 'OnDemand', 'global', 'user',
+             9.0, 'canonical-looker-studio-pro', 'https://cloud.google.com/looker-studio/pricing')
             ON CONFLICT DO NOTHING
-        """, (_sku_id, _sku_name, _rate))
+        """)
 
-    # Looker Studio Pro (per-user): $9/user/mo published list price. Looker
-    # Studio is billed as a SaaS product outside standard Cloud Billing SKUs,
-    # so it is not in the bundled catalog — inject it the same way the egress
-    # rates above are injected, so map_quicksight()'s Author-seat rows resolve
-    # to strategy='map' with a stable, correct $/user rate instead of falling
-    # to passthrough for lack of a catalog SKU.
-    # Rate source: cloud.google.com/looker-studio/pricing (Pro per-user tier).
-    conn.execute("""
-        INSERT INTO gcp_sku_rates VALUES
-        ('GCP-LOOKER-STUDIO-PRO-USER', 'Looker Studio Pro', 'Looker Studio Pro (per user)',
-         'ApplicationServices', 'BusinessIntelligence', 'OnDemand', 'global', 'user',
-         9.0, 'canonical-looker-studio-pro', 'https://cloud.google.com/looker-studio/pricing')
-        ON CONFLICT DO NOTHING
-    """)
+        # Cloud TPU v5e (per chip-hour): pinned on-demand rate for Inferentia/Trainium
+        # rows mapped by family_mapper.map_tpu_row(). No on-demand TPU SKU exists in the
+        # bundled catalog, so inject it the same way egress / Looker Studio are injected.
+        inject_tpu_rates(conn)
 
-    # Cloud TPU v5e (per chip-hour): pinned on-demand rate for Inferentia/Trainium
-    # rows mapped by family_mapper.map_tpu_row(). No on-demand TPU SKU exists in the
-    # bundled catalog, so inject it the same way egress / Looker Studio are injected.
-    inject_tpu_rates(conn)
+        # Cloud Logging Log Ingestion: NOT injected as a pseudo-SKU — the real
+        # catalog SKU "Log Storage cost" (143F-A1B0-E0BE) already carries the
+        # correct rate: despite its misleading name, its tiered_rates entry
+        # (0-50 GiB free, 50+ GiB: $0.50/GiB) IS GCP's real published log
+        # ingestion pricing. apply_static_mappings.py's map_cloudwatch()
+        # resolves it dynamically by name via resolve_sku() for both
+        # PutLogEvents and generic log-volume rows, so a catalog refresh (rate
+        # change, new region coverage) is picked up automatically instead of
+        # going stale behind a fixed injected value.
 
-    # Cloud Logging Log Ingestion: NOT injected as a pseudo-SKU — the real
-    # catalog SKU "Log Storage cost" (143F-A1B0-E0BE) already carries the
-    # correct rate: despite its misleading name, its tiered_rates entry
-    # (0-50 GiB free, 50+ GiB: $0.50/GiB) IS GCP's real published log
-    # ingestion pricing. apply_static_mappings.py's map_cloudwatch()
-    # resolves it dynamically by name via resolve_sku() for both
-    # PutLogEvents and generic log-volume rows, so a catalog refresh (rate
-    # change, new region coverage) is picked up automatically instead of
-    # going stale behind a fixed injected value.
+        # Cloud Logging Log Storage (extended retention): NOT injected as a
+        # pseudo-SKU — the real catalog SKU "Log Retention cost"
+        # (F4AE-5A52-ACE3, $0.01/GiBy.mo) already carries the correct rate.
+        # apply_static_mappings.py's map_cloudwatch() resolves it dynamically by
+        # name via resolve_sku(). The catalog's confusingly-similar "Log Storage
+        # cost" SKU (143F-A1B0-E0BE) is NOT this rate — despite the name, its
+        # tiered_rates entry is (0-50 GiB free, 50+ GiB: $0.50/GiB), the
+        # INGESTION tier structure — a prior fix here mistakenly matched that
+        # SKU and injected a hardcoded pseudo-rate to work around it, which
+        # just meant the real catalog SKU (and any future rate change to it)
+        # was silently ignored. Using the real catalog entry means a future
+        # catalog refresh stays accurate automatically instead of going stale
+        # behind a fixed injected value.
 
-    # Cloud Logging Log Storage (extended retention): NOT injected as a
-    # pseudo-SKU — the real catalog SKU "Log Retention cost"
-    # (F4AE-5A52-ACE3, $0.01/GiBy.mo) already carries the correct rate.
-    # apply_static_mappings.py's map_cloudwatch() resolves it dynamically by
-    # name via resolve_sku(). The catalog's confusingly-similar "Log Storage
-    # cost" SKU (143F-A1B0-E0BE) is NOT this rate — despite the name, its
-    # tiered_rates entry is (0-50 GiB free, 50+ GiB: $0.50/GiB), the
-    # INGESTION tier structure — a prior fix here mistakenly matched that
-    # SKU and injected a hardcoded pseudo-rate to work around it, which
-    # just meant the real catalog SKU (and any future rate change to it)
-    # was silently ignored. Using the real catalog entry means a future
-    # catalog refresh stays accurate automatically instead of going stale
-    # behind a fixed injected value.
+        # Regional External Application Load Balancer Data Processing: $0.008/GiB.
+        # The bundled catalog only carries the Forwarding Rule Minimum (hourly) SKU;
+        # inject the data-processing SKU so ALB LCU-hr rows resolve to strategy='map'.
+        # Mapping assumption: 1 LCU-hr ≈ 1 GB when bandwidth is the dominant LCU dimension
+        # (typical HTTP workloads); connection-heavy workloads (WebSockets, long-lived TCP)
+        # will have fewer actual GB per LCU-hr, making this an over-estimate of GCP cost.
+        # Rate source: cloud.google.com/vpc/network-pricing (LB data processing).
+        conn.execute("""
+            INSERT INTO gcp_sku_rates VALUES
+            ('GCP-REXT-ALB-DATA-GIB', 'Networking',
+             'Regional External Application Load Balancer Data Processing',
+             'Network', 'LoadBalancing', 'OnDemand', 'global', 'gibibyte',
+             0.008, 'canonical-alb-data', 'https://cloud.google.com/vpc/network-pricing')
+            ON CONFLICT DO NOTHING
+        """)
 
-    # Regional External Application Load Balancer Data Processing: $0.008/GiB.
-    # The bundled catalog only carries the Forwarding Rule Minimum (hourly) SKU;
-    # inject the data-processing SKU so ALB LCU-hr rows resolve to strategy='map'.
-    # Mapping assumption: 1 LCU-hr ≈ 1 GB when bandwidth is the dominant LCU dimension
-    # (typical HTTP workloads); connection-heavy workloads (WebSockets, long-lived TCP)
-    # will have fewer actual GB per LCU-hr, making this an over-estimate of GCP cost.
-    # Rate source: cloud.google.com/vpc/network-pricing (LB data processing).
-    conn.execute("""
-        INSERT INTO gcp_sku_rates VALUES
-        ('GCP-REXT-ALB-DATA-GIB', 'Networking',
-         'Regional External Application Load Balancer Data Processing',
-         'Network', 'LoadBalancing', 'OnDemand', 'global', 'gibibyte',
-         0.008, 'canonical-alb-data', 'https://cloud.google.com/vpc/network-pricing')
-        ON CONFLICT DO NOTHING
-    """)
+        # Global External Passthrough Network Load Balancer Data Processing: $0.008/GiB.
+        # Same injection pattern as ALB above — NLB LCU-hr rows need this to map.
+        # Rate source: cloud.google.com/vpc/network-pricing.
+        conn.execute("""
+            INSERT INTO gcp_sku_rates VALUES
+            ('GCP-REXT-NLB-DATA-GIB', 'Networking',
+             'Global External Passthrough Network Load Balancer Data Processing',
+             'Network', 'LoadBalancing', 'OnDemand', 'global', 'gibibyte',
+             0.008, 'canonical-nlb-data', 'https://cloud.google.com/vpc/network-pricing')
+            ON CONFLICT DO NOTHING
+        """)
 
-    # Global External Passthrough Network Load Balancer Data Processing: $0.008/GiB.
-    # Same injection pattern as ALB above — NLB LCU-hr rows need this to map.
-    # Rate source: cloud.google.com/vpc/network-pricing.
-    conn.execute("""
-        INSERT INTO gcp_sku_rates VALUES
-        ('GCP-REXT-NLB-DATA-GIB', 'Networking',
-         'Global External Passthrough Network Load Balancer Data Processing',
-         'Network', 'LoadBalancing', 'OnDemand', 'global', 'gibibyte',
-         0.008, 'canonical-nlb-data', 'https://cloud.google.com/vpc/network-pricing')
-        ON CONFLICT DO NOTHING
-    """)
+        # Flag commercial-license rows (Windows/SQL Server/Oracle) so they are never
+        # silently under-projected — confidence capped + note stamped.
+        flag_license_exposure(conn)
 
-    # Flag commercial-license rows (Windows/SQL Server/Oracle) so they are never
-    # silently under-projected — confidence capped + note stamped.
-    flag_license_exposure(conn)
-
-    # Create the projection VIEW now that rates exist, so the Phase-4 gate
-    # (no_null_projected_cost) and the validator autofix can query it. Phase 5's
-    # detect_outliers.py re-creates it idempotently from the same shared SQL.
-    create_projection_view(conn)
-
-    # Safety net: any mapped row still lacking an OnDemand rate after fill
-    # (e.g. resolved to a Preemptible-only SKU, or SKU genuinely absent from catalog)
-    # must not block the gate. Convert to passthrough so the report always generates.
-    null_keys = conn.execute("""
-        SELECT p.aws_li_key
-        FROM gcp_projection p
-        WHERE p.strategy IN ('map', 'break_down')
-          AND p.gcp_projected_cost IS NULL
-          AND p.aws_amortized_cost > 1
-    """).fetchall()
-    if null_keys:
-        keys = [k[0] for k in null_keys]
-        placeholders = ",".join(["?" for _ in keys])
-        conn.execute(
-            f"""
-            UPDATE aws_li_to_gcp_li
-            SET strategy = 'passthrough',
-                projection_note = COALESCE(projection_note || ' ', '') ||
-                    '[no-rate-fallback: passthrough at cost parity — OnDemand rate missing for resolved SKU]'
-            WHERE aws_li_key IN ({placeholders})
-            """,
-            keys,
-        )
+        # Create the projection VIEW now that rates exist, so the Phase-4 gate
+        # (no_null_projected_cost) and the validator autofix can query it. Phase 5's
+        # detect_outliers.py re-creates it idempotently from the same shared SQL.
         create_projection_view(conn)
-        log.info(f"Rate-gap fallback: {len(keys)} NULL-cost row(s) set to passthrough")
 
-    # ── Populate rate_source ───────────────────────────────────────────────────
-    # Order matters: no_rate first (subset of passthrough), then passthrough,
-    # then exact_sku, then word_overlap. Remaining unknowns → 'unknown'.
-    #
-    # 'passthrough' and 'ignore' are NOT the same thing and must not share a
-    # rate_source label. strategy='passthrough' means "no reliable GCP
-    # equivalent exists — AWS cost carried as a placeholder, needs manual
-    # sizing." strategy='ignore' means the row was deliberately excluded from
-    # GCP pricing on purpose (negative-cost credits/refunds, Savings Plan
-    # commitment artifacts already reflected in amortized cost, RDS IOPS fees
-    # bundled into Cloud SQL's storage price, etc.) — there is nothing to size
-    # and nothing wrong with these rows. Tagging both 'passthrough' previously
-    # made the report's "N passthrough rows — no reliable GCP equivalent;
-    # manual sizing required" caption apply to every ignore row too, wildly
-    # overstating how many rows actually need manual review.
-    conn.execute("""
-        UPDATE aws_li_to_gcp_li
-        SET rate_source = 'no_rate'
-        WHERE projection_note LIKE '%no-rate-fallback%'
-    """)
-    conn.execute("""
-        UPDATE aws_li_to_gcp_li
-        SET rate_source = 'passthrough'
-        WHERE strategy = 'passthrough' AND rate_source IS NULL
-    """)
-    conn.execute("""
-        UPDATE aws_li_to_gcp_li
-        SET rate_source = 'ignored'
-        WHERE strategy = 'ignore' AND rate_source IS NULL
-    """)
-    if pinned_keys:
-        conn.execute(f"""
-            UPDATE aws_li_to_gcp_li
-            SET rate_source = 'exact_sku'
-            WHERE strategy IN ('map','break_down') AND rate_source IS NULL
-              AND aws_li_key IN ({','.join(['?']*len(pinned_keys))})
-        """, list(pinned_keys))
-    if word_overlap_keys:
-        conn.execute(f"""
-            UPDATE aws_li_to_gcp_li
-            SET rate_source = 'word_overlap'
-            WHERE rate_source IS NULL
-              AND aws_li_key IN ({','.join(['?']*len(word_overlap_keys))})
-        """, list(word_overlap_keys))
-    conn.execute("UPDATE aws_li_to_gcp_li SET rate_source = 'unknown' WHERE rate_source IS NULL")
-
-    # Normalize gcp_service to match the catalog's gcp_service field for all mapped rows.
-    # The LLM often writes shortened names ("Cloud KMS", "Memorystore", "Cloud Run") that
-    # differ from the catalog's canonical name ("Cloud Key Management Service (KMS)", etc.).
-    # detect_outliers query D flags these mismatches. Fixing here avoids 700+ false positives.
-    norm_result = conn.execute("""
-        UPDATE aws_li_to_gcp_li m
-        SET gcp_service = (
-            SELECT r.gcp_service FROM gcp_sku_rates r
-            WHERE r.gcp_sku_id = m.gcp_sku_id
-            LIMIT 1
-        )
-        WHERE m.strategy IN ('map', 'break_down')
-          AND m.gcp_sku_id IS NOT NULL
-          AND m.gcp_service != (
-            SELECT r.gcp_service FROM gcp_sku_rates r
-            WHERE r.gcp_sku_id = m.gcp_sku_id
-            LIMIT 1
-          )
-    """)
-    norm_count = conn.execute("""
-        SELECT COUNT(*) FROM aws_li_to_gcp_li m
-        WHERE m.strategy IN ('map', 'break_down')
-          AND m.gcp_sku_id IS NOT NULL
-          AND m.gcp_service != (
-            SELECT r.gcp_service FROM gcp_sku_rates r
-            WHERE r.gcp_sku_id = m.gcp_sku_id LIMIT 1
-          )
-    """).fetchone()[0]
-    if norm_count:
-        log.info(f"Normalized gcp_service for {norm_count} rows to match SKU catalog")
-
-    # Sanity check: any mapped row whose SKU has SOME rate rows but none reachable
-    # for its specific region silently projects $0. Catch and route to outlier_triage.
-    unreachable = conn.execute("""
-        SELECT m.gcp_service, c.gcp_region, m.gcp_sku_id, COUNT(*) AS unreachable_rows
-        FROM aws_li_to_gcp_li m
-        JOIN aws_li_catalog c USING (aws_li_key)
-        WHERE m.gcp_sku_id IS NOT NULL
-          AND m.strategy IN ('map','break_down')
-          AND NOT EXISTS (
-              SELECT 1 FROM gcp_sku_rates r
-              WHERE r.gcp_sku_id = m.gcp_sku_id
-                AND (r.region = c.gcp_region OR r.region = 'global')
-          )
-        GROUP BY m.gcp_service, c.gcp_region, m.gcp_sku_id
-    """).fetchall()
-
-    if unreachable:
-        _write_rate_gaps(unreachable)
-        for svc, region, sku_id, count in unreachable:
-            conn.execute("""
-                UPDATE aws_li_to_gcp_li SET strategy = 'outlier_triage',
+        # Safety net: any mapped row still lacking an OnDemand rate after fill
+        # (e.g. resolved to a Preemptible-only SKU, or SKU genuinely absent from catalog)
+        # must not block the gate. Convert to passthrough so the report always generates.
+        null_keys = conn.execute("""
+            SELECT p.aws_li_key
+            FROM gcp_projection p
+            WHERE p.strategy IN ('map', 'break_down')
+              AND p.gcp_projected_cost IS NULL
+              AND p.aws_amortized_cost > 1
+        """).fetchall()
+        if null_keys:
+            keys = [k[0] for k in null_keys]
+            placeholders = ",".join(["?" for _ in keys])
+            conn.execute(
+                f"""
+                UPDATE aws_li_to_gcp_li
+                SET strategy = 'passthrough',
                     projection_note = COALESCE(projection_note || ' ', '') ||
-                        '[rate-fill-gap: no rate for region — routed to Phase 5]'
-                WHERE gcp_sku_id = ? AND strategy IN ('map','break_down')
-            """, [sku_id])
-        log.info(f"Sanity check: {len(unreachable)} unreachable SKU/region pair(s) moved to outlier_triage")
-    else:
-        log.info("Sanity check: all mapped SKUs have reachable rates")
+                        '[no-rate-fallback: passthrough at cost parity — OnDemand rate missing for resolved SKU]'
+                WHERE aws_li_key IN ({placeholders})
+                """,
+                keys,
+            )
+            create_projection_view(conn)
+            log.info(f"Rate-gap fallback: {len(keys)} NULL-cost row(s) set to passthrough")
 
-    log.info("Rate fill complete")
+        # ── Populate rate_source ───────────────────────────────────────────────────
+        # Order matters: no_rate first (subset of passthrough), then passthrough,
+        # then exact_sku, then word_overlap. Remaining unknowns → 'unknown'.
+        #
+        # 'passthrough' and 'ignore' are NOT the same thing and must not share a
+        # rate_source label. strategy='passthrough' means "no reliable GCP
+        # equivalent exists — AWS cost carried as a placeholder, needs manual
+        # sizing." strategy='ignore' means the row was deliberately excluded from
+        # GCP pricing on purpose (negative-cost credits/refunds, Savings Plan
+        # commitment artifacts already reflected in amortized cost, RDS IOPS fees
+        # bundled into Cloud SQL's storage price, etc.) — there is nothing to size
+        # and nothing wrong with these rows. Tagging both 'passthrough' previously
+        # made the report's "N passthrough rows — no reliable GCP equivalent;
+        # manual sizing required" caption apply to every ignore row too, wildly
+        # overstating how many rows actually need manual review.
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li
+            SET rate_source = 'no_rate'
+            WHERE projection_note LIKE '%no-rate-fallback%'
+        """)
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li
+            SET rate_source = 'passthrough'
+            WHERE strategy = 'passthrough' AND rate_source IS NULL
+        """)
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li
+            SET rate_source = 'ignored'
+            WHERE strategy = 'ignore' AND rate_source IS NULL
+        """)
+        if pinned_keys:
+            conn.execute(f"""
+                UPDATE aws_li_to_gcp_li
+                SET rate_source = 'exact_sku'
+                WHERE strategy IN ('map','break_down') AND rate_source IS NULL
+                  AND aws_li_key IN ({','.join(['?']*len(pinned_keys))})
+            """, list(pinned_keys))
+        if word_overlap_keys:
+            conn.execute(f"""
+                UPDATE aws_li_to_gcp_li
+                SET rate_source = 'word_overlap'
+                WHERE rate_source IS NULL
+                  AND aws_li_key IN ({','.join(['?']*len(word_overlap_keys))})
+            """, list(word_overlap_keys))
+        conn.execute("UPDATE aws_li_to_gcp_li SET rate_source = 'unknown' WHERE rate_source IS NULL")
+
+        # Normalize gcp_service to match the catalog's gcp_service field for all mapped rows.
+        # The LLM often writes shortened names ("Cloud KMS", "Memorystore", "Cloud Run") that
+        # differ from the catalog's canonical name ("Cloud Key Management Service (KMS)", etc.).
+        # detect_outliers query D flags these mismatches. Fixing here avoids 700+ false positives.
+        norm_count = conn.execute("""
+            SELECT COUNT(*) FROM aws_li_to_gcp_li m
+            JOIN (
+                SELECT r.gcp_sku_id, r.gcp_service AS canonical_service
+                FROM gcp_sku_rates r
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY r.gcp_sku_id ORDER BY r.gcp_service, r.region) = 1
+            ) c ON m.gcp_sku_id = c.gcp_sku_id
+            WHERE m.strategy IN ('map', 'break_down')
+              AND m.gcp_service != c.canonical_service
+        """).fetchone()[0]
+        if norm_count:
+            conn.execute("""
+                UPDATE aws_li_to_gcp_li m
+                SET gcp_service = c.canonical_service
+                FROM (
+                    SELECT r.gcp_sku_id, r.gcp_service AS canonical_service
+                    FROM gcp_sku_rates r
+                    QUALIFY ROW_NUMBER() OVER (PARTITION BY r.gcp_sku_id ORDER BY r.gcp_service, r.region) = 1
+                ) c
+                WHERE m.gcp_sku_id = c.gcp_sku_id
+                  AND m.strategy IN ('map', 'break_down')
+                  AND m.gcp_service != c.canonical_service
+            """)
+            log.info(f"Normalized gcp_service for {norm_count} rows to match SKU catalog")
+
+        dominant_region = compute_dominant_region(conn)
+
+        # Sanity check: any mapped row whose SKU has SOME rate rows but none reachable
+        # for its specific region silently projects $0. Catch and route to outlier_triage.
+        # Global rows can fall back to dominant_region per H-4.
+        unreachable = conn.execute("""
+            SELECT m.gcp_service, c.gcp_region, m.gcp_sku_id, COUNT(*) AS unreachable_rows
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog c USING (aws_li_key)
+            WHERE m.gcp_sku_id IS NOT NULL
+              AND m.strategy IN ('map','break_down')
+              AND NOT EXISTS (
+                  SELECT 1 FROM gcp_sku_rates r
+                  WHERE r.gcp_sku_id = m.gcp_sku_id
+                    AND (
+                        r.region = c.gcp_region
+                        OR (r.region = 'global' AND r.source != 'global-fallback')
+                        OR (COALESCE(NULLIF(c.gcp_region, ''), 'global') = 'global' AND (r.region = 'global' OR r.region = ?))
+                    )
+              )
+            GROUP BY m.gcp_service, c.gcp_region, m.gcp_sku_id
+        """, [dominant_region]).fetchall()
+
+        if unreachable:
+            _write_rate_gaps(unreachable)
+            for svc, region, sku_id, count in unreachable:
+                if region is None:
+                    region_filter = "c.gcp_region IS NULL"
+                    params = [sku_id]
+                else:
+                    region_filter = "c.gcp_region = ?"
+                    params = [sku_id, region]
+
+                conn.execute(f"""
+                    UPDATE aws_li_to_gcp_li SET strategy = 'outlier_triage',
+                        projection_note = COALESCE(NULLIF(projection_note, '') || ' ', '') ||
+                            '[rate-fill-gap: no rate for region — routed to Phase 5]'
+                    WHERE gcp_sku_id = ? 
+                      AND strategy IN ('map','break_down')
+                      AND aws_li_key IN (
+                          SELECT aws_li_key FROM aws_li_catalog c WHERE {region_filter}
+                      )
+                """, params)
+            log.info(f"Sanity check: {len(unreachable)} unreachable SKU/region pair(s) moved to outlier_triage")
+        else:
+            log.info("Sanity check: all mapped SKUs have reachable rates")
+
+        # Annotate global rows priced at the dominant region rate (H-4)
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li
+            SET projection_note = COALESCE(NULLIF(projection_note, '') || '; ', '') || 'global charge; priced at ' || ? || ' rate'
+            WHERE aws_li_key IN (
+                SELECT c.aws_li_key
+                FROM aws_li_catalog c
+                JOIN aws_li_to_gcp_li m USING (aws_li_key)
+                WHERE (c.gcp_region = 'global' OR c.gcp_region IS NULL OR c.gcp_region = ''
+                       OR c.aws_region = 'global' OR c.aws_region IS NULL OR c.aws_region = '')
+                  AND m.gcp_sku_id IS NOT NULL
+                  AND m.strategy IN ('map', 'break_down')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM gcp_sku_rates r WHERE r.gcp_sku_id = m.gcp_sku_id AND r.region = 'global'
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM gcp_sku_rates r WHERE r.gcp_sku_id = m.gcp_sku_id AND r.region = ?
+                  )
+            )
+            AND (projection_note IS NULL OR projection_note NOT LIKE '%' || 'global charge; priced at ' || ? || ' rate' || '%')
+        """, [dominant_region, dominant_region, dominant_region])
+
+        # Re-create projection view with dominant region
+        create_projection_view(conn, dominant_region)
+
+        # Cap confidence on rows falling back to cheapest available region
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li
+            SET mapping_confidence = LEAST(mapping_confidence, 0.4)
+            WHERE aws_li_key IN (
+                SELECT aws_li_key FROM gcp_projection
+                WHERE projection_note LIKE '%cheapest available region%'
+            )
+        """)
+        conn.execute("COMMIT")
+        log.info("Rate fill complete")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 if __name__ == "__main__":
     main()

@@ -57,6 +57,8 @@ _ALIASES: dict[str, str] = _cfg("aws-aliases").get("aliases", {})
 _CODE_MAP: dict[str, str] = {
     str(k).lower(): v for k, v in _cfg("aws-product-codes").get("codes", {}).items()
 }
+for _alias_k, _alias_v in _ALIASES.items():
+    _CODE_MAP[_alias_k.strip().lower()] = _alias_v
 
 
 def canonical_from_code(product_code: str | None) -> str | None:

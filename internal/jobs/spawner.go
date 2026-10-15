@@ -11,7 +11,7 @@ import (
 
 type SpawnerConfig struct {
 	AGYPath  string
-	AGYModel string // `agy --model` alias; defaults to "gemini-3.5-flash" if empty.
+	AGYModel string // `agy --model` alias; defaults to "gemini-3.8-flash" if empty.
 	// ANTIGRAVITY_API_KEY is intentionally not part of SpawnerConfig. The spawned
 	// agy process inherits it from os.Environ(); set it on the host
 	// (VM-wide on prod, shell on dev). GEMINI_API_KEY is ignored by agy —
@@ -86,6 +86,10 @@ func (s *Spawner) Start(jobDir, inputExt, _ string) (int, error) {
 // conversation in the CWD (each job dir is isolated, so this is unambiguous).
 // The DuckDB state also persists on disk as a fallback pointer.
 func (s *Spawner) StartRefine(jobDir, _, instruction string) (int, error) {
+	// STOP_ALL lives in DataDir; jobDir is DataDir/jobs/<id>, so go two levels up.
+	if IsStopAllActive(filepath.Dir(filepath.Dir(filepath.Clean(jobDir)))) {
+		return 0, fmt.Errorf("orchestration halted: STOP_ALL is active")
+	}
 	prompt := "Refine an existing AWS-to-GCP cost projection. " +
 		"The projection state is in projection-audit/projection.duckdb in this directory. " +
 		"Refinement instruction from the user: " + instruction + ". " +
@@ -104,7 +108,7 @@ func (s *Spawner) StartRefine(jobDir, _, instruction string) (int, error) {
 // baseFlags are the agy CLI flags common to every spawn:
 //
 //	--dangerously-skip-permissions : auto-approve all tool calls (no interactive prompts)
-//	--model <alias>                : from SpawnerConfig.AGYModel (default "gemini-3.5-flash").
+//	--model <alias>                : from SpawnerConfig.AGYModel (default "gemini-3.8-flash").
 //	--print-timeout 45m            : override agy's default 5-minute print-mode timeout;
 //	                                 large bills take 20-40 min across 6 phases.
 func (s *Spawner) baseFlags() []string {

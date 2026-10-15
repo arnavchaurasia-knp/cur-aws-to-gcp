@@ -1,13 +1,7 @@
 import facetsFIcon from '../assets/facets-logo-f.svg'
 import type { UserInfo } from '../api/auth'
-import { logoutURL } from '../api/auth'
 import { Link } from 'react-router-dom'
-
-function handleSignOut(e: React.MouseEvent) {
-  e.preventDefault()
-  fetch(logoutURL(), { method: 'POST', credentials: 'same-origin' })
-    .finally(() => { window.location.href = '/' })
-}
+import { useState } from 'react'
 
 export function Nav({ user }: Readonly<{ user: UserInfo }>) {
   return (
@@ -35,9 +29,69 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
         {user.is_admin && (
           <Link to="/admin" className="sm:hidden nav-link text-[#00C2BB]">Admin</Link>
         )}
-        <span className="hidden sm:inline">{user.email}</span>
-        <button onClick={handleSignOut} className="nav-link text-[#645DF6]">Sign Out</button>
+        <UserMenu user={user} />
       </div>
     </nav>
+  )
+}
+
+function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
+  const [open, setOpen] = useState(false)
+  const initial = (user.name || user.email || '?').trim().charAt(0).toUpperCase()
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="flex items-center gap-2 rounded-full p-0.5 pr-2 hover:bg-white/5 transition-colors duration-150"
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
+        {user.picture ? (
+          <img
+            src={user.picture}
+            alt=""
+            referrerPolicy="no-referrer"
+            className="h-8 w-8 rounded-full object-cover"
+          />
+        ) : (
+          <span className="h-8 w-8 rounded-full bg-[#645DF6] text-white text-sm font-semibold flex items-center justify-center">
+            {initial}
+          </span>
+        )}
+        <span className="hidden sm:inline text-gray-300 text-sm max-w-[160px] truncate">
+          {user.name || user.email}
+        </span>
+        <svg className="hidden sm:block h-3 w-3 text-gray-500" viewBox="0 0 12 12" fill="none">
+          <path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+
+      {open && (
+        <>
+          {/* click-outside backdrop */}
+          <button
+            aria-label="Close menu"
+            className="fixed inset-0 z-40 cursor-default"
+            onClick={() => setOpen(false)}
+          />
+          <div className="absolute right-0 mt-2 w-60 z-50 rounded-lg border border-white/10 bg-[#13131a] shadow-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-white/10">
+              <p className="text-sm font-medium text-white truncate">{user.name || 'Signed in'}</p>
+              <p className="text-xs text-gray-400 truncate">{user.email}</p>
+            </div>
+            <button
+              onClick={async () => {
+                setOpen(false)
+                await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+                window.location.replace('/login')
+              }}
+              className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-white/5 hover:text-white transition-colors duration-150"
+            >
+              Sign Out
+            </button>
+          </div>
+        </>
+      )}
+    </div>
   )
 }

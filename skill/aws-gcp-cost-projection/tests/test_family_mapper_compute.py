@@ -37,8 +37,8 @@ def _map(instance_type, **overrides):
     r = row(instance_type=instance_type, instance_vcpus=4, instance_ram_gb=16.0, **overrides)
     parsed = parse_instance(instance_type)
     assert parsed is not None, f"parse_instance() failed to parse {instance_type!r}"
-    with patch("family_mapper.resolve_sku", return_value=MOCK_SKU), \
-         patch("family_mapper.cheapest_in_scope", return_value=(None, "STUB Instance Core", "STUB Instance Ram", False, None)):
+    with patch("apply_static_mappings.resolve_sku", return_value=MOCK_SKU), \
+         patch("apply_static_mappings.cheapest_in_scope", return_value=(None, "STUB Instance Core", "STUB Instance Ram", False, None)):
         return map_gce_row(r, parsed)
 
 
@@ -72,8 +72,8 @@ def test_burstable_instance_switched_family_note_matches_switch_not_default():
     on rows that had switched away from it)."""
     r = row(instance_type="t3.medium", instance_vcpus=4, instance_ram_gb=16.0)
     parsed = parse_instance("t3.medium")
-    with patch("family_mapper.resolve_sku", return_value=MOCK_SKU), \
-         patch("family_mapper.cheapest_in_scope",
+    with patch("apply_static_mappings.resolve_sku", return_value=MOCK_SKU), \
+         patch("apply_static_mappings.cheapest_in_scope",
                return_value=("N2D AMD", "N2D AMD Instance Core", "N2D AMD Instance Ram", True, "cheaper")):
         out = map_gce_row(r, parsed)
     core = next(e for e in out if e["component"] == "core")
@@ -87,3 +87,45 @@ def test_compute_optimized_instance_does_not_crash():
     out = _map("c5.2xlarge")
     assert out is not None
     assert len(out) == 2  # core + ram
+
+
+def test_parse_instance_oracle():
+    from family_mapper import parse_instance, _EC2_TYPES
+    # Known type from oracle with specs
+    p = parse_instance("m5.xlarge")
+    assert p is not None
+    assert p["prefix"] == "m"
+    assert p["gen"] == 5
+    assert p["size"] == "xlarge"
+    assert p["vcpus"] == 4
+    assert p["ram_gb"] == 16.0
+
+    # Non-standard AWS type in oracle
+    p_nonstd = parse_instance("u-12tb1.112xlarge")
+    assert p_nonstd is not None
+    assert p_nonstd["prefix"] == "u"
+    assert p_nonstd["gen"] == 12
+    assert p_nonstd["suffixes"] == "tb1"
+    assert p_nonstd["size"] == "112xlarge"
+    assert p_nonstd["vcpus"] == 448
+
+    # Newly added type dynamically inserted into oracle
+    _EC2_TYPES["newfuture99.superlarge"] = {
+        "vcpus": 64,
+        "ram_gb": 256.0,
+        "arch": "x86_64",
+        "chip": "Intel",
+    }
+    try:
+        p_new = parse_instance("newfuture99.superlarge")
+        assert p_new is not None
+        assert p_new["prefix"] == "newfuture"
+        assert p_new["gen"] == 99
+        assert p_new["size"] == "superlarge"
+        assert p_new["vcpus"] == 64
+        assert p_new["ram_gb"] == 256.0
+    finally:
+        del _EC2_TYPES["newfuture99.superlarge"]
+
+    # Unknown non-instance token does not match
+    assert parse_instance("random_word") is None

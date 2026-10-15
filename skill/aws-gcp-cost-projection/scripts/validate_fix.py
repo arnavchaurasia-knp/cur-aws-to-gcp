@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Deterministic validator + autofixer for the AWS->GCP projection.
 
@@ -886,12 +886,42 @@ def main():
         except Exception as _exc:
             print(f"  autofix: echo-clear failed ({_exc})", file=sys.stderr)
 
+    # AUTOFIX (H-5): detail-less rows with real cost must be passthrough at cost
+    detail_less_downgraded = 0
+    if not check_only:
+        try:
+            dl_rows = con.execute("""
+                SELECT m.aws_li_key
+                FROM aws_li_to_gcp_li m
+                JOIN aws_li_catalog c USING (aws_li_key)
+                WHERE c.aws_amortized_cost > 0
+                  AND (c.usage_type IS NULL OR trim(c.usage_type) = '' OR lower(trim(c.usage_type)) LIKE '%:na')
+                  AND (c.operation IS NULL OR trim(c.operation) = '')
+                  AND (c.pricing_unit IS NULL OR trim(c.pricing_unit) = '')
+                  AND (c.instance_type IS NULL OR trim(c.instance_type) = '')
+                  AND m.strategy != 'passthrough'
+            """).fetchall()
+            if dl_rows:
+                con.executemany(
+                    "UPDATE aws_li_to_gcp_li SET strategy='passthrough', gcp_sku_id=NULL, "
+                    "mapping_confidence=LEAST(COALESCE(mapping_confidence, 0.2), 0.2), "
+                    "projection_note=COALESCE(projection_note,'')||"
+                    "' [validator: detail-less row downgraded to passthrough]' "
+                    "WHERE aws_li_key = ?",
+                    dl_rows,
+                )
+                detail_less_downgraded = len(dl_rows)
+                print(f"  autofix: downgraded {detail_less_downgraded} detail-less row(s) to passthrough")
+        except Exception as _exc:
+            print(f"  autofix: detail-less downgrade failed ({_exc})", file=sys.stderr)
+
     report["autofixes"] = {"per_n_multiplier_clamped": clamped,
                            "zero_throughput_info_rows_ignored": len(zeroed_keys),
                            "cud_rates_synthesized": cud_synth,
                            "phantom_zero_auto_ignored": len(phantom_auto_keys),
                            "map_no_rate_downgraded": no_rate_downgraded,
-                           "echo_gcp_service_cleared": echo_cleared}
+                           "echo_gcp_service_cleared": echo_cleared,
+                           "detail_less_downgraded": detail_less_downgraded}
 
     has_view = True
     try:
@@ -1192,6 +1222,27 @@ def main():
         pass
     report["violations"]["gcp_service_echo"] = [
         {"gcp_service": r[0], "rows": r[1], "aws_spend": r[2]} for r in echo_rows]
+
+    # GATE (H-5): detail-less cost-bearing row cannot be mapped to a non-passthrough GCP estimate
+    detail_less_mapped = []
+    try:
+        detail_less_mapped = con.execute("""
+            SELECT m.aws_li_key, c.product, ROUND(c.aws_amortized_cost, 2), m.strategy
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog c USING (aws_li_key)
+            WHERE c.aws_amortized_cost > 0
+              AND (c.usage_type IS NULL OR trim(c.usage_type) = '' OR lower(trim(c.usage_type)) LIKE '%:na')
+              AND (c.operation IS NULL OR trim(c.operation) = '')
+              AND (c.pricing_unit IS NULL OR trim(c.pricing_unit) = '')
+              AND (c.instance_type IS NULL OR trim(c.instance_type) = '')
+              AND m.strategy != 'passthrough'
+        """).fetchall()
+    except Exception:
+        pass
+    report["violations"]["detail_less_row_mapped"] = [
+        {"aws_li_key": r[0], "product": r[1] or "", "cost": r[2], "strategy": r[3]}
+        for r in detail_less_mapped
+    ]
 
     # Inject CRITICAL view-missing violation at the end so it always appears
     if view_missing_violation is not None:

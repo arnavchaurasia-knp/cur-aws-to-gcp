@@ -2,10 +2,11 @@ import type { Job } from '../api/jobs'
 import { useNavigate } from 'react-router-dom'
 
 const statusColor: Record<string, string> = {
-  pending: 'text-gray-400',
-  running: 'text-[#00C2BB]',
-  done:    'text-[#00C2BB]',
-  failed:  'text-orange-400',
+  pending:   'text-gray-400',
+  running:   'text-[#00C2BB]',
+  done:      'text-[#00C2BB]',
+  failed:    'text-orange-400',
+  cancelled: 'text-gray-400',
 }
 
 function StatusBadge({ status }: Readonly<{ status: string }>) {
@@ -20,7 +21,7 @@ function StatusBadge({ status }: Readonly<{ status: string }>) {
       </span>
     )
   }
-  const icon: Record<string, string> = { done: '✓', failed: '✕', pending: '–' }
+  const icon: Record<string, string> = { done: '✓', failed: '✕', pending: '–', cancelled: '⊘' }
   const label = status.charAt(0).toUpperCase() + status.slice(1)
   return (
     <span className={`flex items-center gap-1 ${statusColor[status] ?? 'text-gray-400'}`}>

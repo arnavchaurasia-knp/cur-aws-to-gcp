@@ -9,28 +9,51 @@ validator autofix can query it, and re-created idempotently in Phase 5
 (detect_outliers.py). Both callers import create_projection_view() from here so
 the SQL never drifts between phases.
 """
+import re
 
-_PROJECTION_VIEW_SQL = """
+
+def compute_dominant_region(conn) -> str:
+    """Return the customer's dominant region (most common non-global gcp_region or aws_region)."""
+    try:
+        cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+        region_expr = None
+        if "gcp_region" in cols and "aws_region" in cols:
+            region_expr = "COALESCE(NULLIF(gcp_region, ''), NULLIF(aws_region, ''))"
+        elif "gcp_region" in cols:
+            region_expr = "NULLIF(gcp_region, '')"
+        elif "aws_region" in cols:
+            region_expr = "NULLIF(aws_region, '')"
+
+        if region_expr:
+            row = conn.execute(f"""
+                SELECT {region_expr} AS reg, COUNT(*) as cnt
+                FROM aws_li_catalog
+                WHERE {region_expr} IS NOT NULL
+                  AND lower({region_expr}) NOT IN ('global', 'unknown', '')
+                GROUP BY reg
+                ORDER BY cnt DESC, reg ASC
+                LIMIT 1
+            """).fetchone()
+            if row and row[0]:
+                return row[0].strip()
+    except Exception:
+        pass
+    return "us-central1"
+
+
+
+def _build_projection_view_sql(dominant_region: str) -> str:
+    dom = re.sub(r'[^a-zA-Z0-9-]', '', str(dominant_region)) or "us-central1"
+    return f"""
 CREATE OR REPLACE VIEW gcp_projection AS
+-- passthrough double-count guard: a passthrough's AWS cost belongs to the LINE ITEM,
+-- not each component. If a passthrough row is split into N components (e.g. core+ram),
+-- assigning the full aws_amortized_cost to every component and SUMing would N-multiply
+-- the cost (confirmed real: SageMaker row AWS $1413.56 -> $2827.12, exactly 2x). Rank
+-- components per aws_li_key by rowid; only rn=1 carries the cost, the rest carry $0, so
+-- SUM() reconstructs the AWS cost exactly once. (rowid, not component label, keeps the
+-- join back 1:1 — two rows can share a component label.)
 WITH passthrough_rank AS (
-  -- 'passthrough' strategy means "no real per-component GCP price exists,
-  -- carry the AWS cost through as the honest baseline" — that AWS cost is a
-  -- property of the LINE ITEM, not of each component. When a passthrough row
-  -- is split into multiple components (e.g. an LLM emitting core+ram for a
-  -- SageMaker instance-hour with no per-instance-type pricer yet), assigning
-  -- the full aws_amortized_cost to EVERY component and then SUMing across
-  -- components (both here and in render_report.py's per-row/headline totals)
-  -- silently doubles (or N-multiplies) the projected cost — confirmed real:
-  -- a SageMaker Canvas row showed AWS $1413.56 -> GCP $2827.12, exactly 2x,
-  -- because it had 2 components (core+ram), each carrying the full AWS cost.
-  -- Rank components per aws_li_key so only the first carries the passthrough
-  -- cost; any additional components for the same passthrough line item carry
-  -- $0, so SUM() across components always reconstructs the original AWS cost
-  -- exactly once, never a multiple of it.
-  -- Keyed by rowid, not (aws_li_key, component) — two rows can legitimately
-  -- share the same component label (e.g. two 'core' rows for the same key),
-  -- and joining back on the label alone would fan out into a many-to-many
-  -- join. rowid is always unique per row, so the join back below is always 1:1.
   SELECT m.rowid AS row_id, m.aws_li_key,
          ROW_NUMBER() OVER (PARTITION BY m.aws_li_key ORDER BY m.rowid) AS rn
   FROM aws_li_to_gcp_li m
@@ -41,15 +64,58 @@ od_pick AS (
          COALESCE(
            MAX(CASE WHEN r.region = c.gcp_region THEN r.rate_usd END),
            MAX(CASE WHEN r.region = 'global'     THEN r.rate_usd END),
-           MAX(r.rate_usd)  -- fallback for uniformly-priced SKUs (e.g. KMS) with no global row
-         ) AS rate_usd
+           MAX(CASE WHEN r.region = '{dom}'      THEN r.rate_usd END)
+         ) AS rate_usd,
+         MAX(CASE
+           WHEN (c.gcp_region = 'global' OR c.gcp_region IS NULL OR c.gcp_region = ''
+                 OR c.aws_region = 'global' OR c.aws_region IS NULL OR c.aws_region = '')
+            AND NOT EXISTS (
+                SELECT 1 FROM gcp_sku_rates r_glob
+                WHERE r_glob.gcp_sku_id = m.gcp_sku_id
+                  AND r_glob.region = 'global'
+                  AND r_glob.pricing_type = 'OnDemand'
+            )
+            AND EXISTS (
+                SELECT 1 FROM gcp_sku_rates r_dom
+                WHERE r_dom.gcp_sku_id = m.gcp_sku_id
+                  AND r_dom.region = '{dom}'
+                  AND r_dom.pricing_type = 'OnDemand'
+            )
+           THEN 'global charge; priced at {dom} rate'
+           WHEN c.gcp_region IS NOT NULL AND c.gcp_region != '' AND c.gcp_region != 'global'
+            AND NOT EXISTS (
+                SELECT 1 FROM gcp_sku_rates r_reg
+                WHERE r_reg.gcp_sku_id = m.gcp_sku_id
+                  AND r_reg.region = c.gcp_region
+                  AND r_reg.pricing_type = 'OnDemand'
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM gcp_sku_rates r_glob2
+                WHERE r_glob2.gcp_sku_id = m.gcp_sku_id
+                  AND r_glob2.region = 'global'
+                  AND r_glob2.pricing_type = 'OnDemand'
+            )
+            AND EXISTS (
+                SELECT 1 FROM gcp_sku_rates r_dom2
+                WHERE r_dom2.gcp_sku_id = m.gcp_sku_id
+                  AND r_dom2.region = '{dom}'
+                  AND r_dom2.pricing_type = 'OnDemand'
+            )
+           THEN 'priced at {dom} rate — no ' || c.gcp_region || ' rate'
+           WHEN c.gcp_region IS NOT NULL AND c.gcp_region != ''
+            AND NOT EXISTS (
+                SELECT 1 FROM gcp_sku_rates r_reg2
+                WHERE r_reg2.gcp_sku_id = m.gcp_sku_id
+                  AND r_reg2.region IN (c.gcp_region, 'global', '{dom}')
+                  AND r_reg2.pricing_type = 'OnDemand'
+            )
+           THEN 'no rate in ' || c.gcp_region || '/global/{dom}; unpriced'
+           ELSE NULL
+         END) AS dominant_note
   FROM   aws_li_to_gcp_li m
   JOIN   aws_li_catalog   c USING (aws_li_key)
   LEFT JOIN gcp_sku_rates r ON r.gcp_sku_id = m.gcp_sku_id
-                            AND r.pricing_type = CASE
-                                WHEN c.pricing_model = 'Spot' THEN 'Preemptible'
-                                ELSE 'OnDemand'
-                              END
+                            AND r.pricing_type = 'OnDemand'
   GROUP BY m.aws_li_key, m.gcp_sku_id
 ),
 c1_pick AS (
@@ -57,7 +123,7 @@ c1_pick AS (
          COALESCE(
            MAX(CASE WHEN r.region = c.gcp_region THEN r.rate_usd END),
            MAX(CASE WHEN r.region = 'global'     THEN r.rate_usd END),
-           MAX(r.rate_usd)
+           MAX(CASE WHEN r.region = '{dom}'      THEN r.rate_usd END)
          ) AS rate_usd
   FROM   aws_li_to_gcp_li m
   JOIN   aws_li_catalog   c USING (aws_li_key)
@@ -70,7 +136,7 @@ c3_pick AS (
          COALESCE(
            MAX(CASE WHEN r.region = c.gcp_region THEN r.rate_usd END),
            MAX(CASE WHEN r.region = 'global'     THEN r.rate_usd END),
-           MAX(r.rate_usd)
+           MAX(CASE WHEN r.region = '{dom}'      THEN r.rate_usd END)
          ) AS rate_usd
   FROM   aws_li_to_gcp_li m
   JOIN   aws_li_catalog   c USING (aws_li_key)
@@ -82,49 +148,40 @@ SELECT  c.aws_li_key, c.product, c.aws_region, c.gcp_region,
         c.line_item_type, c.pricing_model, c.is_workload,
         c.total_usage, c.aws_amortized_cost,
         m.strategy, m.gcp_service, m.gcp_sku_id, m.component,
-        m.unit_multiplier, m.projection_note,
-        -- unit_multiplier is COALESCEd to 1: a NULL multiplier must not
-        -- silently null out the whole cost (x*NULL=NULL) and vanish from
-        -- SUM(). rate_usd is deliberately NOT coalesced — a NULL rate is a
-        -- genuine coverage gap the gate must catch, not paper over.
-        -- AWS's aws_amortized_cost is already RI/Savings-Plan-discounted for
-        -- Committed/DiscountedUsage rows. Comparing that against GCP's OnDemand
-        -- rate compares a discounted price to a full-price one — a structural
-        -- 2-10x over-projection, not a per-row bug (see gcp_cost_1yr_cud below,
-        -- which already computes the like-for-like number but previously fed
-        -- only a side display column, never the headline total). For these rows
-        -- the headline number now uses the GCP 1yr-CUD rate — AWS-committed vs
-        -- GCP-committed — falling back to the OD rate only if no CUD rate is
-        -- loaded for that SKU, so committed rows are never left uncosted.
+        m.unit_multiplier,
+        CASE
+          WHEN od.dominant_note IS NOT NULL
+            THEN CASE
+                   WHEN m.projection_note IS NULL OR m.projection_note = '' THEN od.dominant_note
+                   WHEN m.projection_note LIKE '%' || od.dominant_note || '%' THEN m.projection_note
+                   ELSE m.projection_note || '; ' || od.dominant_note
+                 END
+          ELSE m.projection_note
+        END AS projection_note,
         CASE m.strategy
-          WHEN 'ignore'      THEN 0
-          WHEN 'passthrough' THEN CASE WHEN COALESCE(pr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
-          ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) *
-               CASE WHEN c.pricing_model = 'Committed' AND c.line_item_type = 'DiscountedUsage'
-                    THEN COALESCE(c1.rate_usd, od.rate_usd)
-                    ELSE od.rate_usd
-               END
+          WHEN 'ignore'         THEN 0
+          WHEN 'outlier_triage' THEN NULL
+          WHEN 'passthrough'    THEN CASE WHEN COALESCE(pr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
+          ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) * od.rate_usd
         END AS gcp_projected_cost,
         CASE m.strategy
-          WHEN 'ignore'      THEN 0
-          WHEN 'passthrough' THEN CASE WHEN COALESCE(pr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
-          -- Spot/Preemptible VMs cannot be combined with CUDs on GCP.
-          -- Use the preemptible rate (od.rate_usd) for Spot rows.
-          -- For non-Spot rows with no CUD catalog entry (c1.rate_usd IS NULL),
-          -- return NULL so the report can display "—" instead of the OD rate.
+          WHEN 'ignore'         THEN 0
+          WHEN 'outlier_triage' THEN NULL
+          WHEN 'passthrough'    THEN CASE WHEN COALESCE(pr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
           ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) *
                CASE WHEN c.pricing_model = 'Spot'
                     THEN od.rate_usd
-                    ELSE c1.rate_usd   -- NULL when no CUD rate; propagates NULL upward
+                    ELSE COALESCE(c1.rate_usd, od.rate_usd)
                END
         END AS gcp_cost_1yr_cud,
         CASE m.strategy
-          WHEN 'ignore'      THEN 0
-          WHEN 'passthrough' THEN CASE WHEN COALESCE(pr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
+          WHEN 'ignore'         THEN 0
+          WHEN 'outlier_triage' THEN NULL
+          WHEN 'passthrough'    THEN CASE WHEN COALESCE(pr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
           ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) *
                CASE WHEN c.pricing_model = 'Spot'
                     THEN od.rate_usd
-                    ELSE c3.rate_usd   -- NULL when no 3yr CUD rate
+                    ELSE COALESCE(c3.rate_usd, od.rate_usd)
                END
         END AS gcp_cost_3yr_cud
 FROM    aws_li_catalog c
@@ -135,24 +192,21 @@ LEFT JOIN c3_pick c3 ON c3.aws_li_key = m.aws_li_key AND c3.gcp_sku_id = m.gcp_s
 LEFT JOIN passthrough_rank pr ON pr.row_id = m.rowid;
 """
 
+_PROJECTION_VIEW_SQL = _build_projection_view_sql("us-central1")
 
-def create_projection_view(conn):
-    """(Re)create the gcp_projection VIEW. Requires aws_li_catalog,
-    aws_li_to_gcp_li, and gcp_sku_rates to exist. Idempotent.
 
-    Older job databases (predating the switch to a VIEW-based design) can
-    still have gcp_projection as a materialized TABLE — "CREATE OR REPLACE
-    VIEW" fails hard against an existing base table of a different object
-    type (confirmed real: a live job's apply_rates.py run silently produced
-    zero priced rows because this raised and the caller swallowed it,
-    leaving every row's rate_source as 'unknown'). Drop a stale table first
-    so re-running the pipeline against an old job dir self-heals instead of
-    failing this way every time.
+def create_projection_view(conn, dominant_region=None):
+    """(Re)create the gcp_projection VIEW with dominant region fallback.
+    Requires aws_li_catalog, aws_li_to_gcp_li, and gcp_sku_rates to exist. Idempotent.
     """
+    if dominant_region is None:
+        dominant_region = compute_dominant_region(conn)
+    clean_reg = re.sub(r'[^a-zA-Z0-9-]', '', str(dominant_region)) or "us-central1"
+
     conn.execute("""
         SELECT table_type FROM information_schema.tables WHERE table_name = 'gcp_projection'
     """)
     row = conn.fetchone()
     if row and row[0] == "BASE TABLE":
         conn.execute("DROP TABLE gcp_projection")
-    conn.execute(_PROJECTION_VIEW_SQL)
+    conn.execute(_build_projection_view_sql(clean_reg))

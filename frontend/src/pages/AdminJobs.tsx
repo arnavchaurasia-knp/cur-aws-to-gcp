@@ -4,7 +4,7 @@ import { Nav } from '../components/Nav'
 import { Reveal } from '../components/Reveal'
 import { retryJob } from '../api/jobs'
 import type { Job } from '../api/jobs'
-import { listAllJobsPaged, cancelJob, deleteJob } from '../api/admin'
+import { listAllJobsPaged, cancelJob, deleteJob, cancelAllJobs, resumeAllJobs, getSystemState } from '../api/admin'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 
@@ -58,6 +58,9 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [rowError, setRowError] = useState<Record<string, string>>({})
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [halted, setHalted] = useState(false)
+  const [globalBusy, setGlobalBusy] = useState(false)
+  const [globalError, setGlobalError] = useState<string | null>(null)
 
   const toggleGroup = (owner: string) => setCollapsed(prev => {
     const next = new Set(prev)
@@ -65,13 +68,46 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     return next
   })
 
-  const refresh = () => listAllJobsPaged({
-    limit: PAGE_SIZE,
-    offset,
-    status: statusFilter || undefined,
-    from: fromDate || undefined,
-    to: toDate || undefined,
-  }).then(res => { setJobs(res.jobs); setTotal(res.total) })
+  const refreshState = () => getSystemState().then(s => setHalted(s.halted || s.stop_all)).catch(() => {})
+
+  const refresh = () => {
+    refreshState()
+    return listAllJobsPaged({
+      limit: PAGE_SIZE,
+      offset,
+      status: statusFilter || undefined,
+      from: fromDate || undefined,
+      to: toDate || undefined,
+    }).then(res => { setJobs(res.jobs); setTotal(res.total) })
+  }
+
+  const handleStopAll = async () => {
+    if (!confirm('EMERGENCY: Stop ALL running jobs across the host and halt orchestration?')) return
+    if (!confirm('DOUBLE-CONFIRM: This will cancel every active run and prevent any new jobs from starting until resumed. Proceed?')) return
+    setGlobalBusy(true)
+    setGlobalError(null)
+    try {
+      await cancelAllJobs()
+      await refresh()
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : 'stop-all failed')
+    } finally {
+      setGlobalBusy(false)
+    }
+  }
+
+  const handleResume = async () => {
+    setGlobalBusy(true)
+    setGlobalError(null)
+    try {
+      await resumeAllJobs()
+      await refresh()
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : 'resume failed')
+    } finally {
+      setGlobalBusy(false)
+    }
+  }
 
   const handleRetry = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation()
@@ -176,13 +212,57 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
               Every projection across all FSRs. Click a row to open the report.
             </p>
           </div>
-          <div className="flex gap-3 text-xs">
+          <div className="flex items-center gap-3 text-xs flex-wrap">
             <Link to="/admin/users" className="nav-link text-[#645DF6]">Users</Link>
             <Link to="/admin/catalog" className="nav-link text-[#645DF6]">Catalog</Link>
             <Link to="/admin/analytics" className="nav-link text-[#645DF6]">Analytics</Link>
             <Link to="/admin/audit" className="nav-link text-[#645DF6]">Audit log</Link>
+            {!halted ? (
+              <button
+                onClick={handleStopAll}
+                disabled={globalBusy}
+                className="px-3 py-1.5 rounded-lg border border-red-500/40 text-red-400 hover:bg-red-500/10 text-xs font-semibold disabled:opacity-40 transition-colors ml-2"
+              >
+                {globalBusy ? 'Stopping…' : '🛑 Stop all runs'}
+              </button>
+            ) : (
+              <button
+                onClick={handleResume}
+                disabled={globalBusy}
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold disabled:opacity-40 transition-colors ml-2"
+              >
+                {globalBusy ? 'Resuming…' : '▶ Resume orchestration'}
+              </button>
+            )}
           </div>
         </div>
+
+        {halted && (
+          <div className="mb-6 p-4 rounded-xl bg-red-950/40 border border-red-500/40 flex items-center justify-between gap-4 anim-scale-in">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl select-none" aria-hidden="true">🛑</span>
+              <div>
+                <strong className="text-red-400 font-semibold text-sm">Orchestration Halted (Kill-Switch Active)</strong>
+                <p className="text-xs text-gray-300 mt-0.5">
+                  All job runs are stopped and new runs/retries are blocked across the host until resumed.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={handleResume}
+              disabled={globalBusy}
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold disabled:opacity-40 whitespace-nowrap transition-colors"
+            >
+              {globalBusy ? 'Resuming…' : 'Resume Orchestration'}
+            </button>
+          </div>
+        )}
+
+        {globalError && (
+          <div className="mb-4 p-3 rounded-lg bg-orange-950/40 border border-orange-500/40 text-orange-400 text-xs">
+            {globalError}
+          </div>
+        )}
 
         {jobs && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">

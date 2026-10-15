@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 incremental_rerate.py — Phase 5 post-LLM rate refresh.
 
@@ -88,21 +88,21 @@ def fill_missing_skus(conn):
         if key not in sku_meta:
             sku_meta[key] = (svc_name, desc, rf, rg, unit, regions or [])
 
-    max_usage_rows = conn.execute("""
-        SELECT m.gcp_sku_id, MAX(c.total_usage)
+    total_usage_rows = conn.execute("""
+        SELECT m.gcp_sku_id, SUM(c.total_usage)
         FROM aws_li_to_gcp_li m
         JOIN aws_li_catalog c USING (aws_li_key)
         WHERE m.gcp_sku_id IS NOT NULL
         GROUP BY m.gcp_sku_id
     """).fetchall()
-    max_usage = {r[0]: (r[1] or 0.0) for r in max_usage_rows}
+    total_usage = {r[0]: (r[1] or 0.0) for r in total_usage_rows}
 
     found = set()
     for (sku_id, ut), tiers in sku_tiers.items():
         gcp_service = sku_to_service.get(sku_id, sku_meta[(sku_id, ut)][0])
         _, desc, rf, rg, unit, regions = sku_meta[(sku_id, ut)]
 
-        base_rate = blended_rate(tiers, max_usage.get(sku_id, 0.0)) if len(tiers) > 1 else tiers[0]["rate"]
+        base_rate = blended_rate(tiers, total_usage.get(sku_id, 0.0)) if len(tiers) > 1 else tiers[0]["rate"]
 
         expanded: set[str] = set()
         for r in regions:

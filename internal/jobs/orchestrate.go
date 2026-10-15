@@ -142,7 +142,6 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"scripts/classify_mechanics.py $DB",
 				"?scripts/apply_commitment_ignores.py $DB",
 				"?scripts/apply_static_mappings.py $DB",
-				"?scripts/family_mapper.py $DB",
 			},
 			// Post-merge deterministic passes (zero LLM tokens):
 			//   1. merge_mappings.py  — bulk-INSERT all group files into aws_li_to_gcp_li
@@ -265,7 +264,9 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"    into core+ram or any components — each component independently returns the full\n" +
 				"    AWS cost, so N components = N× cost multiplication. This is always a bug.\n" +
 				"  • break_down=true is ONLY valid when strategy='map' or 'break_down' with a real\n" +
-				"    gcp_sku_id. break_down=true combined with strategy='passthrough' is always wrong.\n" +
+				"    catalog SKU. break_down=true combined with strategy='passthrough' is always wrong.\n" +
+				"  • Express intent in words: provide valid `gcp_service` and exact `gcp_sku_name` (from find-sku.sh).\n" +
+				"    NEVER fabricate raw gcp_sku_id strings; the deterministic resolver looks up catalog IDs from intent.\n" +
 				"  • DO NOT run merge_mappings.py — the orchestrator runs it after you finish.\n" +
 				"  • DO NOT query projection.duckdb with python3 -c or run_command. Read manifest only.\n" +
 				"  • DO NOT use search_web or any web browsing tool — all SKU lookups must use scripts/find-sku.sh only.\n" +
@@ -548,6 +549,12 @@ func renderOrchestrator(inputExt string) (string, error) {
 // orchestrator drives the six phases; the watcher polls the returned PID and
 // finalizes when the report appears (same contract as the old single-agy Start).
 func (s *Spawner) StartOrchestrated(jobDir, inputExt string) (int, error) {
+	// Refuse to start if global STOP_ALL sentinel is set.
+	// STOP_ALL lives in DataDir; jobDir is DataDir/jobs/<id>, so go two levels up.
+	if IsStopAllActive(filepath.Dir(filepath.Dir(filepath.Clean(jobDir)))) {
+		return 0, fmt.Errorf("orchestration halted: STOP_ALL is active")
+	}
+
 	script, err := renderOrchestrator(inputExt)
 	if err != nil {
 		return 0, fmt.Errorf("render orchestrator: %w", err)
@@ -638,7 +645,7 @@ from collections import defaultdict
 JOB_DIR   = os.getcwd()
 JOB_ID    = os.path.basename(JOB_DIR)
 AGY       = os.environ.get("AGY_BIN", "agy")
-MODEL     = os.environ.get("AGY_MODEL", "gemini-3.5-flash")
+MODEL     = os.environ.get("AGY_MODEL", "gemini-3.8-flash")
 DUCKDB    = os.environ.get("DUCKDB_BIN", "duckdb")
 PYTHON    = os.environ.get("PYTHON_BIN", "python3")
 # PRINT_TIMEOUT and TOTAL_PHASES are injected by the Go spawner from the
@@ -1333,6 +1340,15 @@ def _build_targeted_retry_prompt(ph, v):
 
 
 def run_phase(ph):
+    # Check for per-job cancel sentinel or global STOP_ALL at each phase boundary
+    data_dir = os.path.dirname(os.path.dirname(os.path.abspath(JOB_DIR)))
+    stop_all_file = os.path.join(data_dir, "STOP_ALL")
+    cancelled_file = os.path.join(JOB_DIR, "cancelled")
+    if os.path.exists(cancelled_file) or os.path.exists(stop_all_file):
+        log("Cancel signal detected at phase boundary (cancelled=%%s, stop_all=%%s) — exiting cleanly" %%
+            (os.path.exists(cancelled_file), os.path.exists(stop_all_file)))
+        sys.exit(0)
+
     if ph["num"] < START_PHASE or ph["num"] > END_PHASE:
         log("Skipping Phase %%d (%%s)" %% (ph["num"], ph["name"]))
         return

@@ -9,6 +9,7 @@ import html as _html
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from log_utils import get_logger, fatal
+from currency_utils import load_currency_info
 
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
@@ -87,10 +88,15 @@ def pct_badge(aws, gcp):
             f'({sign}{abs(pct):.1f}%)</span>')
 
 
-def fmt(v, prefix="$"):
+_GLOBAL_CURRENCY_SYMBOL = "$"
+
+
+def fmt(v, prefix=None):
     if v is None:
         return "—"
-    return f"{prefix}{v:,.2f}"
+    p = prefix if prefix is not None else _GLOBAL_CURRENCY_SYMBOL
+    return f"{p}{v:,.2f}"
+
 
 
 _AWS_LABEL_STRIP_RE = re.compile(
@@ -553,6 +559,15 @@ CSS = """
     background: #f1f3f4 !important; font-weight: 600;
     border-top: 2px solid #1A73E8; border-bottom: none;
   }
+  .subtotal-row td {
+    background: #f8f9fa !important; font-weight: 600;
+    border-top: 1px solid #1A73E8; border-bottom: 2px solid #e8eaed;
+  }
+  .section-header-row th {
+    background: #e8f0fe !important; color: #1967d2 !important;
+    font-size: 13px; font-weight: 600; padding: 10px 12px;
+    border-top: 2px solid #1A73E8; text-transform: uppercase; letter-spacing: 0.5px;
+  }
   .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .green { color: #0D9D58; }
   .red   { color: #D93025; }
@@ -655,6 +670,16 @@ def main():
 
     conn = duckdb.connect(DB_PATH)
 
+    # ── multi-currency resolution (H-6) ───────────────────────────────────────
+    currency_info = load_currency_info(JOB_DIR, conn)
+    curr_code = currency_info.get("currency", "USD")
+    curr_symbol = currency_info.get("symbol", "$")
+    fx_rate = float(currency_info.get("fx_rate", 1.0))
+    aws_fx_rate = float(currency_info.get("aws_fx_rate", 1.0))
+
+    global _GLOBAL_CURRENCY_SYMBOL
+    _GLOBAL_CURRENCY_SYMBOL = curr_symbol
+
     # ── coverage KPI ──────────────────────────────────────────────────────────
     try:
         coverage_rows = conn.execute("""
@@ -697,8 +722,8 @@ def main():
     # total under-reported as $10,663.15 — off by exactly the $5,058.72
     # Savings Plan recurring fee). Trusting the verified ground truth (sum of
     # every row) instead of a format-dependent heuristic.
-    aws_workload     = conn.execute("SELECT COALESCE(SUM(aws_amortized_cost),0) FROM aws_li_catalog WHERE is_workload").fetchone()[0]
-    aws_non_workload = conn.execute("SELECT COALESCE(SUM(aws_amortized_cost),0) FROM aws_li_catalog WHERE NOT is_workload").fetchone()[0]
+    aws_workload     = (conn.execute("SELECT COALESCE(SUM(aws_amortized_cost),0) FROM aws_li_catalog WHERE is_workload").fetchone()[0]) * aws_fx_rate
+    aws_non_workload = (conn.execute("SELECT COALESCE(SUM(aws_amortized_cost),0) FROM aws_li_catalog WHERE NOT is_workload").fetchone()[0]) * aws_fx_rate
     aws_grand = aws_workload + aws_non_workload
 
     # Gross bill before any credit/discount/EDP-reconciliation row nets
@@ -709,27 +734,27 @@ def main():
     # just the other half of that same number, shown alongside it so a
     # reader can see both "what you're billed" and "what was discounted off"
     # without doing the subtraction themselves.
-    aws_gross = conn.execute(
+    aws_gross = (conn.execute(
         "SELECT COALESCE(SUM(aws_amortized_cost),0) FROM aws_li_catalog WHERE aws_amortized_cost > 0"
-    ).fetchone()[0]
+    ).fetchone()[0]) * aws_fx_rate
     aws_discounts = aws_gross - aws_grand
 
     # Marketplace spend: non-workload rows that are passthrough with "Marketplace" in note
-    aws_marketplace = conn.execute("""
+    aws_marketplace = (conn.execute("""
         SELECT COALESCE(SUM(c.aws_amortized_cost), 0)
         FROM aws_li_catalog c
         JOIN aws_li_to_gcp_li m USING (aws_li_key)
         WHERE NOT c.is_workload
           AND (m.projection_note ILIKE '%marketplace%' OR c.product ILIKE '%marketplace%')
-    """).fetchone()[0]
+    """).fetchone()[0]) * aws_fx_rate
     # Infrastructure baseline = everything except marketplace (the "true" IaaS+PaaS spend)
     aws_infra_baseline = aws_grand - aws_marketplace
 
-    gcp_od   = conn.execute("SELECT COALESCE(SUM(gcp_projected_cost),0) FROM gcp_projection WHERE is_workload").fetchone()[0]
+    gcp_od   = (conn.execute("SELECT COALESCE(SUM(gcp_projected_cost),0) FROM gcp_projection WHERE is_workload").fetchone()[0]) * fx_rate
     # For the summary totals, rows without a CUD rate fall back to their OD cost so the
     # grand total reflects actual expected spend; per-row display uses NULL to show "—".
-    gcp_1yr  = conn.execute("SELECT COALESCE(SUM(COALESCE(gcp_cost_1yr_cud, gcp_projected_cost)),0) FROM gcp_projection WHERE is_workload").fetchone()[0]
-    gcp_3yr  = conn.execute("SELECT COALESCE(SUM(COALESCE(gcp_cost_3yr_cud, gcp_projected_cost)),0) FROM gcp_projection WHERE is_workload").fetchone()[0]
+    gcp_1yr  = (conn.execute("SELECT COALESCE(SUM(COALESCE(gcp_cost_1yr_cud, gcp_projected_cost)),0) FROM gcp_projection WHERE is_workload").fetchone()[0]) * fx_rate
+    gcp_3yr  = (conn.execute("SELECT COALESCE(SUM(COALESCE(gcp_cost_3yr_cud, gcp_projected_cost)),0) FROM gcp_projection WHERE is_workload").fetchone()[0]) * fx_rate
 
     # Mapped AWS cost = workload rows that received a real GCP projected cost
     # (strategy map or break_down). Passthrough rows carry AWS cost 1:1 and
@@ -737,7 +762,7 @@ def main():
     # EXISTS subquery ensures each aws_li_key is counted once even for break_down rows
     # that join multiple components. SUM(DISTINCT ...) is wrong here — it deduplicates
     # by value, not by key, which mis-sums rows with coincident costs.
-    aws_mapped_cost = conn.execute("""
+    aws_mapped_cost = (conn.execute("""
         SELECT COALESCE(SUM(c.aws_amortized_cost), 0)
         FROM aws_li_catalog c
         WHERE c.is_workload
@@ -746,7 +771,7 @@ def main():
             WHERE m.aws_li_key = c.aws_li_key
               AND m.strategy IN ('map', 'break_down')
           )
-    """).fetchone()[0]
+    """).fetchone()[0]) * aws_fx_rate
     # Not shown in the report — the customer-facing summary compares GCP
     # against one number (AWS Total (Bill)) to keep it a one-glance read.
     # This more precise "priced rows only" figure is still logged for anyone
@@ -754,9 +779,9 @@ def main():
     # row-by-row sum.
     log.info(f"AWS mapped cost (priced rows only, excl. passthrough/credits): {fmt(aws_mapped_cost)}")
 
-    gcp_nw_od  = conn.execute("SELECT COALESCE(SUM(gcp_projected_cost),0) FROM gcp_projection WHERE NOT is_workload").fetchone()[0]
-    gcp_nw_1yr = conn.execute("SELECT COALESCE(SUM(COALESCE(gcp_cost_1yr_cud, gcp_projected_cost)),0) FROM gcp_projection WHERE NOT is_workload").fetchone()[0]
-    gcp_nw_3yr = conn.execute("SELECT COALESCE(SUM(COALESCE(gcp_cost_3yr_cud, gcp_projected_cost)),0) FROM gcp_projection WHERE NOT is_workload").fetchone()[0]
+    gcp_nw_od  = (conn.execute("SELECT COALESCE(SUM(gcp_projected_cost),0) FROM gcp_projection WHERE NOT is_workload").fetchone()[0]) * fx_rate
+    gcp_nw_1yr = (conn.execute("SELECT COALESCE(SUM(COALESCE(gcp_cost_1yr_cud, gcp_projected_cost)),0) FROM gcp_projection WHERE NOT is_workload").fetchone()[0]) * fx_rate
+    gcp_nw_3yr = (conn.execute("SELECT COALESCE(SUM(COALESCE(gcp_cost_3yr_cud, gcp_projected_cost)),0) FROM gcp_projection WHERE NOT is_workload").fetchone()[0]) * fx_rate
 
     gcp_grand_od  = gcp_od  + gcp_nw_od
     gcp_grand_1yr = gcp_1yr + gcp_nw_1yr
@@ -769,7 +794,11 @@ def main():
         with open(cust_file) as f:
             customer_name = f.read().strip() or "Prospect"
 
-    now    = datetime.datetime.utcnow()
+    try:
+        utc = datetime.UTC
+    except AttributeError:
+        utc = datetime.timezone.utc
+    now    = datetime.datetime.now(utc)
     run_id = now.strftime("%Y%m%dT%H%M%SZ")
 
     region_row = conn.execute("""
@@ -880,6 +909,8 @@ def main():
     _machine_type_expr = (
         "ANY_VALUE(m.gcp_machine_type)" if "gcp_machine_type" in _m2g_cols else "NULL"
     )
+    _has_assumption = "is_assumption" in _m2g_cols
+    _assumption_expr = "BOOL_OR(COALESCE(m.is_assumption, FALSE))" if _has_assumption else "FALSE"
     rows = conn.execute(f"""
         SELECT
             c.product,
@@ -887,17 +918,18 @@ def main():
             COALESCE(ANY_VALUE(m.gcp_service), 'N/A')                        AS gcp_service,
             ANY_VALUE(m.strategy)                                              AS strategy,
             COALESCE(STRING_AGG(DISTINCT m.projection_note, ' | '), '')       AS notes,
-            c.aws_amortized_cost,
-            SUM(p.gcp_projected_cost)                                          AS gcp_od,
-            SUM(p.gcp_cost_1yr_cud)                                           AS gcp_1yr,
-            SUM(p.gcp_cost_3yr_cud)                                           AS gcp_3yr,
+            c.aws_amortized_cost * {aws_fx_rate}                               AS aws_amortized_cost,
+            SUM(p.gcp_projected_cost) * {fx_rate}                             AS gcp_od,
+            SUM(p.gcp_cost_1yr_cud) * {fx_rate}                              AS gcp_1yr,
+            SUM(p.gcp_cost_3yr_cud) * {fx_rate}                              AS gcp_3yr,
             c.aws_region,
             c.gcp_region,
             c.is_workload,
             c.pricing_model,
             c.instance_type,
             ANY_VALUE(m.gcp_sku_name)                                          AS gcp_sku_name,
-            {_machine_type_expr}                                               AS gcp_machine_type
+            {_machine_type_expr}                                               AS gcp_machine_type,
+            {_assumption_expr}                                                 AS is_assumption
         FROM aws_li_catalog c
         LEFT JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
         LEFT JOIN gcp_projection    p ON c.aws_li_key = p.aws_li_key
@@ -907,12 +939,12 @@ def main():
     """).fetchall()
 
     # ── passthrough spend — logged only (see below), not a report card ───────
-    passthrough_spend = conn.execute("""
+    passthrough_spend = (conn.execute("""
         SELECT COALESCE(SUM(c.aws_amortized_cost), 0)
         FROM aws_li_catalog c
         JOIN aws_li_to_gcp_li m USING (aws_li_key)
         WHERE m.strategy = 'passthrough' AND c.is_workload
-    """).fetchone()[0]
+    """).fetchone()[0]) * aws_fx_rate
     passthrough_pct = (passthrough_spend / aws_grand * 100) if aws_grand else 0
     log.info(f"Passthrough spend: {fmt(passthrough_spend)} ({passthrough_pct:.1f}% of bill)")
 
@@ -949,18 +981,18 @@ def main():
         log.debug(f"word_overlap_by_service query failed: {e}")
 
     # ── wins/losses (top 5 each, workload only, mapped rows) ─────────────────
-    wl_rows = conn.execute("""
+    wl_rows = conn.execute(f"""
         WITH agg AS (
             SELECT c.product,
                    ANY_VALUE(m.gcp_service) AS gcp_service,
-                   c.aws_amortized_cost     AS aws,
-                   SUM(COALESCE(p.gcp_cost_1yr_cud, p.gcp_projected_cost)) AS gcp
+                   c.aws_amortized_cost * {aws_fx_rate}     AS aws,
+                   SUM(COALESCE(p.gcp_cost_1yr_cud, p.gcp_projected_cost)) * {fx_rate} AS gcp
             FROM aws_li_catalog c
             JOIN aws_li_to_gcp_li m USING (aws_li_key)
             JOIN gcp_projection    p ON p.aws_li_key = c.aws_li_key
                                     AND p.component IS NOT DISTINCT FROM m.component
             WHERE c.is_workload AND m.strategy IN ('map','break_down')
-              AND c.aws_amortized_cost > 5
+              AND c.aws_amortized_cost * {aws_fx_rate} > 5
             GROUP BY c.aws_li_key, c.product, c.aws_amortized_cost
         )
         SELECT product, gcp_service, aws, gcp, (aws - gcp) AS savings
@@ -975,22 +1007,22 @@ def main():
     # Rows where GCP < 10% of AWS on material spend (aws > $50), strategy='map'.
     # These may reflect wrong SKU, missing components, or unit mismatch.
     # We do NOT clamp — GCP may genuinely be cheaper — but we flag them for review.
-    under_proj_rows = conn.execute("""
+    under_proj_rows = conn.execute(f"""
         SELECT c.product,
                ANY_VALUE(m.gcp_service)      AS gcp_service,
                ANY_VALUE(m.gcp_sku_name)     AS gcp_sku,
-               c.aws_amortized_cost          AS aws,
-               SUM(p.gcp_projected_cost)     AS gcp,
+               c.aws_amortized_cost * {aws_fx_rate}          AS aws,
+               SUM(p.gcp_projected_cost) * {fx_rate}     AS gcp,
                STRING_AGG(DISTINCT m.projection_note, ' | ') AS notes
         FROM aws_li_catalog c
         JOIN aws_li_to_gcp_li m USING (aws_li_key)
         JOIN gcp_projection    p ON p.aws_li_key = c.aws_li_key
                                 AND p.component IS NOT DISTINCT FROM m.component
-        WHERE c.aws_amortized_cost > 50
+        WHERE c.aws_amortized_cost * {aws_fx_rate} > 50
           AND m.strategy IN ('map', 'break_down')
         GROUP BY c.aws_li_key, c.product, c.aws_amortized_cost
-        HAVING SUM(p.gcp_projected_cost) > 0
-           AND SUM(p.gcp_projected_cost) < 0.10 * c.aws_amortized_cost
+        HAVING SUM(p.gcp_projected_cost) * {fx_rate} > 0
+           AND SUM(p.gcp_projected_cost) * {fx_rate} < 0.10 * c.aws_amortized_cost * {aws_fx_rate}
         ORDER BY c.aws_amortized_cost DESC
         LIMIT 20
     """).fetchall()
@@ -1080,41 +1112,49 @@ def main():
         conf_str = "N/A (intentional passthrough)" if cat == "Passthrough" else f"{conf*100:.1f}%"
         log.info(f"  {cat}: {conf_str} avg confidence, {cnt} rows")
 
-    # ── detail table rows ─────────────────────────────────────────────────────
-    detail_rows_html = ""
-    idx = 1
-    for r in rows:
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type = r
+    # ── Section A and Section B row partitioning (Directive 2) ────────────────
+    # Section A: Mapped workload rows with resolved GCP rate
+    # Section B: Passthrough (no GCP equivalent, non-workload, or unpriced rate)
+    sec_a_rows = []
+    sec_b_rows = []
 
-        # Negative rows (EDP reconciliation, refunds, "covered by Savings
-        # Plans" nettings, etc.) are rolled up into a single "Discounts &
-        # Credits" summary row below instead of being listed individually —
-        # aws_discounts (computed above as aws_gross - aws_grand) already
-        # carries their total, so per-row display here would just be noise.
+    for r in rows:
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump = r
         if (aws or 0.0) < 0:
             continue
 
+        # Invariant: Section A contains ONLY strategy in ('map', 'break_down')
+        # with is_workload=True, aws > 0, and a resolved GCP On-Demand price (od is not None).
+        if strategy in ("map", "break_down") and is_wl and od is not None and (aws or 0.0) > 0:
+            sec_a_rows.append(r)
+        else:
+            sec_b_rows.append(r)
+
+    def _render_row(r, idx, force_pt=False):
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump = r
+
         ptype  = pill_type(gcp_svc, product)
         p_html = pill_html(ptype)
-
         aws    = aws or 0.0
-        has_od = od is not None   # None means no GCP rate was resolved (no SKU match)
-        od     = od or 0.0
-        # CUD values are NULL (None) when no CUD rate exists for that SKU.
-        # Keep None distinct from 0.0 so we can render "—" rather than "$0.00".
-        has_cud1 = cud1 is not None
-        has_cud3 = cud3 is not None
-        cud1 = cud1 or 0.0
-        cud3 = cud3 or 0.0
 
-        # The report's GRAND TOTAL / summary CUD columns fall back to the
-        # On-Demand cost for any row with no CUD-specific rate (a row still
-        # bills at OD under a CUD commitment even when that particular SKU
-        # itself carries no discount — e.g. no CUD SKU exists yet, or the
-        # row is Spot/Preemptible, which CUDs don't apply to). The per-row
-        # cells below must show that same OD-fallback value (flagged with a
-        # marker) rather than a bare "—", or the totals won't foot to what a
-        # reader can add up from the visible rows.
+        is_ignore = (strategy == "ignore")
+        is_pt = force_pt or (strategy == "passthrough") or (od is None and not is_ignore)
+
+        if force_pt:
+            od = aws
+            cud1 = aws
+            cud3 = aws
+            has_od = True
+            has_cud1 = True
+            has_cud3 = True
+        else:
+            has_od = od is not None
+            od = od or 0.0
+            has_cud1 = cud1 is not None
+            has_cud3 = cud3 is not None
+            cud1 = cud1 or 0.0
+            cud3 = cud3 or 0.0
+
         is_spot = (pricing_model or "").lower() == "spot"
         spot_title = "Spot/Preemptible — CUDs not applicable; billed at Spot rate regardless of commitment"
         no_cud_title = "No Committed Use Discount rate available for this SKU — billed at On-Demand rate under a CUD commitment"
@@ -1132,8 +1172,6 @@ def main():
         cud3_str, cud3_td_extra = _cud_cell(has_cud3 and not is_spot, cud3)
 
         strategy_badge = ""
-        is_pt = (strategy == "passthrough")
-        is_ignore = (strategy == "ignore")
         if is_pt:
             strategy_badge = '<span class="strat-pt">[passthrough]</span>'
         elif is_ignore:
@@ -1151,43 +1189,23 @@ def main():
         desc_html += why_html
         desc_html += cost_tier_html
 
-        # Rows where no GCP rate was resolved at all (strategy="map" but SKU
-        # lookup failed → gcp_projected_cost NULL): GCP columns show "—" so
-        # the reader isn't misled into thinking GCP charges the AWS amount
-        # when no real GCP equivalent was found (an unknown, not a known $0).
-        #
-        # strategy="ignore" rows are different: that IS a known, real $0 GCP
-        # cost (e.g. Cloud CDN genuinely has no per-request fee), not an
-        # unresolved unknown — show the actual $0.00 and the full AWS amount
-        # as savings, same as any other priced row, instead of hiding it
-        # behind "—" as if the cost were unknown.
-        #
-        # strategy="passthrough" rows are ALSO a known, real value, not an
-        # unknown — projection_view.py's SQL already sets their `od` to
-        # aws_amortized_cost (cost parity: "no reliable GCP-specific price,
-        # bill it at AWS's own rate" — e.g. Route 53 → Cloud DNS, ALB
-        # LCU-hours, Inter-AZ transfer, all explicitly "passthrough at cost
-        # parity" per their own projection_note). Confirmed real, high-impact
-        # display bug this fixes: `is_pt or` here forced EVERY passthrough
-        # row to show a bare "—" regardless of whether has_od was already
-        # True — throwing away a real, correctly-computed cost-parity number
-        # and making every such row look unpriced/unmapped, when the pricing
-        # was actually already correct all along. `not has_od` alone (still
-        # checked below) already covers the genuine "no rate resolved" case
-        # for both map and passthrough strategies — no separate is_pt branch
-        # was ever needed.
         if is_ignore:
             od_str   = fmt(0.0)
             cud1_str = fmt(0.0)
             cud3_str = fmt(0.0)
             diff_td  = f'<td class="num green">+{fmt(aws)}</td>' if aws > 0.005 else '<td class="num">—</td>'
+        elif is_pt:
+            od_str = fmt(aws)
+            cud1_str = fmt(aws)
+            cud3_str = fmt(aws)
+            diff_td = '<td class="num">—</td>'
         elif not has_od:
             od_str   = '—'
             cud1_str = '—'
             cud3_str = '—'
             diff_td  = '<td class="num">—</td>'
         else:
-            od_str = fmt(od)
+            od_str = f"{fmt(od)}*" if is_assump else fmt(od)
             diff = aws - od
             if abs(diff) < 0.005:
                 diff_td = '<td class="num">—</td>'
@@ -1196,35 +1214,9 @@ def main():
             else:
                 diff_td = f'<td class="num red">−{fmt(abs(diff))}</td>'
 
-        # Falls back to a cleaned-up product name for non-instance rows (NAT
-        # Gateway, WAF, Route 53, ...) instead of a bare "—" — every row gets
-        # a short readable label here, not just literal EC2/RDS instances.
         aws_instance_str = _html.escape(str(instance_type or _short_aws_label(product) or "—"))
-        # Genuine $0-on-GCP rows (strategy=ignore) show the SPECIFIC GCP-side
-        # reason (e.g. "Cloud CDN bills data transfer only, no per-request
-        # fee") pulled from the row's own projection_note, not a generic
-        # "Free on GCP" — the actual mapper already worked out exactly why
-        # GCP charges nothing here, so surface that instead of throwing it away.
         if is_ignore:
-            # Two-line layout matching the reference report format: the
-            # actual GCP service/SKU that's free on the first line, "(Free
-            # tier)" annotation on the second — not a single bare "Free on
-            # GCP" string, which threw away which GCP product this even is.
-            # gcp_sku_name is usually None for ignore-strategy rows (no
-            # billable SKU exists at all, e.g. Cloud Monitoring alerting),
-            # so fall back to gcp_svc (the GCP service name, always present)
-            # instead of leaving the first line blank.
             top_line = gcp_sku_name or gcp_svc or "Free on GCP"
-            # A bare "(Free tier)" badge reads as a permanent allowance. Some
-            # ignore-strategy rows are genuinely time-bound instead — $0 only
-            # until a known, dated billing-window start (e.g. RDS MySQL 8.0
-            # Extended Support -> Cloud SQL's own equivalent surcharge starts
-            # 2027-01-01, see map_rds_extended_support's _EXT_SUPPORT_FUTURE_
-            # START). Labeling a $5,793/mo row "(Free tier)" with no further
-            # qualifier made it look identical to a row that's free forever
-            # (CloudWatch alarms, dashboards) — confirmed a real point of
-            # confusion on a live job. Surface the date in the badge itself
-            # instead of leaving it buried only in the expandable note text.
             future_start_m = re.search(
                 r"billing window starts (\d{4}-\d{2}-\d{2})", notes or ""
             )
@@ -1235,28 +1227,18 @@ def main():
                 f'{_html.escape(str(top_line))}<br>'
                 f'<span class="free-tier">({_html.escape(badge_text)})</span>'
             )
-        elif gcp_machine_type:
-            # Precise GCE machine-type label (e.g. "n4d-standard-16") computed
-            # once per aws_li_key by family_mapper.py — identical on both the
-            # core and ram component rows, so this is deterministic (unlike
-            # gcp_sku_name below, which ANY_VALUE picks arbitrarily between
-            # "N4D Instance Core" and "N4D Instance Ram" for the same row).
-            # Preferred over gcp_sku_name specifically so every differently-
-            # sized EC2 row reads as its own distinct GCP shape instead of
-            # all collapsing to the same generic family label.
+        elif gcp_machine_type and not is_pt:
             gcp_mapping_str = _html.escape(str(gcp_machine_type))
-        elif gcp_sku_name:
+        elif gcp_sku_name and not is_pt:
             gcp_mapping_str = _html.escape(str(gcp_sku_name))
         elif is_pt:
-            # No GCP SKU was ever resolved for this row — say so plainly
-            # instead of a bare "—", which reads as missing data rather than
-            # "this genuinely has no GCP mapping yet."
             gcp_mapping_str = "Passthrough"
         else:
             gcp_mapping_str = "—"
+
         row_class = ' class="row-passthrough"' if is_pt else (' class="row-free"' if is_ignore else "")
 
-        detail_rows_html += (
+        return (
             f"<tr{row_class}>"
             f"<td style='color:#80868B;font-size:11px'>{idx}</td>"
             f"<td style='white-space:nowrap'>"
@@ -1276,48 +1258,260 @@ def main():
             f'<td class="extra-col">{desc_html}</td>'
             f"</tr>\n"
         )
+
+    # ── Render Section A Rows & Subtotal ──────────────────────────────────────
+    sec_a_html = ""
+    sec_a_aws = 0.0
+    sec_a_gcp_od = 0.0
+    sec_a_gcp_1yr = 0.0
+    sec_a_gcp_3yr = 0.0
+
+    idx = 1
+    for r in sec_a_rows:
+        aws = r[5] or 0.0
+        od = r[6] if r[6] is not None else 0.0
+        c1 = r[7] if r[7] is not None else od
+        c3 = r[8] if r[8] is not None else od
+        is_spot = (r[12] or "").lower() == "spot"
+        if is_spot:
+            c1 = od
+            c3 = od
+        sec_a_aws += aws
+        sec_a_gcp_od += od
+        sec_a_gcp_1yr += c1
+        sec_a_gcp_3yr += c3
+        sec_a_html += _render_row(r, idx, force_pt=False)
         idx += 1
 
-    # discounts/credits summary row — every negative-cost row (EDP
-    # reconciliation, refunds, "covered by Savings Plans" nettings) collapsed
-    # into one line instead of being listed individually in the detail table.
-    if aws_discounts > 0.5:
-        detail_rows_html += (
-            f'<tr>'
-            f'<td style="color:#80868B;font-size:11px">{idx}</td>'
-            f'<td style="white-space:nowrap"><span style="font-size:12px">Discounts &amp; Credits</span></td>'
-            f'<td style="font-size:11px;min-width:180px;max-width:260px">—</td>'
-            f'<td style="font-size:11px;color:#5F6368;min-width:220px;max-width:320px">—</td>'
-            f'<td style="font-size:11px;color:#5F6368;white-space:nowrap">—</td>'
-            f'<td class="num">−{fmt(aws_discounts)}</td>'
-            f'<td class="num">—</td>'
-            f'<td class="num extra-col">—</td>'
-            f'<td class="num extra-col">—</td>'
-            f'<td class="num">—</td>'
-            f'<td class="extra-col"></td>'
-            f'</tr>\n'
-        )
+    diff_sec_a = sec_a_aws - sec_a_gcp_od
+    diff_sec_a_class = "green" if diff_sec_a > 0 else "red" if diff_sec_a < 0 else ""
+    diff_sec_a_str = ("—" if abs(diff_sec_a) < 0.005
+                      else (f"+{fmt(diff_sec_a)}" if diff_sec_a > 0 else f"−{fmt(abs(diff_sec_a))}"))
+    pct_sec_a = f" ({((sec_a_gcp_od - sec_a_aws) / sec_a_aws * 100):+.1f}%)" if sec_a_aws > 0 else ""
+
+    subtotal_a_html = (
+        f'<tr class="subtotal-row">'
+        f'<td colspan="5" style="font-weight:600">SUBTOTAL SECTION A (MAPPED WORKLOAD){pct_sec_a}</td>'
+        f'<td class="num">{fmt(sec_a_aws)}</td>'
+        f'<td class="num">{fmt(sec_a_gcp_od)}</td>'
+        f'<td class="num extra-col">{fmt(sec_a_gcp_1yr)}</td>'
+        f'<td class="num extra-col">{fmt(sec_a_gcp_3yr)}</td>'
+        f'<td class="num {diff_sec_a_class}" style="font-weight:600">{diff_sec_a_str}</td>'
+        f'<td class="extra-col"></td>'
+        f'</tr>\n'
+    )
+
+    # ── Render Section B Rows & Subtotal ──────────────────────────────────────
+    sec_b_html = ""
+    sec_b_aws = 0.0
+    sec_b_gcp_od = 0.0
+    sec_b_gcp_1yr = 0.0
+    sec_b_gcp_3yr = 0.0
+
+    for r in sec_b_rows:
+        aws = r[5] or 0.0
+        sec_b_aws += aws
+        sec_b_gcp_od += aws
+        sec_b_gcp_1yr += aws
+        sec_b_gcp_3yr += aws
+        sec_b_html += _render_row(r, idx, force_pt=True)
         idx += 1
 
-    # grand total row
-    diff_tot  = aws_grand - gcp_grand_od
+    subtotal_b_html = (
+        f'<tr class="subtotal-row">'
+        f'<td colspan="5" style="font-weight:600">SUBTOTAL SECTION B (PASSTHROUGH / NON-WORKLOAD / UNPRICED)</td>'
+        f'<td class="num">{fmt(sec_b_aws)}</td>'
+        f'<td class="num">{fmt(sec_b_gcp_od)}</td>'
+        f'<td class="num extra-col">{fmt(sec_b_gcp_1yr)}</td>'
+        f'<td class="num extra-col">{fmt(sec_b_gcp_3yr)}</td>'
+        f'<td class="num" style="font-weight:600">$0.00</td>'
+        f'<td class="extra-col"></td>'
+        f'</tr>\n'
+    )
+
+    # ── Grand Totals (Section A + Section B strictly footing) ─────────────────
+    gcp_grand_od  = sec_a_gcp_od + sec_b_gcp_od
+    gcp_grand_1yr = sec_a_gcp_1yr + sec_b_gcp_1yr
+    gcp_grand_3yr = sec_a_gcp_3yr + sec_b_gcp_3yr
+    aws_gross     = sec_a_aws + sec_b_aws
+
+    diff_tot = aws_gross - gcp_grand_od
     diff_tot_class = "green" if diff_tot > 0 else "red" if diff_tot < 0 else ""
     diff_tot_str = ("—" if abs(diff_tot) < 0.005
                     else (f"+{fmt(diff_tot)}" if diff_tot > 0 else f"−{fmt(abs(diff_tot))}"))
 
-    detail_rows_html += (
+    grand_total_row_html = (
         f'<tr class="total-row">'
-        f'<td colspan="5" style="font-weight:600">GRAND TOTAL</td>'
-        f'<td class="num">{fmt(aws_grand)}</td>'
+        f'<td colspan="5" style="font-weight:600">GRAND TOTAL (LIST PRICES)</td>'
+        f'<td class="num">{fmt(aws_gross)}</td>'
         f'<td class="num">{fmt(gcp_grand_od)}</td>'
         f'<td class="num extra-col">{fmt(gcp_grand_1yr)}</td>'
         f'<td class="num extra-col">{fmt(gcp_grand_3yr)}</td>'
         f'<td class="num {diff_tot_class}" style="font-weight:600">{diff_tot_str}</td>'
         f'<td class="extra-col"></td>'
-        f'</tr>'
+        f'</tr>\n'
     )
 
-    # ── summary cards ─────────────────────────────────────────────────────────
+    detail_rows_html = (
+        f'<tr class="section-header-row"><th colspan="11">SECTION A — MAPPED (REAL GCP EQUIVALENT)</th></tr>\n'
+        + sec_a_html
+        + subtotal_a_html
+        + f'<tr class="section-header-row"><th colspan="11">SECTION B — PASSTHROUGH / NO DIRECT GCP EQUIVALENT (CARRIED 1:1)</th></tr>\n'
+        + sec_b_html
+        + subtotal_b_html
+        + grand_total_row_html
+    )
+
+    # ── discounts by service block (H-3, Section C) ───────────────────────────
+    discount_rows = []
+    try:
+        discount_rows = conn.execute(f"""
+            SELECT
+                COALESCE(c.product, 'Discounts & Credits') AS service,
+                STRING_AGG(DISTINCT COALESCE(NULLIF(c.line_item_type, ''), c.mechanic_group), ', ') AS discount_types,
+                COUNT(*)                                   AS item_count,
+                SUM(ABS(c.aws_amortized_cost)) * {aws_fx_rate}             AS discount_amount
+            FROM aws_li_catalog c
+            WHERE c.aws_amortized_cost < 0
+            GROUP BY c.product
+            HAVING discount_amount > 0.005
+            ORDER BY discount_amount DESC
+        """).fetchall()
+    except Exception as e:
+        log.warning(f"Could not query discounts by service: {e}")
+
+    # L-9: Compute total discounts authoritatively from aws_discounts (sum of all negative rows)
+    # to avoid dropping tiny sub-cent credits in the net total box.
+    display_discounts = aws_discounts
+
+    if display_discounts > 0.5 and discount_rows:
+        disc_table_rows = ""
+        for d_idx, (d_svc, d_types, d_count, d_amt) in enumerate(discount_rows, 1):
+            disc_table_rows += (
+                f"<tr>"
+                f"<td style='color:#80868B;font-size:11px'>{d_idx}</td>"
+                f"<td>{_html.escape(str(d_svc))}</td>"
+                f"<td style='color:#5F6368;font-size:11px'>{_html.escape(str(d_types or 'Discount / Credit'))}</td>"
+                f"<td class='num'>{d_count:,}</td>"
+                f"<td class='num green' style='font-weight:600'>−{fmt(d_amt)}</td>"
+                f"</tr>\n"
+            )
+        discounts_block_html = f"""
+<div class="discounts-section" style="margin-top:28px">
+  <h3>Discounts by Service (Section C)</h3>
+  <p class="section-meta">
+    AWS discounts, credits, and Savings Plans / EDP reductions applied to this bill, grouped by service.
+    These are excluded from the headline table above to keep the comparison strictly <b>AWS On-Demand List vs GCP On-Demand List</b>.
+  </p>
+  <div class="table-scroll"><table>
+    <tr>
+      <th>#</th>
+      <th>AWS Service</th>
+      <th>Discount Type / Description</th>
+      <th class="num">Line Items</th>
+      <th class="num">Discount Amount</th>
+    </tr>
+    {disc_table_rows}
+    <tr class="total-row">
+      <td colspan="4" style="font-weight:600">TOTAL AWS DISCOUNTS &amp; CREDITS</td>
+      <td class="num green" style="font-weight:600">−{fmt(display_discounts)}</td>
+    </tr>
+  </table></div>
+
+  <div class="net-spend-box" style="background:#F8F9FA;border:1px solid #DADCE0;border-radius:8px;padding:16px;margin:18px 0">
+    <div style="font-size:12px;font-weight:600;color:#5F6368;text-transform:uppercase;letter-spacing:0.5px">Customer Net AWS Total ("What you actually pay AWS today")</div>
+    <div style="font-size:22px;font-weight:700;color:#202124;margin-top:4px">
+      {fmt(aws_grand)} / mo
+      <span style="font-size:13px;font-weight:400;color:#5F6368">
+        (AWS List Total {fmt(aws_gross)} − Discounts &amp; Credits {fmt(display_discounts)})
+      </span>
+    </div>
+    <p style="font-size:12px;color:#5F6368;margin-top:6px;margin-bottom:0">
+      * Note: The headline table compares baseline list prices ({fmt(aws_gross)} vs {fmt(gcp_grand_od)}) so you can evaluate true unit economics before negotiating GCP commitments.
+    </p>
+  </div>
+</div>
+"""
+    elif display_discounts > 0.5:
+        discounts_block_html = f"""
+<div class="discounts-section" style="margin-top:28px">
+  <div class="net-spend-box" style="background:#F8F9FA;border:1px solid #DADCE0;border-radius:8px;padding:16px;margin:18px 0">
+    <div style="font-size:12px;font-weight:600;color:#5F6368;text-transform:uppercase;letter-spacing:0.5px">Customer Net AWS Total ("What you actually pay AWS today")</div>
+    <div style="font-size:22px;font-weight:700;color:#202124;margin-top:4px">
+      {fmt(aws_grand)} / mo
+      <span style="font-size:13px;font-weight:400;color:#5F6368">
+        (AWS List Total {fmt(aws_gross)} − Discounts &amp; Credits {fmt(display_discounts)})
+      </span>
+    </div>
+  </div>
+</div>
+"""
+    else:
+        discounts_block_html = f"""
+<div class="discounts-section" style="margin-top:28px">
+  <div class="net-spend-box" style="background:#F8F9FA;border:1px solid #DADCE0;border-radius:8px;padding:16px;margin:18px 0">
+    <div style="font-size:12px;font-weight:600;color:#5F6368;text-transform:uppercase;letter-spacing:0.5px">Customer Net AWS Total</div>
+    <div style="font-size:22px;font-weight:700;color:#202124;margin-top:4px">
+      {fmt(aws_grand)} / mo
+    </div>
+    <p style="font-size:12px;color:#5F6368;margin-top:6px;margin-bottom:0">
+      No customer discounts or credits detected on this bill. AWS List Total equals Net AWS Total.
+    </p>
+  </div>
+</div>
+"""
+    # ── AR-5 Assumptions Section ──
+    assumptions_block_html = ""
+    try:
+        if "is_assumption" in _m2g_cols:
+            assump_rows = conn.execute("""
+                SELECT DISTINCT
+                    COALESCE(NULLIF(m.assumption_note, ''), 'Pricing assumption applied') AS basis,
+                    c.product AS service,
+                    COUNT(*) AS row_cnt
+                FROM aws_li_to_gcp_li m
+                JOIN aws_li_catalog c USING (aws_li_key)
+                WHERE m.is_assumption = TRUE
+                GROUP BY basis, c.product
+                ORDER BY basis, c.product
+            """).fetchall()
+            if assump_rows:
+                from collections import defaultdict
+                grouped_assumptions = defaultdict(list)
+                for basis, svc, cnt in assump_rows:
+                    grouped_assumptions[basis].append(f"{svc} ({cnt} row{'s' if cnt != 1 else ''})")
+
+                assump_table_rows = []
+                for i, (basis, svcs) in enumerate(grouped_assumptions.items(), 1):
+                    assump_table_rows.append(f"""
+                    <tr>
+                      <td style="font-weight:600">*{i}</td>
+                      <td><b>{_html.escape(basis)}</b></td>
+                      <td>{_html.escape(', '.join(svcs))}</td>
+                    </tr>
+                    """)
+                assump_rows_html = "\n".join(assump_table_rows)
+                assumptions_block_html = f"""
+<div class="assumptions-section" style="margin-top:28px">
+  <h3>* Pricing Assumptions</h3>
+  <p class="section-meta">
+    Specific line items in this bill are projected based on documented sizing or ratio assumptions.
+    Rows carrying assumptions are marked with an asterisk (<b>*</b>) in the detailed tables.
+  </p>
+  <div class="table-scroll"><table>
+    <tr>
+      <th style="width:40px">#</th>
+      <th>Assumption &amp; Basis</th>
+      <th>Applied To Services</th>
+    </tr>
+    {assump_rows_html}
+  </table></div>
+</div>
+"""
+    except Exception as e:
+        log.warning(f"Could not build assumptions section: {e}")
+
+    # ── summary cards (M-3: compare Section A GCP against Section A AWS mapped baseline) ──
     def card(label, value, sub="", accent=False):
         a = ' card-accent' if accent else ''
         return (f'<div class="card{a}">'
@@ -1326,24 +1520,16 @@ def main():
                 f'{"<div class=card-sub>" + sub + "</div>" if sub else ""}'
                 f'</div>')
 
-    # One clear, single-denominator comparison: every GCP figure is measured
-    # against the AWS Total (Bill) — the number on the actual invoice. Earlier
-    # versions compared against a separate "Mapped AWS Cost" baseline (AWS
-    # spend on priced rows only), which was more technically precise but meant
-    # the % badges didn't reconcile against the headline AWS number a reader
-    # already has in front of them — two "AWS" figures on one screen that
-    # don't match is exactly the kind of thing that needs a calculator to
-    # untangle. A single baseline trades a little precision for something a
-    # reader can check in one glance.
-    aws_total_sub = "Your current monthly AWS spend"
-    if aws_discounts > 0.5:
-        aws_total_sub = f"{fmt(aws_gross)} before {fmt(aws_discounts)} in discounts/credits"
+    aws_total_sub = "Current monthly AWS spend (no discounts)"
+    if display_discounts > 0.5:
+        aws_total_sub = f"Net bill: {fmt(aws_grand)} after {fmt(display_discounts)} discounts"
+
     cards_html = (
-        card("AWS Total (Bill)", fmt(aws_grand), aws_total_sub, accent=True) +
-        card("AWS Mapped Cost", fmt(aws_mapped_cost), "Cost of rows actually priced to GCP") +
-        card("GCP On-Demand", fmt(gcp_od), _pct(aws_grand, gcp_od)) +
-        card("GCP 1-Year CUD", fmt(gcp_1yr), _pct(aws_grand, gcp_1yr)) +
-        card("GCP 3-Year CUD", fmt(gcp_3yr), _pct(aws_grand, gcp_3yr))
+        card("AWS List Total", fmt(aws_gross), aws_total_sub, accent=True) +
+        card("AWS Mapped Cost", fmt(sec_a_aws), "Section A workload baseline priced to GCP") +
+        card("GCP On-Demand", fmt(sec_a_gcp_od), _pct(sec_a_aws, sec_a_gcp_od)) +
+        card("GCP 1-Year CUD", fmt(sec_a_gcp_1yr), _pct(sec_a_aws, sec_a_gcp_1yr)) +
+        card("GCP 3-Year CUD", fmt(sec_a_gcp_3yr), _pct(sec_a_aws, sec_a_gcp_3yr))
     )
 
     # ── assemble page ─────────────────────────────────────────────────────────
@@ -1435,6 +1621,43 @@ def main():
 <path d="M28.082 7.00009H17.7905V12H24.1238L28.082 7.00009Z" fill="#00C2BB"/>
 </svg>"""
 
+    gap_json_path = os.path.join(JOB_DIR, "projection-audit", "data_gaps.json")
+    if not os.path.exists(gap_json_path):
+        gap_json_path = os.path.join(JOB_DIR, "data_gaps.json")
+    data_gap_html = ""
+    if os.path.exists(gap_json_path):
+        try:
+            with open(gap_json_path, encoding="utf-8") as _gf:
+                _gap_data = json.load(_gf)
+            _gc = _gap_data.get("count", 0)
+            _gt = _gap_data.get("total_cost", 0.0)
+            if _gc > 0 and _gt > 0:
+                data_gap_html = (
+                    f'<div style="background:#FEF3C7;border:1px solid #F59E0B;border-radius:8px;'
+                    f'padding:16px;margin:20px 0;color:#92400E;">'
+                    f'<strong style="font-size:15px">&#9888; Data Gap Warning:</strong> '
+                    f'<strong>${_gt:,.2f}</strong> across {_gc} line item(s) could not be classified — '
+                    f'source bill lacked line-item detail (passed through at 1:1 AWS cost parity; '
+                    f'no non-passthrough GCP estimate was guessed).'
+                    f'</div>'
+                )
+        except Exception as _ge:
+            log.warning(f"Could not read data_gaps.json: {_ge}")
+
+    currency_notice_html = ""
+    if curr_code != "USD":
+        aws_note = ""
+        if aws_fx_rate != 1.0:
+            aws_note = f' AWS costs were converted from {currency_info.get("aws_cost_currency", "USD")} to {curr_code} at {aws_fx_rate:g}.'
+        currency_notice_html = (
+            f'<div style="background:#EFF6FF;border:1px solid #3B82F6;border-radius:8px;'
+            f'padding:12px 16px;margin:16px 0;color:#1E40AF;font-size:13px;">'
+            f'<strong>&#128177; Currency Notice:</strong> All AWS and GCP costs are shown in <strong>{curr_code}</strong>. '
+            f'GCP list prices have been converted from USD ({currency_info.get("label", "")}).'
+            f'{aws_note}'
+            f'</div>'
+        )
+
     page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1466,8 +1689,12 @@ def main():
   <b>Customer:</b> {_html.escape(customer_name)} &nbsp;·&nbsp;
   <b>Analysis Date:</b> {now.strftime('%B %Y')} &nbsp;·&nbsp;
   <b>Line Items:</b> {total_li:,} &nbsp;·&nbsp;
-  <b>Primary GCP Region:</b> {_html.escape(gcp_region_display)}
+  <b>Primary GCP Region:</b> {_html.escape(gcp_region_display)} &nbsp;·&nbsp;
+  <b>Currency:</b> {_html.escape(curr_code)}
 </p>
+
+{currency_notice_html}
+{data_gap_html}
 
 <div class="summary-grid">
 {cards_html}
@@ -1506,6 +1733,10 @@ def main():
   {detail_rows_html}
 </table></div>
 <p class="legend">* Diff = AWS − GCP On-Demand. Positive (green) = GCP cheaper; negative (red) = GCP costs more.</p>
+
+{discounts_block_html}
+
+{assumptions_block_html}
 
 <h2>Methodology</h2>
 <ul class="method">
@@ -1553,20 +1784,21 @@ def main():
     # ── AI summary markdown (shown in frontend JobStatus card) ────────────────
     summary_md_rel = None
     try:
-        od_pct  = (gcp_od  - aws_infra_baseline) / aws_infra_baseline * 100 if aws_infra_baseline else 0
-        c1_pct  = (gcp_1yr - aws_infra_baseline) / aws_infra_baseline * 100 if aws_infra_baseline else 0
-        c3_pct  = (gcp_3yr - aws_infra_baseline) / aws_infra_baseline * 100 if aws_infra_baseline else 0
+        baseline = aws_gross if aws_gross > 0 else aws_infra_baseline
+        od_pct  = (gcp_od  - baseline) / baseline * 100 if baseline else 0
+        c1_pct  = (gcp_1yr - baseline) / baseline * 100 if baseline else 0
+        c3_pct  = (gcp_3yr - baseline) / baseline * 100 if baseline else 0
         arrow   = lambda p: ("▲" if p > 0 else "▼") + f" {abs(p):.1f}%"
         verdict = "GCP On-Demand is cost-neutral" if abs(od_pct) < 2 else \
-                  f"GCP On-Demand is {arrow(od_pct)} vs AWS" + (" — GCP more expensive" if od_pct > 0 else " — GCP cheaper")
+                  f"GCP On-Demand is {arrow(od_pct)} vs AWS List" + (" — GCP more expensive" if od_pct > 0 else " — GCP cheaper")
 
         top_saves = "\n".join(
-            f"- **{r[0]}** → {r[1]}: save ${r[4]:,.0f}/mo ({r[4]/r[2]*100:.0f}%)"
+            f"- **{r[0]}** → {r[1]}: save {curr_symbol}{r[4]:,.0f}/mo ({r[4]/r[2]*100:.0f}%)"
             for r in gcp_wins[:3] if r[2]
         ) or "_No significant savings identified._"
 
         top_costs = "\n".join(
-            f"- **{r[0]}** → {r[1]}: +${abs(r[4]):,.0f}/mo ({abs(r[4])/r[2]*100:.0f}% more)"
+            f"- **{r[0]}** → {r[1]}: +{curr_symbol}{abs(r[4]):,.0f}/mo ({abs(r[4])/r[2]*100:.0f}% more)"
             for r in gcp_loses[:3] if r[2]
         ) or "_No significant cost increases identified._"
 
@@ -1584,13 +1816,46 @@ def main():
             "",
             f"**{verdict}**",
             "",
-            "| Pricing Tier | Monthly Estimate | vs AWS |",
+        ]
+        if curr_code != "USD":
+            summary_lines.extend([
+                f"> 💱 **CURRENCY**: All figures shown in **{curr_code}** ({currency_info.get('label', '')}).",
+                "",
+            ])
+        if os.path.exists(gap_json_path):
+            try:
+                with open(gap_json_path, encoding="utf-8") as _gf:
+                    _gap_data = json.load(_gf)
+                if _gap_data.get("count", 0) > 0 and _gap_data.get("total_cost", 0) > 0:
+                    summary_lines.extend([
+                        f"> ⚠️ **DATA GAP WARNING**: {curr_symbol}{_gap_data['total_cost']:,.2f} across {_gap_data['count']} line item(s) could not be classified — source bill lacked line-item detail (passed through at 1:1 AWS cost).",
+                        "",
+                    ])
+            except Exception:
+                pass
+
+        summary_lines.extend([
+            "| Pricing Tier | Monthly Estimate | vs AWS List |",
             "|---|---|---|",
-            f"| AWS Infra Baseline | ${aws_infra_baseline:,.0f} | — |",
-            f"| GCP On-Demand | ${gcp_od:,.0f} | {arrow(od_pct)} |",
-            f"| GCP 1-Year CUD | ${gcp_1yr:,.0f} | {arrow(c1_pct)} |",
-            f"| GCP 3-Year CUD | ${gcp_3yr:,.0f} | {arrow(c3_pct)} |",
+            f"| AWS List Total | {curr_symbol}{aws_gross:,.0f} | — |",
+        ])
+        if display_discounts > 0.5:
+            summary_lines.append(f"| Customer Net AWS Bill | {curr_symbol}{aws_grand:,.0f} | (-{curr_symbol}{display_discounts:,.0f} discounts) |")
+        summary_lines.extend([
+            f"| GCP On-Demand (List) | {curr_symbol}{gcp_od:,.0f} | {arrow(od_pct)} |",
+            f"| GCP 1-Year CUD | {curr_symbol}{gcp_1yr:,.0f} | {arrow(c1_pct)} |",
+            f"| GCP 3-Year CUD | {curr_symbol}{gcp_3yr:,.0f} | {arrow(c3_pct)} |",
             "",
+        ])
+        if discount_rows:
+            disc_md = "\n".join(f"- **{r[0]}**: -{curr_symbol}{r[3]:,.0f}/mo ({r[1] or 'Discount'})" for r in discount_rows[:5])
+            summary_lines.extend([
+                "### Discounts by Service",
+                disc_md,
+                f"**Customer Net AWS Total**: {curr_symbol}{aws_grand:,.0f}/mo (List {curr_symbol}{aws_gross:,.0f} − Discounts {curr_symbol}{display_discounts:,.0f})",
+                "",
+            ])
+        summary_lines.extend([
             "### Where GCP saves",
             top_saves,
             "",
@@ -1601,7 +1866,7 @@ def main():
             f"- **{total_li:,}** AWS line items · **{avg_conf*100:.0f}%** average mapping confidence",
             f"- Passthroughs (no GCP equivalent): {passthrough_note}",
             f"- Primary GCP region: {gcp_region_display}",
-        ]
+        ])
         summary_text = "\n".join(summary_lines)
         summary_rel  = os.path.join("projection-audit", f"summary-{run_id}.md")
         summary_abs  = os.path.join(JOB_DIR, summary_rel)

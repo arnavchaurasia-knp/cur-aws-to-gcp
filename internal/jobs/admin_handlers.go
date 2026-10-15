@@ -3,14 +3,18 @@ package jobs
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/facets/cur-web/internal/auth"
 	"github.com/facets/cur-web/internal/db"
+	"github.com/facets/cur-web/internal/metrics"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
@@ -75,29 +79,175 @@ func (h *Handler) AdminListAllPaged(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// AdminCancelJob kills the job's process (if running) and marks it cancelled.
-func (h *Handler) AdminCancelJob(w http.ResponseWriter, r *http.Request) {
-	sess := auth.SessionFromCtx(r.Context())
-	id := chi.URLParam(r, "id")
+// cancelJob performs the authoritative stop of a job.
+// Order of operations:
+// 1. Guard valid id & load job.
+// 2. If already terminal (cancelled, done, failed), idempotent return 200 with current status.
+// 3. Write <jobDir>/cancelled sentinel file FIRST.
+// 4. UpdateJobCancelled(id) in DB.
+// 5. killGroup(job.AgentPID) — tree kill.
+// 6. Remove <jobDir>/orchestrator.lock.
+func (h *Handler) cancelJob(id, canceller string) (*db.Job, error) {
 	if !isValidJobID(id) {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		return
+		return nil, os.ErrNotExist
 	}
 	job, err := h.db.GetJob(id)
 	if err != nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		return
+		return nil, err
 	}
-	if job.AgentPID > 0 && pidAlive(job.AgentPID) {
+	// Idempotent: cancelling an already-terminal job is a no-op on processes
+	switch job.Status {
+	case "cancelled", "done", "failed":
+		return job, nil
+	}
+
+	jobDir, ok := safeJobDir(h.jobsDir, id)
+	if ok {
+		_ = WriteCancelledSentinel(jobDir, canceller, "authoritative cancel")
+	}
+
+	if err := h.db.UpdateJobCancelled(id); err != nil {
+		return nil, err
+	}
+	metrics.JobsCancelled.Add(1)
+
+	if job.AgentPID > 0 {
 		killGroup(job.AgentPID)
 	}
-	if err := h.db.UpdateJobCancelled(id); err != nil {
+
+	if ok {
+		_ = os.Remove(filepath.Join(jobDir, "orchestrator.lock"))
+	}
+
+	job.Status = "cancelled"
+	return job, nil
+}
+
+// AdminCancelJob kills the job's process tree and marks it cancelled authoritatively.
+func (h *Handler) AdminCancelJob(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	id := chi.URLParam(r, "id")
+	canceller := "admin"
+	if sess != nil && sess.Email != "" {
+		canceller = sess.Email
+	}
+	job, err := h.cancelJob(id, canceller)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
-	_ = h.db.LogAdminAction(sess.Email, "cancel_job", id, "")
+	if sess != nil {
+		_ = h.db.LogAdminAction(sess.Email, "cancel_job", id, "")
+	}
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
-	json.NewEncoder(w).Encode(map[string]string{"id": id, "status": "cancelled"})
+	json.NewEncoder(w).Encode(map[string]string{"id": id, "status": job.Status})
+}
+
+// CancelAll cancels all non-terminal jobs in parallel, sets STOP_ALL, and reaps orphans.
+func (h *Handler) CancelAll(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	canceller := "admin"
+	if sess != nil && sess.Email != "" {
+		canceller = sess.Email
+	}
+
+	// 1. Set persistent STOP_ALL sentinel file in dataDir (parent of jobsDir)
+	dataDir := filepath.Dir(h.jobsDir)
+	stopAllPath := filepath.Join(dataDir, "STOP_ALL")
+	_ = os.WriteFile(stopAllPath, []byte(fmt.Sprintf("STOP_ALL set by %s at %s\n", canceller, time.Now().UTC().Format(time.RFC3339))), 0644)
+
+	// 2. Load all non-terminal jobs
+	jobs, err := h.db.ListNonTerminalJobs()
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var (
+		mu              sync.Mutex
+		cancelledIDs    []string
+		alreadyTerminal []string
+		errs            []string
+		wg              sync.WaitGroup
+	)
+
+	for _, j := range jobs {
+		wg.Add(1)
+		go func(jobID string) {
+			defer wg.Done()
+			res, cErr := h.cancelJob(jobID, canceller)
+			mu.Lock()
+			defer mu.Unlock()
+			if cErr != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", jobID, cErr))
+			} else if res != nil && res.Status == "cancelled" {
+				cancelledIDs = append(cancelledIDs, jobID)
+			} else {
+				alreadyTerminal = append(alreadyTerminal, jobID)
+			}
+		}(j.ID)
+	}
+	wg.Wait()
+
+	// 3. Sweep orphan agent processes
+	activeIDs := make(map[string]bool)
+	reapedPIDs := reapOrphanAgents(h.jobsDir, activeIDs)
+
+	if sess != nil {
+		_ = h.db.LogAdminAction(sess.Email, "cancel_all", "", fmt.Sprintf("cancelled=%d reaped_pids=%v", len(cancelledIDs), reapedPIDs))
+	}
+
+	if cancelledIDs == nil {
+		cancelledIDs = []string{}
+	}
+	if alreadyTerminal == nil {
+		alreadyTerminal = []string{}
+	}
+	if errs == nil {
+		errs = []string{}
+	}
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"cancelled":        cancelledIDs,
+		"already_terminal": alreadyTerminal,
+		"reaped_pids":      reapedPIDs,
+		"errors":           errs,
+		"stop_all":         true,
+	})
+}
+
+// ResumeAll removes the STOP_ALL sentinel file and re-enables job spawning.
+func (h *Handler) ResumeAll(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	dataDir := filepath.Dir(h.jobsDir)
+	stopAllPath := filepath.Join(dataDir, "STOP_ALL")
+	_ = os.Remove(stopAllPath)
+
+	if sess != nil {
+		_ = h.db.LogAdminAction(sess.Email, "resume_all", "", "")
+	}
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":   "ok",
+		"stop_all": false,
+	})
+}
+
+// SystemState reports whether orchestration is halted (for the UI banner).
+func (h *Handler) SystemState(w http.ResponseWriter, r *http.Request) {
+	dataDir := filepath.Dir(h.jobsDir)
+	halted := IsStopAllActive(dataDir)
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"halted":   halted,
+		"stop_all": halted,
+	})
 }
 
 // AdminDeleteJob removes a terminal-status job's row and on-disk directory.
@@ -160,6 +310,10 @@ func (h *Handler) AdminSetUserRole(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !validRoles[body.Role] {
 		http.Error(w, `{"error":"role must be one of viewer, admin, facets"}`, http.StatusBadRequest)
+		return
+	}
+	if body.Role == "admin" && !strings.HasSuffix(strings.ToLower(email), "@facets.cloud") {
+		http.Error(w, `{"error":"admin role is restricted to @facets.cloud accounts"}`, http.StatusForbidden)
 		return
 	}
 	if err := h.db.SetUserRole(email, body.Role); err != nil {

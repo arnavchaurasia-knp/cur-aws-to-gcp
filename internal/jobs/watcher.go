@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
@@ -133,6 +134,23 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		return
 	}
 	jobDir := filepath.Clean(filepath.Join(w.jobsDir, jobID))
+
+	// §2 Make finalize cancel-aware (and STOP_ALL aware):
+	// Check before success/failure/retry branches.
+	stopAllActive := IsStopAllActive(filepath.Dir(w.jobsDir))
+	if job.Status == "cancelled" || IsCancelled(jobDir) || stopAllActive {
+		// Authoritative stop. Do not retry, do not mark done/failed.
+		if job.AgentPID > 0 {
+			killGroup(job.AgentPID) // reap any survivors
+		}
+		_ = os.Remove(filepath.Join(jobDir, "orchestrator.lock"))
+		if job.Status != "cancelled" {
+			_ = w.db.UpdateJobCancelled(jobID)
+			metrics.JobsCancelled.Add(1)
+		}
+		log.Printf("watcher %s: cancel observed (stopAll=%v) — not resuming", jobID, stopAllActive)
+		return
+	}
 
 	// SUCCESS CHECK FIRST: report presence is the ground truth. If render_report.py
 	// ran and wrote an HTML file, the job succeeded — regardless of what agy logged
@@ -290,6 +308,27 @@ func readFailureReason(jobDir string) string {
 		s = string(runes[:1000]) + "…"
 	}
 	return s
+}
+
+// IsCancelled returns true if <jobDir>/cancelled sentinel file exists.
+func IsCancelled(jobDir string) bool {
+	_, err := os.Stat(filepath.Join(filepath.Clean(jobDir), "cancelled"))
+	return err == nil
+}
+
+// WriteCancelledSentinel writes the <jobDir>/cancelled sentinel file.
+func WriteCancelledSentinel(jobDir, canceller, reason string) error {
+	content := fmt.Sprintf("cancelled by %s at %s: %s\n", canceller, time.Now().UTC().Format(time.RFC3339), reason)
+	return os.WriteFile(filepath.Join(filepath.Clean(jobDir), "cancelled"), []byte(content), 0644)
+}
+
+// IsStopAllActive returns true if the global STOP_ALL sentinel exists in dataDir.
+func IsStopAllActive(dataDir string) bool {
+	if dataDir == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(filepath.Clean(dataDir), "STOP_ALL"))
+	return err == nil
 }
 
 // quotaMarkers are substrings (case-insensitive) that indicate the Gemini API

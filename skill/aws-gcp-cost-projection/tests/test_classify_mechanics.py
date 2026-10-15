@@ -326,6 +326,27 @@ def test_detailed_row_is_not_a_data_gap():
     assert classify(r) == "compute_breakdown"
 
 
+def test_cost_only_blank_row_forced_passthrough_data_gap():
+    # Row with cost > 0 but all line-item detail missing (H-5)
+    # 1. Completely blank cost-only row (bad PDF/export)
+    r_blank = row(product="", usage_type="", operation="", unit="",
+                  instance_type="", cost=150.0, canonical=None)
+    assert classify(r_blank) == "misc"
+    reason_blank = _json.loads(_misc_reason(r_blank))
+    assert reason_blank.get("data_gap") is True
+    assert reason_blank.get("recommended_strategy") == "passthrough"
+    assert reason_blank.get("strategy") == "passthrough"
+    assert "could not be classified" in reason_blank.get("why", "")
+
+    # 2. Amazon prefix row with no charge-type detail
+    r_aws = row(product="Amazon Unknown Service", usage_type="", operation="", unit="",
+                instance_type="", cost=80.0, canonical=None)
+    assert classify(r_aws) == "misc"
+    reason_aws = _json.loads(_misc_reason(r_aws))
+    assert reason_aws.get("data_gap") is True
+    assert reason_aws.get("recommended_strategy") == "passthrough"
+
+
 # ---------------------------------------------------------------------------
 # FIX 8, 9, 10 regressions & coverage
 # ---------------------------------------------------------------------------
@@ -339,6 +360,29 @@ def test_has_instance_type_tightened():
     assert _has_instance_type("v2.0") is False
     assert _has_instance_type("h264.profile") is False
     assert _has_instance_type("tier1.foo") is False
+
+
+def test_instance_type_oracle_matching():
+    from classify_mechanics import _has_instance_type, _EC2_TYPES_DATA
+    # Known types in oracle table (including non-standard and prefix formats)
+    assert _has_instance_type("m5.xlarge") is True
+    assert _has_instance_type("db.r5.large") is True
+    assert _has_instance_type("u-12tb1.112xlarge") is True
+    assert _has_instance_type("hpc7g.16xlarge") is True
+    assert _has_instance_type("APS3-BoxUsage:u-12tb1.112xlarge") is True
+
+    # Newly added type dynamically added to oracle table
+    _EC2_TYPES_DATA["newfuture99.superlarge"] = {"vcpus": 128, "ram_gb": 512.0}
+    try:
+        assert _has_instance_type("newfuture99.superlarge") is True
+        assert _has_instance_type("db.newfuture99.superlarge") is True
+    finally:
+        del _EC2_TYPES_DATA["newfuture99.superlarge"]
+
+    # Unknown tokens do NOT false-match
+    assert _has_instance_type("v2.0") is False
+    assert _has_instance_type("h264.profile") is False
+    assert _has_instance_type("random_non_instance_token") is False
 
 
 def test_pdf_whitespace_and_nbsp_normalization():
@@ -355,4 +399,76 @@ def test_sagemaker_instance_excluded_from_compute_breakdown():
             usage_type="APS3-ml.p4d.24xlarge-Hour", operation="RunInstance", unit="Hrs",
             canonical="sagemaker", instance_type="ml.p4d.24xlarge")
     assert classify(r) == "misc"
+
+
+# ---------------------------------------------------------------------------
+# FIX 12, 14 regressions & coverage
+# ---------------------------------------------------------------------------
+
+def test_rifee_no_discounted_usage_becomes_compute():
+    r = row(product="Amazon Elastic Compute Cloud", usage_type="HeavyUsage:m5.xlarge",
+            line_item_type="RIFee", unit="Hrs", _bill_has_discounted_usage=False)
+    assert classify(r) == "compute_breakdown"
+
+
+def test_neptune_instance_not_compute_breakdown():
+    r = row(product="Amazon Neptune", usage_type="BoxUsage:db.r5.large",
+            operation="CreateDBInstance", unit="Hrs")
+    assert classify(r) != "compute_breakdown"
+
+
+def test_qldb_not_compute_breakdown():
+    r = row(product="Amazon QLDB", usage_type="BoxUsage:db.t3.medium",
+            operation="", unit="Hrs")
+    assert classify(r) != "compute_breakdown"
+
+
+def test_timestream_not_compute_breakdown():
+    r = row(product="Amazon Timestream", usage_type="BoxUsage:db.r5.large",
+            operation="", unit="Hrs")
+    assert classify(r) != "compute_breakdown"
+
+
+# ---------------------------------------------------------------------------
+# WORKORDER_charge_type_misrouting_fix tests
+# ---------------------------------------------------------------------------
+
+def test_aurora_serverless_io_routes_to_block_storage():
+    """Aurora Serverless I/O request rows must route to block_storage, NOT managed_db."""
+    r = row(product="Amazon Relational Database Service",
+            usage_type="APS3-Aurora:ServerlessV2IOOptimizedUsage",
+            operation="CreateDBInstance:0016",
+            unit="ACU-Hr")
+    res = classify(r)
+    assert res == "block_storage"
+    assert res != "managed_db"
+
+
+def test_waf_requests_and_rules_route_to_waf_per_request():
+    """WAF RequestV2 and WebACLV2 rows must route to per_request WAF branch, NOT generic per_request."""
+    r_req = row(product="AWS WAF",
+                usage_type="APS3-RequestV2-Tier2-2000WCU",
+                operation="ALB",
+                unit="Request")
+    res_req = classify(r_req)
+    assert res_req == "per_request"
+
+    r_acl = row(product="AWS WAF",
+                usage_type="Global-WebACLV2",
+                operation="WebACLV2",
+                unit="Month")
+    res_acl = classify(r_acl)
+    assert res_acl == "per_request"
+
+
+def test_s3_requests_tier_routes_before_generic_per_request():
+    """S3 Requests-Tier rows must be caught by dedicated S3 request guard before generic per_request."""
+    r = row(product="Amazon Simple Storage Service",
+            usage_type="APS3-Requests-Tier2",
+            operation="GetObject",
+            unit="Requests",
+            canonical="s3")
+    res = classify(r)
+    assert res == "per_request"
+
 

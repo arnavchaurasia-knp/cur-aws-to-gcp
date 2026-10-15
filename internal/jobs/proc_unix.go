@@ -5,6 +5,7 @@ package jobs
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -53,5 +54,49 @@ func pidAlive(pid int) bool {
 		return false
 	}
 	return true
+}
+
+func reapOrphanAgents(jobsDir string, activeJobIDs map[string]bool) []int {
+	cleanJobsDir := filepath.Clean(jobsDir)
+	var reaped []int
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return reaped
+	}
+	myPid := os.Getpid()
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 0 || pid == myPid {
+			continue
+		}
+		cmdBytes, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		// In /proc/<pid>/cmdline arguments are separated by NUL bytes
+		cmdLine := strings.ReplaceAll(string(cmdBytes), "\x00", " ")
+		isAgent := strings.Contains(cmdLine, "dangerously-skip-permissions") || strings.Contains(cmdLine, "run_all.py")
+		if !isAgent {
+			continue
+		}
+		if !strings.Contains(cmdLine, cleanJobsDir) {
+			continue
+		}
+		isActive := false
+		for activeID := range activeJobIDs {
+			if activeID != "" && strings.Contains(cmdLine, activeID) {
+				isActive = true
+				break
+			}
+		}
+		if !isActive {
+			killGroup(pid)
+			reaped = append(reaped, pid)
+		}
+	}
+	return reaped
 }
 

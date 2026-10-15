@@ -46,6 +46,8 @@ GCS_STANDARD            = "Standard Storage"
 GCS_ARCHIVE             = "Archive Storage"
 GCS_COLDLINE            = "Coldline Storage"
 GCP_COMPUTE_ENGINE      = "Compute Engine"
+GB_TO_GIB = 1.0 / 1.074  # AWS decimal GB-Mo -> GCP GiBy.mo (1 GiB = 1.074 GB)
+
 
 # CUD discount multipliers — single source of truth for the last-resort
 # fallback used by both apply_rates.py and validate_fix.py when
@@ -325,12 +327,8 @@ FLAT_HOURLY_MAP = [
     # in asia-southeast1).
     (r"LoadBalancerUsage|Elastic Load Balancing - Classic|LoadBalancer-hour",
      "Cloud Load Balancing", r"Cloud Load Balancer Forwarding Rule Minimum", 1.0),
-    # Cloud NAT gateway-hours: AWS bills a flat $0.045/hr per gateway regardless of
-    # instance count behind it. "Cloud Nat Gateway Uptime" ($0.0014/hr) is GCP's
-    # per-VM-instance charge, not a per-gateway fee, and was a ~32x mismatch.
-    # "Private Nat Gateway Uptime" ($0.045/hr) is the flat per-gateway SKU — exact parity.
-    (r"NatGateway-Hours|NatGateway",
-     "Networking", r"Private Nat Gateway Uptime", 1.0),
+    # P-15: Cloud NAT gateway hours are handled in map_flat_hourly directly with Public/Private
+    # splitting, per-VM-hour modeling, and assumption metadata.
     # Transit Gateway → Cloud VPN Tunnel ($0.05/hr vs NCC Spoke $0.10/hr).
     # Cloud VPN is the functional equivalent for inter-VPC/on-prem connectivity
     # and costs 2x less than NCC Spoke Hours (the previous mapping).
@@ -584,6 +582,95 @@ RESOLVED_SKUS_FILE = os.path.join(DATA_DIR, "resolved_skus.json")
 
 with open(os.path.join(DATA_DIR, "ec2-instance-types.json")) as _f:
     _EC2_TYPES_FOR_VCPU = json.load(_f)
+_EC2_TYPES = _EC2_TYPES_FOR_VCPU
+
+_MAP_CONFIG_PATH = os.path.join(DATA_DIR, "family_map.json")
+with open(_MAP_CONFIG_PATH) as _f_map:
+    _cfg_family_map = json.load(_f_map)
+
+_AWS_WORKLOAD = _cfg_family_map["aws_workload"]
+_ARCH_SUFFIX = _cfg_family_map["arch_suffix"]
+_GCP_FAMILIES = _cfg_family_map["gcp_families"]
+_ARM_PREFIX = set(_cfg_family_map.get("arm_prefix", []))
+_GPU_PROFILES_CFG = _cfg_family_map.get("gpu_profiles", {})
+
+_ACCEL_CHIPS_CFG = _cfg("accelerator-chips")
+_ACCEL_CHIPS = _ACCEL_CHIPS_CFG.get("chips", {}) if _ACCEL_CHIPS_CFG else {}
+_TPU_RATES_CFG = _cfg("tpu-rates") or {}
+
+
+def family_arch(family_token: str) -> tuple[str, str]:
+    """Return (arch, workload) for an AWS instance/node family token.
+    arch: 'arm', 'amd', or 'intel'
+    workload: 'general', 'compute', 'memory', 'storage', 'burstable', 'accelerated', etc.
+    Shared helper (AR-3 / Note) centralizing architecture and workload determination.
+    """
+    clean = (family_token or "").strip().lower()
+    clean = re.sub(r'^(?:db\.|cache\.|kafka\.)', '', clean)
+    fam = clean.split(".")[0]
+
+    m = re.match(r'^([a-z]+[a-z0-9-]*?)(\d+)([a-z0-9-]*)$', fam)
+    if m:
+        prefix = m.group(1).rstrip("-")
+        suffixes = m.group(3)
+    else:
+        prefix = fam.rstrip("-")
+        suffixes = ""
+
+    workload = _AWS_WORKLOAD.get(prefix, "general")
+
+    if prefix in _ARM_PREFIX or suffixes.endswith("g") or bool(re.search(r'\d+g\b', fam)):
+        arch = "arm"
+    elif "a" in suffixes:
+        arch = "amd"
+    else:
+        arch = "intel"
+
+    return arch, workload
+
+
+def _emit(
+    aws_li_key: str,
+    strategy: str,
+    gcp_service: str,
+    gcp_sku_id=None,
+    gcp_sku_name=None,
+    component="instance",
+    unit_multiplier=1.0,
+    gcp_region="global",
+    projection_note="",
+    mapping_confidence=0.8,
+    is_workload=True,
+    **extra
+) -> dict:
+    """Standardized row-builder for mapping dicts (AR-3 / Note). Enforces:
+    - strategy='map' requires resolved gcp_sku_id; otherwise downgrades to passthrough.
+    - extracts sku_unit from SKUMeta if available.
+    - uniform schema fields with consistent types.
+    """
+    sku_id_val = str(gcp_sku_id) if gcp_sku_id else None
+    if strategy == "map" and not sku_id_val:
+        strategy = "passthrough"
+        if not projection_note:
+            projection_note = "no GCP SKU resolved — passthrough at cost parity"
+
+    entry = {
+        "aws_li_key": aws_li_key,
+        "gcp_service": gcp_service,
+        "gcp_sku_id": sku_id_val,
+        "gcp_sku_name": gcp_sku_name,
+        "component": component,
+        "strategy": strategy,
+        "unit_multiplier": unit_multiplier,
+        "gcp_region": gcp_region,
+        "projection_note": projection_note,
+        "mapping_confidence": mapping_confidence,
+        "is_workload": is_workload,
+    }
+    if gcp_sku_id and hasattr(gcp_sku_id, "unit"):
+        entry["gcp_sku_unit"] = gcp_sku_id.unit
+    entry.update(extra)
+    return entry
 
 
 _SERVICES_CACHE = None
@@ -1623,7 +1710,7 @@ def _sku_meta(sku):
     return sku["skuId"], unit, resource_group
 
 
-def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region):
+def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=False):
     """
     Search the bundled GCP catalog for the first SKU whose description matches
     desc_pattern (regex) and whose serviceRegions include gcp_region (or is GLOBAL).
@@ -1690,12 +1777,8 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region):
 
     def _continent_region_match(sku):
         # Some families (T2A, newer/niche SKUs) are only sold in a subset of a
-        # continent's regions. Used ONLY as a fallback when no exact-region SKU
-        # exists at all — an earlier version of this check treated exact-region
-        # and same-continent matches as equally valid, so a same-continent SKU
-        # (e.g. Standard Storage Hong Kong) could be picked over the correct
-        # exact-region one (Standard Storage Mumbai) purely by list order. Never
-        # let continent-fallback outrank an exact match.
+        # continent's regions. Used ONLY as a fallback when explicitly opted in
+        # (allow_continent_fallback=True) — never by default.
         regions = sku.get("serviceRegions", [])
         for continent_regions in _CONTINENT.values():
             if gcp_region in continent_regions and any(r in continent_regions for r in regions):
@@ -1706,19 +1789,6 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region):
     # When desc_pattern doesn't mention them, these variants must be excluded —
     # "Nearline Storage" must not resolve to "Autoclass Nearline Storage" or
     # "Nearline Storage Dual-region". The same rule applies to all GCP services.
-    # "regional" (cross-ZONE replicated Persistent Disk, ~2x zonal price) must be
-    # excluded the same way as the others: AWS EBS/gp3 is a zonal construct with
-    # no built-in cross-zone replication, so a bare "Balanced PD Capacity" search
-    # was non-deterministically matching "Regional Balanced PD Capacity in
-    # Mumbai" ($0.24/GiB-mo) instead of the correct zonal "Balanced PD Capacity
-    # in Mumbai" ($0.12/GiB-mo) — a confirmed ~2x/2.6x over-projection on every
-    # gp2/gp3 EBS row. Callers that DO want the regional tier (Cloud SQL HA,
-    # Filestore Enterprise) already write "Regional" into their own desc_pattern,
-    # so they're unaffected — _has_noise() only excludes a qualifier absent from
-    # the caller's own pattern. _NOISE_QUALIFIERS/_is_noise_variant() are shared
-    # module-level (defined above _family_hourly_rate_uncached) so this
-    # function's SKU-ID choice and that function's rate-sweep can never drift
-    # onto two different SKUs for the same desc_pattern again.
     def _has_noise(sku_desc):
         return _is_noise_variant(desc_pattern, sku_desc)
 
@@ -1740,19 +1810,18 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region):
             return _sku_meta(sku)
         return None
 
-    # Exact-region (or GLOBAL) candidates always take priority. Only fall back
-    # to same-continent candidates when NO exact-region SKU exists at all —
-    # otherwise a continent-mate could win purely by catalog list order even
-    # when the correct exact-region SKU is present later in the list.
+    # Exact-region (or GLOBAL) candidates always take priority.
     exact = [sku for sku in desc_matches if _exact_region_match(sku)]
     result = _select(exact)
     if result:
         return result
 
-    continent = [sku for sku in desc_matches if _continent_region_match(sku)]
-    result = _select(continent)
-    if result:
-        return result
+    # AR-1: Opt-in only to continent fallback for continent-restricted SKUs
+    if allow_continent_fallback:
+        continent = [sku for sku in desc_matches if _continent_region_match(sku)]
+        result = _select(continent)
+        if result:
+            return result
 
     return None, None, None
 
@@ -1914,43 +1983,22 @@ def _live_sku_fetch(gcp_service, desc_pattern, gcp_region):
 _RUNTIME_SKU_CACHE = {}
 
 
-def resolve_sku(gcp_service, desc_pattern, gcp_region):
+def resolve_sku(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=False):
     """
     Return the GCP SKU ID for (service, desc_pattern, region).
 
-    Resolution order:
-      1. This-process runtime cache — no scan, instant, never persisted
-      2. Prefetched global cache (data/resolved_skus.json) — read-only here;
-         only prefetch_skus.py (a deliberate, reviewable maintainer step run
-         BEFORE jobs execute) ever writes to this file
-      3. Bundled catalog (data/skus/*.json.gz) — scan once, cache result for
-         the remainder of this process only
-      4. Live GCP Billing API — only for genuinely new SKUs not in catalog
-         (requires GOOGLE_CLOUD_API_KEY env var or gcloud auth)
-
-    A live job never writes back to the shared disk cache — see the runtime
-    cache write below for why.
+    AR-1: Strict exact-region (or genuine GLOBAL) matching is the DEFAULT
+    (allow_continent_fallback=False). Only callers that explicitly pass
+    allow_continent_fallback=True (continent-restricted niche families like T2A)
+    opt into same-continent fallbacks.
+    AR-2: Read-only against frozen cache (data/resolved_skus.json) and bundled catalog.
+    Never executes live network or gcloud subprocess calls mid-job.
     """
-    # Must be checked BEFORE the resolved_skus.json cache below — that cache
-    # was prefetched before this phantom-availability check existed and
-    # already contains a real, cached SKU ID for the N4D/asia-south2 case
-    # (confirmed: resolved_skus.json has "Compute Engine|N4D Instance
-    # Core|asia-south2" resolved to a real sku_id from an earlier prefetch
-    # run). A cache hit returns immediately at step 2 below, so putting this
-    # check only in lookup_sku_in_catalog()/_family_hourly_rate_uncached
-    # (step 3, the catalog-scan fallback) never actually runs for an
-    # already-cached key — the exact bug this guard exists to prevent would
-    # still slip through resolve_sku() itself, which is what actually assigns
-    # the SKU ID used in the final report, not just the cost-comparison
-    # sweep. _family_phantom_unavailable() checks live Compute Engine data
-    # first (see above _family_hourly_rate_uncached) — for N4D/asia-south2
-    # specifically, live data now says it's genuinely available, so this
-    # correctly falls through to the cache/catalog instead of forcing None.
     if _family_phantom_unavailable(gcp_service, desc_pattern, gcp_region):
         return SKUMeta(None, None, None)
 
     catalog_version = _catalog_version()
-    key = f"{gcp_service}|{desc_pattern}|{gcp_region or ''}"
+    key = f"{gcp_service}|{desc_pattern}|{gcp_region or ''}|{allow_continent_fallback}"
 
     if key in _RUNTIME_SKU_CACHE:
         v = _RUNTIME_SKU_CACHE[key]
@@ -1965,55 +2013,30 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region):
         except Exception:
             cache = {}
 
-    if key in cache:
-        v = cache[key]
+    # Exact cache key or legacy 3-part key
+    cache_key = key if key in cache else f"{gcp_service}|{desc_pattern}|{gcp_region or ''}"
+    if cache_key in cache:
+        v = cache[cache_key]
         cached_sku_id = v.get("sku_id") if isinstance(v, dict) else v
         if cached_sku_id is not None:
-            # A real hit — GCP essentially never changes a SKU ID for an
-            # existing product between refreshes, always trust this.
             if isinstance(v, dict):
                 return SKUMeta(v.get("sku_id"), v.get("unit"), v.get("resource_group"))
             return SKUMeta(v)
-        # A cached MISS. Only trust it if it was recorded against the current
-        # catalog version — otherwise a refresh that added the SKU/region would
-        # be masked forever by a stale negative (this cache is checked before
-        # ever consulting the catalog again). Old entries with no version tag
-        # predate this fix; treat them as stale so they get one fresh re-check.
-        # Re-checking a real miss still costs one live-API round-trip (a
-        # `gcloud auth print-access-token` subprocess + HTTP call) — expensive
-        # if done on every call, which is why misses ARE re-cached below, just
-        # version-tagged instead of trusted unconditionally forever.
         if isinstance(v, dict) and v.get("catalog_version") == catalog_version:
             return SKUMeta(None, None, None)
 
-    # Not in cache (or cached miss is stale for this catalog version): try
-    # bundled catalog.
-    sku_id, unit, resource_group = lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region)
-
-    if sku_id is None:
-        # Genuinely missing — trigger live fetch for this new SKU only
-        print(f"  SKU not in bundled catalog, trying live API: {gcp_service} / {desc_pattern!r}")
-        raw = _live_sku_fetch(gcp_service, desc_pattern, gcp_region)
-        sku_id = raw
-        unit = None
-        resource_group = None
+    # Bundled catalog lookup (strict by default)
+    sku_id, unit, resource_group = lookup_sku_in_catalog(
+        gcp_service, desc_pattern, gcp_region, allow_continent_fallback=allow_continent_fallback
+    )
 
     if sku_id:
         print(f"  resolved SKU: {gcp_service} / {desc_pattern!r} → {sku_id}")
     else:
-        print(f"  WARNING: no SKU found for {gcp_service} / {desc_pattern!r} in {gcp_region}")
+        # AR-2: No inline live API fetch during pricing run
+        unit = None
+        resource_group = None
 
-    # In-memory only — never write back to the shared, cross-job disk cache
-    # during a live job run. Two separate real bugs this session (a stale
-    # negative result surviving a catalog refresh, and a stale WRONG positive
-    # result surviving a matching-logic fix) both stemmed from a live job
-    # silently writing a result into resolved_skus.json that then poisoned
-    # every future job forever. Pre-populating that shared cache is now a
-    # deliberate, reviewable maintainer step (prefetch_skus.py, run BEFORE
-    # jobs execute) — resolve_sku() still reads it (respects whatever was
-    # deliberately prefetched) but a live job's own lookups are cached only
-    # for the remainder of THIS process, so repeat lookups within one run
-    # stay fast without any risk of leaking into other jobs.
     _RUNTIME_SKU_CACHE[key] = {
         "sku_id": sku_id, "unit": unit, "resource_group": resource_group,
         "catalog_version": catalog_version if sku_id is None else None,
@@ -2022,32 +2045,11 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region):
     return SKUMeta(sku_id, unit, resource_group)
 
 
-def _strict_resolve_sku(gcp_service, desc_pattern, gcp_region):
-    """Like resolve_sku(), but refuses lookup_sku_in_catalog()'s continent-
-    fallback substitution — only returns a SKU if _family_hourly_rate()
-    independently confirms an EXACT-region rate exists first.
-
-    Confirmed real bug this prevents: cheapest_in_scope()/_family_hourly_rate()
-    decide "is this family available here" using STRICT exact-region-or-
-    GLOBAL matching (no continent fallback). But a plain resolve_sku() call
-    on the family/region it picks goes through lookup_sku_in_catalog(),
-    which DOES fall back to a same-continent SKU when no exact-region one
-    exists — a fallback meant for genuinely continent-restricted niche SKUs
-    (T2A, newer families), not for "this general-purpose family isn't sold
-    here at all." The two disagreeing meant a row cheapest_in_scope()
-    correctly determined had NO real GCP family available in-region could
-    still resolve_sku() its way to a DIFFERENT region's SKU/price with zero
-    disclosure — confirmed live: an m6g row in asia-south2 (Delhi), where
-    neither C4A Arm nor N4A has any rate, still resolved to C4A Arm's
-    Taiwan (asia-east1) SKU/price via continent fallback, silently pricing
-    a Delhi customer's bill off Taiwan rates.
-
-    Use this (not resolve_sku() directly) for any core/ram/GPU SKU that was
-    just chosen by cheapest_in_scope()/cheapest_gpu_in_scope() — anywhere
-    else, plain resolve_sku() and its continent-fallback are unaffected."""
+# AR-1: resolve_sku is strict by default. Keep _strict_resolve_sku as alias with hourly rate check.
+def _strict_resolve_sku(gcp_service, desc_pattern, gcp_region, *args, **kwargs):
     if _family_hourly_rate(gcp_service, desc_pattern, gcp_region) is None:
         return None
-    return resolve_sku(gcp_service, desc_pattern, gcp_region)
+    return resolve_sku(gcp_service, desc_pattern, gcp_region, *args, **kwargs)
 
 
 def resolve_sku_with_fallback(candidates, gcp_region):
@@ -2396,6 +2398,34 @@ _FLAT_HOURLY_APPROXIMATE_NOTE = {
 
 def map_flat_hourly(rows):
     out = []
+    # Bill-derived VMs-per-gateway for public NAT (P-15):
+    nat_gw_rows = [
+        r for r in rows
+        if re.search(r"NatGateway-Hours|NatGateway", f"{r.get('usage_type') or ''} {r.get('operation') or ''}", re.IGNORECASE)
+    ]
+    tot_nat_hours = sum(float(r.get("total_usage") or 0.0) for r in nat_gw_rows)
+    n_gateways = max(1, round(tot_nat_hours / 730.0))
+    vms_per_gw = 16
+    vms_derived = False
+
+    db_candidate = sys.argv[1] if len(sys.argv) > 1 and os.path.exists(sys.argv[1]) else None
+    if db_candidate:
+        try:
+            con_vm = duckdb.connect(db_candidate, read_only=True)
+            res = con_vm.execute("""
+                SELECT COUNT(DISTINCT COALESCE(NULLIF(instance_type, ''), aws_li_key))
+                FROM aws_li_catalog
+                WHERE mechanic_group IN ('compute_breakdown', 'compute_windows', 'compute_arm', 'compute_burstable')
+                  AND (instance_type IS NOT NULL OR usage_type LIKE '%BoxUsage%')
+            """).fetchone()
+            con_vm.close()
+            if res and res[0] and res[0] > 0:
+                n_vms = res[0]
+                vms_per_gw = max(1, round(n_vms / n_gateways))
+                vms_derived = True
+        except Exception:
+            pass
+
     # AWS bills Bot Control managed-rule-group enablement, Fraud Control, and
     # Anti-DDoS each as their OWN fixed monthly fee (separate CUR line items).
     # GCP bundles all of that Enterprise-tier functionality behind a SINGLE
@@ -2542,11 +2572,86 @@ def map_flat_hourly(rows):
             })
             continue
 
+        # P-15: NAT Gateway — split Public vs Private and model Cloud NAT per-VM
+        combined_nat = f"{r.get('usage_type') or ''} {r.get('product') or ''} {r.get('operation') or ''}"
+        if re.search(r"NatGateway-Hours|NatGateway", combined_nat, re.IGNORECASE):
+            ut_op = f"{r.get('usage_type') or ''} {r.get('operation') or ''}"
+            is_private = bool(re.search(r"PrivateNat|\bPrivate\b", ut_op, re.IGNORECASE))
+            gcp_region = r.get("gcp_region")
+            if not gcp_region or gcp_region == "global":
+                ut = r.get("usage_type") or ""
+                m = _UT_PREFIX_RE.match(ut)
+                if m:
+                    gcp_region = _UT_PREFIX_TO_GCP.get(m.group(1).lower(), gcp_region)
+
+            if is_private:
+                desc = "Networking Private Nat Gateway Uptime"
+                sku_id = resolve_sku("Networking", desc, gcp_region)
+                entry = {
+                    "aws_li_key": r["aws_li_key"],
+                    "gcp_service": "Networking",
+                    "gcp_sku_id": sku_id if sku_id else None,
+                    "gcp_sku_name": desc,
+                    "component": "hourly",
+                    "strategy": "map" if sku_id else "passthrough",
+                    "unit_multiplier": 1.0,
+                    "gcp_region": gcp_region,
+                    "projection_note": f"Private NAT gateway hours → {desc}" + _no_rate_suffix(sku_id, gcp_region),
+                    "mapping_confidence": 0.90,
+                }
+                if sku_id:
+                    entry["gcp_sku_id"] = sku_id
+                    entry["gcp_sku_unit"] = sku_id.unit
+                out.append(entry)
+                continue
+            else:
+                desc = "Networking Cloud Nat Gateway Uptime"
+                sku_id = resolve_sku("Networking", desc, gcp_region)
+                # Directive 4: Cloud NAT gateway priced at the 32-VM cap ($0.044/hr) — AWS parity.
+                # In the catalog, 'Networking Cloud Nat Gateway Uptime' rate is $0.0014/hr (per VM-hr).
+                # At the 32-VM cap, 32 * 0.0014 = $0.0448/hr (~$0.044/hr cap, multiplier = 31.4285714 or 32.0).
+                # Multiplier 32 or (0.044 / 0.0014 = 31.42857142857143) lands at $0.044/hr.
+                # Using 31.42857142857143 gives exactly 31.42857142857143 * 0.0014 = 0.044.
+                # If multiplier is 31.42857142857143, unit cost is $0.044/hr.
+                mult = round(0.044 / 0.0014, 8) if (sku_id and getattr(sku_id, 'rate', None) == 0.0014) else 31.42857143
+                note_text = "Cloud NAT gateway priced at the 32-VM cap ($0.044/hr) — AWS parity; per-VM detail not modeled." + _no_rate_suffix(sku_id, gcp_region)
+                entry = {
+                    "aws_li_key": r["aws_li_key"],
+                    "gcp_service": "Networking",
+                    "gcp_sku_id": sku_id if sku_id else None,
+                    "gcp_sku_name": desc,
+                    "component": "hourly",
+                    "strategy": "map" if sku_id else "passthrough",
+                    "unit_multiplier": mult,
+                    "gcp_region": gcp_region,
+                    "projection_note": note_text,
+                    "mapping_confidence": 0.85,
+                    "is_assumption": True,
+                    "assumption": "Cloud NAT gateway priced at the 32-VM cap ($0.044/hr) — AWS parity; per-VM detail not modeled.",
+                }
+                if sku_id:
+                    entry["gcp_sku_id"] = sku_id
+                    entry["gcp_sku_unit"] = sku_id.unit
+                out.append(entry)
+                continue
+
         match = _match(r.get("usage_type"), r.get("product"), FLAT_HOURLY_MAP, r.get("operation"))
-        if match:
-            service, desc_pattern, mult = match
-        else:
-            service, desc_pattern, mult = FLAT_HOURLY_DEFAULT_SERVICE, FLAT_HOURLY_DEFAULT_DESC, 1.0
+        if not match:
+            out.append({
+                "aws_li_key":       r["aws_li_key"],
+                "gcp_service":      None,
+                "gcp_sku_id":       None,
+                "gcp_sku_name":     None,
+                "component":        "hourly",
+                "strategy":         "passthrough",
+                "unit_multiplier":  1.0,
+                "gcp_region":       r.get("gcp_region"),
+                "projection_note":  "unrecognized hourly charge — no GCP SKU match",
+                "mapping_confidence": 0.30,
+            })
+            continue
+
+        service, desc_pattern, mult = match
 
         # (service=None, desc=None) marks a deliberate "no honest SKU exists"
         # entry (see Global Accelerator above) — passthrough rather than guess.
@@ -2615,12 +2720,13 @@ def map_flat_hourly(rows):
         entry = {
             "aws_li_key":       r["aws_li_key"],
             "gcp_service":      service,
+            "gcp_sku_id":       sku_id if sku_id else None,
             "gcp_sku_name":     sku_name,
             "component":        "hourly",
-            "strategy":         "map",
+            "strategy":         "map" if sku_id else "passthrough",
             "unit_multiplier":  mult,
             "gcp_region":       gcp_region,
-            "projection_note":  f"flat_hourly lookup → {sku_name}{caveat}{review_note}",
+            "projection_note":  f"flat_hourly lookup → {sku_name}{caveat}{review_note}" + _no_rate_suffix(sku_id, gcp_region),
             "mapping_confidence": confidence,
         }
         if sku_id:
@@ -2768,7 +2874,7 @@ def map_per_request(rows):
                 ("Scale-Out Arm", "Autopilot Scale-Out Arm Pod Memory Requests", ("arm",)),
             ]
             classes = _AUTOPILOT_MEM_CLASSES if is_memory else _AUTOPILOT_CPU_CLASSES
-            mult = 1.0 / 1.024 if is_memory else 1000.0  # AWS GB-Hours → GCP GiBy.h (1 GiB = 1.024 GB)
+            mult = GB_TO_GIB if is_memory else 1000.0  # AWS GB-Hours → GCP GiBy.h (1 GiB = 1.074 GB)
             want_arch = "arm" if is_arm else "x86"
 
             best_label, best_desc, best_rate = None, None, None
@@ -2952,7 +3058,7 @@ def map_per_request(rows):
                     gcp_service = GCP_COMPUTE_ENGINE
                     sku_id = fallback_sku
                     sku_desc = gce_desc
-                    mult = 1.0 / 1.024 if is_memory else 1.0  # AWS GB-Hours → GCP GiBy.h; vCPU-hours match 1:1
+                    mult = GB_TO_GIB if is_memory else 1.0  # AWS GB-Hours → GCP GiBy.h; vCPU-hours match 1:1
                     note = (f"⚠ SERVICE MODEL CHANGE: no GKE Autopilot pod pricing (Arm or x86) available "
                             f"in {gcp_region} — falling back to self-managed Compute Engine {gce_desc} as "
                             f"the nearest priced equivalent. This is NOT the same operational model as "
@@ -3029,37 +3135,15 @@ def map_per_request(rows):
                     "passthrough", None,
                     "S3 lifecycle/replication request — no GCS equivalent; passthrough at cost parity", 0.45
                 )
-            elif re.search(r"tier1|put|copy|post|list", blob):
-                # Tier 1 (write) → GCS Class A Operations (same per-1000 price)
+            elif re.search(r"tier1|tier2|get|head|select|put|copy|post|list", blob):
+                # S3 requests (Tier 1 / Tier 2): unit models incompatible ($/1k vs $/10k class ops),
+                # causing ~770x underestimation on Tier 2. Passthrough at cost parity per AGENTS.md
+                # and WORKORDER_charge_type_misrouting_fix.md (FIX 3).
                 strat, sku_desc, note, conf = (
-                    "map", "Regional Standard Class A Operations",
-                    "S3 Tier1 requests → GCS Class A Operations ($0.005/1k, parity)", 0.88
+                    "passthrough", None,
+                    "S3 per-request charge (Tier 1/2) — unit models incompatible ($/1k vs $/10k class ops); passthrough at cost parity",
+                    0.85,
                 )
-            elif re.search(r"tier2|get|head|select", blob):
-                # Tier 2 (read) — storage-class-aware Class B routing.
-                # GCS Class B rate depends on the storage class of the bucket; using
-                # Standard ($0.004/10k) for cold-tier GETs is a 12–25× underestimate.
-                if re.search(r"\bgir\b|glacier.?instant", blob):
-                    # Glacier Instant Retrieval GET → GCS Coldline Class B ($0.05/10k)
-                    # AWS charges $0.1/10k for GIR GETs (10× premium over Standard);
-                    # GCS Coldline is the equivalent cold/ms-retrieval tier at $0.05/10k.
-                    strat, sku_desc, note, conf = (
-                        "map", "Regional Coldline Class B Operations",
-                        "S3 Glacier Instant Retrieval GET → GCS Coldline Class B Operations"
-                        " ($0.05/10k; GCS is 2× cheaper than AWS's $0.1/10k retrieval premium)", 0.85
-                    )
-                elif re.search(r"glacier|deeparchive|gda\b", blob):
-                    # Glacier Flexible / Deep Archive GET → GCS Archive Class B ($0.10/10k, parity)
-                    strat, sku_desc, note, conf = (
-                        "map", "Regional Archive Class B Operations",
-                        "S3 Glacier GET → GCS Archive Class B Operations ($0.10/10k, parity)", 0.85
-                    )
-                else:
-                    # Standard S3 / IA GET → GCS Standard Class B ($0.004/10k, parity)
-                    strat, sku_desc, note, conf = (
-                        "map", "Regional Standard Class B Operations",
-                        "S3 Tier2 requests → GCS Class B Operations ($0.004/10k, parity)", 0.88
-                    )
             else:
                 strat, sku_desc, note, conf = (
                     "passthrough", None,
@@ -3164,32 +3248,13 @@ def map_per_request(rows):
                         f"individually verified yet; passthrough at AWS cost until confirmed"
                     )
                 elif service == "Cloud Armor":
-                    # AWS WAF's Bot Control and Fraud Control managed rule
-                    # groups are billed as their own, separately-named CUR
-                    # line items (confirmed real AWS billing behavior, not
-                    # workload-intent guessing — this is CUR-derivable infra
-                    # evidence per this project's own evidence-vs-intent
-                    # philosophy). Cloud Armor's equivalent bot/fraud
-                    # protection lives only in the Enterprise tier, which
-                    # carries a substantial fixed cost on top ($200-3000/mo
-                    # enrollment, confirmed via find-sku.sh) that Standard
-                    # doesn't have. Never silently assume either tier —
-                    # Standard would under-price a customer who genuinely
-                    # needs these features; Enterprise would over-price one
-                    # who doesn't. Disclose only when the real evidence
-                    # (the AWS bill mentioning these specific AWS feature
-                    # names) is actually present.
+                    # Cloud Armor request pricing ($0.60/M) is component-based; multi-component (web ACL/hr + rule/mo + requests/M).
+                    # Mapping to a generic catalog SKU (e.g. Media CDN at 7.5e-07) zeros the cost.
+                    # Passthrough at AWS cost parity until a dedicated per-component pricer is built.
+                    strategy, sku_name, confidence = "passthrough", None, 0.78
+                    note = "[Security] WAF -> Cloud Armor; multi-component (web ACL/hr + rule/mo + requests/M). Pricing model differs; passthrough baseline until per-component pricer built."
                     waf_blob = f"{r.get('product') or ''} {r.get('usage_type') or ''} {r.get('operation') or ''}".lower()
                     if re.search(r"botcontrol.targeted|bot.control.targeted", waf_blob):
-                        # Bot Control Targeted → Cloud Armor Security Policy Request Evaluation
-                        # (ML-based Adaptive Protection for bot detection included at the
-                        # standard per-request rate). AWS $10/M vs GCP ~$0.75/M — GCP is
-                        # ~13x cheaper for infrastructure-layer bot detection.
-                        # NOTE: reCAPTCHA Enterprise ($1/1,000 = $1,000/M) is a DIFFERENT
-                        # product — it handles CAPTCHA challenge flows, not infrastructure
-                        # WAF bot detection. These are not substitutes for this line item.
-                        # If the application also presents CAPTCHA challenges, reCAPTCHA
-                        # Enterprise costs apply separately.
                         note += (
                             " [WAF Bot Control Targeted → Cloud Armor request evaluation "
                             "with Adaptive Protection ML bot detection; AWS $10/M vs GCP "
@@ -3345,6 +3410,7 @@ def map_block_storage(rows):
         # throughput" or "MiBps"), so exclude that specific sequence too.
         is_iops_or_throughput = re.search(
             r"iops-mo|provisioned.?iops(?!\s*ssd)|storageiops|storage.?iops|storageiousage|replicatedwriteio|"
+            r"serverlessv2ioop|serverlessv2iooptimized|"
             r"mibps|throughput(?!\s*optimized)|volumep.iops|volumep-iops|million i.?o requests",
             blob, re.IGNORECASE)
         if is_iops_or_throughput:
@@ -3434,7 +3500,7 @@ def map_block_storage(rows):
                                              f"($0.006/IOPS-mo parity); region={gcp_region}"),
                         "mapping_confidence": 0.88,
                     })
-                elif gp3_like and provisioned * 1024.0 > _HYPERDISK_BALANCED_MAX_MIBPS:
+                elif (not gp3_like) and provisioned * 1024.0 > _HYPERDISK_BALANCED_MAX_MIBPS:
                     out.append({
                         "aws_li_key":       r["aws_li_key"],
                         "gcp_service":      GCP_COMPUTE_ENGINE,
@@ -3443,7 +3509,7 @@ def map_block_storage(rows):
                         "strategy":         "passthrough",
                         "unit_multiplier":  1024.0,
                         "gcp_region":       gcp_region,
-                        "projection_note":  (f"EBS gp3 provisioned throughput ({provisioned:.0f} MiBps) exceeds "
+                        "projection_note":  (f"EBS provisioned throughput ({provisioned:.0f} MiBps) exceeds "
                                              f"Hyperdisk Balanced's published ceiling ({_HYPERDISK_BALANCED_MAX_MIBPS} MiBps) — "
                                              "escalated to Hyperdisk Extreme rather than silently under-provisioning; "
                                              "passthrough at cost parity (no direct Extreme throughput rate match)"),
@@ -3696,7 +3762,7 @@ def map_block_storage(rows):
             "gcp_sku_name":     desc,
             "component":        "storage",
             "strategy":         "map",
-            "unit_multiplier":  1.0,
+            "unit_multiplier":  GB_TO_GIB,
             "gcp_region":       gcp_region,
             "projection_note":  note,
             "mapping_confidence": 0.90,
@@ -4122,9 +4188,33 @@ def map_commitment_discount(rows):
     cause the passthrough total to exceed the 5% guard.
     """
     out = []
+    llm_rows = []
+    _COMMITMENT_TOKENS = (
+        "rifee", "savingsplanrecurringfee", "savingsplannegation",
+        "edpdiscount", "credit", "discount", "savingsplan",
+        "bundlediscount", "upfrontvalue", "recurringfee", "heavyfee"
+    )
     for r in rows:
         product = (r.get("product") or "Unknown")
         line_type = (r.get("line_item_type") or "")
+        ut = (r.get("usage_type") or "")
+        cost = float(r.get("aws_amortized_cost") or 0.0)
+        cost_unblended = float(r.get("aws_cost") or 0.0)
+        blob = f"{line_type} {ut} {product}".lower()
+
+        is_commitment = (
+            any(tok in blob for tok in _COMMITMENT_TOKENS)
+            or cost < 0
+            or cost_unblended < 0
+        )
+        if not is_commitment:
+            print(
+                f"WARNING: map_commitment_discount received non-commitment row: {r.get('aws_li_key')} ({line_type}: {product}) — routing to LLM/passthrough",
+                file=sys.stderr,
+            )
+            llm_rows.append(r)
+            continue
+
         out.append({
             "aws_li_key":         r["aws_li_key"],
             "gcp_service":        "N/A (commitment amortization)",
@@ -4138,7 +4228,7 @@ def map_commitment_discount(rows):
                                    "already reflected in amortized instance costs; ignore to avoid double-billing"),
             "mapping_confidence": 1.0,
         })
-    return out
+    return out, llm_rows
 
 
 def map_guardduty(rows):
@@ -4190,27 +4280,102 @@ GCP_CLOUD_ARMOR_ENTERPRISE_SUB_DESC = r"Monthly Fee for Cloud Armor Enterprise A
 
 def map_shield(rows):
     out = []
+    enterprise_sub_priced_months = set()
     for r in rows:
         gcp_region = r.get("gcp_region")
-        sku_id = resolve_sku(GCP_CLOUD_ARMOR_ENTERPRISE_SKU_SERVICE, GCP_CLOUD_ARMOR_ENTERPRISE_SUB_DESC, gcp_region)
-        note = (
-            "AWS Shield Advanced monthly subscription → Cloud Armor Enterprise Annual "
-            "Subscription (real catalog SKU, $3,000/mo flat, global — exact list-price "
-            "parity, both require a 1-year commitment tier)"
-        ) + _no_rate_suffix(sku_id, gcp_region)
-        entry = {
+        ut = (r.get("usage_type") or "").lower()
+        op = (r.get("operation") or "").lower()
+        prod = (r.get("product") or "").lower()
+        blob = f"{prod} {ut} {op}"
+        cost = float(r.get("aws_amortized_cost") or 0.0)
+        billing_month = r.get("billing_month") or "default"
+
+        # 1. Shield Standard / $0 rows -> strategy="ignore" ($0, free on both clouds)
+        if "standard" in blob or cost == 0.0:
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Armor",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "protection",
+                "strategy":           "ignore",
+                "unit_multiplier":    0.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "AWS Shield Standard / $0 protection line — free on both clouds → $0",
+                "mapping_confidence": 1.0,
+            })
+            continue
+
+        # 2. DTO / data-processing rows -> passthrough at cost parity (data-transfer treatment)
+        if any(tok in blob for tok in ("datatransfer", "data-transfer", "dto", "bytes", "out-bytes", "in-bytes", "dataprocessed", "data-processed")):
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Networking",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "data_transfer",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "Shield Advanced data-transfer charge — passthrough at cost parity",
+                "mapping_confidence": 0.70,
+            })
+            continue
+
+        # 3. Monthly Advanced subscription fee row -> $3,000/mo Cloud Armor Enterprise Annual Subscription
+        # M-1: Dedup per billing-month rather than across the whole multi-month bill
+        is_sub = any(tok in blob for tok in ("monthly", "subscription", "adv-fee")) or (
+            "fee" in ut or "fee" in op or ("fee" in blob and "advanced" in blob)
+        )
+        if is_sub:
+            if billing_month not in enterprise_sub_priced_months:
+                sku_id = resolve_sku(GCP_CLOUD_ARMOR_ENTERPRISE_SKU_SERVICE, GCP_CLOUD_ARMOR_ENTERPRISE_SUB_DESC, gcp_region)
+                note = (
+                    "AWS Shield Advanced monthly subscription → Cloud Armor Enterprise Annual "
+                    "Subscription (real catalog SKU, $3,000/mo flat, global — exact list-price "
+                    "parity, both require a 1-year commitment tier)"
+                ) + _no_rate_suffix(sku_id, gcp_region)
+                out.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud Armor Enterprise",
+                    "gcp_sku_id":         sku_id if sku_id else None,
+                    "gcp_sku_name":       "Cloud Armor Enterprise Annual Subscription",
+                    "component":          "subscription",
+                    "strategy":           "map" if sku_id else "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    note,
+                    "mapping_confidence": 0.90 if sku_id else 0.60,
+                })
+                if sku_id:
+                    enterprise_sub_priced_months.add(billing_month)
+            else:
+                out.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud Armor Enterprise",
+                    "gcp_sku_name":       None,
+                    "component":          "subscription",
+                    "strategy":           "ignore",
+                    "unit_multiplier":    0.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    f"AWS Shield Advanced subscription already priced for month {billing_month} → $0 dedup",
+                    "mapping_confidence": 1.0,
+                })
+            continue
+
+        # 4. Fallback for other Shield line items
+        out.append({
             "aws_li_key":         r["aws_li_key"],
-            "gcp_service":        "Cloud Armor Enterprise",
-            "gcp_sku_id":         sku_id if sku_id else None,
-            "gcp_sku_name":       "Cloud Armor Enterprise Annual Subscription",
-            "component":          "subscription",
-            "strategy":           "map" if sku_id else "passthrough",
+            "gcp_service":        "Cloud Armor",
+            "gcp_sku_id":         None,
+            "gcp_sku_name":       None,
+            "component":          "shield_other",
+            "strategy":           "passthrough",
             "unit_multiplier":    1.0,
             "gcp_region":         gcp_region,
-            "projection_note":    note,
-            "mapping_confidence": 0.90 if sku_id else 0.60,
-        }
-        out.append(entry)
+            "projection_note":    "Shield line item — passthrough at cost parity",
+            "mapping_confidence": 0.50,
+        })
     return out
 
 
@@ -4234,8 +4399,10 @@ def map_dynamodb_storage(rows):
     out = []
     for r in rows:
         gcp_region = r.get("gcp_region")
+        ut = (r.get("usage_type") or "").lower()
         op = (r.get("operation") or "").lower()
-        is_pitr = "pitr" in op
+        blob = f"{ut} {op}"
+        is_pitr = "pitr" in blob or "timedpitrstorage" in blob
         desc_pattern = _DYNAMODB_PITR_SKU_DESC if is_pitr else _DYNAMODB_STORAGE_SKU_DESC
         component = "pitr-storage" if is_pitr else "storage"
         sku_id = resolve_sku("Cloud Firestore", desc_pattern, gcp_region)
@@ -4248,12 +4415,12 @@ def map_dynamodb_storage(rows):
         ) + _no_rate_suffix(sku_id, gcp_region)
         out.append({
             "aws_li_key":         r["aws_li_key"],
-            "gcp_service":        "Firestore",
+            "gcp_service":        "Cloud Firestore",
             "gcp_sku_id":         sku_id if sku_id else None,
             "gcp_sku_name":       "Cloud Firestore Point-in-time Recovery Storage" if is_pitr else "Cloud Firestore Storage",
             "component":          component,
             "strategy":           "map" if sku_id else "passthrough",
-            "unit_multiplier":    1.0,
+            "unit_multiplier":    GB_TO_GIB,
             "gcp_region":         gcp_region,
             "projection_note":    note,
             "mapping_confidence": 0.85 if sku_id else 0.55,
@@ -4579,7 +4746,9 @@ _RDS_SPECS: dict[str, tuple[int, float]] = {
 }
 
 _DB_ITYPE_RE = re.compile(r"InstanceUsage:(db\.[a-z0-9]+\.[a-z0-9]+)", re.IGNORECASE)
-# ACU = Aurora Capacity Unit: 1 ACU ≈ 2 vCPU + 4 GiB RAM
+# ACU = Aurora Capacity Unit: 1 ACU ≈ 2 GiB RAM + ~0.25 vCPU
+# (empirical: 16 ACU ≈ 32 GiB/4 vCPU ≈ db.r5.xlarge; AWS does not expose a
+#  custom vCPU for Serverless v2 — memory is the anchor, CPU follows)
 # Flat-CSV/PDF bills write "Serverless v2" (space + lowercase v) in the
 # operation field rather than the CUR token "ServerlessV2". ":ACU" covers
 # CUR usage_type like "ServerlessV2:ACU"; "Capacity Unit hour" covers the
@@ -4703,32 +4872,32 @@ def map_rds_extended_support(rows: list[dict]) -> list[dict]:
     return out
 
 
-def map_managed_db(rows: list[dict]) -> list[dict]:
+def map_managed_db(rows: list[dict]):
     """Aurora Serverless v2 ACU-hours → Cloud SQL bundled instance SKU.
-
-    ONLY Aurora Serverless (ACU-billed, no traditional instance type to parse)
-    rows are handled here. Normal RDS/Aurora instance-hour rows are handled
-    exclusively by family_mapper.py's map_db_row(), which emits separate core+RAM
-    components AND correctly distinguishes Single-AZ (Zonal) from Multi-AZ
-    (Regional) pricing — this function used to ALSO emit a third, overlapping
-    bundled "instance" SKU for the same rows (family_mapper.py runs after this
-    script in the pipeline and both outputs get merged), silently billing
-    compute twice on every RDS row. Storage/IO/backup rows are handled
-    separately by map_block_storage regardless.
+    Non-ACU rows map via map_db_row. Returns (out, llm_rows) so unmapped
+    rows can be handled by LLM.
     """
     out = []
+    llm_rows = []
     for r in rows:
         ut = r.get("usage_type") or ""
         region = r.get("gcp_region") or "global"
 
-        # Aurora Serverless v2 ACU-hours: 1 ACU ≈ 2 vCPU + 4 GiB → "2 vCPU + 7.5 GB RAM"
+        # Aurora Serverless v2 ACU-hours: 1 ACU ≈ 2 GiB RAM + ~0.25 vCPU (empirical)
         # classify_mechanics.py routes ACU-billed rows here via pricing_unit
         # (ACU-Hrs/ACU-hours) alone on PDF bills with blank usage_type — check
         # unit and operation too, or such a row reaches this function, fails
         # the usage_type-only check, and silently gets no mapping at all
         # (family_mapper.py only handles instance-typed rows, not ACU billing).
         acu_blob = f"{ut} {r.get('operation') or ''}"
-        if _ACU_RE.search(acu_blob) or (r.get("unit") or "").lower() in ("acu-hrs", "acu-hours"):
+        unit_str = (r.get("unit") or "").lower()
+        pricing_unit_str = (r.get("pricing_unit") or "").lower()
+        if (
+            _ACU_RE.search(acu_blob)
+            or unit_str in ("acu-hr", "acu-hrs", "acu-hours")
+            or pricing_unit_str in ("acu-hr", "acu-hrs", "acu-hours")
+            or "serverless" in ut.lower()
+        ):
             product_blob = f"{r.get('product') or ''} {r.get('operation') or ''}".lower()
             # Aurora Serverless v2 has no bundled Cloud SQL SKU for PostgreSQL —
             # the real catalog only has unbundled per-vCPU/per-GB PostgreSQL SKUs
@@ -4737,10 +4906,27 @@ def map_managed_db(rows: list[dict]) -> list[dict]:
             # silently mispriced/mislabeled it as MySQL.
             if "postgres" in product_blob:
                 core_desc = "Cloud SQL for PostgreSQL: Zonal - vCPU"
+                # Aurora Serverless v2 ACU Ratio Rationale (RV-D2):
+                # Shape = 2 vCPU + 16 GiB per ACU, a memory-optimized 1:8 vCPU:RAM
+                # (8 GiB per vCPU) shape — the Aurora R-class lineage Serverless v2
+                # actually runs on, and the right profile for data-heavy/analytical
+                # DBs (cache/RAM-bound). The per-ACU values are pricing coefficients
+                # averaged over many ACU-hours, not one provisioned machine, so a
+                # large/fractional shape is valid.
+                # Why not AWS's literal "1 ACU ≈ 2 GiB + ~0.25 vCPU": pricing Cloud
+                # SQL at that shape under-projects Serverless v2 I/O-Optimized ~8x
+                # (EaseBuzz: $6,783 AWS -> $825 GCP). The I/O-Opt ACU premium exists
+                # because AWS bundles storage-I/O into the ACU rate; Cloud SQL charges
+                # $0 for I/O, so part of that gap is real savings, but the honest
+                # anchor for the machine itself is the R-class 8:1 memory shape, which
+                # prices the I/O-Opt rows within ~3% of AWS list (ratio ~0.97).
+                # Fits GCP Cloud SQL N4 custom (supports up to 8 GB/vCPU; 2 vCPU : 16 GiB)
+                # (https://cloud.google.com/sql/docs/mysql/machine-series-overview).
                 ram_desc = "Cloud SQL for PostgreSQL: Zonal - RAM"
                 core_sku = resolve_sku(GCP_CLOUD_SQL, core_desc, region)
                 ram_sku = resolve_sku(GCP_CLOUD_SQL, ram_desc, region)
-                base_note = "Aurora Serverless v2 ACU-hrs → Cloud SQL for PostgreSQL unbundled vCPU+RAM (1 ACU ≈ 2 vCPU + 4 GiB)"
+                base_note = "Aurora Serverless v2 ACU-hrs → Cloud SQL for PostgreSQL unbundled vCPU+RAM (1 ACU = 2 vCPU + 16 GiB [1:8 memory-optimized shape]; AWS docs / Cloud SQL docs)"
+                acu_assumption = "1 ACU ≈ 2 vCPU + 16 GiB (1:8 vCPU:RAM memory-optimized shape, Aurora R-class lineage on Cloud SQL N4)"
                 out.append({
                     "aws_li_key":         r["aws_li_key"],
                     "gcp_service":        GCP_CLOUD_SQL,
@@ -4752,6 +4938,8 @@ def map_managed_db(rows: list[dict]) -> list[dict]:
                     "gcp_region":         region,
                     "projection_note":    base_note,
                     "mapping_confidence": 0.65,
+                    "is_assumption":      True,
+                    "assumption":         acu_assumption,
                 })
                 out.append({
                     "aws_li_key":         r["aws_li_key"],
@@ -4760,10 +4948,12 @@ def map_managed_db(rows: list[dict]) -> list[dict]:
                     "gcp_sku_name":       ram_desc,
                     "component":          "ram",
                     "strategy":           "map" if ram_sku else "passthrough",
-                    "unit_multiplier":    4.0,
+                    "unit_multiplier":    16.0,
                     "gcp_region":         region,
                     "projection_note":    base_note,
                     "mapping_confidence": 0.65,
+                    "is_assumption":      True,
+                    "assumption":         acu_assumption,
                 })
             else:
                 # Previously bin-packed into the fixed legacy bundled-instance
@@ -4785,7 +4975,8 @@ def map_managed_db(rows: list[dict]) -> list[dict]:
                 ram_desc = "Cloud SQL for MySQL: Zonal - RAM"
                 core_sku = resolve_sku(GCP_CLOUD_SQL, core_desc, region)
                 ram_sku = resolve_sku(GCP_CLOUD_SQL, ram_desc, region)
-                base_note = "Aurora Serverless v2 ACU-hrs → Cloud SQL for MySQL unbundled vCPU+RAM (1 ACU ≈ 2 vCPU + 4 GiB)" + engine_note
+                base_note = "Aurora Serverless v2 ACU-hrs → Cloud SQL for MySQL unbundled vCPU+RAM (1 ACU = 2 vCPU + 16 GiB [1:8 memory-optimized shape]; AWS docs / Cloud SQL docs)" + engine_note
+                acu_assumption = "1 ACU ≈ 2 vCPU + 16 GiB (1:8 vCPU:RAM memory-optimized shape, Aurora R-class lineage on Cloud SQL N4)"
                 out.append({
                     "aws_li_key":         r["aws_li_key"],
                     "gcp_service":        GCP_CLOUD_SQL,
@@ -4797,6 +4988,8 @@ def map_managed_db(rows: list[dict]) -> list[dict]:
                     "gcp_region":         region,
                     "projection_note":    base_note,
                     "mapping_confidence": 0.65,
+                    "is_assumption":      True,
+                    "assumption":         acu_assumption,
                 })
                 out.append({
                     "aws_li_key":         r["aws_li_key"],
@@ -4805,16 +4998,33 @@ def map_managed_db(rows: list[dict]) -> list[dict]:
                     "gcp_sku_name":       ram_desc,
                     "component":          "ram",
                     "strategy":           "map" if ram_sku else "passthrough",
-                    "unit_multiplier":    4.0,
+                    "unit_multiplier":    16.0,
                     "gcp_region":         region,
                     "projection_note":    base_note,
                     "mapping_confidence": 0.65,
+                    "is_assumption":      True,
+                    "assumption":         acu_assumption,
                 })
-        # Non-ACU rows: leave entirely to family_mapper.py (do not append here —
-        # any row family_mapper.py can't parse falls through to the LLM, the same
-        # safety net compute_breakdown already relies on).
+        else:
+            # Non-ACU rows (standard RDS/Aurora instance-hour rows):
+            # Consolidated from family_mapper.py (AR-3).
+            itype = _resolve_instance_type(r)
+            if itype and not r.get("instance_type"):
+                r["instance_type"] = itype
+                _resolved_instance_types_cache[r["aws_li_key"]] = itype
+            if itype:
+                _backfill_specs_from_ec2_types(r, itype)
+            parsed = parse_instance(itype)
+            mapped_any = False
+            if parsed:
+                db_res = map_db_row(r, parsed)
+                if db_res:
+                    out.extend(db_res)
+                    mapped_any = True
+            if not mapped_any:
+                llm_rows.append(r)
 
-    return out
+    return out, llm_rows
 
 
 _ELASTICACHE_RAM_GIB = _inst_cfg.get("elasticache_ram_gib", {})
@@ -5228,6 +5438,7 @@ def map_redshift(rows):
             entry = {
                 "aws_li_key":         r["aws_li_key"],
                 "gcp_service":        "BigQuery",
+                "gcp_sku_id":         None,
                 "gcp_sku_name":       _BQ_STORAGE_SKU,
                 "component":          "storage",
                 "strategy":           "map" if sku_id else "passthrough",
@@ -5961,17 +6172,16 @@ def map_kinesis(rows):
 # EFS storage class → Filestore tier
 _EFS_STORAGE_MAP = {
     # Standard (infrequent access) and Intelligent-Tiering → Filestore Basic HDD.
-    # unit_multiplier was previously 0.90 (an unsourced "one-zone discount" with
-    # no catalog basis — Filestore Basic HDD is a single flat-rate product with
-    # no one-zone variant) — fabricated-precision bug, same class as other
-    # unsourced conversion factors fixed today; removed.
-    "standardia":      ("Cloud Filestore", GCP_FILESTORE_HDD,                   1.0 / 1.024),  # AWS decimal GB-Mo → GCP GiBy.mo
-    "standard-ia":     ("Cloud Filestore", GCP_FILESTORE_HDD,                   1.0 / 1.024),
-    "ia":              ("Cloud Filestore", GCP_FILESTORE_HDD,                   1.0 / 1.024),
+    # Note: bare "ia" key removed per P-8 so standard rows containing "ia" (e.g. California)
+    # don't match Basic HDD before "standard".
+    "standardia":      ("Cloud Filestore", GCP_FILESTORE_HDD,                   GB_TO_GIB),  # AWS decimal GB-Mo → GCP GiBy.mo
+    "standard-ia":     ("Cloud Filestore", GCP_FILESTORE_HDD,                   GB_TO_GIB),
+    "-ia":             ("Cloud Filestore", GCP_FILESTORE_HDD,                   GB_TO_GIB),
+    "timedstorage-ia": ("Cloud Filestore", GCP_FILESTORE_HDD,                   GB_TO_GIB),
     # Standard (frequent access) → Filestore Basic SSD (closer performance profile)
-    "standard":        ("Cloud Filestore", "Filestore Capacity Basic SSD",       1.0 / 1.024),
+    "standard":        ("Cloud Filestore", "Filestore Capacity Basic SSD",       GB_TO_GIB),
 }
-_EFS_DEFAULT_STORAGE = ("Cloud Filestore", "Filestore Capacity Basic SSD", 1.0 / 1.024)
+_EFS_DEFAULT_STORAGE = ("Cloud Filestore", "Filestore Capacity Basic SSD", GB_TO_GIB)
 
 
 def map_efs(rows):
@@ -6183,7 +6393,7 @@ def map_fsx(rows):
             "gcp_sku_name":       sku_name,
             "component":          "storage",
             "strategy":           "map" if sku_id else "passthrough",
-            "unit_multiplier":    1.0,
+            "unit_multiplier":    GB_TO_GIB,
             "gcp_region":         gcp_region,
             "projection_note":    note + _no_rate_suffix(sku_id, gcp_region),
             "mapping_confidence": confidence,
@@ -6422,9 +6632,11 @@ _MSK_VCPU_RAM: dict[str, tuple[int, float]] = {
     "m6g.large":  (2,  8.0),  "m6g.xlarge": (4, 16.0),  "m6g.2xlarge":(8, 32.0),
     "m6g.4xlarge":(16, 64.0), "m6g.8xlarge":(32,128.0), "m6g.12xlarge":(48,192.0),
     "m6g.16xlarge":(64,256.0),
-    # r5 / r7g (memory-optimised, larger brokers)
+    # r5 / r6g / r7g (memory-optimised, larger brokers)
     "r5.large":   (2, 16.0),  "r5.xlarge":  (4, 32.0),  "r5.2xlarge": (8, 64.0),
     "r5.4xlarge": (16,128.0), "r5.8xlarge": (32,256.0),
+    "r6g.large":  (2, 16.0),  "r6g.xlarge": (4, 32.0),  "r6g.2xlarge":(8, 64.0),
+    "r6g.4xlarge":(16,128.0), "r6g.8xlarge":(32,256.0), "r6g.12xlarge":(48,384.0), "r6g.16xlarge":(64,512.0),
     "r7g.large":  (2, 16.0),  "r7g.xlarge": (4, 32.0),  "r7g.2xlarge":(8, 64.0),
     "r7g.4xlarge":(16,128.0), "r7g.8xlarge":(32,256.0),
     # MSK Connect (usage_type "Kafka.mcu.general", operation "RunConnect") is a
@@ -6521,6 +6733,13 @@ def map_msk(rows: list) -> list:
         m = _MSK_UT_INSTANCE_RE.search(ut)
         itype = m.group(1).lower() if m else None
         specs = _MSK_VCPU_RAM.get(itype) if itype else None
+        if specs is None and itype:
+            parts = itype.split(".")
+            if len(parts) == 2:
+                specs = _arm_specs(parts[0], parts[1])
+                if specs is None and itype in _EC2_TYPES_FOR_VCPU:
+                    tinfo = _EC2_TYPES_FOR_VCPU[itype]
+                    specs = (tinfo.get("vcpus"), tinfo.get("ram_gb"))
 
         if specs is None:
             out.append({
@@ -6539,8 +6758,9 @@ def map_msk(rows: list) -> list:
             continue
 
         vcpu, ram_gib = specs
-        is_arm_burstable = itype.split(".")[0] == "t4g"
-        is_arm_sustained = itype.split(".")[0] in ("m7g", "m6g", "r7g", "c7g", "c6g")
+        fam = itype.split(".")[0]
+        is_arm_burstable = fam == "t4g"
+        is_arm_sustained = bool(re.match(r"^[a-z]+\d+g", fam)) and fam != "t4g"
         is_arm = is_arm_burstable or is_arm_sustained
         # t3 is AWS's burstable broker family; m5/r5/m6g/m7g/r7g are sustained.
         # The old code resolved both through a single "N2 Instance Core|E2
@@ -6549,7 +6769,7 @@ def map_msk(rows: list) -> list:
         # broker was actually burstable. A sustained r5/m5 broker could land
         # on E2 (a real performance-tier downgrade) purely by catalog list
         # order. Branch explicitly instead, same as map_compute_windows.
-        is_burstable = itype.split(".")[0] in ("t3", "t2")
+        is_burstable = fam in ("t3", "t2")
         cost_tag = ""
 
         if is_arm:
@@ -6789,12 +7009,17 @@ def map_opensearch(rows: list[dict]) -> list[dict]:
         is_burstable = family in ("t2", "t3", "t3a", "t4g")
         specs = (_BURSTABLE_EC2_SPECS.get(f"{family}.{size}") if is_burstable
                  else _arm_specs(family, size))
+        if specs is None and f"{family}.{size}" in _EC2_TYPES_FOR_VCPU:
+            tinfo = _EC2_TYPES_FOR_VCPU[f"{family}.{size}"]
+            specs = (tinfo.get("vcpus"), tinfo.get("ram_gb"))
         if specs is None:
             llm_rows.append(r)
             continue
 
         vcpu, ram_gib = specs
         is_arm = bool(_OPENSEARCH_ARM_RE.match(family))
+        is_compute_workload = bool(re.match(r"^c\d", family))
+        workloads = ("general",)
 
         if is_arm:
             native_default = "T2A Arm" if is_burstable else "C4A Arm"
@@ -6804,6 +7029,11 @@ def map_opensearch(rows: list[dict]) -> list[dict]:
             native_default = "E2"
             native_archs = ("x86",)
             tiers = ("burstable", "sustained")
+        elif is_compute_workload:
+            native_default = "C4D"
+            native_archs = ("x86",)
+            tiers = ("sustained",)
+            workloads = ("compute",)
         else:
             native_default = "N4D"
             native_archs = ("x86",)
@@ -6819,7 +7049,7 @@ def map_opensearch(rows: list[dict]) -> list[dict]:
 
         family_label, core_desc, ram_desc, switched, reason = cheapest_in_scope(
             native_default, vcpu, ram_gib, region, archs=native_archs, tiers=tiers,
-            min_generation=min_gen)
+            workloads=workloads, min_generation=min_gen)
         cpu_sku = _strict_resolve_sku(GCP_COMPUTE_ENGINE, core_desc, region)
         ram_sku = _strict_resolve_sku(GCP_COMPUTE_ENGINE, ram_desc, region)
 
@@ -7475,6 +7705,750 @@ def map_compute_windows(rows: list[dict]) -> list[dict]:
     return out
 
 
+_resolved_instance_types_cache: dict[str, str] = {}
+
+_ITYPE_RE = re.compile(r'^(?:db\.)?([a-z]+)(\d+)([a-z]*)\.(.*)$')
+
+_ITYPE_FROM_UT_RE = re.compile(
+    r'(?:BoxUsage:|InstanceUsage:)?\b((?:db\.)?[a-z][a-z0-9]*\.[0-9]*x?(?:large|medium|small|micro|nano|metal|l))\b',
+    re.IGNORECASE,
+)
+
+
+def _resolve_instance_type(r):
+    itype = r.get("instance_type")
+    if itype:
+        return itype
+    for field in ("usage_type", "operation"):
+        val = r.get(field) or ""
+        for m in re.finditer(r'[a-zA-Z0-9_\-\.:]+', val):
+            tok = m.group(0).split(":")[-1].strip(".,;:()")
+            clean = re.sub(r'^(?:db\.|cache\.|kafka\.)', '', tok, flags=re.IGNORECASE).lower().strip()
+            if clean and not clean.startswith("_") and clean in _EC2_TYPES:
+                if tok.lower().startswith("db."):
+                    return f"db.{clean}"
+                return clean
+    m = _ITYPE_FROM_UT_RE.search(r.get("usage_type") or "")
+    if m:
+        itype = m.group(1)
+        if itype.endswith("xl") and not itype.endswith("xlarge"):
+            itype += "arge"
+        return itype
+    m = _ITYPE_FROM_UT_RE.search(r.get("operation") or "")
+    if m:
+        itype = m.group(1)
+        if itype.endswith("xl") and not itype.endswith("xlarge"):
+            itype += "arge"
+        return itype
+    return None
+
+
+def _backfill_specs_from_ec2_types(r, itype):
+    if r.get("instance_vcpus") and r.get("instance_ram_gb"):
+        return
+    key = (itype or "").lower().strip()
+    if key.startswith("db."):
+        key = key[3:]
+    entry = _EC2_TYPES.get(key)
+    if not entry:
+        return
+    if not r.get("instance_vcpus") and entry.get("vcpus"):
+        r["instance_vcpus"] = entry["vcpus"]
+    if not r.get("instance_ram_gb") and entry.get("ram_gb"):
+        r["instance_ram_gb"] = entry["ram_gb"]
+
+
+_ACCEL_RE = re.compile(r'^(\d+)x\s+NVIDIA\s+(?:Tesla\s+)?([A-Za-z0-9]+)(?:\s+(\d+)GB)?$', re.IGNORECASE)
+
+
+def _aws_gpu_spec(instance_type):
+    entry = _EC2_TYPES.get(instance_type)
+    if not entry:
+        return None
+    accel = (entry.get("accelerator") or "").strip()
+    m = _ACCEL_RE.match(accel)
+    if not m:
+        return None
+    count = int(m.group(1))
+    model = m.group(2).upper()
+    vram = int(m.group(3)) if m.group(3) else None
+    return model, vram, count
+
+
+def parse_instance(itype):
+    if not itype:
+        return None
+    raw = itype.lower().strip()
+    clean = re.sub(r'^(?:db\.|cache\.|kafka\.)', '', raw)
+    entry = _EC2_TYPES.get(clean)
+    if entry:
+        fam, _, sz = clean.partition(".")
+        m = re.match(r'^([a-z]+[a-z0-9-]*?)(\d+)([a-z0-9-]*)$', fam)
+        if m:
+            prefix = m.group(1).rstrip("-")
+            gen = int(m.group(2))
+            suffixes = m.group(3)
+        else:
+            prefix = fam.rstrip("-")
+            gen = 1
+            suffixes = ""
+        return {
+            "prefix": prefix,
+            "gen": gen,
+            "suffixes": suffixes,
+            "size": sz,
+            "vcpus": entry.get("vcpus"),
+            "ram_gb": entry.get("ram_gb"),
+            "arch": entry.get("arch"),
+            "chip": entry.get("chip"),
+            "accelerator": entry.get("accelerator"),
+        }
+    m = _ITYPE_RE.match(raw)
+    if not m:
+        return None
+    return {
+        "prefix": m.group(1),
+        "gen": int(m.group(2)),
+        "suffixes": m.group(3),
+        "size": m.group(4)
+    }
+
+
+def get_gcp_family(parsed):
+    prefix   = parsed["prefix"]
+    suffixes = parsed["suffixes"]
+    gen      = parsed["gen"]
+
+    workload = _AWS_WORKLOAD.get(prefix, "general")
+
+    if prefix in _ARM_PREFIX:
+        arch = "arm"
+    else:
+        arch = "intel"
+        for char, detected in _ARCH_SUFFIX.items():
+            if char in suffixes:
+                arch = detected
+                break
+
+    target = _GCP_FAMILIES.get(workload, {}).get(arch)
+    if not target:
+        return None, False
+
+    family = target["family"]
+    if gen < target.get("min_aws_gen", 1):
+        family = target.get("prev_gen_family", family)
+
+    return family, target.get("arm_sku", False)
+
+
+_RHEL_VCPU_BANDS = [
+    (127, "Red Hat Enterprise Linux 9 on VM with 128 VCPU or more"),
+    (8, "Red Hat Enterprise Linux 9 on VM with 9 to 127 VCPU"),
+    (0, "Red Hat Enterprise Linux 9 on VM with up to 8 VCPU"),
+]
+
+
+def _license_entries(r, aws_key, gcp_region, vcpus, ram):
+    os_name = (r.get("operating_system") or "").strip().lower()
+    license_model = (r.get("license_model") or "").strip().lower()
+    if not os_name or "byol" in license_model:
+        return []
+
+    if os_name == "rhel" or "red hat" in os_name:
+        desc = next((d for min_v, d in _RHEL_VCPU_BANDS if vcpus > min_v), _RHEL_VCPU_BANDS[-1][1])
+        sku = resolve_sku("Compute Engine", desc, gcp_region)
+        return [{
+            "aws_li_key": aws_key, "gcp_service": "Compute Engine",
+            "gcp_sku_name": desc, "component": "license",
+            "strategy": "map" if sku else "passthrough", "unit_multiplier": 1.0, "gcp_region": gcp_region,
+            "projection_note": f"Deterministic OS-license mapping: {desc}" + _no_rate_suffix(sku, gcp_region),
+            "mapping_confidence": 0.85, "is_workload": True, "break_down": True,
+            **({"gcp_sku_id": sku, "gcp_sku_unit": sku.unit} if sku else {}),
+        }]
+
+    return []
+
+
+def _gce_machine_type_label(gcp_family: str, vcpus: float, ram_gb: float) -> str:
+    vcpus_int = max(1, round(vcpus))
+    ratio = ram_gb / vcpus_int if vcpus_int else 4.0
+    if ratio <= 2.0:
+        tier = "highcpu"
+    elif ratio >= 6.0:
+        tier = "highmem"
+    else:
+        tier = "standard"
+    family_slug = re.sub(r"\s+arm\b", "", gcp_family, flags=re.IGNORECASE).strip().lower().replace(" ", "-")
+    return f"{family_slug}-{tier}-{vcpus_int}"
+
+
+def map_gce_row(r, parsed):
+    gcp_family, arm_sku = get_gcp_family(parsed)
+    if not gcp_family:
+        return None
+
+    gcp_region = r.get("gcp_region")
+    aws_key = r["aws_li_key"]
+    vcpus = r.get("instance_vcpus") or 2
+    ram = r.get("instance_ram_gb") or 8.0
+
+    is_burstable = _AWS_WORKLOAD.get(parsed["prefix"]) == "burstable"
+    arm_infix = "Arm " if arm_sku else ""
+
+    workload_type = _AWS_WORKLOAD.get(parsed["prefix"], "general")
+    if workload_type == "compute":
+        workloads = ("compute",)
+    elif workload_type == "storage":
+        workloads = ("storage", "general")
+    else:
+        workloads = ("general",)
+
+    _EFA_HPC_FAMILIES = {"hpc6a", "hpc6id", "hpc7a", "hpc7g", "c5n", "m5n", "m5dn", "r5n", "r5dn"}
+    aws_family_key = (r.get("instance_type") or "").split(".")[0].lower()
+    min_network_tier = "high" if aws_family_key in _EFA_HPC_FAMILIES else "standard"
+
+    cost_tag = ""
+    if not arm_sku:
+        default_label = gcp_family
+        tiers = ("burstable", "sustained") if is_burstable else ("sustained",)
+        min_gen = _GP_FAMILY_GENERATION.get("N4D", 4) if is_burstable else None
+        switched_family, core_desc, ram_desc, switched, reason = cheapest_in_scope(
+            default_label, vcpus, ram, gcp_region, archs=("x86",), tiers=tiers, workloads=workloads,
+            min_network_tier=min_network_tier, min_generation=min_gen)
+        if switched:
+            gcp_family = switched_family
+            cost_tag = (f" [cost-tier: {switched_family} cheaper here, same/better tier]" if reason == "cheaper"
+                        else f" [cost-tier: {default_label} unavailable in region — {switched_family} used instead, same/better tier]")
+            if switched_family == "Z3":
+                cost_tag += (" [architecture review recommended: Z3 is GCP's storage-optimized "
+                             "family, genuinely cheaper here for this vCPU/RAM shape, but its "
+                             "real-world minimum provisioning size isn't captured by the linear "
+                             "per-vCPU rate used for this comparison — verify with customer that "
+                             "a Z3 instance is actually offered at this size before finalizing]")
+
+        if is_burstable:
+            t2a_entry = _gp_family_by_label("T2A Arm")
+            if t2a_entry:
+                _, t2a_core, t2a_ram, _, _, _, _ = t2a_entry
+                t2a_core_rate = _family_hourly_rate("Compute Engine", t2a_core, gcp_region)
+                t2a_ram_rate = _family_hourly_rate("Compute Engine", t2a_ram, gcp_region)
+                x86_core_rate = _family_hourly_rate("Compute Engine", core_desc, gcp_region)
+                x86_ram_rate = _family_hourly_rate("Compute Engine", ram_desc, gcp_region)
+                if (t2a_core_rate is not None and t2a_ram_rate is not None
+                        and x86_core_rate is not None and x86_ram_rate is not None):
+                    t2a_total = vcpus * t2a_core_rate + ram * t2a_ram_rate
+                    x86_total = vcpus * x86_core_rate + ram * x86_ram_rate
+                    if t2a_total < x86_total:
+                        pct = round((1 - t2a_total / x86_total) * 100)
+                        cost_tag += (f" [architecture review recommended: ARM T2A would be ~{pct}% cheaper "
+                                     f"here for this vCPU/RAM shape than {gcp_family} — not switched "
+                                     "automatically since x86 binaries aren't ARM-compatible without a "
+                                     "rebuild; confirm with customer whether ARM is viable]")
+    else:
+        arm_default_label = f"{gcp_family} {arm_infix.strip()}".strip()
+        arm_tiers = ("burstable", "sustained") if is_burstable else ("sustained",)
+        switched_family, core_desc, ram_desc, switched, reason = cheapest_in_scope(
+            arm_default_label, vcpus, ram, gcp_region, archs=("arm",), tiers=arm_tiers,
+            workloads=workloads, min_network_tier=min_network_tier)
+        if switched:
+            gcp_family = switched_family
+            cost_tag = (f" [cost-tier: {switched_family} cheaper here, same/better tier]" if reason == "cheaper"
+                        else f" [cost-tier: {arm_default_label} unavailable in region — {switched_family} used "
+                             "instead, same/better tier]")
+
+        if is_burstable:
+            e2_core_rate = _family_hourly_rate("Compute Engine", "E2 Instance Core", gcp_region)
+            e2_ram_rate = _family_hourly_rate("Compute Engine", "E2 Instance Ram", gcp_region)
+            if e2_core_rate is not None and e2_ram_rate is not None:
+                arm_core_rate = _family_hourly_rate("Compute Engine", core_desc, gcp_region)
+                arm_ram_rate = _family_hourly_rate("Compute Engine", ram_desc, gcp_region)
+                if arm_core_rate is not None and arm_ram_rate is not None:
+                    arm_total = vcpus * arm_core_rate + ram * arm_ram_rate
+                    e2_total = vcpus * e2_core_rate + ram * e2_ram_rate
+                    if e2_total < arm_total:
+                        pct = round((1 - e2_total / arm_total) * 100)
+                        cost_tag += (f" [architecture review recommended: x86 E2 would be ~{pct}% cheaper "
+                                     f"here for this vCPU/RAM shape than {gcp_family} — not switched "
+                                     "automatically since Graviton/ARM binaries aren't x86-compatible "
+                                     "without a rebuild; confirm with customer whether x86 is viable]")
+
+    burst_note = (f" [Note: {gcp_family} has no burst-credit model; projection assumes steady-state CPU usage]"
+                  if is_burstable else "")
+
+    gcp_machine_type = _gce_machine_type_label(gcp_family, vcpus, ram)
+
+    core_sku = _strict_resolve_sku("Compute Engine", core_desc, gcp_region)
+    core_entry = {
+        "aws_li_key": aws_key,
+        "gcp_service": "Compute Engine",
+        "gcp_sku_name": core_desc,
+        "component": "core",
+        "strategy": "map" if core_sku else "passthrough",
+        "unit_multiplier": float(vcpus),
+        "gcp_region": gcp_region,
+        "projection_note": f"Deterministic mapping: GCE {gcp_family} Core{burst_note}{cost_tag}" + _no_rate_suffix(core_sku, gcp_region),
+        "mapping_confidence": 0.85 if is_burstable else 1.0,
+        "is_workload": True,
+        "break_down": True,
+        "gcp_machine_type": gcp_machine_type,
+    }
+    if core_sku:
+        core_entry["gcp_sku_id"] = core_sku
+        core_entry["gcp_sku_unit"] = core_sku.unit
+
+    ram_sku = _strict_resolve_sku("Compute Engine", ram_desc, gcp_region)
+    ram_entry = {
+        "aws_li_key": aws_key,
+        "gcp_service": "Compute Engine",
+        "gcp_sku_name": ram_desc,
+        "component": "ram",
+        "strategy": "map" if ram_sku else "passthrough",
+        "unit_multiplier": float(ram),
+        "gcp_region": gcp_region,
+        "projection_note": f"Deterministic mapping: GCE {gcp_family} RAM{burst_note}{cost_tag}" + _no_rate_suffix(ram_sku, gcp_region),
+        "mapping_confidence": 0.85 if is_burstable else 1.0,
+        "is_workload": True,
+        "break_down": True,
+        "gcp_machine_type": gcp_machine_type,
+    }
+    if ram_sku:
+        ram_entry["gcp_sku_id"] = ram_sku
+        ram_entry["gcp_sku_unit"] = ram_sku.unit
+
+    mappings = [core_entry, ram_entry]
+
+    # Local SSD Suffix Handling or Storage Optimized (P-11 / AR-3)
+    if "d" in parsed["suffixes"] or parsed["prefix"] in ("i", "im", "is", "d", "h"):
+        ssd_desc = f"{gcp_family} Instance Local SSD"
+        ssd_sku = resolve_sku("Compute Engine", ssd_desc, gcp_region)
+        if not ssd_sku:
+            ssd_desc = "SSD backed Local Storage"
+            ssd_sku = resolve_sku("Compute Engine", ssd_desc, gcp_region)
+        _AVG_HOURS_PER_MONTH = 730.0
+        clean_itype = (r.get("instance_type") or "").strip()
+        type_entry = _EC2_TYPES.get(clean_itype) or _EC2_TYPES.get(clean_itype.lower())
+        real_local_ssd_gib = type_entry.get("storage_gb") if type_entry else None
+
+        if real_local_ssd_gib and real_local_ssd_gib > 0:
+            ssd_entry = {
+                "aws_li_key": aws_key,
+                "gcp_service": "Compute Engine",
+                "gcp_sku_name": ssd_desc,
+                "component": "storage",
+                "strategy": "map" if ssd_sku else "passthrough",
+                "unit_multiplier": float(real_local_ssd_gib) / _AVG_HOURS_PER_MONTH,
+                "gcp_region": gcp_region,
+                "projection_note": f"Local SSD suffix / storage-optimized VM attachment ({real_local_ssd_gib:g} GiB, GiB-month rate, hours->month corrected)" + _no_rate_suffix(ssd_sku, gcp_region),
+                "mapping_confidence": 0.95,
+                "is_workload": True,
+                "break_down": True
+            }
+        else:
+            ssd_entry = {
+                "aws_li_key": aws_key,
+                "gcp_service": "Compute Engine",
+                "gcp_sku_name": ssd_desc,
+                "component": "storage",
+                "strategy": "passthrough",
+                "unit_multiplier": 1.0,
+                "gcp_region": gcp_region,
+                "projection_note": f"Local SSD suffix / storage-optimized VM attachment: local NVMe capacity unknown for {clean_itype or 'instance'} — passthrough at cost parity",
+                "mapping_confidence": 0.40,
+                "is_workload": True,
+                "break_down": True
+            }
+        if ssd_sku and ssd_entry["strategy"] == "map":
+            ssd_entry["gcp_sku_id"] = ssd_sku
+            ssd_entry["gcp_sku_unit"] = ssd_sku.unit
+        mappings.append(ssd_entry)
+
+    mappings.extend(_license_entries(r, aws_key, gcp_region, vcpus, ram))
+    return mappings
+
+
+def _resolve_gpu_count(entry, vcpus):
+    if "fixed_count" in entry:
+        return float(entry["fixed_count"])
+    if "gpu_per_vcpu" in entry:
+        return max(float(entry.get("min_count", 1)), vcpus * entry["gpu_per_vcpu"])
+    if "vcpu_breakpoints" in entry:
+        for bp in sorted(entry["vcpu_breakpoints"], key=lambda x: -x["min_vcpu"]):
+            if vcpus >= bp["min_vcpu"]:
+                return float(bp["count"])
+        return float(entry.get("default_count", 1))
+    return 1.0
+
+
+def _gpu_profile(prefix, gen, vcpus):
+    for entry in _GPU_PROFILES_CFG.get(prefix, []):
+        min_gen = entry.get("min_gen", 1)
+        max_gen = entry.get("max_gen", 9999)
+        if min_gen <= gen <= max_gen:
+            return entry["family"], entry["gpu_desc"], _resolve_gpu_count(entry, vcpus)
+    return None
+
+
+_AWS_GPU_NO_EQUIVALENT = {"K80", "GAUDI", "HL-205", "VU9P", "V520", "H200"}
+_NON_NVIDIA_ACCEL_RE = re.compile(r"\b(AMD|Habana|Xilinx|Gaudi|FPGA|Radeon)\b", re.IGNORECASE)
+_AWS_GPU_MODEL_ALIAS = {"A10G": "L4", "T4G": "T4"}
+
+
+def _no_gpu_equivalent_entry(r, aws_key, gcp_region, vcpus, ram, why):
+    note = f"No GCP GPU equivalent for this AWS accelerator ({why}) — priced as plain compute only, accelerator cost not represented"
+    entries = []
+    for component, unit_mult in (("core", vcpus), ("ram", ram)):
+        entries.append({
+            "aws_li_key": aws_key,
+            "gcp_service": "Compute Engine",
+            "gcp_sku_name": None,
+            "component": component,
+            "strategy": "passthrough",
+            "unit_multiplier": float(unit_mult),
+            "gcp_region": gcp_region,
+            "projection_note": note,
+            "mapping_confidence": 0.40,
+            "is_workload": True,
+            "break_down": True,
+        })
+    return entries
+
+
+def _accel_kind(parsed, itype):
+    prefix = (parsed.get("prefix") or "").lower() if parsed else ""
+    raw_itype = (itype or "").lower()
+    if prefix.startswith(("inf", "trn")) or raw_itype.startswith(("inf", "trn")):
+        return "tpu_mappable"
+    return "other"
+
+
+def _compute_mapper_kind(parsed, itype):
+    if _accel_kind(parsed, itype) == "tpu_mappable":
+        return "tpu"
+    prefix = parsed.get("prefix") if parsed else None
+    if _AWS_WORKLOAD.get(prefix) == "accelerated":
+        return "gpu"
+    return "gce"
+
+
+def map_tpu_row(r, parsed, itype):
+    aws_key = r["aws_li_key"]
+    gcp_region = r.get("gcp_region") or "us-central1"
+    raw_itype = (itype or r.get("instance_type") or "").strip().lower()
+
+    chip_entry = _ACCEL_CHIPS.get(raw_itype)
+    assumed_count = False
+    if chip_entry:
+        chips = chip_entry.get("chips", 1)
+        family = chip_entry.get("family", "accelerator")
+    else:
+        chips = 1
+        assumed_count = True
+        family = "accelerator"
+        if raw_itype.startswith("inf"):
+            family = "inferentia"
+        elif raw_itype.startswith("trn"):
+            family = "trainium"
+
+    family_display = family.capitalize()
+
+    synth_sku_id = _TPU_RATES_CFG.get("synthetic_sku_id", "TPU-V5E-ONDEMAND")
+    sku_name = _TPU_RATES_CFG.get("gcp_sku_name", "Cloud TPU v5e (on-demand, per chip-hour)")
+    by_region = _TPU_RATES_CFG.get("by_region", {})
+    default_rate = _TPU_RATES_CFG.get("default_usd_per_chip_hour")
+    rate = by_region.get(gcp_region, default_rate)
+
+    strategy = "map" if rate is not None else "passthrough"
+
+    note_parts = [
+        f"Mapped 1 AWS {family_display} chip -> 1 Cloud TPU v5e chip (chip-count parity, {chips} chips). "
+        "PRICE assumption only, NOT a verified performance equivalence — no public Inferentia/Trainium-vs-TPU "
+        "benchmark exists (checked 2026-10). TPU v5e per-chip rate bundles the host VM, so no separate CPU/RAM line. "
+        "Migration requires recompiling models from AWS Neuron SDK to GCP XLA/JAX; treat as directional."
+    ]
+    if assumed_count:
+        note_parts.append(" chip count assumed = 1 (instance not in accelerator-chips.json).")
+
+    projection_note = "".join(note_parts)
+
+    entry = {
+        "aws_li_key": aws_key,
+        "gcp_service": "Cloud TPU",
+        "gcp_sku_id": synth_sku_id,
+        "gcp_sku_name": sku_name,
+        "component": "accelerator",
+        "strategy": strategy,
+        "unit_from": "instance-hour",
+        "unit_to": "chip-hour",
+        "unit_multiplier": float(chips),
+        "gcp_region": gcp_region,
+        "mapping_confidence": 0.3,
+        "projection_note": projection_note,
+        "is_workload": True,
+        "break_down": False,
+    }
+    return [entry]
+
+
+def map_gpu_row(r, parsed):
+    prefix = parsed["prefix"]
+    gen = parsed["gen"]
+    gcp_region = r.get("gcp_region")
+    aws_key = r["aws_li_key"]
+    vcpus = r.get("instance_vcpus") or 8
+    ram = r.get("instance_ram_gb") or 32.0
+
+    itype = r.get("instance_type") or ""
+    accel_raw = ""
+    entry = _EC2_TYPES.get(itype)
+    if entry:
+        accel_raw = (entry.get("accelerator") or "")
+    is_arm_host = bool(entry) and (entry.get("arch") or "").lower() == "arm64"
+
+    if _NON_NVIDIA_ACCEL_RE.search(accel_raw):
+        return _no_gpu_equivalent_entry(r, aws_key, gcp_region, vcpus, ram, accel_raw.strip())
+
+    spec = _aws_gpu_spec(itype)
+    cost_tag = ""
+    if spec and spec[0] in _AWS_GPU_NO_EQUIVALENT:
+        return _no_gpu_equivalent_entry(r, aws_key, gcp_region, vcpus, ram, f"{spec[2]}x {spec[0]}")
+
+    alias_note = ""
+    if spec:
+        model, vram, gpu_count = spec
+        aliased_model = _AWS_GPU_MODEL_ALIAS.get(model, model)
+        if aliased_model != model:
+            alias_note = (f" [no exact GCP equivalent for Nvidia {model}; substituted {aliased_model} "
+                          "— different generation/performance tier, verify with customer]")
+        model = aliased_model
+        if vram is None:
+            vram = _GPU_VRAM_GB_FALLBACK.get(model)
+        if vram is not None:
+            best_model, best_vram, core_desc, ram_desc, gpu_desc, gpu_display_desc, switched, reason = \
+                cheapest_gpu_in_scope(model, vram, gpu_count, vcpus, ram, gcp_region)
+            if switched:
+                cost_tag = (f" [cost-tier: {best_model} {best_vram}GB cheaper here, same/better "
+                             "class — verify with customer that this GPU model/size is actually "
+                             "available at this size before finalizing]" if reason == "cheaper"
+                             else f" [cost-tier: {model} {vram}GB unavailable in region — "
+                             f"{best_model} {best_vram}GB used instead, same/better class — "
+                             "verify with customer]")
+        else:
+            core_desc = ram_desc = gpu_desc = gpu_display_desc = None
+    else:
+        core_desc = ram_desc = gpu_desc = gpu_display_desc = None
+
+    if core_desc is None:
+        profile = _gpu_profile(prefix, gen, vcpus)
+        if not profile:
+            return None
+        gcp_family, gpu_desc, gpu_count = profile
+        gpu_display_desc = gpu_desc
+        core_desc = f"{gcp_family} Instance Core"
+        ram_desc = f"{gcp_family} Instance Ram"
+
+    host_arch_note = (" [no ARM-hosted GPU offering on GCP for this accelerator class — "
+                      "host CPU silently would have been x86 either way, but flagging since the "
+                      "AWS source runs Graviton/ARM64; verify application compatibility with "
+                      "customer]") if is_arm_host else ""
+
+    core_sku = _strict_resolve_sku("Compute Engine", core_desc, gcp_region)
+    core_entry = {
+        "aws_li_key": aws_key,
+        "gcp_service": "Compute Engine",
+        "gcp_sku_name": core_desc,
+        "component": "core",
+        "strategy": "map" if core_sku else "passthrough",
+        "unit_multiplier": float(vcpus),
+        "gcp_region": gcp_region,
+        "projection_note": f"GPU workload mapping: GCE {core_desc.replace(' Instance Core', '')} Core" + cost_tag + host_arch_note + _no_rate_suffix(core_sku, gcp_region),
+        "mapping_confidence": 0.75 if is_arm_host else 0.95,
+        "is_workload": True,
+        "break_down": True
+    }
+    if core_sku:
+        core_entry["gcp_sku_id"] = core_sku
+        core_entry["gcp_sku_unit"] = core_sku.unit
+
+    ram_sku = _strict_resolve_sku("Compute Engine", ram_desc, gcp_region)
+    ram_entry = {
+        "aws_li_key": aws_key,
+        "gcp_service": "Compute Engine",
+        "gcp_sku_name": ram_desc,
+        "component": "ram",
+        "strategy": "map" if ram_sku else "passthrough",
+        "unit_multiplier": float(ram),
+        "gcp_region": gcp_region,
+        "projection_note": f"GPU workload mapping: GCE {ram_desc.replace(' Instance Ram', '')} RAM" + _no_rate_suffix(ram_sku, gcp_region),
+        "mapping_confidence": 0.95,
+        "is_workload": True,
+        "break_down": True
+    }
+    if ram_sku:
+        ram_entry["gcp_sku_id"] = ram_sku
+        ram_entry["gcp_sku_unit"] = ram_sku.unit
+
+    gpu_sku = _strict_resolve_sku("Compute Engine", gpu_desc, gcp_region)
+    gpu_entry = {
+        "aws_li_key": aws_key,
+        "gcp_service": "Compute Engine",
+        "gcp_sku_name": gpu_display_desc,
+        "component": "accelerator",
+        "strategy": "map" if gpu_sku else "passthrough",
+        "unit_multiplier": gpu_count,
+        "gcp_region": gcp_region,
+        "projection_note": f"Nvidia Accelerator attachment ({gpu_display_desc})" + alias_note + cost_tag + _no_rate_suffix(gpu_sku, gcp_region),
+        "mapping_confidence": 0.75 if alias_note else 0.95,
+        "is_workload": True,
+        "break_down": True
+    }
+    if gpu_sku:
+        gpu_entry["gcp_sku_id"] = gpu_sku
+        gpu_entry["gcp_sku_unit"] = gpu_sku.unit
+
+    results = [core_entry, ram_entry, gpu_entry]
+
+    clean_itype = (itype or r.get("instance_type") or "").strip()
+    type_entry = _EC2_TYPES.get(clean_itype) or _EC2_TYPES.get(clean_itype.lower())
+    real_local_ssd_gib = type_entry.get("storage_gb") if type_entry else None
+    if real_local_ssd_gib and real_local_ssd_gib > 0:
+        _AVG_HOURS_PER_MONTH = 730.0
+        ssd_desc = "SSD backed Local Storage"
+        ssd_sku = _strict_resolve_sku("Compute Engine", ssd_desc, gcp_region)
+        ssd_entry = {
+            "aws_li_key": aws_key,
+            "gcp_service": "Compute Engine",
+            "gcp_sku_name": ssd_desc,
+            "component": "storage",
+            "strategy": "map" if ssd_sku else "passthrough",
+            "unit_multiplier": float(real_local_ssd_gib) / _AVG_HOURS_PER_MONTH,
+            "gcp_region": gcp_region,
+            "projection_note": f"GPU instance local NVMe storage ({real_local_ssd_gib:g} GiB) attachment (GiB-month rate, hours->month corrected)" + _no_rate_suffix(ssd_sku, gcp_region),
+            "mapping_confidence": 0.90,
+            "is_workload": True,
+            "break_down": True,
+        }
+        if ssd_sku:
+            ssd_entry["gcp_sku_id"] = ssd_sku
+            ssd_entry["gcp_sku_unit"] = ssd_sku.unit
+        results.append(ssd_entry)
+
+    return results
+
+
+def map_db_row(r, parsed):
+    gcp_family, arm_sku = get_gcp_family(parsed)
+    if not gcp_family:
+        return None
+    arm_source_note = (" [source is a Graviton/ARM64 RDS instance — Cloud SQL has no ARM "
+                       "machine type at all, so x86 is the only option regardless of cost; "
+                       "no compatibility concern for the DB engine itself, but note for any "
+                       "ARM-specific client tooling]") if arm_sku else ""
+
+    gcp_region = r.get("gcp_region")
+    aws_key = r["aws_li_key"]
+    vcpus = r.get("instance_vcpus") or 2
+    ram = r.get("instance_ram_gb") or 8.0
+    is_ha = r.get("deployment_option") == "Multi-AZ" or "multi-az" in (r.get("operation") or "").lower()
+
+    engine = (r.get("database_engine") or "").strip().lower()
+    engine_note = ""
+    engine_confidence = 0.90
+    if "postgres" in engine:
+        cloud_sql_engine = "PostgreSQL"
+        engine_note = (" [possible architectural alternative: AlloyDB for PostgreSQL — a fully "
+                       "PostgreSQL-compatible managed service with better read-scaling/analytics "
+                       "performance than Cloud SQL, at a real price premium; requires workload "
+                       "context this bill alone doesn't provide, so not auto-mapped — worth "
+                       "evaluating with customer if analytics/scaling was a driver for this instance]")
+    elif "mariadb" in engine:
+        cloud_sql_engine = "MySQL"
+        engine_note = (" [engine substitution: Cloud SQL has no native MariaDB offering — "
+                       "MySQL used as the closest available equivalent (MariaDB is a MySQL "
+                       "fork, largely wire-compatible but not identical); verify application "
+                       "compatibility with customer before migrating]")
+    elif "mysql" in engine:
+        cloud_sql_engine = "MySQL"
+    else:
+        cloud_sql_engine = "MySQL"
+        engine_note = (" [engine could not be determined from CUR — MySQL assumed as a "
+                       "default, not a detected engine; verify actual database engine with "
+                       "customer before finalizing]")
+        engine_confidence = 0.55
+
+    tier = "Regional" if is_ha else "Zonal"
+    core_desc = f"Cloud SQL for {cloud_sql_engine}: {tier} - vCPU"
+    ram_desc = f"Cloud SQL for {cloud_sql_engine}: {tier} - RAM"
+
+    core_sku = resolve_sku("Cloud SQL", core_desc, gcp_region)
+    core_entry = {
+        "aws_li_key": aws_key,
+        "gcp_service": "Cloud SQL",
+        "gcp_sku_name": core_desc,
+        "component": "core",
+        "strategy": "map" if core_sku else "passthrough",
+        "unit_multiplier": float(vcpus),
+        "gcp_region": gcp_region,
+        "projection_note": f"Deterministic DB mapping: Cloud SQL for {cloud_sql_engine} {tier} vCPU ({gcp_family} family equivalent)" + engine_note + arm_source_note + _no_rate_suffix(core_sku, gcp_region),
+        "mapping_confidence": engine_confidence,
+        "is_workload": True,
+        "break_down": True
+    }
+    if core_sku:
+        core_entry["gcp_sku_id"] = core_sku
+        core_entry["gcp_sku_unit"] = core_sku.unit
+
+    ram_sku = resolve_sku("Cloud SQL", ram_desc, gcp_region)
+    ram_entry = {
+        "aws_li_key": aws_key,
+        "gcp_service": "Cloud SQL",
+        "gcp_sku_name": ram_desc,
+        "component": "ram",
+        "strategy": "map" if ram_sku else "passthrough",
+        "unit_multiplier": float(ram),
+        "gcp_region": gcp_region,
+        "projection_note": f"Deterministic DB mapping: Cloud SQL for {cloud_sql_engine} {tier} RAM ({gcp_family} family equivalent)" + engine_note + arm_source_note + _no_rate_suffix(ram_sku, gcp_region),
+        "mapping_confidence": engine_confidence,
+        "is_workload": True,
+        "break_down": True
+    }
+    if ram_sku:
+        ram_entry["gcp_sku_id"] = ram_sku
+        ram_entry["gcp_sku_unit"] = ram_sku.unit
+
+    return [core_entry, ram_entry]
+
+
+def map_compute_breakdown(rows: list[dict]):
+    """Deterministic compute breakdown mapper for GCE CPU, GPU, and Cloud TPU.
+    Consolidated from family_mapper.py (AR-3).
+    """
+    mapped = []
+    llm_rows = []
+    for r in rows:
+        itype = _resolve_instance_type(r)
+        if itype and not r.get("instance_type"):
+            r["instance_type"] = itype
+            _resolved_instance_types_cache[r["aws_li_key"]] = itype
+        if itype:
+            _backfill_specs_from_ec2_types(r, itype)
+        parsed = parse_instance(itype)
+        if not parsed:
+            llm_rows.append(r)
+            continue
+        kind = _compute_mapper_kind(parsed, itype)
+        if kind == "tpu":
+            res = map_tpu_row(r, parsed, itype)
+        elif kind == "gpu":
+            res = map_gpu_row(r, parsed)
+        else:
+            res = map_gce_row(r, parsed)
+        if res:
+            mapped.extend(res)
+        else:
+            llm_rows.append(r)
+    return mapped, llm_rows
+
+
 def main():
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <projection.duckdb>", file=sys.stderr)
@@ -7486,35 +8460,36 @@ def main():
 
     # product_code (authoritative CUR lineItem/ProductCode) lets canonical_service
     # key on the stable code first; guard for DBs created before the column existed.
-    _has_code = any(
-        c[1].lower() == "product_code"
-        for c in con.execute("PRAGMA table_info('aws_li_catalog')").fetchall()
-    )
-    _pc_expr = "product_code" if _has_code else "NULL AS product_code"
+    catalog_cols = {c[1].lower() for c in con.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+    _pc_expr = "product_code" if "product_code" in catalog_cols else "NULL AS product_code"
+    _vcpu_expr = "instance_vcpus" if "instance_vcpus" in catalog_cols else "NULL AS instance_vcpus"
+    _os_expr = "operating_system" if "operating_system" in catalog_cols else "NULL AS operating_system"
+    _lic_expr = "license_model" if "license_model" in catalog_cols else "NULL AS license_model"
+
     rows = con.execute(f"""
         SELECT aws_li_key, mechanic_group, product, usage_type, pricing_unit AS unit,
                aws_amortized_cost, aws_region AS region, gcp_region, operation, volume_type,
                total_usage, instance_type, instance_ram_gb, deployment_option, database_engine,
-               pricing_model, {_pc_expr}
+               pricing_model, {_pc_expr}, {_vcpu_expr}, {_os_expr}, {_lic_expr}
         FROM aws_li_catalog
         WHERE mechanic_group IN
               ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer',
                'non_workload', 'cloudwatch', 'guardduty', 'inspector', 'marketplace_thirdparty', 'quicksight', 'redshift', 'athena', 'kinesis', 'efs',
                'xray', 'fsx', 'emr', 'elasticache', 'msk', 'compute_windows', 'compute_arm',
-               'compute_burstable', 'managed_db', 'opensearch', 'commitment_discount', 'rds_extended_support', 'glue', 'shield', 'dynamodb_storage', 'mwaa', 'ssm_parameter_store')
+               'compute_burstable', 'compute_breakdown', 'managed_db', 'opensearch', 'commitment_discount', 'rds_extended_support', 'glue', 'shield', 'dynamodb_storage', 'mwaa', 'ssm_parameter_store')
     """).fetchall()
     con.close()
 
     cols = ["aws_li_key", "mechanic_group", "product", "usage_type", "unit",
             "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type",
             "total_usage", "instance_type", "instance_ram_gb", "deployment_option", "database_engine",
-            "pricing_model", "product_code"]
+            "pricing_model", "product_code", "instance_vcpus", "operating_system", "license_model"]
     by_group: dict[str, list] = {g: [] for g in
                                  ("flat_hourly", "object_storage", "per_request",
                                   "block_storage", "data_transfer", "non_workload", "cloudwatch", "msk",
                                   "guardduty", "inspector", "marketplace_thirdparty", "quicksight", "redshift", "athena", "kinesis", "efs", "xray",
                                   "fsx", "emr", "elasticache", "compute_windows", "compute_arm",
-                                  "compute_burstable", "managed_db", "opensearch", "commitment_discount", "rds_extended_support", "glue", "shield", "dynamodb_storage", "mwaa", "ssm_parameter_store")}
+                                  "compute_burstable", "compute_breakdown", "managed_db", "opensearch", "commitment_discount", "rds_extended_support", "glue", "shield", "dynamodb_storage", "mwaa", "ssm_parameter_store")}
     for raw in rows:
         r = dict(zip(cols, raw))
         by_group[r["mechanic_group"]].append(r)
@@ -7546,6 +8521,7 @@ def main():
         "compute_windows":     map_compute_windows,
         "compute_arm":         map_compute_arm,
         "compute_burstable":   map_compute_burstable,
+        "compute_breakdown":   map_compute_breakdown,
         "commitment_discount": map_commitment_discount,
         "managed_db":          map_managed_db,
         "opensearch":          map_opensearch,
@@ -7581,10 +8557,57 @@ def main():
         llm_note = f" (+{len(llm_rows)} → LLM)" if isinstance(result, tuple) and llm_rows else ""
         print(f"{group}: {len(mappings)} rows → {path}{llm_note}")
 
+    # Persist resolved instance types back onto aws_li_catalog
+    if _resolved_instance_types_cache and os.path.exists(db_path):
+        con = duckdb.connect(db_path)
+        try:
+            con.executemany(
+                "UPDATE aws_li_catalog SET instance_type = ? WHERE aws_li_key = ? "
+                "AND instance_type IS NULL",
+                [(itype, key) for key, itype in _resolved_instance_types_cache.items()],
+            )
+            con.commit()
+            print(f"  apply_static_mappings: persisted instance_type for {len(_resolved_instance_types_cache)} row(s)")
+        finally:
+            con.close()
+
+    # Prune mapped compute/db rows from phase2_manifest.json so LLM does not double-map them
+    manifest_path = _safe_path(os.path.dirname(db_path), "phase2_manifest.json")
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            pruned = False
+            compute_mapped_keys = {m["aws_li_key"] for m in by_group.get("compute_breakdown", [])}
+            if compute_mapped_keys and "compute_breakdown" in manifest and manifest["compute_breakdown"].get("rows"):
+                orig_cnt = len(manifest["compute_breakdown"]["rows"])
+                manifest["compute_breakdown"]["rows"] = [
+                    r for r in manifest["compute_breakdown"]["rows"]
+                    if r["aws_li_key"] not in compute_mapped_keys
+                ]
+                manifest["compute_breakdown"]["row_count"] = len(manifest["compute_breakdown"]["rows"])
+                if len(manifest["compute_breakdown"]["rows"]) != orig_cnt:
+                    pruned = True
+            db_mapped_keys = {m["aws_li_key"] for m in by_group.get("managed_db", [])}
+            if db_mapped_keys and "managed_db" in manifest and manifest["managed_db"].get("rows"):
+                orig_cnt = len(manifest["managed_db"]["rows"])
+                manifest["managed_db"]["rows"] = [
+                    r for r in manifest["managed_db"]["rows"]
+                    if r["aws_li_key"] not in db_mapped_keys
+                ]
+                manifest["managed_db"]["row_count"] = len(manifest["managed_db"]["rows"])
+                if len(manifest["managed_db"]["rows"]) != orig_cnt:
+                    pruned = True
+            if pruned:
+                with open(manifest_path, "w", encoding="utf-8") as f:
+                    json.dump(manifest, f, indent=2)
+                print("  apply_static_mappings: pruned manifest.json")
+        except Exception as e:
+            print(f"WARNING: failed to prune manifest: {e}", file=sys.stderr)
+
     # Inject unknown rows from static mappers into the manifest misc group so the
     # Phase 2 LLM handles them with full context instead of them being silently lost.
     if all_llm_rows:
-        manifest_path = _safe_path(os.path.dirname(db_path), "phase2_manifest.json")
         if os.path.exists(manifest_path):
             with open(manifest_path) as f:
                 manifest = json.load(f)

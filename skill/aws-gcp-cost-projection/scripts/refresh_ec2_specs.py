@@ -72,6 +72,30 @@ def _parse_memory(mem: str) -> float | None:
         return None
 
 
+_STORAGE_RE = re.compile(r'(\d+)\s*x\s*([0-9,]+)', re.IGNORECASE)
+
+
+def _parse_storage(storage: str) -> float | None:
+    if not storage or "EBS only" in storage:
+        return None
+    m = _STORAGE_RE.search(storage)
+    if m:
+        try:
+            return float(m.group(1)) * float(m.group(2).replace(",", ""))
+        except ValueError:
+            return None
+    m = re.search(r'([0-9,]+)\s*(?:GB|TB|NVMe|SSD)', storage, re.IGNORECASE)
+    if m:
+        try:
+            val = float(m.group(1).replace(",", ""))
+            if "TB" in storage.upper():
+                val *= 1000.0
+            return val
+        except ValueError:
+            return None
+    return None
+
+
 def _stream_products(fh):
     """Yield each product dict from the price-list JSON's "products" map."""
     import ijson
@@ -100,12 +124,16 @@ def build(region: str = "us-east-1", offline: str | None = None) -> dict:
                 continue
             # First spec wins; specs are identical across OS/tenancy variants.
             if itype not in specs:
-                specs[itype] = {
+                st_gb = _parse_storage(attr.get("storage", ""))
+                spec_entry = {
                     "vcpus": vcpus,
                     "ram_gb": ram,
                     "arch": _arch_of(attr.get("physicalProcessor", "")),
                     "chip": attr.get("physicalProcessor", "") or None,
                 }
+                if st_gb:
+                    spec_entry["storage_gb"] = st_gb
+                specs[itype] = spec_entry
                 seen += 1
 
     if offline:

@@ -62,15 +62,16 @@ RULE_TAG = "service_map_v1"
 # pre-existing generic "dynamodb"/"shield" service_map rules — written before
 # those mappers existed — still matched by product name and stomped the
 # mapper's strategy='map' back to 'passthrough' on every run).
-DETERMINISTIC_GROUPS = {
-    "commitment_discount", "negative_cost",
-    "flat_hourly", "object_storage", "per_request",
-    "block_storage", "data_transfer", "non_workload", "cloudwatch",
-    "guardduty", "inspector", "marketplace_thirdparty", "quicksight", "redshift",
-    "athena", "kinesis", "efs", "xray", "fsx", "emr", "elasticache", "msk",
-    "rds_extended_support", "glue", "shield", "dynamodb_storage", "mwaa", "ssm_parameter_store",
-    "compute_windows", "compute_arm", "compute_burstable",
-}
+#
+# BUT generic shared mechanics (per_request, managed_db, flat_hourly, block_storage)
+# must NOT confer immunity against review/ignore rules when a service-level correction
+# exists — see WORKORDER_generic_mechanic_overclaim.md (FIX-B).
+from classify_mechanics import DETERMINISTIC_GROUPS
+
+GENERIC_DETERMINISTIC_GROUPS = frozenset({
+    "per_request", "managed_db", "flat_hourly", "block_storage",
+})
+DEDICATED_DETERMINISTIC_GROUPS = DETERMINISTIC_GROUPS - GENERIC_DETERMINISTIC_GROUPS
 
 
 def _norm(product):
@@ -133,10 +134,10 @@ def main():
     rows = con.execute(
         f"SELECT DISTINCT c.product, {code_expr} AS product_code, c.usage_type, "
         "       BOOL_OR(c.mechanic_group IN ("
-        + ",".join("?" for _ in DETERMINISTIC_GROUPS) +
+        + ",".join("?" for _ in DEDICATED_DETERMINISTIC_GROUPS) +
         "       )) OVER (PARTITION BY c.product, c.usage_type) AS is_deterministic "
         "FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING(aws_li_key)",
-        list(DETERMINISTIC_GROUPS),
+        list(DEDICATED_DETERMINISTIC_GROUPS),
     ).fetchall()
 
     # Skip comment/divider entries that carry no "match" key.
@@ -183,7 +184,7 @@ def main():
             ignore_updates.append((rule["gcp_service"], conf, note, product, usage_type))
             stats["ignore"] += 1
         else:  # keep
-            keep_updates.append((conf, note, note, product, usage_type))
+            keep_updates.append((rule["gcp_service"], conf, note, note, product, usage_type))
             stats["keep"] += 1
 
     # usage_type may be NULL (PDF-ingested bills); match it with IS NOT DISTINCT FROM
@@ -234,6 +235,18 @@ def main():
         con.executemany(
             """
             UPDATE aws_li_to_gcp_li SET
+                -- 'keep' never re-prices (strategy/gcp_sku_id untouched), but it
+                -- MUST ensure the row carries its GCP label: a deterministic mapper
+                -- (e.g. flat_hourly) prices+labels the sub-charges it knows, but
+                -- leaves unknown sub-charges of the same product as passthrough with
+                -- gcp_service NULL (confirmed real: VPC IPAM-Active-IP and
+                -- PublicIPv4:ContiguousBlock rows under "Amazon Virtual Private
+                -- Cloud"). Those null rows can't be rescued by a 'review' rule either
+                -- — flat_hourly is in DETERMINISTIC_GROUPS, so review is skipped as
+                -- "already priced". Backfill the rule's gcp_service ONLY when the
+                -- row has none, so labeled rows keep their real mapper SKU/label and
+                -- the no_null_projected_cost gate stops failing on the orphans.
+                gcp_service = COALESCE(NULLIF(TRIM(gcp_service), ''), ?),
                 mapping_confidence = LEAST(COALESCE(mapping_confidence, 1.0), ?),
                 projection_note = CASE
                     WHEN projection_note ILIKE '%unpriced%' OR projection_note ILIKE '%no rate%'

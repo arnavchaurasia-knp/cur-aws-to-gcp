@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +33,7 @@ _SELF_HOST_ON_GCE = _SVC_CFG.get("self_host_on_gce", [
 ])
 _SPECS_RAW = load_data_config("service_specs")
 _SPECS = {k: v for k, v in _SPECS_RAW.items() if not k.startswith("_")}
+_MISC_CONTEXT: dict[str, dict] = load_data_config("misc_service_context")
 
 
 def _get_spec_charge_type(service: str, charge_type_id: str) -> dict | None:
@@ -121,25 +123,35 @@ def build_guidance(row: dict, dispatch_result: dict | None) -> dict:
     # c. Data-gap
     _ut = usage_type.strip().lower()
     degenerate_ut = (not _ut) or _ut.endswith(":na")
-    if canonical and not unit.strip() and not operation.strip() and degenerate_ut:
-        gap_guidance = (
-            f"Identity is known ({canonical}) but this is an aggregated/rolled-up bill line "
-            f"with no unit, operation, or granular usage_type, so the charge TYPE "
-            f"(instance-hours vs storage vs request) cannot be determined from the source "
-            f"bill. Passthrough at cost parity, mapping_confidence=0.3, and note in "
-            f"mapping-notes.md that the source bill lacked line-item detail for this "
-            f"{canonical} charge."
-        )
+    _it = (row.get("instance_type") or "").strip()
+    if (canonical or cost > 0) and not unit.strip() and not operation.strip() and degenerate_ut and not _it:
+        if canonical:
+            why_text = f"service identified as '{canonical}' but the bill row has no charge-type detail (unit, operation blank; usage_type={usage_type!r})"
+            target_label = canonical
+            gap_guidance = (
+                f"Identity is known ({canonical}) but this is an aggregated/rolled-up bill line "
+                f"with no unit, operation, or granular usage_type, so the charge TYPE "
+                f"(instance-hours vs storage vs request) cannot be determined from the source "
+                f"bill. Passthrough at cost parity, mapping_confidence=0.3, and note in "
+                f"mapping-notes.md that the source bill lacked line-item detail for this "
+                f"{canonical} charge."
+            )
+        else:
+            why_text = f"${cost:,.2f} could not be classified — source bill lacked line-item detail (unit, operation, usage_type, instance_type blank)"
+            target_label = product or "Unclassified Charge"
+            gap_guidance = (
+                f"Source bill lacked line-item detail for this charge (${cost:,.2f}). "
+                f"Must passthrough at cost parity — never map to a guessed non-zero GCP SKU."
+            )
         return {
-            "why": (f"service identified as '{canonical}' but the bill row has no "
-                    f"charge-type detail (unit, operation blank; usage_type={usage_type!r})"),
-            "gcp_target": canonical,
-            "service_hint": canonical,
+            "why": why_text,
+            "gcp_target": target_label,
+            "service_hint": target_label,
             "strategy": "passthrough",
             "recommended_strategy": "passthrough",
-            "confidence_max": 0.3,
+            "confidence_max": 0.2 if not canonical else 0.3,
             "data_gap": True,
-            "missing_fields": ["unit", "operation", "usage_type_detail"],
+            "missing_fields": ["unit", "operation", "usage_type", "instance_type"],
             "guidance": gap_guidance,
             "mapping_guidance": gap_guidance,
             "guardrails": guardrails,
@@ -170,6 +182,46 @@ def build_guidance(row: dict, dispatch_result: dict | None) -> dict:
             if "formula" in g:
                 res["formula"] = g["formula"]
             return res
+
+    # 2b. Curated misc service context (for recognized services landing in misc without a full spec)
+    misc_ctx = None
+    if canonical and str(canonical).lower() in _MISC_CONTEXT:
+        misc_ctx = _MISC_CONTEXT[str(canonical).lower()]
+    elif product:
+        prod_lower = product.lower()
+        for k, ctx in _MISC_CONTEXT.items():
+            kl = k.lower()
+            if len(kl) <= 4:
+                # Word-boundary check for short tokens (e.g. 'mq', 's3') to prevent
+                # false positive substring matches inside unrelated product names
+                if re.search(r'\b' + re.escape(kl) + r'\b', prod_lower):
+                    misc_ctx = ctx
+                    break
+            elif kl in ("connect",):
+                # Specific check for 'connect' so 'Direct Connect' does not falsely match 'Amazon Connect'
+                if re.search(r'\b' + re.escape(kl) + r'\b', prod_lower) and "direct connect" not in prod_lower:
+                    misc_ctx = ctx
+                    break
+            elif kl in prod_lower:
+                misc_ctx = ctx
+                break
+
+    if misc_ctx:
+        ctx_target = misc_ctx.get("gcp_target", "(curated misc target)")
+        ctx_guidance = misc_ctx.get("guidance", "")
+        ctx_conf = misc_ctx.get("confidence_max", 0.5)
+        ctx_strategy = misc_ctx.get("strategy", "map")
+        return {
+            "why": f"curated misc context for {canonical or product}",
+            "gcp_target": ctx_target,
+            "service_hint": ctx_target,
+            "strategy": ctx_strategy,
+            "recommended_strategy": ctx_strategy,
+            "confidence_max": ctx_conf,
+            "guidance": ctx_guidance,
+            "mapping_guidance": ctx_guidance,
+            "guardrails": guardrails,
+        }
 
     # 3. Fallback: generic unknown-service guidance from _misc_reason
     completeness = _cm._info_completeness(row)

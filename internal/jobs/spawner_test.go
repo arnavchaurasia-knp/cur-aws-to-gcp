@@ -96,3 +96,30 @@ func TestSpawner_Failure(t *testing.T) {
 	result := s.Run(jobDir, ".csv")
 	assert.Error(t, result.Err)
 }
+
+// A global STOP_ALL drain flag must block NEW spawns, not just refinement.
+// Uses the production dir layout (DataDir/jobs/<id>) because the STOP_ALL
+// sentinel lives in DataDir — a shallower lookup (DataDir/jobs/STOP_ALL) would
+// never find it, which was the bug this test guards against.
+func TestSpawner_StopAllBlocksStart(t *testing.T) {
+	dataDir := t.TempDir()
+	jobsDir := filepath.Join(dataDir, "jobs")
+	jobDir := filepath.Join(jobsDir, "job-stopall")
+	require.NoError(t, os.MkdirAll(jobDir, 0755))
+	os.WriteFile(filepath.Join(jobDir, "input.csv"), []byte("header,data"), 0644)
+
+	agyPath := filepath.Join(dataDir, "agy")
+	os.WriteFile(agyPath, []byte(fakeAGY), 0755)
+	s := jobs.NewSpawner(jobs.SpawnerConfig{AGYPath: agyPath})
+
+	// Without STOP_ALL the guard must NOT fire (no "halted" error short-circuit).
+	require.False(t, jobs.IsStopAllActive(dataDir))
+
+	// Set the drain flag in DataDir, then a new Start must be refused.
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "STOP_ALL"), []byte("halt"), 0644))
+	require.True(t, jobs.IsStopAllActive(dataDir))
+
+	_, err := s.Start(jobDir, ".csv", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "STOP_ALL")
+}

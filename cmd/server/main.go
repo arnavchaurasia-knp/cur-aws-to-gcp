@@ -88,7 +88,9 @@ func main() {
 	}
 
 	// Reap orphan jobs surviving a previous backend run.
-	if orphans, err := database.ListNonTerminalJobs(); err == nil {
+	if jobs.IsStopAllActive(cfg.DataDir) {
+		log.Println("STOP_ALL is active — startup orphan reaper attaching NO watchers and resuming nothing")
+	} else if orphans, err := database.ListNonTerminalJobs(); err == nil {
 		for _, j := range orphans {
 			if j.AgentPID == 0 {
 				// Never actually started (server crashed before spawn). Mark
@@ -149,6 +151,7 @@ func main() {
 		r.Get("/api/jobs", jobHandler.List)
 		r.Get("/api/jobs/{id}", jobHandler.GetByID)
 		r.Get("/api/jobs/{id}/progress", jobHandler.Progress)
+		r.Post("/api/jobs/{id}/cancel", jobHandler.Cancel)
 		r.Post("/api/jobs/{id}/retry", jobHandler.Retry)
 		r.Post("/api/jobs/{id}/refine", jobHandler.Refine)
 		r.Get("/api/jobs/{id}/download", jobHandler.Download)
@@ -162,6 +165,9 @@ func main() {
 			r.Use(auth.RequireAdmin(cfg.AdminEmails))
 			r.Get("/api/admin/jobs", jobHandler.AdminListAllPaged)
 			r.Post("/api/admin/jobs/{id}/cancel", jobHandler.AdminCancelJob)
+			r.Post("/api/admin/jobs/cancel-all", jobHandler.CancelAll)
+			r.Post("/api/admin/jobs/resume-all", jobHandler.ResumeAll)
+			r.Get("/api/admin/system/state", jobHandler.SystemState)
 			r.Delete("/api/admin/jobs/{id}", jobHandler.AdminDeleteJob)
 			r.Get("/api/admin/users", jobHandler.AdminListUsers)
 			r.Post("/api/admin/users/{email}/role", jobHandler.AdminSetUserRole)

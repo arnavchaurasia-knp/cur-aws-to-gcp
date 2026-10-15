@@ -175,7 +175,7 @@ def _call_agy(prompt: str) -> str:
         return ""
     try:
         result = subprocess.run(
-            [agy_bin, "--print-only", "--model", os.environ.get("AGY_MODEL", "gemini-3.5-flash")],
+            [agy_bin, "--print-only", "--model", os.environ.get("AGY_MODEL", "gemini-3.8-flash")],
             input=prompt, text=True, capture_output=True, timeout=120,
         )
         return (result.stdout or "").strip()

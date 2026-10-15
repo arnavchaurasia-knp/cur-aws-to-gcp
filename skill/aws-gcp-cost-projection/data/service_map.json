@@ -174,7 +174,7 @@
       "match": "waf",
       "category": "Security",
       "gcp_service": "Cloud Armor",
-      "mode": "keep",
+      "mode": "review",
       "confidence": 78,
       "reason": "WAF -> Cloud Armor; multi-component (web ACL/hr + rule/mo + requests/M). Pricing model differs; passthrough baseline until per-component pricer built."
     },

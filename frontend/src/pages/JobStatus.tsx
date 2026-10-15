@@ -6,7 +6,7 @@ import { RunHistory } from '../components/RunHistory'
 import { Summary } from '../components/Summary'
 import { ContactCard } from '../components/ContactCard'
 import { Reveal } from '../components/Reveal'
-import { getJob, getProgress, listJobs, downloadURL, refineJob, retryJob, getRuns, getSummary } from '../api/jobs'
+import { getJob, getProgress, listJobs, downloadURL, refineJob, retryJob, cancelJob, getRuns, getSummary } from '../api/jobs'
 import type { Job, Progress, RunResult } from '../api/jobs'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
@@ -267,6 +267,24 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState<string | null>(null)
 
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
+
+  const submitCancel = async () => {
+    if (!id || !confirm('Stop this estimation run?')) return
+    setCancelling(true)
+    setCancelError(null)
+    try {
+      await cancelJob(id)
+      setJob(prev => prev ? { ...prev, status: 'cancelled' } : prev)
+      setJobs(prev => prev.map(old => old.id === id ? { ...old, status: 'cancelled' } : old))
+    } catch (e: unknown) {
+      setCancelError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setCancelling(false)
+    }
+  }
+
   const submitRetry = async () => {
     if (!id) return
     setRetrying(true)
@@ -357,6 +375,16 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
               <p className="text-gray-300">An AI agent is analyzing your bill and mapping each AWS line item to its GCP equivalent. This typically takes 10–30 minutes.</p>
               <p className="text-gray-400 text-xs mt-1">We'll email you when it's ready — you can close this tab.</p>
               <PhaseProgress phase={progress?.phase_number || 1} />
+              <div className="mt-4 pt-3 border-t border-[#645DF6]/20 flex items-center justify-between">
+                {cancelError && <span className="text-xs text-orange-400">{cancelError}</span>}
+                <button
+                  onClick={submitCancel}
+                  disabled={cancelling}
+                  className="px-3 py-1.5 rounded-lg border border-orange-500/30 text-xs font-medium text-orange-400 hover:bg-orange-500/10 disabled:opacity-40 transition-colors ml-auto"
+                >
+                  {cancelling ? 'Stopping…' : 'Cancel / Stop'}
+                </button>
+              </div>
             </div>
           )}
 
@@ -474,6 +502,19 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
               </div>
             )
           })()}
+
+          {job.status === 'cancelled' && (
+            <div className="bg-white/[0.03] border border-white/10 rounded-lg p-5 text-sm space-y-3 anim-scale-in">
+              <div className="flex items-center gap-2">
+                <span className="text-gray-400 font-bold text-base">⊘</span>
+                <strong className="text-gray-300">Estimation stopped</strong>
+                <span className="text-xs px-2 py-0.5 rounded bg-white/10 text-gray-400 font-mono">cancelled</span>
+              </div>
+              <p className="text-gray-400 text-xs">
+                This run was cancelled. No further phases will be executed.
+              </p>
+            </div>
+          )}
 
           <Link to="/" className="nav-link text-xs text-[#645DF6] self-start">← New Estimation</Link>
         </main>

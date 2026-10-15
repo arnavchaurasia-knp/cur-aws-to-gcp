@@ -606,3 +606,36 @@ func (h *Handler) AdminListAll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	json.NewEncoder(w).Encode(jobs)
 }
+
+// Cancel allows the job owner (or admin) to cancel a job authoritatively.
+func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	id := chi.URLParam(r, "id")
+	if !isValidJobID(id) {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	job, err := h.db.GetJob(id)
+	if err != nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.canAccess(sess, job) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	canceller := "user"
+	if sess != nil && sess.Email != "" {
+		canceller = sess.Email
+	}
+
+	res, err := h.cancelJob(id, canceller)
+	if err != nil {
+		http.Error(w, `{"error":"cancel failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]string{"id": id, "status": res.Status})
+}

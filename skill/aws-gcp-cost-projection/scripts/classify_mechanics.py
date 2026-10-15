@@ -32,10 +32,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config_loader import load_data_config as _cfg
 try:
     from aws_normalizer import canonical_service
-except Exception:  # pragma: no cover
-    canonical_service = lambda _p: None
+except (ImportError, ModuleNotFoundError):  # pragma: no cover
+    canonical_service = lambda *_a: None
 
 _svc_cfg = _cfg("service-classification")
+
+# Groups resolved deterministically by apply_commitment_ignores.py /
+# apply_static_mappings.py — the LLM must NOT re-touch them, or it could
+# overwrite a stable deterministic mapping with a run-to-run-varying guess.
+DETERMINISTIC_GROUPS = frozenset({
+    "commitment_discount", "negative_cost",
+    "flat_hourly", "object_storage", "per_request",
+    "block_storage", "data_transfer", "non_workload", "cloudwatch",
+    "guardduty", "inspector", "marketplace_thirdparty", "quicksight", "redshift",
+    "athena", "kinesis", "efs", "xray", "fsx", "emr", "elasticache", "msk",
+    "rds_extended_support", "glue", "shield", "dynamodb_storage", "mwaa", "ssm_parameter_store",
+    "compute_windows", "compute_arm", "compute_burstable",
+})
 
 AWS_RDS = "Relational Database"
 AWS_S3 = "Simple Storage"
@@ -110,9 +123,18 @@ def _is_accelerator(row) -> bool:
         return True
     return bool(re.search(r'\b(inf\d|trn\d|dl\d|p[2-5]|g[3-6]|vt\d)[a-z0-9]*\.', txt))
 
+_EC2_TYPES_DATA = _cfg("ec2-instance-types")
+
 def _has_instance_type(text: str | None) -> bool:
     if not text:
         return False
+    # Oracle lookup against authoritative ec2-instance-types table first
+    for m in re.finditer(r'[a-zA-Z0-9_\-\.:]+', text):
+        tok = m.group(0).split(":")[-1].strip(".,;:()")
+        clean = re.sub(r'^(?:db\.|cache\.|kafka\.)', '', tok, flags=re.IGNORECASE).lower().strip()
+        if clean and not clean.startswith("_") and clean in _EC2_TYPES_DATA:
+            return True
+    # Fallback to regex for uncataloged or brand-new types
     return bool(re.search(r'\b(?:db\.|cache\.|kafka\.)?[a-z]+\d[a-z0-9-]*\.(nano|micro|small|medium|large|metal|\d*xlarge)\b', text, re.IGNORECASE))
 
 # Set once per job by main() before classify() is ever called (module-level,
@@ -370,6 +392,13 @@ RULES = [
                 or _ilike(r["product"], "ElastiCache")
                 or _ilike(r["product"], "DocumentDB")
                 or _ilike(r["product"], "MemoryDB")
+                # Policy confirmation (P-1): Neptune, QLDB, and Timestream instances have no direct
+                # managed equivalent on GCP. Excluding them from compute_breakdown prevents pricing
+                # them as standard generic GCE VMs; they route to misc -> passthrough at AWS cost.
+                or _ilike(r["product"], "Neptune")
+                or _ilike(r["product"], "QLDB")
+                or _ilike(r["product"], "Timestream")
+                or r.get("canonical") in ("neptune", "qldb", "timestream")
                 # EMR's own "BoxUsage:<type>" lines are EMR's per-instance
                 # SURCHARGE (confirmed real: 23-33% of the same instance's EC2
                 # rate in the raw bill, e.g. m8g.4xlarge $0.1795/h on EMR vs
@@ -441,6 +470,27 @@ RULES = [
         lambda r: _re(r.get("usage_type", ""), r"ExtendedSupport:"),
     ),
     (
+        # TACTICAL: migrate into service_specs.json <svc> charge_type (see WORKORDER_generic_mechanic_overclaim.md)
+        # Aurora/RDS per-I/O request rows (ServerlessV2IOOp, StorageIOUsage, ReplicatedWriteIO, etc.)
+        # must route to block_storage deterministically so they are not treated as ACU compute capacity
+        # by managed_db. Excludes capacity storage (GB-Mo) like IO-OptimizedStorage.
+        "block_storage",
+        lambda r: (
+            (
+                _ilike(r["product"], "RDS")
+                or _ilike(r["product"], "Relational Database")
+                or _ilike(r["product"], "Aurora")
+                or r.get("canonical") in ("rds", "aurora")
+            )
+            and _re(
+                f"{r.get('usage_type', '')} {r.get('operation', '')}",
+                r"I/?O.?Op(?!timized\s*ACU)|ServerlessV2IOOp|StorageIOUsage|IO-?Optimized.*(Request|Usage)|per.?IO|ReplicatedWriteIO",
+            )
+            and not _re(f"{r.get('usage_type', '')} {r.get('operation', '')}", r"IO-?OptimizedStorage")
+            and r.get("unit") != "GB-Mo"
+        ),
+    ),
+    (
         # managed_db handles INSTANCE rows (billing unit = Hrs/hours) for the LLM.
         # Storage/IO/backup rows (unit = GB-Mo, None, or non-hourly) are routed to
         # block_storage instead — map_block_storage handles managed-DB storage
@@ -478,7 +528,8 @@ RULES = [
                 # or "...Aurora:ServerlessV2IOOptimizedUsage" (I/O-Optimized storage mode,
                 # Parquet/CUR-2.0) — match the "Aurora:ServerlessV2" prefix alone (not the
                 # full "...Usage" suffix) so every variant is caught, not just the plain one.
-                or _re(r.get("usage_type", ""), r"Aurora:ServerlessV2")
+                # Excludes ServerlessV2IOOp which is handled by the block_storage I/O guard above.
+                or (_re(r.get("usage_type", ""), r"Aurora:ServerlessV2") and not _re(r.get("usage_type", ""), r"ServerlessV2IOOp"))
             )
         ),
     ),
@@ -693,6 +744,31 @@ RULES = [
         ),
     ),
     (
+        # TACTICAL: migrate into service_specs.json <svc> charge_type (see WORKORDER_generic_mechanic_overclaim.md)
+        # AWS WAF request rows (RequestV2, Requests, Captcha, Challenge) and rules (WebACLV2, RuleV2)
+        # must route to per_request dedicated WAF handling (yielding Cloud Armor passthrough at AWS cost parity),
+        # not generic per_request mapping to 7.5e-07 zero-cost SKUs.
+        "per_request",
+        lambda r: (
+            (_re(r.get("product", ""), r"AWS WAF|WAF") or r.get("canonical") == "waf")
+            and _re(
+                f"{r.get('usage_type', '')} {r.get('operation', '')} {r.get('unit', '')}",
+                r"RequestV2|Requests|Captcha|Challenge|WebACLV2|RuleV2|Web ACL|WAF Rule",
+            )
+        ),
+    ),
+    (
+        # TACTICAL: migrate into service_specs.json <svc> charge_type (see WORKORDER_generic_mechanic_overclaim.md)
+        # S3 request rows (Requests-Tier1, Requests-Tier2, etc.) must route to dedicated S3 request
+        # passthrough handling at cost parity rather than being mapped to GCS Class A/B SKUs with
+        # incompatible $/1k vs $/10k unit models (~770x underestimation).
+        "per_request",
+        lambda r: (
+            (r.get("canonical") == "s3" or _ilike(r.get("product", ""), "Simple Storage") or _re(r.get("product", ""), r"\bS3\b"))
+            and _re(r.get("usage_type", ""), r"Requests-Tier")
+        ),
+    ),
+    (
         # Architecturally complex services (Cognito, DynamoDB, SES) are excluded
         # here — they fall through to misc so the LLM gets a personalized prompt.
         # GuardDuty and Security Hub are caught by the guardduty rule above and
@@ -764,8 +840,13 @@ RULES = [
             and not any(
                 _ilike(r["product"], p) for p in (
                     "Cognito", "DynamoDB", "Simple Email",
-                    "GuardDuty", "Security Hub",
+                    "GuardDuty", "Security Hub", "WAF",
                 )
+            )
+            and r.get("canonical") != "waf"
+            and not (
+                (r.get("canonical") == "s3" or _ilike(r.get("product", ""), "Simple Storage") or _re(r.get("product", ""), r"\bS3\b"))
+                and _re(r.get("usage_type", ""), r"Requests-Tier")
             )
         ),
     ),
@@ -876,7 +957,7 @@ RULES = [
         "ssm_parameter_store",
         lambda r: (
             (_ilike(r["product"], "Systems Manager") or _ilike(r["product"], "AWSSystemsManager")
-             or r.get("canonical") == "systemsmanager")
+             or r.get("canonical") in ("systemsmanager", "ssm"))
             and _re(r.get("usage_type", ""), r"PS-(?:Advanced-)?Param")
         ),
     ),
@@ -1136,7 +1217,7 @@ RULES = [
         "marketplace_thirdparty",
         lambda r: (
             bool(r["product"])
-            and not re.match(r'^(amazon|aws)\b', r["product"], re.IGNORECASE)
+            and not re.match(r'^(amazon|aws)\s*', r["product"], re.IGNORECASE)
             and canonical_service(r["product"], r.get("product_code")) is None
         ),
     ),
@@ -1225,24 +1306,38 @@ def _misc_reason(row: dict) -> str:
     # missing fields instead of a silent, unexplained misc.
     canonical = row.get("canonical")
     operation = row.get("operation") or ""
+    cost = float(row.get("aws_amortized_cost") or 0.0)
     _ut = usage_type.strip().lower()
     degenerate_ut = (not _ut) or _ut.endswith(":na")
-    if canonical and not unit.strip() and not operation.strip() and degenerate_ut:
-        return json.dumps({
-            "why": (f"service identified as '{canonical}' but the bill row has no "
-                    f"charge-type detail (unit, operation blank; usage_type={usage_type!r})"),
-            "service_hint": canonical,
-            "data_gap": True,
-            "missing_fields": ["unit", "operation", "usage_type_detail"],
-            "recommended_strategy": "passthrough",
-            "mapping_guidance": (
+    _it = (row.get("instance_type") or "").strip()
+    if (canonical or cost > 0) and not unit.strip() and not operation.strip() and degenerate_ut and not _it:
+        if canonical:
+            why_text = f"service identified as '{canonical}' but the bill row has no charge-type detail (unit, operation blank; usage_type={usage_type!r})"
+            svc_hint = canonical
+            guidance_text = (
                 f"Identity is known ({canonical}) but this is an aggregated/rolled-up bill line "
                 f"with no unit, operation, or granular usage_type, so the charge TYPE "
                 f"(instance-hours vs storage vs request) cannot be determined from the source "
                 f"bill. Passthrough at cost parity, mapping_confidence=0.3, and note in "
                 f"mapping-notes.md that the source bill lacked line-item detail for this "
                 f"{canonical} charge."
-            ),
+            )
+        else:
+            why_text = f"${cost:,.2f} could not be classified — source bill lacked line-item detail (unit, operation, usage_type, instance_type blank)"
+            svc_hint = product or "Unclassified Charge"
+            guidance_text = (
+                f"Source bill lacked line-item detail for this charge (${cost:,.2f}). "
+                f"Must passthrough at cost parity — never guess a non-zero GCP SKU."
+            )
+        return json.dumps({
+            "why": why_text,
+            "service_hint": svc_hint,
+            "data_gap": True,
+            "strategy": "passthrough",
+            "recommended_strategy": "passthrough",
+            "confidence_max": 0.2,
+            "missing_fields": ["unit", "operation", "usage_type", "instance_type"],
+            "mapping_guidance": guidance_text,
         })
 
     # Accelerator / specialized silicon (Inferentia, Trainium, GPU) → NEVER a
@@ -1382,6 +1477,60 @@ def _misc_reason(row: dict) -> str:
     })
 
 
+def annotate_misc_field_state(row: dict) -> dict[str, str]:
+    """Annotate field states for a misc row in phase2_manifest.json (FIX 18).
+    Classifies each column as 'present_in_cur', 'needs_api', 'not_available', or 'not_in_bill'.
+    """
+    try:
+        from field_state import FIELD_REGISTRY, FieldSource
+    except Exception:
+        FIELD_REGISTRY = {}
+        FieldSource = None
+
+    field_state = {}
+    for col, val in row.items():
+        if col in ("aws_li_key", "mechanic_group", "misc_annotation", "field_state"):
+            continue
+        if val is not None:
+            field_state[col] = "present_in_cur"
+        else:
+            fdef = FIELD_REGISTRY.get(col)
+            if fdef and FieldSource:
+                if fdef.source == FieldSource.NOT_AVAILABLE_CUR_ONLY:
+                    field_state[col] = "not_available"
+                elif fdef.source in (FieldSource.AWS_CATALOG, FieldSource.GCP_CATALOG):
+                    field_state[col] = "needs_api"
+                else:
+                    field_state[col] = "not_in_bill"
+            else:
+                field_state[col] = "not_in_bill"
+    return field_state
+
+
+def check_manifest_integrity(
+    manifest_groups: set[str] | dict[str, list],
+    llm_groups: set[str],
+    handled_groups: set[str] | frozenset[str],
+) -> list[str]:
+    """Assert every group present in the manifest is either in llm_groups or in handled_groups (FIX 20).
+
+    Returns a list of warning/error messages for any unhandled groups.
+    """
+    groups = manifest_groups.keys() if isinstance(manifest_groups, dict) else manifest_groups
+    unhandled = []
+    for g in sorted(groups):
+        if g not in llm_groups and g not in handled_groups:
+            spend_str = ""
+            if isinstance(manifest_groups, dict) and g in manifest_groups:
+                spend = sum(r.get("aws_amortized_cost") or 0.0 for r in manifest_groups[g])
+                rows_count = len(manifest_groups[g])
+                spend_str = f" ({rows_count} rows, ${spend:,.2f} spend)"
+            unhandled.append(
+                f"Unhandled mechanic_group '{g}'{spend_str}: excluded from LLM manifest but has no deterministic handler"
+            )
+    return unhandled
+
+
 def main():
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <projection.duckdb>", file=sys.stderr)
@@ -1403,9 +1552,11 @@ def main():
     }
     if "mechanic_group" not in existing_cols:
         con.execute("ALTER TABLE aws_li_catalog ADD COLUMN mechanic_group TEXT")
+        existing_cols.add("mechanic_group")
         print("Added column mechanic_group to aws_li_catalog.")
     if "mechanic_rule" not in existing_cols:
         con.execute("ALTER TABLE aws_li_catalog ADD COLUMN mechanic_rule TEXT")
+        existing_cols.add("mechanic_rule")
         print("Added column mechanic_rule to aws_li_catalog.")
 
     # --- Load rows ---
@@ -1579,29 +1730,52 @@ def main():
     # --- Emit phase2_manifest.json alongside the DB ---
     import collections  # os is already imported at module scope
     manifest: dict[str, list] = collections.defaultdict(list)
+
+    # FIX 19: Build manifest SELECT column expressions dynamically from existing_cols
+    manifest_col_specs = [
+        ("aws_li_key", "aws_li_key"),
+        ("mechanic_group", "mechanic_group"),
+        ("product", "product"),
+        ("usage_type", "usage_type"),
+        ("operation", "operation"),
+        ("pricing_unit", "unit"),
+        ("line_item_type", "line_item_type"),
+        ("pricing_model", "pricing_model"),
+        ("aws_amortized_cost", "aws_amortized_cost"),
+        ("instance_type", "instance_type"),
+        ("instance_vcpus", "instance_vcpus"),
+        ("instance_ram_gb", "instance_ram_gb"),
+        ("instance_arch", "instance_arch"),
+        ("workload_class", "workload_class"),
+        ("billing_days", "billing_days"),
+        ("instance_count", "instance_count"),
+        ("aws_effective_unit_rate", "aws_effective_unit_rate"),
+        ("aws_region", "region"),
+        ("gcp_region", "gcp_region"),
+        ("is_workload", "is_workload"),
+        ("operating_system", "operating_system"),
+        ("license_model", "license_model"),
+        ("database_engine", "database_engine"),
+        ("deployment_option", "deployment_option"),
+    ]
+    manifest_select_exprs = [
+        (f"{db_col} AS {alias}" if db_col != alias else db_col)
+        if db_col in existing_cols
+        else f"NULL AS {alias}"
+        for db_col, alias in manifest_col_specs
+    ]
+    full_cols = [alias for _, alias in manifest_col_specs]
+    manifest_select_sql = ",\n            ".join(manifest_select_exprs)
+
     row_data_full = con.execute(
-        """
+        f"""
         SELECT
-            aws_li_key, mechanic_group, product, usage_type, operation,
-            pricing_unit AS unit, line_item_type, pricing_model,
-            aws_amortized_cost, instance_type, instance_vcpus,
-            instance_ram_gb, instance_arch, workload_class,
-            billing_days, instance_count, aws_effective_unit_rate,
-            aws_region AS region, gcp_region, is_workload,
-            operating_system, license_model, database_engine, deployment_option
+            {manifest_select_sql}
         FROM aws_li_catalog
         ORDER BY mechanic_group, aws_amortized_cost DESC
         """
     ).fetchall()
-    full_cols = [
-        "aws_li_key", "mechanic_group", "product", "usage_type", "operation",
-        "unit", "line_item_type", "pricing_model",
-        "aws_amortized_cost", "instance_type", "instance_vcpus",
-        "instance_ram_gb", "instance_arch", "workload_class",
-        "billing_days", "instance_count", "aws_effective_unit_rate",
-        "region", "gcp_region", "is_workload",
-        "operating_system", "license_model", "database_engine", "deployment_option",
-    ]
+
     for raw in row_data_full:
         row = dict(zip(full_cols, raw))
         if row["mechanic_group"] == "misc" and row["aws_li_key"] in misc_reasons:
@@ -1611,28 +1785,15 @@ def main():
     # Groups resolved deterministically by apply_commitment_ignores.py /
     # apply_static_mappings.py — the LLM must NOT re-touch them, or it could
     # overwrite a stable deterministic mapping with a run-to-run-varying guess.
-    skip_groups = {
-        "commitment_discount", "negative_cost",
-        "flat_hourly", "object_storage", "per_request",
-        "block_storage", "data_transfer", "non_workload", "cloudwatch",
-        "guardduty", "inspector", "marketplace_thirdparty", "quicksight", "redshift", "athena", "kinesis", "efs", "xray", "fsx", "emr", "elasticache", "msk",
-        "rds_extended_support", "glue", "shield", "dynamodb_storage", "mwaa", "ssm_parameter_store",
-        # compute_windows/compute_arm/compute_burstable each have a dedicated static
-        # handler in apply_static_mappings.py that always emits an output entry (map
-        # or passthrough fallback) for every row — same shape as the other
-        # deterministic groups above. Without this, these rows stayed in the LLM
-        # manifest as needs_llm=true and got a SECOND, independent LLM mapping on
-        # top of the deterministic one, which is what caused the same Windows/RHEL
-        # SKU to produce a different ratio on every bill (whichever mapping the
-        # merge step kept last), rather than the deterministic price being final.
-        "compute_windows", "compute_arm", "compute_burstable",
-    }
-    # Only include groups the LLM actually needs to map. Static groups (flat_hourly,
-    # object_storage, block_storage, etc.) are handled deterministically by
-    # apply_static_mappings.py — serializing them into the manifest burns ~87K tokens
-    # per run as the LLM reads each group and discovers there is nothing to do.
+    skip_groups = set(DETERMINISTIC_GROUPS)
     llm_groups = {g for g in manifest if g not in skip_groups}
     static_groups = {g for g in manifest if g in skip_groups}
+
+    # FIX 20: Integrity check — ensure no group drops silently
+    integrity_errors = check_manifest_integrity(manifest, llm_groups, DETERMINISTIC_GROUPS)
+    if integrity_errors:
+        for err in integrity_errors:
+            print(f"CRITICAL WARNING (unhandled group): {err}", file=sys.stderr)
 
     def _drop_null_cols(rows: list) -> list:
         """Remove columns that are None for every row in the group (T3 token optimization)."""
@@ -1644,13 +1805,26 @@ def main():
             return rows
         return [{k: v for k, v in r.items() if k not in null_cols} for r in rows]
 
-    manifest_out = {
-        g: {"rows": _drop_null_cols(rows), "row_count": len(rows),
+    # FIX 18: For misc rows, do not drop null columns; attach per-row field_state instead.
+    manifest_out = {}
+    for g, rows in manifest.items():
+        if g not in llm_groups:
+            continue
+        if g == "misc":
+            processed_rows = []
+            for r in rows:
+                r_copy = dict(r)
+                r_copy["field_state"] = annotate_misc_field_state(r_copy)
+                processed_rows.append(r_copy)
+        else:
+            processed_rows = _drop_null_cols(rows)
+
+        manifest_out[g] = {
+            "rows": processed_rows,
+            "row_count": len(rows),
             "total_spend": sum(r.get("aws_amortized_cost") or 0 for r in rows),
-            "needs_llm": True}
-        for g, rows in manifest.items()
-        if g in llm_groups
-    }
+            "needs_llm": True,
+        }
 
     # Add output_dir so the LLM knows exactly where to write mapping files.
     # Use a relative path — absolute paths cause the LLM to write outside the job dir.

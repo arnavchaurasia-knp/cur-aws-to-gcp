@@ -203,14 +203,21 @@ def build_field_state_map(
     versa). This handles schema drift between ingest.py versions without
     requiring a migration.
     """
-    # Build an alias-aware value lookup once up front.
+    # Build alias-aware value lookups once up front.
     _RAM_ALIASES = ("ram_gb", "memory_gb")
+    _REGION_ALIASES = ("region", "gcp_region", "aws_region")
 
     def _get_value(fname: str) -> Any:
         val = profile.get(fname)
         if val is None and fname in _RAM_ALIASES:
             # Try the other alias
             for alias in _RAM_ALIASES:
+                if alias != fname:
+                    val = profile.get(alias)
+                    if val is not None:
+                        break
+        elif val is None and fname in _REGION_ALIASES:
+            for alias in _REGION_ALIASES:
                 if alias != fname:
                     val = profile.get(alias)
                     if val is not None:

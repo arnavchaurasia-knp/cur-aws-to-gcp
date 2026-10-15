@@ -111,3 +111,12 @@ export async function refineJob(id: string, instruction: string): Promise<{ stat
   }
   return res.json()
 }
+
+export async function cancelJob(id: string): Promise<{ id: string; status: string }> {
+  const res = await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `cancel failed (${res.status})`)
+  }
+  return res.json()
+}

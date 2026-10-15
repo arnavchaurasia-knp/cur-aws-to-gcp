@@ -36,6 +36,45 @@ export async function cancelJob(id: string): Promise<void> {
   }
 }
 
+export interface CancelAllResponse {
+  cancelled: string[]
+  already_terminal: string[]
+  reaped_pids: number[]
+  errors: string[]
+  stop_all: boolean
+}
+
+export async function cancelAllJobs(): Promise<CancelAllResponse> {
+  const res = await fetch('/api/admin/jobs/cancel-all', { method: 'POST' })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `cancel-all failed (${res.status})`)
+  }
+  return res.json()
+}
+
+export async function resumeAllJobs(): Promise<{ status: string; stop_all: boolean }> {
+  const res = await fetch('/api/admin/jobs/resume-all', { method: 'POST' })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `resume-all failed (${res.status})`)
+  }
+  return res.json()
+}
+
+export interface SystemState {
+  halted: boolean
+  stop_all: boolean
+}
+
+export async function getSystemState(): Promise<SystemState> {
+  const res = await fetch('/api/admin/system/state')
+  if (!res.ok) {
+    return { halted: false, stop_all: false }
+  }
+  return res.json()
+}
+
 export async function deleteJob(id: string): Promise<void> {
   const res = await fetch(`/api/admin/jobs/${id}`, { method: 'DELETE' })
   if (!res.ok && res.status !== 204) {

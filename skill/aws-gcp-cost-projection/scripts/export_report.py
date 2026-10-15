@@ -5,56 +5,82 @@ import os
 import sys
 
 import duckdb
+from currency_utils import load_currency_info
 
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 
-_QUERY = """
--- A line item can fan out into multiple GCP mapping components (e.g. an
--- EC2 instance-hour split into 'core' + 'ram'). aws_li_catalog carries
--- aws_amortized_cost at the LINE-ITEM level, not per component, so a plain
--- join against aws_li_to_gcp_li/gcp_projection repeats that same AWS cost
--- on every component row while gcp_projected_cost is correctly split —
--- summing the exported "AWS Cost ($)" column then overcounts AWS spend by
--- Nx for every multi-component line item. Rank components per aws_li_key
--- (mirroring projection_view.py's passthrough_rank) so only the first
--- component row carries the real AWS cost; the rest show $0, keeping
--- per-row totals additive on both the AWS and GCP side.
+
+def _build_query(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0):
+    cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
+    return f"""
 WITH component_rank AS (
     SELECT rowid AS row_id, aws_li_key,
            ROW_NUMBER() OVER (PARTITION BY aws_li_key ORDER BY rowid) AS rn
     FROM aws_li_to_gcp_li
+),
+per_item AS (
+    SELECT
+        c.aws_amortized_cost,
+        c.product,
+        c.instance_type,
+        p.gcp_service,
+        p.gcp_machine_type,
+        p.gcp_region,
+        m.strategy,
+        m.mapping_confidence,
+        (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END) * {aws_fx_rate} AS aws_cost,
+        CASE
+            WHEN m.strategy = 'ignore' THEN 0.0
+            WHEN m.strategy IN ('map', 'break_down') AND p.gcp_projected_cost IS NOT NULL
+                THEN p.gcp_projected_cost * {fx_rate}
+            ELSE (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END) * {aws_fx_rate}
+        END AS gcp_od_cost,
+        CASE
+            WHEN m.strategy = 'ignore' THEN 0.0
+            WHEN m.strategy IN ('map', 'break_down') AND p.gcp_projected_cost IS NOT NULL
+                THEN COALESCE(p.gcp_cost_1yr_cud, p.gcp_projected_cost) * {fx_rate}
+            ELSE (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END) * {aws_fx_rate}
+        END AS gcp_1yr_cost,
+        CASE
+            WHEN m.strategy = 'ignore' THEN 0.0
+            WHEN m.strategy IN ('map', 'break_down') AND p.gcp_projected_cost IS NOT NULL
+                THEN COALESCE(p.gcp_cost_3yr_cud, p.gcp_projected_cost) * {fx_rate}
+            ELSE (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END) * {aws_fx_rate}
+        END AS gcp_3yr_cost,
+        CASE
+            WHEN m.strategy IN ('map', 'break_down') AND c.is_workload AND p.gcp_projected_cost IS NOT NULL AND c.aws_amortized_cost > 0
+                THEN 'A'
+            ELSE 'B'
+        END AS section
+    FROM aws_li_catalog c
+    LEFT JOIN aws_li_to_gcp_li m USING (aws_li_key)
+    LEFT JOIN gcp_projection p ON p.aws_li_key = m.aws_li_key AND p.component = m.component
+    LEFT JOIN component_rank cr ON cr.row_id = m.rowid
 )
 SELECT
-    ROW_NUMBER() OVER (ORDER BY c.aws_amortized_cost DESC) AS "#",
-    c.product                                              AS "AWS Service",
-    COALESCE(c.instance_type, '')                          AS "AWS Instance",
-    COALESCE(p.gcp_service, '')                            AS "GCP Service",
-    COALESCE(p.gcp_machine_type, '')                       AS "GCP Mapping",
-    COALESCE(p.gcp_region, '')                             AS "Region",
-    ROUND(CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END, 2)
-                                                            AS "AWS Cost ($)",
-    ROUND(p.gcp_projected_cost, 2)                         AS "GCP OD ($)",
-    ROUND(CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
-          - COALESCE(p.gcp_projected_cost, 0), 2)          AS "Diff ($)",
-    ROUND(COALESCE(p.gcp_cost_1yr_cud, p.gcp_projected_cost), 2)     AS "GCP 1yr CUD ($)",
-    ROUND(COALESCE(p.gcp_cost_3yr_cud, p.gcp_projected_cost), 2)     AS "GCP 3yr CUD ($)",
-    COALESCE(m.strategy, '')                               AS "Strategy",
-    ROUND(COALESCE(m.mapping_confidence, 0), 2)            AS "Confidence"
-FROM aws_li_catalog c
-LEFT JOIN aws_li_to_gcp_li m USING (aws_li_key)
-LEFT JOIN gcp_projection p ON p.aws_li_key = m.aws_li_key AND p.component = m.component
-LEFT JOIN component_rank cr ON cr.row_id = m.rowid
-ORDER BY c.aws_amortized_cost DESC
+    ROW_NUMBER() OVER (ORDER BY aws_amortized_cost DESC) AS "#",
+    product                                              AS "AWS Service",
+    COALESCE(instance_type, '')                          AS "AWS Instance",
+    COALESCE(gcp_service, '')                            AS "GCP Service",
+    COALESCE(gcp_machine_type, '')                       AS "GCP Mapping",
+    COALESCE(gcp_region, '')                             AS "Region",
+    ROUND(aws_cost, 2)                                   AS "AWS Cost{cur_sym}",
+    ROUND(gcp_od_cost, 2)                                AS "GCP OD{cur_sym}",
+    ROUND(aws_cost - gcp_od_cost, 2)                     AS "Diff{cur_sym}",
+    ROUND(gcp_1yr_cost, 2)                               AS "GCP 1yr CUD{cur_sym}",
+    ROUND(gcp_3yr_cost, 2)                               AS "GCP 3yr CUD{cur_sym}",
+    section                                              AS "Section",
+    COALESCE(strategy, '')                               AS "Strategy",
+    ROUND(COALESCE(mapping_confidence, 0), 2)            AS "Confidence"
+FROM per_item
+ORDER BY aws_amortized_cost DESC
 """
 
-# Per-instance-type rollup: groups the same de-duplicated per-line-item costs
-# above by AWS instance type, so every number here is additive straight from
-# the pipeline's own ground-truth gcp_projection view — no proportional-split
-# estimation from aggregated bill totals, which is what introduces the
-# "AWS-discount vs GCP-list-price" row-level mismatches seen when per-instance
-# detail is reconstructed from the rendered HTML report + raw CUR instead.
-_QUERY_BY_INSTANCE = """
+
+def _build_query_by_instance(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0):
+    cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
+    return f"""
 WITH component_rank AS (
     SELECT rowid AS row_id, aws_li_key,
            ROW_NUMBER() OVER (PARTITION BY aws_li_key ORDER BY rowid) AS rn
@@ -66,11 +92,11 @@ per_line_item AS (
         COALESCE(c.instance_type, '')                          AS instance_type,
         COALESCE(p.gcp_machine_type, '')                       AS gcp_mapping,
         COALESCE(p.gcp_region, c.gcp_region, '')                AS region,
-        CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
+        (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END) * {aws_fx_rate}
                                                                 AS aws_cost,
-        COALESCE(p.gcp_projected_cost, 0)                      AS gcp_od_cost,
-        COALESCE(p.gcp_cost_1yr_cud, p.gcp_projected_cost, 0)  AS gcp_1yr_cost,
-        COALESCE(p.gcp_cost_3yr_cud, p.gcp_projected_cost, 0)  AS gcp_3yr_cost
+        COALESCE(p.gcp_projected_cost, 0) * {fx_rate}          AS gcp_od_cost,
+        COALESCE(p.gcp_cost_1yr_cud, p.gcp_projected_cost, 0) * {fx_rate} AS gcp_1yr_cost,
+        COALESCE(p.gcp_cost_3yr_cud, p.gcp_projected_cost, 0) * {fx_rate} AS gcp_3yr_cost
     FROM aws_li_catalog c
     LEFT JOIN aws_li_to_gcp_li m USING (aws_li_key)
     LEFT JOIN gcp_projection p ON p.aws_li_key = m.aws_li_key AND p.component = m.component
@@ -84,15 +110,44 @@ SELECT
     gcp_mapping                                        AS "GCP Mapping",
     region                                              AS "Region",
     COUNT(*)                                            AS "Line Items",
-    ROUND(SUM(aws_cost), 2)                             AS "AWS Cost ($)",
-    ROUND(SUM(gcp_od_cost), 2)                          AS "GCP OD ($)",
-    ROUND(SUM(aws_cost) - SUM(gcp_od_cost), 2)          AS "Diff ($)",
-    ROUND(SUM(gcp_1yr_cost), 2)                         AS "GCP 1yr CUD ($)",
-    ROUND(SUM(gcp_3yr_cost), 2)                         AS "GCP 3yr CUD ($)"
+    ROUND(SUM(aws_cost), 2)                             AS "AWS Cost{cur_sym}",
+    ROUND(SUM(gcp_od_cost), 2)                          AS "GCP OD{cur_sym}",
+    ROUND(SUM(aws_cost) - SUM(gcp_od_cost), 2)          AS "Diff{cur_sym}",
+    ROUND(SUM(gcp_1yr_cost), 2)                         AS "GCP 1yr CUD{cur_sym}",
+    ROUND(SUM(gcp_3yr_cost), 2)                         AS "GCP 3yr CUD{cur_sym}"
 FROM per_line_item
 GROUP BY product, instance_type, gcp_mapping, region
 ORDER BY SUM(aws_cost) DESC
 """
+
+
+def _build_query_discounts(curr_code="USD", aws_fx_rate=1.0):
+    cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
+    return f"""
+SELECT
+    ROW_NUMBER() OVER (ORDER BY discount_amount DESC) AS "#",
+    service                                            AS "AWS Service",
+    discount_types                                     AS "Discount Type",
+    item_count                                         AS "Line Items",
+    ROUND(discount_amount, 2)                          AS "Discount Amount{cur_sym}"
+FROM (
+    SELECT
+        COALESCE(c.product, 'Discounts & Credits') AS service,
+        STRING_AGG(DISTINCT COALESCE(NULLIF(c.line_item_type, ''), c.mechanic_group), ', ') AS discount_types,
+        COUNT(*)                                   AS item_count,
+        SUM(ABS(c.aws_amortized_cost)) * {aws_fx_rate}             AS discount_amount
+    FROM aws_li_catalog c
+    WHERE c.aws_amortized_cost < 0
+    GROUP BY c.product
+    HAVING discount_amount > 0.005
+)
+ORDER BY discount_amount DESC
+"""
+
+
+_QUERY = _build_query()
+_QUERY_BY_INSTANCE = _build_query_by_instance()
+_QUERY_DISCOUNTS = _build_query_discounts()
 
 
 def _safe_prospect(conn):
@@ -142,6 +197,7 @@ def main():
     fmt = "xlsx"
     out_path = None
     by_instance = False
+    by_discounts = False
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -154,31 +210,56 @@ def main():
         elif args[i] == "--by-instance":
             by_instance = True
             i += 1
+        elif args[i] == "--by-discounts":
+            by_discounts = True
+            i += 1
         else:
             i += 1
 
     if not out_path:
         print(
-            "Usage: export_report.py --format [xlsx|csv] --out <path> [--by-instance]\n"
-            "  --by-instance   CSV: emit the per-instance-type rollup instead of raw line items.\n"
-            "                  XLSX: always included as an extra 'Per-Instance Summary' sheet.",
+            "Usage: export_report.py --format [xlsx|csv] --out <path> [--by-instance] [--by-discounts]\n"
+            "  --by-instance    CSV: emit the per-instance-type rollup instead of raw line items.\n"
+            "  --by-discounts   CSV: emit the discounts-by-service rollup instead of raw line items.\n"
+            "                   XLSX: always included as an extra 'Discounts by Service' sheet.",
             file=sys.stderr,
         )
         sys.exit(1)
 
     conn = duckdb.connect(DB_PATH, read_only=True)
-    result = conn.execute(_QUERY)
+    job_dir = JOB_DIR if os.path.exists(os.path.join(JOB_DIR, "projection-audit")) else os.path.dirname(os.path.dirname(os.path.abspath(DB_PATH)))
+    currency_info = load_currency_info(job_dir, conn)
+    curr_code = currency_info.get("currency", "USD")
+    fx_rate = float(currency_info.get("fx_rate", 1.0))
+    aws_fx_rate = float(currency_info.get("aws_fx_rate", 1.0))
+
+    query = _build_query(fx_rate, curr_code, aws_fx_rate)
+    inst_query = _build_query_by_instance(fx_rate, curr_code, aws_fx_rate)
+    disc_query = _build_query_discounts(curr_code, aws_fx_rate)
+
+    result = conn.execute(query)
     headers = [d[0] for d in result.description]
     rows = result.fetchall()
 
-    inst_result = conn.execute(_QUERY_BY_INSTANCE)
+    inst_result = conn.execute(inst_query)
     inst_headers = [d[0] for d in inst_result.description]
     inst_rows = inst_result.fetchall()
+
+    try:
+        disc_result = conn.execute(disc_query)
+        disc_headers = [d[0] for d in disc_result.description]
+        disc_rows = disc_result.fetchall()
+    except Exception:
+        cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
+        disc_headers = ["#", "AWS Service", "Discount Type", "Line Items", f"Discount Amount{cur_sym}"]
+        disc_rows = []
     conn.close()
 
     if fmt == "csv":
         if by_instance:
             headers, rows = inst_headers, inst_rows
+        elif by_discounts:
+            headers, rows = disc_headers, disc_rows
         with open(out_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(headers)
@@ -191,6 +272,8 @@ def main():
         wb.remove(wb.active)
         _write_sheet(wb, "GCP Cost Analysis", headers, rows)
         _write_sheet(wb, "Per-Instance Summary", inst_headers, inst_rows)
+        if disc_rows:
+            _write_sheet(wb, "Discounts by Service", disc_headers, disc_rows)
         wb.save(out_path)
 
     else:

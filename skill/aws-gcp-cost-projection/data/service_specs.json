@@ -1,7 +1,7 @@
 {
   "_meta": {
-    "purpose": "Per-service charge-type specification registry (Layer-1.5). ONE uniform schema for every AWS service: given a row whose service identity is already resolved (canonical_service, product_code-first), this declares the service's charge-types, how each is recognised, which reusable pricing mechanic prices it, and which fields it needs for full context. Replaces the greedy global regex rules in classify_mechanics.py with explicit per-service dispatch. The mechanic vocabulary (compute_breakdown/block_storage/...) is UNCHANGED \u2014 this only changes HOW a row's mechanic is chosen (per-service + explicit) instead of by global pattern order.",
-    "status": "SEED \u2014 ec2 + rds only. Faithfully carried over from classify_mechanics.py RULES (each charge_type cites its source_rule). Field names grounded in the authoritative AWS CUR data dictionary. NOT YET consumed by any script. classify_mechanics.py still owns classification until the dispatch engine lands (see docs/SERVICE_SPECS_DESIGN.md migration plan). Grow one service at a time, ranked by spend.",
+    "purpose": "Per-service charge-type specification registry (Layer-1.5). ONE uniform schema for every AWS service: given a row whose service identity is already resolved (canonical_service, product_code-first), this declares the service's charge-types, how each is recognised, which reusable pricing mechanic prices it, and which fields it needs for full context. Replaces the greedy global regex rules in classify_mechanics.py with explicit per-service dispatch. The mechanic vocabulary (compute_breakdown/block_storage/...) is UNCHANGED — this only changes HOW a row's mechanic is chosen (per-service + explicit) instead of by global pattern order.",
+    "status": "SEED — ec2 + rds only. Faithfully carried over from classify_mechanics.py RULES (each charge_type cites its source_rule). Field names grounded in the authoritative AWS CUR data dictionary. NOT YET consumed by any script. classify_mechanics.py still owns classification until the dispatch engine lands (see docs/SERVICE_SPECS_DESIGN.md migration plan). Grow one service at a time, ranked by spend.",
     "schema_version": 2,
     "evidence_source": "Service seeding order = global spend ranking across all 75 historical job DBs (AGENTS.md global_sku_audit). Field names from AWS CUR product/line_item/pricing columns (https://docs.aws.amazon.com/cur/latest/userguide/table-dictionary-cur2-product.html) cross-checked against the columns ingest.py actually parses.",
     "dispatch_model": "canonical_service (identity, done) -> service_specs[canonical] -> test charge_types in order, FIRST MATCH WINS (same semantics as today's rule chain, but scoped to one service) -> assign (charge_type, mechanic) + compute field_state over the charge_type's fields. A row whose service has no spec here falls back to the legacy generic mechanic rules.",
@@ -14,14 +14,14 @@
       "exclude_usage_type_re": "row does NOT match if this hits usage_type",
       "exclude_operation_re": "row does NOT match if this hits operation",
       "unit_in": "pricing_unit (lowercased) is in this list",
-      "unit_hourly": "true => _is_hourly_unit(unit): unit in {hrs,hours,hour,hr,accelerator-hours,''} \u2014 '' included because PDF/flat bills leave unit blank",
+      "unit_hourly": "true => _is_hourly_unit(unit): unit in {hrs,hours,hour,hr,accelerator-hours,''} — '' included because PDF/flat bills leave unit blank",
       "pricing_model_in": "pricing_model in this list (OnDemand|Spot|Reserved|SavingsPlan|Committed)",
       "line_item_type_in": "line_item_type in this list",
       "cost_lt_zero": "true => aws_amortized_cost < 0",
       "is_accelerator": "true => _is_accelerator(row): Inferentia/Trainium/Habana/GPU family token"
     },
     "mechanic_vocabulary": {
-      "_note": "Output contract \u2014 unchanged from classify_mechanics.py so apply_static_mappings.py / family_mapper.py need no changes. 'ignore' and 'passthrough' are terminal (no GCP SKU math).",
+      "_note": "Output contract — unchanged from classify_mechanics.py so apply_static_mappings.py / family_mapper.py need no changes. 'ignore' and 'passthrough' are terminal (no GCP SKU math).",
       "compute_breakdown": "x86/GPU EC2 & self-host-on-GCE: core+RAM (+accelerator) SKU breakdown (family_mapper).",
       "compute_windows": "EC2 running Windows: core+RAM+Windows-license components (static mapper).",
       "compute_burstable": "t2/t3/t3a/t4g EC2 -> E2 (static mapper).",
@@ -35,9 +35,9 @@
       "rds_extended_support": "post-EOL engine surcharge -> Cloud SQL Extended Support vCPU SKU (or ignore if none).",
       "ignore": "not a real GCP cost (credits, CPU credits, taxes) -> $0.",
       "passthrough": "known service, no fair GCP conversion -> carry AWS cost, manual review.",
-      "negative_cost": "GLOBAL pre-filter label (credits/refunds/negations) \u2014 applied before per-service dispatch.",
-      "commitment_discount": "GLOBAL pre-filter label (RIFee/SP recurring/EDP) \u2014 applied before per-service dispatch.",
-      "non_workload": "GLOBAL pre-filter label (marketplace/support/tax, EC2 CPU credits) \u2014 applied before per-service dispatch.",
+      "negative_cost": "GLOBAL pre-filter label (credits/refunds/negations) — applied before per-service dispatch.",
+      "commitment_discount": "GLOBAL pre-filter label (RIFee/SP recurring/EDP) — applied before per-service dispatch.",
+      "non_workload": "GLOBAL pre-filter label (marketplace/support/tax, EC2 CPU credits) — applied before per-service dispatch.",
       "opensearch": "Service-specific mechanic_group (dedicated static mapper for opensearch).",
       "redshift": "Service-specific mechanic_group (dedicated static mapper for redshift).",
       "elasticache": "Service-specific mechanic_group (dedicated static mapper for elasticache).",
@@ -59,7 +59,7 @@
     },
     "field_descriptor": {
       "_note": "Each field: name (internal), cur_column (authoritative AWS CUR attribute it comes from, legacy slash form as ingest.py uses; null = AWS does not expose it in the bill at all), source (where we REALISTICALLY obtain the value), required.",
-      "cur_column": "The AWS CUR column/attribute. null means AWS never bills this field \u2014 it MUST be enriched (api/llm).",
+      "cur_column": "The AWS CUR column/attribute. null means AWS never bills this field — it MUST be enriched (api/llm).",
       "source_enum": {
         "cur": "present in the bill (ingest.py parses the cur_column directly).",
         "table": "cur_column may be present but we derive authoritatively from a bundled table (ec2-instance-types.json / rds-instance-types.json / instance-specs.json) keyed by instance type.",
@@ -83,271 +83,287 @@
         "mechanic": "non_workload",
         "fields": [],
         "source_rule": "non_workload (CPUCredits branch)",
-        "notes": "Faithful label = 'non_workload' (what classify_mechanics returns today). Downstream pricing outcome is $0/ignore. Checked across usage_type AND product: PDF bills carry 'T3ACPUCredits' in product with usage_type blank. NOTE: in the pipeline this is caught by the GLOBAL non_workload pre-filter before per-service dispatch \u2014 this entry documents EC2's charge-type taxonomy completely and is defensive."
-      },
-      {
-        "id": "instance_hour_windows",
-        "description": "EC2 instance-hours running Windows \u2014 needs core+RAM+Windows Server license.",
-        "match": {
-          "unit_hourly": true,
-          "any_field_re": "running Windows|Windows",
-          "is_accelerator": false
-        },
-        "mechanic": "compute_windows",
-        "fields": [
-          {
-            "name": "instance_type",
-            "cur_column": "product/instanceType",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "vcpus",
-            "cur_column": "product/vCPU",
-            "source": "table",
-            "required": true
-          },
-          {
-            "name": "ram_gb",
-            "cur_column": "product/memory",
-            "source": "table",
-            "required": true
-          },
-          {
-            "name": "operating_system",
-            "cur_column": "product/operatingSystem",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "license_model",
-            "cur_column": "product/licenseModel",
-            "source": "cur",
-            "required": false
-          },
-          {
-            "name": "tenancy",
-            "cur_column": "product/tenancy",
-            "source": "cur",
-            "required": false
-          },
-          {
-            "name": "pricing_model",
-            "cur_column": "pricing/term",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "region",
-            "cur_column": "product/region",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "usage_amount",
-            "cur_column": "lineItem/UsageAmount",
-            "source": "cur",
-            "required": true
-          }
-        ],
-        "source_rule": "compute_windows"
-      },
-      {
-        "id": "instance_hour_burstable",
-        "description": "Burstable t2/t3/t3a/t4g instance-hours -> E2. Must precede graviton so t4g lands here.",
-        "match": {
-          "unit_hourly": true,
-          "usage_type_re": "(?:BoxUsage|HeavyUsage):t[234][ag]?\\.",
-          "exclude_usage_type_re": "running Windows",
-          "exclude_operation_re": "Windows"
-        },
-        "fallback_match": {
-          "unit_hourly": true,
-          "operation_re": "t[234][ag]?\\.(nano|micro|small|medium|large|\\d*xlarge)",
-          "exclude_usage_type_re": "running Windows"
-        },
-        "mechanic": "compute_burstable",
-        "fields": [
-          {
-            "name": "instance_type",
-            "cur_column": "product/instanceType",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "vcpus",
-            "cur_column": "product/vCPU",
-            "source": "table",
-            "required": true
-          },
-          {
-            "name": "ram_gb",
-            "cur_column": "product/memory",
-            "source": "table",
-            "required": true
-          },
-          {
-            "name": "pricing_model",
-            "cur_column": "pricing/term",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "region",
-            "cur_column": "product/region",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "usage_amount",
-            "cur_column": "lineItem/UsageAmount",
-            "source": "cur",
-            "required": true
-          }
-        ],
-        "source_rule": "compute_burstable",
-        "notes": "fallback_match handles PDF/flat bills (usage_type blank, type in operation)."
-      },
-      {
-        "id": "instance_hour_graviton",
-        "description": "Graviton/ARM instance-hours (family token contains 'g') -> C4A, N2D fallback.",
-        "match": {
-          "unit_hourly": true,
-          "usage_type_re": "(?:BoxUsage|HeavyUsage):[a-z]\\d[a-z0-9]*g[a-z0-9]*\\.",
-          "is_accelerator": false,
-          "exclude_usage_type_re": "running Windows",
-          "exclude_operation_re": "Windows"
-        },
-        "mechanic": "compute_arm",
-        "fields": [
-          {
-            "name": "instance_type",
-            "cur_column": "product/instanceType",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "vcpus",
-            "cur_column": "product/vCPU",
-            "source": "table",
-            "required": true
-          },
-          {
-            "name": "ram_gb",
-            "cur_column": "product/memory",
-            "source": "table",
-            "required": true
-          },
-          {
-            "name": "physical_processor",
-            "cur_column": "product/physicalProcessor",
-            "source": "table",
-            "required": true
-          },
-          {
-            "name": "pricing_model",
-            "cur_column": "pricing/term",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "region",
-            "cur_column": "product/region",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "usage_amount",
-            "cur_column": "lineItem/UsageAmount",
-            "source": "cur",
-            "required": true
-          }
-        ],
-        "source_rule": "compute_arm"
+        "notes": "Faithful label = 'non_workload' (what classify_mechanics returns today). Downstream pricing outcome is $0/ignore. Checked across usage_type AND product: PDF bills carry 'T3ACPUCredits' in product with usage_type blank. NOTE: in the pipeline this is caught by the GLOBAL non_workload pre-filter before per-service dispatch — this entry documents EC2's charge-type taxonomy completely and is defensive."
       },
       {
         "id": "instance_hour",
-        "description": "General x86 (and GPU) instance-hours -> core+RAM (+accelerator) breakdown. family_mapper branches on is_gpu for p/g/vt families.",
+        "description": "EC2 instance-hours of any flavour. GROUP: the children below partition these rows by OS/family/architecture and must stay mutually exclusive and exhaustive (see docs/ANALYSIS_spec_dispatch_validation.md).",
         "match": {
-          "unit_hourly": true,
-          "usage_type_re": "BoxUsage|SpotUsage|ReservedInstances|running Linux|HeavyUsage",
-          "exclude_usage_type_re": "running Windows"
+          "unit_hourly": true
         },
-        "fallback_match": {
-          "unit_hourly": true,
-          "operation_re": "Instance[\\s-]hour|hourly fee per Linux/UNIX|per On Demand \\w+.*Instance"
-        },
-        "mechanic": "compute_breakdown",
-        "fields": [
+        "any_of": [
           {
-            "name": "instance_type",
-            "cur_column": "product/instanceType",
-            "source": "cur",
-            "required": true
+            "usage_type_re": "BoxUsage|SpotUsage|ReservedInstances|running Linux|HeavyUsage"
           },
           {
-            "name": "vcpus",
-            "cur_column": "product/vCPU",
-            "source": "table",
-            "required": true
+            "any_field_re": "running Windows|Windows"
           },
           {
-            "name": "ram_gb",
-            "cur_column": "product/memory",
-            "source": "table",
-            "required": true
+            "operation_re": "t[234][ag]?\\.(nano|micro|small|medium|large|\\d*xlarge)"
           },
           {
-            "name": "physical_processor",
-            "cur_column": "product/physicalProcessor",
-            "source": "table",
-            "required": true
-          },
-          {
-            "name": "gpu_model",
-            "cur_column": null,
-            "source": "table",
-            "required": false
-          },
-          {
-            "name": "gpu_count",
-            "cur_column": null,
-            "source": "table",
-            "required": false
-          },
-          {
-            "name": "operating_system",
-            "cur_column": "product/operatingSystem",
-            "source": "cur",
-            "required": false
-          },
-          {
-            "name": "tenancy",
-            "cur_column": "product/tenancy",
-            "source": "cur",
-            "required": false
-          },
-          {
-            "name": "pricing_model",
-            "cur_column": "pricing/term",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "region",
-            "cur_column": "product/region",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "usage_amount",
-            "cur_column": "lineItem/UsageAmount",
-            "source": "cur",
-            "required": true
+            "operation_re": "Instance[\\s-]hour|hourly fee per Linux/UNIX|per On Demand \\w+.*Instance"
           }
         ],
-        "source_rule": "compute_breakdown",
-        "notes": "Inferentia/Trainium (inf*/trn*) are handled by family_mapper's TPU branch (map_tpu_row -> Cloud TPU v5e, chip-count parity); dl* (Gaudi) stays no-equivalent passthrough. gpu_model/gpu_count have no CUR column \u2014 enriched from the instance table / gcp-model-config.json."
+        "mechanic": "compute_breakdown",
+        "children": [
+          {
+            "id": "instance_hour_windows",
+            "description": "EC2 instance-hours running Windows — needs core+RAM+Windows Server license.",
+            "match": {
+              "any_field_re": "running Windows|Windows",
+              "is_accelerator": false
+            },
+            "mechanic": "compute_windows",
+            "fields": [
+              {
+                "name": "instance_type",
+                "cur_column": "product/instanceType",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "vcpus",
+                "cur_column": "product/vCPU",
+                "source": "table",
+                "required": true
+              },
+              {
+                "name": "ram_gb",
+                "cur_column": "product/memory",
+                "source": "table",
+                "required": true
+              },
+              {
+                "name": "operating_system",
+                "cur_column": "product/operatingSystem",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "license_model",
+                "cur_column": "product/licenseModel",
+                "source": "cur",
+                "required": false
+              },
+              {
+                "name": "tenancy",
+                "cur_column": "product/tenancy",
+                "source": "cur",
+                "required": false
+              },
+              {
+                "name": "pricing_model",
+                "cur_column": "pricing/term",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "region",
+                "cur_column": "product/region",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "usage_amount",
+                "cur_column": "lineItem/UsageAmount",
+                "source": "cur",
+                "required": true
+              }
+            ],
+            "source_rule": "compute_windows"
+          },
+          {
+            "id": "instance_hour_burstable",
+            "description": "Burstable t2/t3/t3a/t4g instance-hours -> E2. Must precede graviton so t4g lands here.",
+            "match": {
+              "usage_type_re": "(?:BoxUsage|HeavyUsage):t[234][ag]?\\.",
+              "exclude_usage_type_re": "running Windows",
+              "exclude_operation_re": "Windows",
+              "exclude_any_field_re": "running Windows|Windows"
+            },
+            "fallback_match": {
+              "operation_re": "t[234][ag]?\\.(nano|micro|small|medium|large|\\d*xlarge)",
+              "exclude_usage_type_re": "running Windows",
+              "exclude_any_field_re": "running Windows|Windows"
+            },
+            "mechanic": "compute_burstable",
+            "fields": [
+              {
+                "name": "instance_type",
+                "cur_column": "product/instanceType",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "vcpus",
+                "cur_column": "product/vCPU",
+                "source": "table",
+                "required": true
+              },
+              {
+                "name": "ram_gb",
+                "cur_column": "product/memory",
+                "source": "table",
+                "required": true
+              },
+              {
+                "name": "pricing_model",
+                "cur_column": "pricing/term",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "region",
+                "cur_column": "product/region",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "usage_amount",
+                "cur_column": "lineItem/UsageAmount",
+                "source": "cur",
+                "required": true
+              }
+            ],
+            "source_rule": "compute_burstable",
+            "notes": "fallback_match handles PDF/flat bills (usage_type blank, type in operation). Windows excluded across product/usage_type/operation: a Windows t3 row belongs to instance_hour_windows (licence premium drives the mapping)."
+          },
+          {
+            "id": "instance_hour_graviton",
+            "description": "Graviton/ARM instance-hours (family token contains 'g') -> C4A, N2D fallback.",
+            "match": {
+              "usage_type_re": "(?:BoxUsage|HeavyUsage):[a-z]\\d[a-z0-9]*g[a-z0-9]*\\.",
+              "is_accelerator": false,
+              "exclude_usage_type_re": "running Windows|(?:BoxUsage|HeavyUsage):t[234][ag]?\\.",
+              "exclude_operation_re": "Windows"
+            },
+            "mechanic": "compute_arm",
+            "fields": [
+              {
+                "name": "instance_type",
+                "cur_column": "product/instanceType",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "vcpus",
+                "cur_column": "product/vCPU",
+                "source": "table",
+                "required": true
+              },
+              {
+                "name": "ram_gb",
+                "cur_column": "product/memory",
+                "source": "table",
+                "required": true
+              },
+              {
+                "name": "physical_processor",
+                "cur_column": "product/physicalProcessor",
+                "source": "table",
+                "required": true
+              },
+              {
+                "name": "pricing_model",
+                "cur_column": "pricing/term",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "region",
+                "cur_column": "product/region",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "usage_amount",
+                "cur_column": "lineItem/UsageAmount",
+                "source": "cur",
+                "required": true
+              }
+            ],
+            "source_rule": "compute_arm",
+            "notes": "t-family Graviton (t4g) is deliberately NOT matched here: it is burstable first, and burstable maps to E2. Excluded explicitly so the two siblings are disjoint rather than resolved by list order."
+          },
+          {
+            "id": "instance_hour_standard",
+            "description": "Plain x86 Linux/UNIX instance-hours — the default when no more specific variant applies.",
+            "match": {},
+            "mechanic": "compute_breakdown",
+            "fields": [
+              {
+                "name": "instance_type",
+                "cur_column": "product/instanceType",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "vcpus",
+                "cur_column": "product/vCPU",
+                "source": "table",
+                "required": true
+              },
+              {
+                "name": "ram_gb",
+                "cur_column": "product/memory",
+                "source": "table",
+                "required": true
+              },
+              {
+                "name": "physical_processor",
+                "cur_column": "product/physicalProcessor",
+                "source": "table",
+                "required": true
+              },
+              {
+                "name": "gpu_model",
+                "cur_column": null,
+                "source": "table",
+                "required": false
+              },
+              {
+                "name": "gpu_count",
+                "cur_column": null,
+                "source": "table",
+                "required": false
+              },
+              {
+                "name": "operating_system",
+                "cur_column": "product/operatingSystem",
+                "source": "cur",
+                "required": false
+              },
+              {
+                "name": "tenancy",
+                "cur_column": "product/tenancy",
+                "source": "cur",
+                "required": false
+              },
+              {
+                "name": "pricing_model",
+                "cur_column": "pricing/term",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "region",
+                "cur_column": "product/region",
+                "source": "cur",
+                "required": true
+              },
+              {
+                "name": "usage_amount",
+                "cur_column": "lineItem/UsageAmount",
+                "source": "cur",
+                "required": true
+              }
+            ],
+            "source_rule": "compute_breakdown",
+            "notes": "Inferentia/Trainium (inf*/trn*) are handled by family_mapper's TPU branch (map_tpu_row -> Cloud TPU v5e, chip-count parity); dl* (Gaudi) stays no-equivalent passthrough. gpu_model/gpu_count have no CUR column — enriched from the instance table / gcp-model-config.json."
+          }
+        ],
+        "source_rule": "compute_windows / compute_burstable / compute_arm / compute_breakdown"
       },
       {
         "id": "ebs_storage",
@@ -398,7 +414,7 @@
           }
         ],
         "source_rule": "block_storage (EBS branch)",
-        "notes": "EBS provisioned IOPS/throughput are billed on separate line items (own usage_type), not as attributes of the capacity row \u2014 'iops' here is the volume's provisioned IOPS for sizing, which CUR does not expose per-row; enrich if needed."
+        "notes": "EBS provisioned IOPS/throughput are billed on separate line items (own usage_type), not as attributes of the capacity row — 'iops' here is the volume's provisioned IOPS for sizing, which CUR does not expose per-row; enrich if needed."
       },
       {
         "id": "data_transfer",
@@ -440,7 +456,7 @@
       },
       {
         "id": "nat_and_flat_hourly",
-        "description": "NAT gateway-hours, Elastic IP, public IPv4, VPN connection-hours \u2014 fixed hourly fees.",
+        "description": "NAT gateway-hours, Elastic IP, public IPv4, VPN connection-hours — fixed hourly fees.",
         "match": {
           "usage_type_re": "NatGateway-Hours|ElasticIP|IPAddress|PublicIPv4|VPN-Connections|VPNConnection"
         },
@@ -514,7 +530,7 @@
           ]
         },
         "fallback_match": {
-          "any_field_re": "InstanceUsage:|RDS:Proxy|Aurora:ServerlessV2"
+          "any_field_re": "InstanceUsage:|InstanceUsageIOOptimized:|Multi-AZUsage:|RDS:Proxy|Aurora:ServerlessV2"
         },
         "also_match_line_item_type_in": [
           "DiscountedUsage",
@@ -584,7 +600,8 @@
           }
         ],
         "source_rule": "managed_db",
-        "notes": "Unit gate is critical: GB-Mo storage rows must NOT match here (sending them to the instance-sizing path priced GB at $/hr = 10,000x inflation). Storage falls to the 'storage' charge_type below. Deployment_option (Multi-AZ) doubles the real footprint \u2014 must be carried for capacity reconciliation."
+        "notes": "Unit gate is critical: GB-Mo storage rows must NOT match here (sending them to the instance-sizing path priced GB at $/hr = 10,000x inflation). Storage falls to the 'storage' charge_type below. Deployment_option (Multi-AZ) doubles the real footprint — must be carried for capacity reconciliation. Default edition = Enterprise (standard), not Enterprise Plus (~2x). Plus requires explicit CUR evidence (near-zero-downtime failover, Data Cache) or C4A ARM compatibility. When CUR gives no evidence, default to Enterprise or price-proximity with note [tier chosen by price-proximity — no CUR evidence of edition; confirm with customer]. Multi-AZUsage: and InstanceUsageIOOptimized: added after real bills showed Multi-AZ instance-hours matching no charge_type at all (docs/ANALYSIS_spec_dispatch_validation.md).",
+        "default_edition": "Enterprise"
       },
       {
         "id": "provisioned_iops",
@@ -608,7 +625,7 @@
           }
         ],
         "source_rule": "block_storage (managed-db non-Hrs branch) + final_mapping_sanity_check.py",
-        "notes": "Faithful label = 'block_storage' (what classify_mechanics returns today). The IGNORE pricing decision (gp3 IOPS included in pd-balanced capacity) is made DOWNSTREAM by map_block_storage/final_mapping_sanity_check, not at classification. io2 IOPS is a separate case (pd-extreme DOES bill IOPS) \u2014 flagged for review, not yet split. Having its own charge_type keeps the distinction visible for when the downstream ignore becomes spec-driven."
+        "notes": "Faithful label = 'block_storage' (what classify_mechanics returns today). The IGNORE pricing decision (gp3 IOPS included in pd-balanced capacity) is made DOWNSTREAM by map_block_storage/final_mapping_sanity_check, not at classification. io2 IOPS is a separate case (pd-extreme DOES bill IOPS) — flagged for review, not yet split. Having its own charge_type keeps the distinction visible for when the downstream ignore becomes spec-driven."
       },
       {
         "id": "backup",
@@ -637,7 +654,8 @@
         "id": "storage",
         "description": "RDS storage capacity (GB-Mo), non-hourly unit -> Cloud SQL storage SKU.",
         "match": {
-          "any_field_re": "gb-mo|storage"
+          "any_field_re": "gb-mo|storage",
+          "exclude_any_field_re": "backup|snapshot"
         },
         "exclude_when": {
           "unit_hourly": true
@@ -663,7 +681,8 @@
             "required": true
           }
         ],
-        "source_rule": "block_storage (managed-db storage branch)"
+        "source_rule": "block_storage (managed-db storage branch)",
+        "notes": "Backup/snapshot rows are owned by the `backup` charge_type; excluded here so the two cannot both match (both route to block_storage, so this is a clarity fix, not a behaviour change)."
       }
     ]
   },
@@ -1402,7 +1421,7 @@
           "gcp_target": "Firestore / Bigtable / Spanner",
           "strategy": "map",
           "confidence_max": 0.5,
-          "guidance": "Decision rule: GetItem/PutItem/Query/Scan \u2192 Firestore; BatchWrite/high-volume throughput \u2192 Bigtable; transactional/ACID workloads \u2192 Cloud Spanner. Conversion assumption: 1 RCU \u2248 1 doc read, 1 WCU \u2248 1 doc write. rcu/wcu/table_mode not in CUR \u2014 infer workload scale from total_usage."
+          "guidance": "Decision rule: GetItem/PutItem/Query/Scan → Firestore; BatchWrite/high-volume throughput → Bigtable; transactional/ACID workloads → Cloud Spanner. Conversion assumption: 1 RCU ≈ 1 doc read, 1 WCU ≈ 1 doc write. rcu/wcu/table_mode not in CUR — infer workload scale from total_usage."
         },
         "source_rule": "misc (DynamoDB throughput rows deliberately guided to Firestore/Bigtable/Spanner)"
       },
@@ -1738,9 +1757,6 @@
       {
         "id": "route53_dns",
         "description": "Hosted zones / DNS queries -> Cloud DNS.",
-        "exclude_when": {
-          "product_re": "Application Recovery Controller"
-        },
         "match": {},
         "mechanic": "per_request",
         "fields": [
@@ -2152,7 +2168,11 @@
             "required": true
           }
         ],
-        "source_rule": "flat_hourly (WAF Month branch)"
+        "source_rule": "flat_hourly (WAF Month branch)",
+        "exclude_when": {
+          "any_field_re": "WebACL-Hour|Rule-Hour|Web ACL|WAF Rule"
+        },
+        "notes": "Excludes the WebACL/Rule hourly vocabulary so it cannot overlap waf_fixed_hourly (both route to flat_hourly, so this is a clarity fix, not a behaviour change)."
       },
       {
         "id": "waf_requests",
@@ -2394,8 +2414,8 @@
           "gcp_target": "Identity Platform",
           "strategy": "map",
           "confidence_max": 0.45,
-          "formula": "MAU \u2248 total_usage \u00f7 20",
-          "guidance": "CUR bills auth requests, not MAU \u2014 estimate MAU and document the assumption."
+          "formula": "MAU ≈ total_usage ÷ 20",
+          "guidance": "CUR bills auth requests, not MAU — estimate MAU and document the assumption."
         }
       }
     ]
@@ -2699,7 +2719,7 @@
           "gcp_target": "Cloud Logging",
           "strategy": "review",
           "confidence_max": 0.4,
-          "guidance": "event\u2192log-volume conversion has no reliable basis; passthrough until a sizing model exists."
+          "guidance": "event→log-volume conversion has no reliable basis; passthrough until a sizing model exists."
         }
       }
     ]
@@ -2714,7 +2734,6 @@
         "id": "ssm_parameter_store",
         "description": "Parameter Store (PS-Param / PS-Advanced-Param) -> Secret Manager.",
         "match": {
-          "product_re": "Systems Manager|AWSSystemsManager",
           "usage_type_re": "PS-(?:Advanced-)?Param"
         },
         "mechanic": "ssm_parameter_store",
@@ -2860,7 +2879,7 @@
           "gcp_target": "Private Service Connect",
           "strategy": "review",
           "confidence_max": 0.4,
-          "guidance": "VPC endpoints/PrivateLink \u2192 PSC; passthrough until a PSC pricer exists."
+          "guidance": "VPC endpoints/PrivateLink → PSC; passthrough until a PSC pricer exists."
         }
       }
     ]

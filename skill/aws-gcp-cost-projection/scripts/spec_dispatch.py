@@ -83,6 +83,13 @@ def _eval_block(block: dict, row: dict) -> bool:
         elif key == "exclude_operation_re":
             if re.search(val, _f(row, "operation"), re.IGNORECASE):
                 return False
+        elif key == "exclude_any_field_re":
+            # Negative counterpart of any_field_re. Belongs in `match` rather
+            # than `exclude_when`, because exclude_when ANDs its predicates —
+            # putting a second condition there narrows the exclusion instead of
+            # widening it.
+            if re.search(val, _any_text(row), re.IGNORECASE):
+                return False
         elif key == "product_re_not":
             if re.search(val, _f(row, "product"), re.IGNORECASE):
                 return False
@@ -189,25 +196,98 @@ def _field_state(ct: dict, row: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+def is_default_charge_type(ct: dict) -> bool:
+    """A charge_type with no positive predicates — the declared catch-all for
+    its level. It matches anything that reached it, so overlapping with it is
+    by design, not ambiguity. `exclude_when` is still allowed (a guarded
+    default)."""
+    return not (ct.get("match") or ct.get("any_of") or ct.get("fallback_match")
+                or ct.get("also_match_line_item_type_in"))
+
+
 def dispatch(row: dict) -> dict | None:
     """Per-service dispatch. Returns a result dict, or None when the service
-    has no spec (caller should fall back to the legacy classifier)."""
+    has no spec (caller should fall back to the legacy classifier).
+
+    Charge types may nest: a charge_type carrying "children" is a GROUP. Its own
+    `match` answers the coarse question ("is this an instance-hour row?") and its
+    children answer the fine one ("Windows? burstable? Graviton? plain?").
+
+    Why nesting rather than a flat list: measured on 12 real bills, 335 rows
+    ($53k) matched two or three sibling charge types at once — every one of them
+    a specific variant plus the general case written as flat siblings
+    (instance_hour_graviton + instance_hour, etc.). Flat ordering resolved those
+    correctly only by list position. Under a group, a child cannot collide with
+    its parent, and siblings are required to partition the parent's rows — an
+    invariant tests/test_spec_partition.py enforces. See
+    docs/ANALYSIS_spec_dispatch_validation.md.
+
+    The last child of a group must be a default (no positive predicates), so a
+    row entering a group always leaves it with a named charge type.
+    """
     canon = row.get("canonical")
     if canon is None:
         canon = _canonical_service(row.get("product"), row.get("product_code"))
     spec = SPECS.get(canon)
     if not spec:
         return None
+
+    def _result(ct, group=None):
+        return {
+            "service": canon,
+            "charge_type": ct["id"],
+            "group": group,
+            "mechanic": ct["mechanic"],
+            "fields": ct.get("fields", []),
+            "field_state": _field_state(ct, row),
+        }
+
     for ct in spec.get("charge_types", []):
-        if _charge_type_matches(ct, row):
-            return {
-                "service": canon,
-                "charge_type": ct["id"],
-                "mechanic": ct["mechanic"],
-                "fields": ct.get("fields", []),
-                "field_state": _field_state(ct, row),
-            }
+        if not _charge_type_matches(ct, row):
+            continue
+        children = ct.get("children")
+        if not children:
+            return _result(ct)
+        for child in children:
+            if _charge_type_matches(child, row):
+                # A child may itself be a group (depth is not limited).
+                grandchildren = child.get("children")
+                if grandchildren:
+                    for gc in grandchildren:
+                        if _charge_type_matches(gc, row):
+                            return _result(gc, group=child["id"])
+                return _result(child, group=ct["id"])
+        # No child matched. The spec is incomplete at this level — the group
+        # should declare a default child. Fall back to the group's own mechanic
+        # when it has one so a row is never dropped over a spec gap.
+        if ct.get("mechanic"):
+            return _result(ct)
+        return None
     return None
+
+
+def matching_charge_types(canon: str, row: dict) -> list[str]:
+    """Every charge_type id in `canon`'s spec that matches `row`, at every
+    level. Used by the ambiguity tests and scripts/spec_parity.py — dispatch()
+    itself only ever returns the first match."""
+    spec = SPECS.get(canon) or {}
+    out = []
+
+    def walk(cts, prefix=""):
+        for ct in cts:
+            if _charge_type_matches(ct, row):
+                name = prefix + ct["id"]
+                kids = ct.get("children")
+                if kids:
+                    before = len(out)
+                    walk(kids, name + ".")
+                    if len(out) == before:
+                        out.append(name)
+                else:
+                    out.append(name)
+
+    walk(spec.get("charge_types", []))
+    return out
 
 
 def classify_via_specs(row: dict) -> str:

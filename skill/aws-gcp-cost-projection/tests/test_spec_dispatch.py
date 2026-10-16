@@ -59,7 +59,9 @@ CASES = [
      _row(product="Amazon Elastic Compute Cloud", product_code="AmazonEC2",
           usage_type="APS3-BoxUsage:m5.xlarge", operation="RunInstances",
           unit="Hrs", instance_type="m5.xlarge"),
-     "compute_breakdown", "instance_hour"),
+     # instance_hour is now a GROUP; plain x86 rows land on its default child.
+     # Mechanic is unchanged — only the charge_type id is more specific.
+     "compute_breakdown", "instance_hour_standard"),
     ("ec2_windows",
      _row(product="Amazon Elastic Compute Cloud", product_code="AmazonEC2",
           usage_type="APS3-BoxUsage:m5.xlarge", operation="RunInstances:0002 Windows",
@@ -79,7 +81,7 @@ CASES = [
      _row(product="Amazon Elastic Compute Cloud", product_code="AmazonEC2",
           usage_type="APS3-SpotUsage:c5.xlarge", operation="RunInstances",
           unit="Hrs", pricing_model="Spot", instance_type="c5.xlarge"),
-     "compute_breakdown", "instance_hour"),
+     "compute_breakdown", "instance_hour_standard"),
     ("ec2_ebs_gp3",
      _row(product="Amazon Elastic Compute Cloud", product_code="AmazonEC2",
           usage_type="APS3-EBS:VolumeUsage.gp3", operation="", unit="GB-Mo",

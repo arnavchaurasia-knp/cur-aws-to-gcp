@@ -20,6 +20,61 @@ intended.
 
 ---
 
+## 0. Setup — build the measurement corpus first
+
+Everything in this work order is verified against real bills. Build the corpus
+before reading further; without it you cannot measure, and an unmeasured change
+here is not reviewable.
+
+The bills live in `C:\Users\arnav\Downloads\Facets` (15 files: 4 PDF, 5 XLSX,
+4 CSV including one raw CUR, plus 3 that are correctly rejected — an RVTools
+vSphere inventory, an Azure plan, and one unparseable CSV).
+
+`scripts/ingest.py` reads `input.<ext>` from its working directory, so each bill
+needs its own job folder. Build them into a scratch directory — **not** into the
+repo:
+
+```bash
+SKILL="C:/Users/arnav/Downloads/cur-web-AGY/skill/aws-gcp-cost-projection"
+CORPUS="$TEMP/spec-corpus"          # or any scratch path outside the repo
+rm -rf "$CORPUS"; mkdir -p "$CORPUS"
+
+i=0
+cd "C:/Users/arnav/Downloads/Facets"
+find . -type f \( -iname "*.csv" -o -iname "*.pdf" -o -iname "*.xlsx" \) | while read f; do
+  i=$((i+1)); ext="${f##*.}"
+  mkdir -p "$CORPUS/job$i/projection-audit"
+  cp "$f" "$CORPUS/job$i/input.$ext"
+  basename "$f" > "$CORPUS/job$i/name.txt"
+done
+
+export SKILL_DIR="$SKILL"
+for d in "$CORPUS"/job*; do
+  (cd "$d" && python "$SKILL/scripts/ingest.py" >/dev/null 2>&1)
+  db="$d/projection-audit/projection.duckdb"
+  [ -f "$db" ] && python "$SKILL/scripts/aws_normalizer.py" "$db" >/dev/null 2>&1
+done
+```
+
+`aws_normalizer.py` must run — it stamps `canonical_service`, and
+`spec_parity.py` skips any DB without it.
+
+Expect **12 usable job DBs**; 3 will have no `aws_li_catalog` table, which is
+the correct outcome for those inputs. Confirm with:
+
+```bash
+python scripts/spec_parity.py "$CORPUS"
+```
+
+You should see `jobs=12 ... workload_rows=1457 specs=54` and the buckets in §1.
+**If your baseline differs from §1, stop and report it** — the numbers in this
+work order are the contract, and a different baseline means something changed
+underneath it.
+
+Throughout this document, `<jobs-root>` means `$CORPUS`.
+
+---
+
 ## 1. Where things stand
 
 Measured on the 12-bill corpus in `Downloads/Facets` (4 PDF, 5 XLSX, 4 CSV
@@ -391,7 +446,7 @@ python - <<'PY'
 import duckdb, glob, os, sys
 sys.path.insert(0, 'scripts')
 import spec_dispatch as sd
-ROOT = r'<jobs-root>'
+ROOT = r'<jobs-root>'          # the $CORPUS path from section 0
 COLS = ["aws_li_key","product","usage_type","operation","pricing_unit","line_item_type",
         "pricing_model","aws_amortized_cost","instance_type","instance_vcpus",
         "instance_ram_gb","instance_count","billing_format","product_code",

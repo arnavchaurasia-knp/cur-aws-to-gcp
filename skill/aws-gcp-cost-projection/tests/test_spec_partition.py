@@ -113,14 +113,27 @@ def test_charge_type_ids_are_unique_within_a_service():
     assert not dupes, "\n  ".join(dupes)
 
 
+def _predicate_blocks(ct):
+    """Yield (label, block) for every predicate block on a charge_type —
+    including each `any_of` sub-block, which an earlier version of this test
+    skipped. That gap let kinesis_data_volume.any_of[2].product_re sit in the
+    registry unflagged."""
+    for name in ("match", "fallback_match", "exclude_when"):
+        block = ct.get(name)
+        if isinstance(block, dict):
+            yield name, block
+    for i, block in enumerate(ct.get("any_of") or []):
+        if isinstance(block, dict):
+            yield f"any_of[{i}]", block
+
+
 def test_no_predicate_restates_service_identity():
     """A spec file is already scoped to its service, so re-testing the product
     name inside it is both redundant and the free-text coupling Layer 1 exists
-    to remove. Flags product_re / product_re_not on any charge_type."""
+    to remove. Flags product_re / product_re_not anywhere on a charge_type."""
     offenders = []
     for svc, name, ct in _all_charge_types():
-        for block_name in ("match", "fallback_match", "exclude_when"):
-            block = ct.get(block_name) or {}
+        for block_name, block in _predicate_blocks(ct):
             for key in ("product_re", "product_re_not"):
                 if key in block:
                     offenders.append(
@@ -129,6 +142,142 @@ def test_no_predicate_restates_service_identity():
                         f"operation / unit instead."
                     )
     assert not offenders, "Service identity restated inside a spec:\n  " + "\n  ".join(offenders)
+
+
+# Synthetic rows used to probe reachability. Each is deliberately permissive:
+# the point is to find a charge_type that NOTHING can reach, so a wide net of
+# plausible rows is what we want.
+_PROBE_FIELDS = {
+    "usage_type_re": "usage_type",
+    "exclude_usage_type_re": "usage_type",
+    "operation_re": "operation",
+    "exclude_operation_re": "operation",
+    "any_field_re": "usage_type",
+    "exclude_any_field_re": "usage_type",
+}
+
+
+def _regex_literals(pattern):
+    """Plain-text alternatives a regex would match, for use as probe strings.
+
+    Strips regex metacharacters but DROPS any alternative that still contains
+    one — a mangled token (`\\bMonth\\b` -> `bMonthb`) does not match its own
+    pattern and would make a reachable charge type look unreachable.
+    """
+    import re as _re
+    out = []
+    for alt in str(pattern).split("|"):
+        tok = alt.replace("\\b", "").replace("\\s", " ").strip()
+        if not tok or _re.search(r"[\\^$()\[\]{}+*?]", tok):
+            continue
+        if _re.search(tok, tok, _re.IGNORECASE):   # the token matches itself
+            out.append(tok)
+    return out
+
+
+def _plausible_units(tokens, declared):
+    """Units a row carrying these text tokens would realistically have.
+
+    Reachability must be judged against rows that can actually occur. A
+    Storage-ShardHour row billed in GB-Mo is reachable on paper and impossible
+    in practice, and counting it hides real shadowing.
+    """
+    if declared:
+        return list(declared)
+    blob = " ".join(tokens).lower()
+    if any(k in blob for k in ("hour", "hrs", "-hr", "usage:")):
+        return ["Hrs"]
+    if any(k in blob for k in ("byte", "gb-mo", "gb month", "storage")):
+        return ["GB-Mo", "GB"]
+    if any(k in blob for k in ("request", "invocation", "count", "api")):
+        return ["Requests", "Count"]
+    return ["Hrs", "GB-Mo", "Requests", "GB", ""]
+
+
+def _probe_rows_for(ct, canon):
+    """Candidate rows that SHOULD reach `ct`, derived from its own positive
+    predicates and crossed with the units such a row would plausibly carry.
+
+    Returns None when the charge type's text predicates are all regexes too
+    structured to turn into a literal (e.g. `Kafka\\.[a-z]`). In that case the
+    probe cannot build a row that reaches the charge type at all, and a
+    "no row reached it" result would say nothing about shadowing. The test
+    skips those rather than reporting a finding it cannot support.
+    """
+    import itertools
+
+    texts = {"usage_type": [], "operation": []}
+    declared_units = []
+    hourly = False
+    had_text_predicate = False
+    for block_name, block in _predicate_blocks(ct):
+        if block_name == "exclude_when":
+            continue
+        for key, val in block.items():
+            if key.startswith("exclude_"):
+                continue
+            field = _PROBE_FIELDS.get(key)
+            if field:
+                had_text_predicate = True
+                texts[field].extend(_regex_literals(val))
+            elif key == "unit_in":
+                declared_units.extend(str(v) for v in val)
+            elif key == "unit_hourly" and val:
+                hourly = True
+
+    if had_text_predicate and not (texts["usage_type"] or texts["operation"]):
+        return None  # cannot build a reaching row; inconclusive, not a finding
+
+    all_tokens = texts["usage_type"] + texts["operation"]
+    units = ["Hrs"] if hourly else _plausible_units(all_tokens, declared_units)
+    for field in texts:
+        texts[field] = sorted(set(texts[field])) or [""]
+
+    return [
+        _row(canonical=canon, usage_type=ut, operation=op, unit=u)
+        for ut, op, u in itertools.product(texts["usage_type"], texts["operation"], units)
+    ]
+
+
+def test_no_charge_type_is_unreachable():
+    """A charge_type fully shadowed by an earlier, broader sibling is dead code:
+    it never matches, and its declared mechanic is a false statement about what
+    the pipeline does.
+
+    Confirmed real: kinesis_storage_shard_hour was appended after
+    kinesis_shard_hours, whose any_of carries `unit_hourly: true` and therefore
+    claims every hourly Kinesis row first. It passed 995 tests because the
+    partition test only checks hand-written cases and the corpus check only
+    sees rows that exist.
+    """
+    unreachable = []
+    for svc, spec in sorted(sd.SPECS.items()):
+        cts = spec.get("charge_types", [])
+        for idx, ct in enumerate(cts):
+            if sd.is_default_charge_type(ct) or ct.get("children"):
+                continue
+            earlier = cts[:idx]
+            if not earlier:
+                continue
+            probes = _probe_rows_for(ct, svc)
+            if probes is None:
+                continue  # inconclusive — see _probe_rows_for
+            reached = False
+            for row in probes:
+                if not sd._charge_type_matches(ct, row):
+                    continue
+                if not any(sd._charge_type_matches(prev, row) for prev in earlier):
+                    reached = True
+                    break
+            if not reached:
+                shadows = [p["id"] for p in earlier]
+                unreachable.append(
+                    f"{svc}.{ct['id']} (index {idx}, mechanic {ct.get('mechanic')!r}) is "
+                    f"shadowed by an earlier sibling in {shadows} — no row that matches it "
+                    f"can get past them, so its mechanic never applies. Move it earlier, or "
+                    f"narrow the sibling that swallows it."
+                )
+    assert not unreachable, "Unreachable charge_types:\n  " + "\n  ".join(unreachable)
 
 
 # --------------------------------------------------------------------------

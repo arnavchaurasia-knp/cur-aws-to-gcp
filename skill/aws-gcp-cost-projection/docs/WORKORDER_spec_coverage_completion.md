@@ -74,12 +74,20 @@ underneath this work order and proceeding would produce unverifiable results.
 jobs=12 (skipped 0 pre-Layer-1)  workload_rows=1457  specs=54
 
 bucket          rows           spend   % spend
-agree           1344         512,921     95.6%
+agree           1371         518,432     96.6%
 differ            25           4,778      0.9%
-spec_gap          16           3,819      0.7%
-no_spec           72          15,112      2.8%
+spec_gap          14           3,679      0.7%
+no_spec           16             684      0.1%
+excluded          31           9,057      1.7%
 
 genuine ambiguity: NONE
+```
+
+`spec_gap` PER SERVICE — this is the number that matters, not the total:
+
+```
+rds       $2,519      ec2       $640      elb       $215
+msk         $198      dynamodb   $80      lambda     $27
 ```
 
 What each bucket means:
@@ -98,7 +106,24 @@ windows/burstable/graviton/standard with disjoint siblings; RDS `Multi-AZUsage`
 and `InstanceUsageIOOptimized` classified; RDS backup-vs-storage and WAF
 hourly-vs-monthly overlaps removed; VPC public-IPv4 and VPN-hour charge types
 added; KMS request fallback for PDF rows; two redundant `product_re` identity
-tests removed. 995 tests pass.
+tests removed. 996 tests pass.
+
+**ITEMs 1, 2, 3 and 7 have since been completed** (harness `excluded` bucket;
+`ebs`→`ec2` and `aurora`→`rds` folds plus 27 new aliases; kinesis charge types).
+A review of that work found and fixed three further defects, each now covered by
+a test:
+
+- `kinesis_storage_shard_hour` was appended after `kinesis_shard_hours`, whose
+  `any_of {unit_hourly: true}` claims every hourly Kinesis row — the new entry
+  was unreachable and its declared `block_storage` mechanic never applied. Moved
+  ahead of the general case; `test_no_charge_type_is_unreachable` now catches
+  this class.
+- The `ebs`→`ec2` fold moved three PDF rows ($184) into a spec whose
+  `ebs_storage` fallback could not match them. Fallback widened (work order 2.7).
+- `test_no_predicate_restates_service_identity` did not scan `any_of` blocks, so
+  two `product_re` predicates sat unflagged. The lint now walks every block.
+
+**ITEMs 4 and 5 (ingest defects) remain open.**
 
 ---
 
@@ -718,11 +743,17 @@ python scripts/spec_parity.py "<CORPUS>"
 
 | metric | baseline | after your change |
 |---|---:|---|
-| `agree` % spend | 95.6% | must not fall |
+| `agree` % spend | 96.6% | must not fall |
 | `differ` rows | 25 | must not grow |
-| `spec_gap` spend | $3,819 | must fall |
-| `no_spec` spend | $15,112 | must fall |
+| `spec_gap` **per service** | rds $2,519 · ec2 $640 · elb $215 · msk $198 · dynamodb $80 · lambda $27 | **no service may rise** |
+| `no_spec` spend | $684 | must fall |
 | genuine ambiguity | NONE | must stay NONE |
+
+**`spec_gap` is checked per service, not as a total.** An aggregate check hides
+the case where one fix regresses another service: confirmed real — folding the
+`ebs` canonical into `ec2` added $184 of EC2 gap while kinesis dropped $142 out,
+a net +$44 that read as noise. If any service's gap rises, say so and explain it,
+even when the total falls.
 
 **Ambiguity check — must print `NONE`:**
 
@@ -788,8 +819,8 @@ correct. An unexplained move is a regression, not a fix.
 - [ ] ITEM 7: kinesis `BilledBytes` + `ShardHour` classified, with the same
       mechanic the legacy chain produces.
 - [ ] ITEM 8: `s3`/`rds` left flat.
-- [ ] `agree` ≥ 95.6%, `differ` ≤ 25 rows, `spec_gap` and `no_spec` both
-      reduced, ambiguity NONE.
+- [ ] `agree` ≥ 96.6%, `differ` ≤ 25 rows, `no_spec` reduced, **no service's
+      `spec_gap` risen**, ambiguity NONE.
 - [ ] Semantic spec diff shows only the services you intended, `removed` empty.
 - [ ] Full suite passes with no new failures.
 - [ ] Summary lists every moved row with its reason, plus anything you noticed

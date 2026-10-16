@@ -372,7 +372,7 @@
           "usage_type_re": "EBS:Volume|EBS:Snapshot|gp2|gp3|io1|io2|sc1|st1"
         },
         "fallback_match": {
-          "operation_re": "\\((?:gp2|gp3|io1|io2|sc1|st1)\\)\\s+provisioned storage|snapshot data stored|provisioned (?:IOPS|MiBps)-month of (?:gp2|gp3|io1|io2)"
+          "operation_re": "\\((?:gp2|gp3|io1|io2|sc1|st1)\\)\\s+provisioned storage|snapshot data stored|provisioned (?:IOPS|MiBps)-month of (?:gp2|gp3|io1|io2)|GB-month provisioned|GB-month of (?:general purpose|provisioned|data stored)|/GB-month provisioned|per GB-month of"
         },
         "mechanic": "block_storage",
         "fields": [
@@ -414,7 +414,7 @@
           }
         ],
         "source_rule": "block_storage (EBS branch)",
-        "notes": "EBS provisioned IOPS/throughput are billed on separate line items (own usage_type), not as attributes of the capacity row — 'iops' here is the volume's provisioned IOPS for sizing, which CUR does not expose per-row; enrich if needed."
+        "notes": "EBS provisioned IOPS/throughput are billed on separate line items (own usage_type), not as attributes of the capacity row — 'iops' here is the volume's provisioned IOPS for sizing, which CUR does not expose per-row; enrich if needed. fallback_match widened for PDF/XLSX rows after the ebs->ec2 canonical fold moved three rows ($184) here that matched nothing: those bills carry no usage_type and describe the charge in operation as 'USD 0.1464/GB-month provisioned iops', '$0.162 per GB-month of general purpose ...'. See work order 2.7."
       },
       {
         "id": "data_transfer",
@@ -1250,7 +1250,7 @@
             "usage_type_re": "Requests|Invocations"
           },
           {
-            "product_re": "Requests|Invocations"
+            "any_field_re": "Requests|Invocations"
           }
         ],
         "mechanic": "per_request",
@@ -1262,7 +1262,22 @@
             "required": true
           }
         ],
-        "source_rule": "per_request (runs before kinesis)"
+        "source_rule": "per_request (runs before kinesis)",
+        "notes": "any_of[2] changed product_re -> any_field_re: 'Requests|Invocations' is a charge-type token that appears in the product field on some bill formats, not a service name. any_field_re covers product plus usage_type/operation, so no row that matched before stops matching."
+      },
+      {
+        "id": "kinesis_storage_shard_hour",
+        "description": "Kinesis extended/storage shard hours.",
+        "match": {
+          "usage_type_re": "Storage-ShardHour"
+        },
+        "fallback_match": {
+          "operation_re": "Storage-ShardHour"
+        },
+        "mechanic": "block_storage",
+        "fields": [],
+        "source_rule": "legacy classify_mechanics (Storage-ShardHour branch)",
+        "notes": "Kinesis Storage-ShardHour routes to block_storage in parity with legacy chain. Must stay BEFORE kinesis_shard_hours, whose any_of {unit_hourly: true} claims every hourly Kinesis row and would otherwise shadow this entirely. Enforced by tests/test_spec_partition.py::test_no_charge_type_is_unreachable."
       },
       {
         "id": "kinesis_shard_hours",
@@ -1294,6 +1309,26 @@
           }
         ],
         "source_rule": "kinesis"
+      },
+      {
+        "id": "kinesis_billed_bytes",
+        "description": "Kinesis Firehose billed bytes / data processed.",
+        "match": {
+          "usage_type_re": "BilledBytes"
+        },
+        "fallback_match": {
+          "operation_re": "BilledBytes|PutRecordBatch"
+        },
+        "mechanic": "misc",
+        "fields": [],
+        "source_rule": "legacy classify_mechanics (BilledBytes branch)",
+        "notes": "Kinesis data volume / BilledBytes routes to misc in parity with legacy chain.",
+        "llm_guidance": {
+          "gcp_target": "Pub/Sub",
+          "strategy": "passthrough",
+          "confidence_max": 0.5,
+          "guidance": "Kinesis Firehose data volume / billed bytes; review for Pub/Sub message delivery or passthrough."
+        }
       }
     ]
   },
@@ -1830,7 +1865,7 @@
             "usage_type_re": "Requests|Invocations"
           },
           {
-            "product_re": "Lambda[- ]GB[- ]Second"
+            "any_field_re": "Lambda[- ]GB[- ]Second"
           }
         ],
         "mechanic": "per_request",
@@ -1854,7 +1889,8 @@
             "required": true
           }
         ],
-        "source_rule": "per_request (Lambda-GB-Second / requests branches)"
+        "source_rule": "per_request (Lambda-GB-Second / requests branches)",
+        "notes": "any_of[2] changed product_re -> any_field_re: 'Lambda[- ]GB[- ]Second' is a charge-type token that appears in the product field on some bill formats, not a service name. any_field_re covers product plus usage_type/operation, so no row that matched before stops matching."
       }
     ]
   },

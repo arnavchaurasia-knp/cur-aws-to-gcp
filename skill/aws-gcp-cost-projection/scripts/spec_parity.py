@@ -119,6 +119,9 @@ def main(argv):
                     bspend["spec_gap"] += cost
                     gap[(canon, (r.get("usage_type") or "")[:48])] += 1
                     gapspend[canon] += cost
+                elif via in ("negative_cost", "commitment_discount", "non_workload"):
+                    buckets["excluded"] += 1
+                    bspend["excluded"] += cost
                 else:
                     buckets["no_spec"] += 1
                     bspend["no_spec"] += cost
@@ -145,8 +148,9 @@ def main(argv):
           f"specs={len(sd.SPECS)}")
     print(f"\n{'bucket':<12}{'rows':>8}{'spend':>16}{'% spend':>10}")
     print("-" * 46)
-    for b in ("agree", "differ", "spec_gap", "no_spec"):
-        print(f"{b:<12}{buckets[b]:>8}{bspend[b]:>16,.0f}{100*bspend[b]/total:>9.1f}%")
+    for b in ("agree", "differ", "spec_gap", "no_spec", "excluded"):
+        if buckets[b] > 0 or bspend[b] != 0:
+            print(f"{b:<12}{buckets[b]:>8}{bspend[b]:>16,.0f}{100*bspend[b]/total:>9.1f}%")
 
     def _section(title, counter, spend_by, keyfmt):
         print(f"\n--- {title} ---")
@@ -159,6 +163,11 @@ def main(argv):
     _section("DISAGREEMENTS  (canonical: legacy -> spec)", differ, dspend,
              lambda k, n, s: f"{k[0]:<16}{k[1]:<22}-> {k[2]:<22} rows={n:<5} ${s[k]:>12,.0f}")
     print(f"\n--- SPEC GAPS (service declared, nothing matched) ---")
+    print("  Compare this table PER SERVICE against your baseline, not just the")
+    print("  bucket total. A fix that improves one service while regressing another")
+    print("  can leave the total almost unchanged: confirmed real — folding the ebs")
+    print("  canonical into ec2 added $184 of EC2 gap while kinesis dropped $142 out,")
+    print("  for a net +$44 that looked like noise.")
     if not gapspend:
         print("  none")
     for canon, s in sorted(gapspend.items(), key=lambda kv: -abs(kv[1]))[:15]:

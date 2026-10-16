@@ -36,7 +36,7 @@ def test_canonical_service_handles_compact_product_names():
         "AmazonEKS": "eks",
         "AmazonMSK": "msk",
         "AmazonKMS": "kms",
-        "AmazonEBS": "ebs",
+        "AmazonEBS": "ec2",
     }
     for product, expected in cases.items():
         assert canonical_service(product) == expected, product

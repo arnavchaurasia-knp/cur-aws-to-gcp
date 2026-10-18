@@ -29,6 +29,12 @@ try:
 except Exception:  # pragma: no cover
     canonical_service = lambda _p: None
 
+try:
+    from diagnostics import diag, ERROR, WARN
+except ImportError:
+    def diag(*a, **k): pass
+    ERROR, WARN = "error", "warn"
+
 _inst_cfg = _cfg("instance-specs")
 _gcp_cfg  = _cfg("gcp-model-config")
 _svc_cfg  = _cfg("service-classification")
@@ -137,12 +143,29 @@ INTENTIONAL_PASSTHROUGH_NOTE_ILIKE = _svc_cfg.get("intentional_passthrough_note_
 
 
 def intentional_passthrough_exclude_clause(column):
-    """SQL AND-clause excluding rows whose projection_note marks them as an
-    intentional, permanent no-GCP-equivalent passthrough. `column` should be
-    the fully-qualified projection_note column reference, e.g. 'm.projection_note'."""
-    return " AND ".join(
+    """SQL AND-clause excluding rows that are INTENTIONAL, permanent passthroughs.
+
+    Primary test: the structured passthrough_reason column (kind='intentional').
+    Fallback: the legacy projection_note ILIKE patterns, kept so job DBs created
+    before passthrough_reason existed still behave correctly. Do not remove them.
+
+    `column` is the fully-qualified projection_note reference, e.g.
+    'm.projection_note'. The matching passthrough_reason column is derived from
+    the same table alias.
+    """
+    note_clause = " AND ".join(
         f"COALESCE({column}, '') NOT ILIKE '{p}'" for p in INTENTIONAL_PASSTHROUGH_NOTE_ILIKE
     )
+    alias = column.rsplit(".", 1)[0] + "." if "." in column else ""
+    try:
+        import passthrough_reasons as _pr
+        intent_list = _pr.sql_in_list(_pr.INTENTIONAL_REASONS)
+        reason_clause = (
+            f"COALESCE({alias}passthrough_reason, '') NOT IN ({intent_list})"
+        )
+        return f"({reason_clause}) AND ({note_clause})"
+    except Exception:
+        return note_clause
 
 
 class SKUMeta(str):
@@ -641,6 +664,7 @@ def _emit(
     projection_note="",
     mapping_confidence=0.8,
     is_workload=True,
+    passthrough_reason=None,
     **extra
 ) -> dict:
     """Standardized row-builder for mapping dicts (AR-3 / Note). Enforces:
@@ -654,6 +678,17 @@ def _emit(
         if not projection_note:
             projection_note = "no GCP SKU resolved — passthrough at cost parity"
 
+    if strategy in ("passthrough", "needs_reprice") and not passthrough_reason:
+        # Infer reason from projection_note using INTENTIONAL_PASSTHROUGH_NOTE_ILIKE
+        note_lower = (projection_note or "").lower()
+        is_intentional = False
+        for p in INTENTIONAL_PASSTHROUGH_NOTE_ILIKE:
+            clean = p.replace("%", "").lower()
+            if clean in note_lower:
+                is_intentional = True
+                break
+        passthrough_reason = "no_gcp_equivalent" if is_intentional else "unclassified"
+
     entry = {
         "aws_li_key": aws_li_key,
         "gcp_service": gcp_service,
@@ -666,6 +701,8 @@ def _emit(
         "projection_note": projection_note,
         "mapping_confidence": mapping_confidence,
         "is_workload": is_workload,
+        "passthrough_reason": passthrough_reason,
+        "decided_by": "apply_static_mappings.py",
     }
     if gcp_sku_id and hasattr(gcp_sku_id, "unit"):
         entry["gcp_sku_unit"] = gcp_sku_id.unit
@@ -7847,16 +7884,76 @@ _RHEL_VCPU_BANDS = [
     (0, "Red Hat Enterprise Linux 9 on VM with up to 8 VCPU"),
 ]
 
+_UBUNTU_PRO_VCPU_BANDS = [
+    (221, "Licensing Fee for Ubuntu Pro 22.04 LTS (Jammy Jellyfish) on VM with 222 or more VCPU (CPU cost)"),
+    (97,  "Licensing Fee for Ubuntu Pro 22.04 LTS (Jammy Jellyfish) on VM with 98 to 221 VCPU (CPU cost)"),
+    (79,  "Licensing Fee for Ubuntu Pro 22.04 LTS (Jammy Jellyfish) on VM with 80 to 97 VCPU (CPU cost)"),
+    (49,  "Licensing Fee for Ubuntu Pro 22.04 LTS (Jammy Jellyfish) on VM with 50 to 79 VCPU (CPU cost)"),
+    (17,  "Licensing Fee for Ubuntu Pro 22.04 LTS (Jammy Jellyfish) on VM with 18 to 49 VCPU (CPU cost)"),
+    (9,   "Licensing Fee for Ubuntu Pro 22.04 LTS (Jammy Jellyfish) on VM with 10 to 17 VCPU (CPU cost)"),
+    (5,   "Licensing Fee for Ubuntu Pro 22.04 LTS (Jammy Jellyfish) on VM with 6 to 9 VCPU (CPU cost)"),
+    (3,   "Licensing Fee for Ubuntu Pro 22.04 LTS (Jammy Jellyfish) on VM with 4 to 5 VCPU (CPU cost)"),
+    (1,   "Licensing Fee for Ubuntu Pro 22.04 LTS (Jammy Jellyfish) on VM with 2 to 3 VCPU (CPU cost)"),
+    (0,   "Licensing Fee for Ubuntu Pro 22.04 LTS (Jammy Jellyfish) on VM with up to 1 VCPU (CPU cost)"),
+]
+
+_SUSE_VCPU_BANDS = [
+    (5, "Licensing Fee for SUSE Linux Enterprise Server 15 on VM with 6 or more VCPU"),
+    (3, "Licensing Fee for SUSE Linux Enterprise Server 15 on VM with 4 to 5 VCPU"),
+    (0, "Licensing Fee for SUSE Linux Enterprise Server 15 on VM with up to 3 VCPU"),
+]
+
 
 def _license_entries(r, aws_key, gcp_region, vcpus, ram):
     os_name = (r.get("operating_system") or "").strip().lower()
     license_model = (r.get("license_model") or "").strip().lower()
-    if not os_name or "byol" in license_model:
+    product_str = (r.get("product") or "").strip().lower()
+    operation_str = (r.get("operation") or "").strip().lower()
+    usage_type_str = (r.get("usage_type") or "").strip().lower()
+    db_engine = (r.get("database_engine") or "").strip().lower()
+
+    # Oracle DB: no GCP managed-license equivalent -> emit labeled passthrough note, not fabricated license rate
+    if "oracle" in os_name or "oracle" in db_engine or "oracle" in operation_str or "oracle" in product_str:
+        return [{
+            "aws_li_key": aws_key, "gcp_service": "Cloud SQL",
+            "gcp_sku_name": "Oracle Database License (BYOL)", "component": "license",
+            "strategy": "passthrough", "unit_multiplier": 1.0, "gcp_region": gcp_region,
+            "projection_note": "Oracle license — BYOL; not modeled, add separately",
+            "mapping_confidence": 0.50, "is_workload": True, "break_down": True,
+        }]
+
+    if "byol" in license_model:
         return []
 
-    if os_name == "rhel" or "red hat" in os_name:
+    combined_os_blob = f"{os_name} {operation_str} {usage_type_str}"
+
+    if os_name == "rhel" or "red hat" in combined_os_blob:
         desc = next((d for min_v, d in _RHEL_VCPU_BANDS if vcpus > min_v), _RHEL_VCPU_BANDS[-1][1])
-        sku = resolve_sku("Compute Engine", desc, gcp_region)
+        sku = resolve_sku("Compute Engine", re.escape(desc), gcp_region)
+        return [{
+            "aws_li_key": aws_key, "gcp_service": "Compute Engine",
+            "gcp_sku_name": desc, "component": "license",
+            "strategy": "map" if sku else "passthrough", "unit_multiplier": 1.0, "gcp_region": gcp_region,
+            "projection_note": f"Deterministic OS-license mapping: {desc}" + _no_rate_suffix(sku, gcp_region),
+            "mapping_confidence": 0.85, "is_workload": True, "break_down": True,
+            **({"gcp_sku_id": sku, "gcp_sku_unit": sku.unit} if sku else {}),
+        }]
+
+    if "ubuntu pro" in combined_os_blob or "ubuntu-pro" in combined_os_blob:
+        desc = next((d for min_v, d in _UBUNTU_PRO_VCPU_BANDS if vcpus > min_v), _UBUNTU_PRO_VCPU_BANDS[-1][1])
+        sku = resolve_sku("Compute Engine", re.escape(desc), gcp_region)
+        return [{
+            "aws_li_key": aws_key, "gcp_service": "Compute Engine",
+            "gcp_sku_name": desc, "component": "license",
+            "strategy": "map" if sku else "passthrough", "unit_multiplier": 1.0, "gcp_region": gcp_region,
+            "projection_note": f"Deterministic OS-license mapping: {desc}" + _no_rate_suffix(sku, gcp_region),
+            "mapping_confidence": 0.85, "is_workload": True, "break_down": True,
+            **({"gcp_sku_id": sku, "gcp_sku_unit": sku.unit} if sku else {}),
+        }]
+
+    if "suse" in combined_os_blob:
+        desc = next((d for min_v, d in _SUSE_VCPU_BANDS if vcpus > min_v), _SUSE_VCPU_BANDS[-1][1])
+        sku = resolve_sku("Compute Engine", re.escape(desc), gcp_region)
         return [{
             "aws_li_key": aws_key, "gcp_service": "Compute Engine",
             "gcp_sku_name": desc, "component": "license",
@@ -8538,10 +8635,33 @@ def main():
         try:
             result = handler(by_group[group])
         except Exception as e:
-            # A mapper failure must never stop report generation. Log it and emit
-            # an empty mapping file so downstream phases see the group as handled.
-            print(f"WARNING: {group} mapper raised {type(e).__name__}: {e} — skipping group, rows will be passthrough", file=sys.stderr)
-            result = []
+            err_rows = by_group[group]
+            err_usd = sum(float(_r.get("aws_amortized_cost") or 0.0) for _r in err_rows)
+            print(f"WARNING: {group} mapper raised {type(e).__name__}: {e} — "
+                  f"emitting {len(err_rows)} row(s) as mapper_error passthrough",
+                  file=sys.stderr)
+            diag(ERROR, "mapper_error", "apply_static_mappings.py",
+                 f"{group} mapper raised {type(e).__name__}: {e}; {len(err_rows)} rows carried at AWS cost",
+                 rows=len(err_rows), usd=err_usd, phase=2,
+                 detail={"mechanic_group": group})
+            result = [
+                {
+                    "aws_li_key": _r["aws_li_key"],
+                    "gcp_service": "Manual Review — Mapper Error",
+                    "strategy": "passthrough",
+                    "component": None,
+                    "unit_multiplier": 1.0,
+                    "gcp_region": _r.get("gcp_region"),
+                    "projection_note": f"[mapper_error] {group} mapper raised "
+                                       f"{type(e).__name__}: {e}",
+                    "mapping_confidence": 0.0,
+                    "is_workload": True,
+                    "break_down": False,
+                    "passthrough_reason": "mapper_error",
+                    "decided_by": "apply_static_mappings.py",
+                }
+                for _r in err_rows
+            ]
 
         # Handlers that have LLM fallback return (mapped, llm_rows).
         # Legacy handlers return a plain list — treat as (result, []).
@@ -8608,6 +8728,10 @@ def main():
     # Inject unknown rows from static mappers into the manifest misc group so the
     # Phase 2 LLM handles them with full context instead of them being silently lost.
     if all_llm_rows:
+        llm_usd = sum(float(r.get("aws_amortized_cost") or 0.0) for r in all_llm_rows)
+        diag(WARN, "rows_sent_to_llm", "apply_static_mappings.py",
+             f"{len(all_llm_rows)} static-mapper row(s) sent to LLM for mapping",
+             rows=len(all_llm_rows), usd=llm_usd, phase=2)
         if os.path.exists(manifest_path):
             with open(manifest_path) as f:
                 manifest = json.load(f)

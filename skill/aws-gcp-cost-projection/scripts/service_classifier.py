@@ -194,7 +194,8 @@ def main():
             """
             UPDATE aws_li_to_gcp_li SET
                 gcp_service = ?, mapping_confidence = ?, projection_note = ?,
-                strategy = 'passthrough', gcp_sku_id = NULL, gcp_sku_name = NULL
+                strategy = 'passthrough', passthrough_reason = 'service_policy_review', decided_by = 'service_classifier.py',
+                gcp_sku_id = NULL, gcp_sku_name = NULL
             WHERE aws_li_key IN (
                 SELECT aws_li_key FROM aws_li_catalog
                 WHERE product = ? AND usage_type IS NOT DISTINCT FROM ?)
@@ -249,32 +250,13 @@ def main():
                 gcp_service = COALESCE(NULLIF(TRIM(gcp_service), ''), ?),
                 mapping_confidence = LEAST(COALESCE(mapping_confidence, 1.0), ?),
                 projection_note = CASE
-                    WHEN projection_note ILIKE '%unpriced%' OR projection_note ILIKE '%no rate%'
-                      OR projection_note ILIKE '%service model change%'
-                      OR projection_note ILIKE '%architecture review recommended%'
-                      OR projection_note ILIKE '%verify with customer%'
-                      -- unavailable-in-region fallback chains (e.g. "Arm Autopilot
-                      -- pods unavailable in asia-south1 — x86 pricing used instead;
-                      -- real cost may differ") were silently clobbered by this same
-                      -- rule before this was added — confidence correctly reflected
-                      -- the fallback (LEAST() ceiling) but the note explaining WHY
-                      -- was lost, replaced by the generic category note. Same bug
-                      -- class already fixed for ElastiCache; this whitelist was
-                      -- just narrower than the set of honest-fallback phrasings
-                      -- mappers across this file actually use.
-                      OR projection_note ILIKE '%unavailable in%'
-                      OR projection_note ILIKE '%real cost may differ%'
-                      -- Preserve notes from mappers that emit their own per-operation
-                      -- pricing (e.g. PutLogEvents → Cloud Logging Log Ingestion),
-                      -- so the service_map generic "Multi-component" reason doesn't
-                      -- overwrite a more specific, accurate SKU-level note.
-                      OR projection_note ILIKE '%log ingestion%'
-                    -- The mapper's own note already carries real, row-specific
-                    -- evidence (e.g. the actual RAM/tier picked, or its own
-                    -- verify-with-customer flag) — append the rule's note rather
-                    -- than picking one or the other, since the rule may carry a
-                    -- genuinely distinct caveat (e.g. cluster-mode vs Multi-AZ)
-                    -- that the mapper's own note doesn't cover.
+                    WHEN (
+                        COALESCE(rate_source, '') IN ('no_rate', 'word_overlap', 'no_catalog', 'unknown')
+                        OR COALESCE(rate_region_basis, '') IN ('dominant', 'cheapest_available')
+                        OR passthrough_reason IS NOT NULL
+                        OR COALESCE(license_status, '') = 'premium_not_modeled'
+                        OR COALESCE(review_flags, ',') <> ','
+                    )
                     THEN projection_note || ' ' || ?
                     ELSE ?
                 END

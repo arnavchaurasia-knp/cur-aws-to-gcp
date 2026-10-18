@@ -243,27 +243,31 @@ def _setup_catalog_table(con):
 
 
 def _setup_mappings_table(con):
-    con.execute("""
-        CREATE TABLE aws_li_to_gcp_li (
-            aws_li_key TEXT,
-            gcp_service TEXT,
-            gcp_sku_id TEXT,
-            gcp_sku_name TEXT,
-            gcp_sku_unit TEXT,
-            component TEXT,
-            strategy TEXT,
-            unit_multiplier DOUBLE,
-            gcp_region TEXT,
-            projection_note TEXT,
-            mapping_confidence DOUBLE,
-            is_workload BOOLEAN,
-            break_down BOOLEAN,
-            gcp_machine_type TEXT,
-            is_assumption BOOLEAN,
-            assumption_note TEXT,
-            rate_source TEXT
-        )
-    """)
+    try:
+        import row_state
+        row_state.ensure_schema(con)
+    except Exception:
+        con.execute("""
+            CREATE TABLE aws_li_to_gcp_li (
+                aws_li_key TEXT,
+                gcp_service TEXT,
+                gcp_sku_id TEXT,
+                gcp_sku_name TEXT,
+                gcp_sku_unit TEXT,
+                component TEXT,
+                strategy TEXT,
+                unit_multiplier DOUBLE,
+                gcp_region TEXT,
+                projection_note TEXT,
+                mapping_confidence DOUBLE,
+                is_workload BOOLEAN,
+                break_down BOOLEAN,
+                gcp_machine_type TEXT,
+                is_assumption BOOLEAN,
+                assumption_note TEXT,
+                rate_source TEXT
+            )
+        """)
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +349,8 @@ def test_section_ard_unreachable_rate_scoped_by_region(monkeypatch):
         con = duckdb.connect(db_path)
         _setup_catalog_table(con)
         _setup_mappings_table(con)
-        # Row 1 is in us-central1 (has rate), Row 2 is in europe-west1 (no rate)
+        # k_us has SKU-US-ONLY (has rate in us-central1);
+        # k_eu has SKU-NO-RATE (has no rate anywhere -> goes to outlier_triage)
         con.execute("""
             INSERT INTO aws_li_catalog (aws_li_key, product, gcp_region, aws_region, total_usage, pricing_model, billing_month, aws_amortized_cost)
             VALUES ('k_us', 'AmazonEC2', 'us-central1', 'us-east-1', 10.0, 'OnDemand', '2026-01', 10.0),
@@ -354,7 +359,7 @@ def test_section_ard_unreachable_rate_scoped_by_region(monkeypatch):
         con.execute("""
             INSERT INTO aws_li_to_gcp_li (aws_li_key, gcp_service, gcp_sku_id, gcp_sku_name, strategy, unit_multiplier, gcp_region, projection_note, mapping_confidence, component)
             VALUES ('k_us', 'Compute Engine', 'SKU-US-ONLY', 'US Only SKU', 'map', 1.0, 'us-central1', '', 1.0, 'core'),
-                   ('k_eu', 'Compute Engine', 'SKU-US-ONLY', 'US Only SKU', 'map', 1.0, 'europe-west1', '', 1.0, 'core')
+                   ('k_eu', 'Compute Engine', 'SKU-NO-RATE', 'No Rate SKU', 'map', 1.0, 'europe-west1', '', 1.0, 'core')
         """)
         con.close()
 
@@ -362,9 +367,10 @@ def test_section_ard_unreachable_rate_scoped_by_region(monkeypatch):
         cat_db = duckdb.connect(cat_path)
         cat_db.execute("CREATE TABLE skus (sku_id TEXT, service_name TEXT, description TEXT, resource_family TEXT, resource_group TEXT, usage_type TEXT, usage_unit TEXT, service_regions TEXT[])")
         cat_db.execute("CREATE TABLE tiered_rates (sku_id TEXT, tier_start DOUBLE, rate_usd DOUBLE)")
-        # SKU-US-ONLY only has rate in us-central1
+        # SKU-US-ONLY has rate in us-central1; SKU-NO-RATE is not in tiered_rates
         cat_db.execute("INSERT INTO skus VALUES ('SKU-US-ONLY', 'Compute Engine', 'US Only SKU', 'Compute', 'CPU', 'OnDemand', 'h', ['us-central1'])")
         cat_db.execute("INSERT INTO tiered_rates VALUES ('SKU-US-ONLY', 0.0, 0.05)")
+        cat_db.execute("INSERT INTO skus VALUES ('SKU-NO-RATE', 'Compute Engine', 'No Rate SKU', 'Compute', 'CPU', 'OnDemand', 'h', ['europe-west1'])")
         cat_db.close()
 
         monkeypatch.setattr(apply_rates, "DB_PATH", db_path)
@@ -379,6 +385,54 @@ def test_section_ard_unreachable_rate_scoped_by_region(monkeypatch):
         # k_us must remain 'map', while k_eu goes to 'outlier_triage'
         assert rows["k_us"] == "map", "Region with reachable rate must remain mapped"
         assert rows["k_eu"] == "outlier_triage", "Only unreachable region row should go to outlier_triage"
+
+
+def test_region1_dominant_region_fallback_avoids_triage(monkeypatch):
+    """REGION-1: Row in region A whose SKU has rate only in dominant region B is priced, NOT moved to outlier_triage."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "projection.duckdb")
+        con = duckdb.connect(db_path)
+        _setup_catalog_table(con)
+        _setup_mappings_table(con)
+
+        # us-central1 is dominant (2 rows)
+        con.execute("""
+            INSERT INTO aws_li_catalog (aws_li_key, product, gcp_region, aws_region, total_usage, pricing_model, billing_month, aws_amortized_cost)
+            VALUES ('k_dom1', 'AmazonEC2', 'us-central1', 'us-east-1', 10.0, 'OnDemand', '2026-01', 10.0),
+                   ('k_dom2', 'AmazonEC2', 'us-central1', 'us-east-1', 10.0, 'OnDemand', '2026-01', 10.0),
+                   ('k_eu',   'AmazonEC2', 'europe-west1', 'eu-west-1', 10.0, 'OnDemand', '2026-01', 10.0)
+        """)
+        con.execute("""
+            INSERT INTO aws_li_to_gcp_li (aws_li_key, gcp_service, gcp_sku_id, gcp_sku_name, strategy, unit_multiplier, gcp_region, projection_note, mapping_confidence, component)
+            VALUES ('k_dom1', 'Compute Engine', 'SKU-US-ONLY', 'US Only SKU', 'map', 1.0, 'us-central1', '', 1.0, 'core'),
+                   ('k_dom2', 'Compute Engine', 'SKU-US-ONLY', 'US Only SKU', 'map', 1.0, 'us-central1', '', 1.0, 'core'),
+                   ('k_eu',   'Compute Engine', 'SKU-US-ONLY', 'US Only SKU', 'map', 1.0, 'europe-west1', '', 1.0, 'core')
+        """)
+        con.close()
+
+        cat_path = os.path.join(tmp_dir, "catalog.duckdb")
+        cat_db = duckdb.connect(cat_path)
+        cat_db.execute("CREATE TABLE skus (sku_id TEXT, service_name TEXT, description TEXT, resource_family TEXT, resource_group TEXT, usage_type TEXT, usage_unit TEXT, service_regions TEXT[])")
+        cat_db.execute("CREATE TABLE tiered_rates (sku_id TEXT, tier_start DOUBLE, rate_usd DOUBLE)")
+        # SKU-US-ONLY only has rate in dominant region us-central1
+        cat_db.execute("INSERT INTO skus VALUES ('SKU-US-ONLY', 'Compute Engine', 'US Only SKU', 'Compute', 'CPU', 'OnDemand', 'h', ['us-central1'])")
+        cat_db.execute("INSERT INTO tiered_rates VALUES ('SKU-US-ONLY', 0.0, 0.05)")
+        cat_db.close()
+
+        monkeypatch.setattr(apply_rates, "DB_PATH", db_path)
+        monkeypatch.setattr(apply_rates, "CATALOG_DB", cat_path)
+
+        apply_rates.main()
+
+        con = duckdb.connect(db_path)
+        rows = dict(con.execute("SELECT aws_li_key, strategy FROM aws_li_to_gcp_li").fetchall())
+        proj = con.execute("SELECT aws_li_key, gcp_projected_cost, projection_note FROM gcp_projection WHERE aws_li_key = 'k_eu'").fetchone()
+        con.close()
+
+        # k_eu is NOT moved to outlier_triage; stays map and is priced at dominant rate!
+        assert rows["k_eu"] == "map"
+        assert proj[1] == 10.0 * 1.0 * 0.05  # total_usage * mult * rate
+        assert "priced at the us-central1 rate" in proj[2]
 
 
 # ---------------------------------------------------------------------------
@@ -774,8 +828,8 @@ def test_section_ar_j_no_catalog_rate_source_stamped(monkeypatch):
         con = duckdb.connect(db_path)
         strat, rate_src, note = con.execute("SELECT strategy, rate_source, projection_note FROM aws_li_to_gcp_li WHERE aws_li_key = 'k_dummy'").fetchone()
         assert strat == "passthrough"
-        assert rate_src == "no_rate", f"rate_source must be stamped 'no_rate', got: {rate_src}"
-        assert "[no-catalog: catalog.duckdb missing" in note
+        assert rate_src == "no_catalog", f"rate_source must be stamped 'no_catalog', got: {rate_src}"
+        assert "GCP catalog unavailable at run time" in note
         con.close()
 
 
@@ -1293,4 +1347,370 @@ def test_arn_sku_used_deterministic_service(tmp_path, monkeypatch):
     assert rate_svc[0][0] == "Cloud Key Management Service (KMS)"
 
 
+# ---------------------------------------------------------------------------
+# Section NAME-1: gcp_service normalized before CUD synthesis
+# ---------------------------------------------------------------------------
 
+def test_name1_service_normalized_before_cud(tmp_path, monkeypatch):
+    """NAME-1: Casual service name (e.g. 'Memorystore') is normalized to canonical catalog name
+    before CUD synthesis, ensuring CUD rates are synthesized and 1yr/3yr CUD columns populated."""
+    db_path = str(tmp_path / "projection.duckdb")
+    con = duckdb.connect(db_path)
+    _setup_catalog_table(con)
+    _setup_mappings_table(con)
+    con.execute("""
+        INSERT INTO aws_li_catalog (aws_li_key, product, gcp_region, aws_region, total_usage, pricing_model, aws_amortized_cost)
+        VALUES ('k_mem', 'AmazonElastiCache', 'us-central1', 'us-east-1', 100.0, 'OnDemand', 50.0);
+
+        INSERT INTO aws_li_to_gcp_li (aws_li_key, gcp_service, gcp_sku_id, gcp_sku_name, strategy, unit_multiplier, gcp_region, projection_note, mapping_confidence)
+        VALUES ('k_mem', 'Memorystore', 'SKU-MEM-NODE', 'Memorystore Node', 'map', 1.0, 'us-central1', '', 1.0);
+    """)
+    con.close()
+
+    monkeypatch.setattr(apply_rates, "DB_PATH", db_path)
+
+    cat_path = str(tmp_path / "catalog.duckdb")
+    cat_db = duckdb.connect(cat_path)
+    cat_db.execute("CREATE TABLE skus (sku_id TEXT, service_name TEXT, description TEXT, resource_family TEXT, resource_group TEXT, usage_type TEXT, usage_unit TEXT, service_regions TEXT[])")
+    cat_db.execute("CREATE TABLE tiered_rates (sku_id TEXT, tier_start DOUBLE, rate_usd DOUBLE)")
+    cat_db.execute("""
+        INSERT INTO skus VALUES ('SKU-MEM-NODE', 'Cloud Memorystore for Redis', 'Memorystore Node', 'Database', 'Memory', 'OnDemand', 'h', ['us-central1']);
+        INSERT INTO tiered_rates VALUES ('SKU-MEM-NODE', 0.0, 0.10);
+    """)
+    cat_db.close()
+    monkeypatch.setattr(apply_rates, "CATALOG_DB", cat_path)
+
+    apply_rates.main()
+
+    con = duckdb.connect(db_path)
+    row = con.execute("""
+        SELECT gcp_service FROM aws_li_to_gcp_li WHERE aws_li_key = 'k_mem'
+    """).fetchone()
+    # Check that gcp_service in aws_li_to_gcp_li is canonicalized
+    assert row[0] == "Cloud Memorystore for Redis"
+
+    # Check that CUD rates were synthesized for the canonical service in the SKU's region
+    cud_rates = con.execute("""
+        SELECT pricing_type, rate_usd FROM gcp_sku_rates
+        WHERE gcp_sku_id = 'SKU-MEM-NODE' AND pricing_type IN ('Commit1Yr', 'Commit3Yr') AND region = 'us-central1'
+        ORDER BY pricing_type
+    """).fetchall()
+    assert len(cud_rates) == 2
+    # Check projection has CUD costs populated
+    proj = con.execute("""
+        SELECT gcp_projected_cost, gcp_cost_1yr_cud, gcp_cost_3yr_cud
+        FROM gcp_projection WHERE aws_li_key = 'k_mem'
+    """).fetchone()
+    con.close()
+
+    assert proj[0] == 100.0 * 1.0 * 0.10  # OnDemand = $10.0
+    assert proj[1] < proj[0]               # 1yr CUD populated and discounted
+    assert proj[2] < proj[1]               # 3yr CUD populated and discounted
+
+
+# ---------------------------------------------------------------------------
+# Section Minor: merge_mappings warns and continues on missing group files
+# ---------------------------------------------------------------------------
+
+def test_minor_merge_mappings_warn_and_continue_on_missing_group(tmp_path, monkeypatch):
+    """Minor: merge_mappings.py warns and continues when groups are missing, recording in merge_report.json."""
+    import merge_mappings
+
+    db_path = str(tmp_path / "projection.duckdb")
+    con = duckdb.connect(db_path)
+    _setup_catalog_table(con)
+    _setup_mappings_table(con)
+    con.execute("""
+        INSERT INTO aws_li_catalog (aws_li_key, product, gcp_region, aws_region, total_usage, pricing_model, aws_amortized_cost)
+        VALUES ('k1', 'AmazonEC2', 'us-central1', 'us-east-1', 1.0, 'OnDemand', 10.0);
+    """)
+    con.close()
+
+    # Create phase2_manifest.json listing compute and storage as expected LLM groups
+    manifest_path = str(tmp_path / "phase2_manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "compute": {"needs_llm": True},
+            "storage": {"needs_llm": True},
+        }, f)
+
+    mappings_dir = str(tmp_path / "mappings")
+    os.makedirs(mappings_dir, exist_ok=True)
+    # Write only compute_mappings.json, omitting storage
+    with open(os.path.join(mappings_dir, "compute_mappings.json"), "w") as f:
+        json.dump([{
+            "aws_li_key": "k1",
+            "gcp_service": "Compute Engine",
+            "gcp_sku_id": "SKU-TEST",
+            "gcp_sku_name": "Test SKU",
+            "strategy": "map",
+            "unit_multiplier": 1.0,
+            "mapping_confidence": 0.95,
+        }], f)
+
+    sys.argv = ["merge_mappings.py", db_path, mappings_dir]
+    with pytest.raises(SystemExit) as exc:
+        merge_mappings.main()
+    assert exc.value.code == 0
+
+    # Verify report records missing groups
+    report_path = str(tmp_path / "merge_report.json")
+    with open(report_path, "r", encoding="utf-8") as f:
+        report = json.load(f)
+
+    assert "missing_groups" in report
+    assert "storage" in report["missing_groups"]
+    assert "compute" not in report["missing_groups"]
+
+
+# ---------------------------------------------------------------------------
+# Section L: License cost display & complete modeling (L-1, L-2, L-3, L-4)
+# ---------------------------------------------------------------------------
+
+def test_l1_flag_license_exposure_reconciliation(tmp_path):
+    """L-1: flag_license_exposure only flags rows when license component is NOT modeled."""
+    from apply_rates import flag_license_exposure
+    db_path = str(tmp_path / "projection.duckdb")
+    con = duckdb.connect(db_path)
+    _setup_catalog_table(con)
+    _setup_mappings_table(con)
+    try:
+        con.execute("ALTER TABLE aws_li_catalog ADD COLUMN operating_system TEXT")
+    except Exception:
+        pass
+    try:
+        con.execute("ALTER TABLE aws_li_catalog ADD COLUMN database_engine TEXT")
+    except Exception:
+        pass
+
+    con.execute("""
+        INSERT INTO aws_li_catalog (aws_li_key, product, operating_system, aws_amortized_cost, is_workload)
+        VALUES 
+            ('k_win_modeled', 'AmazonEC2', 'Windows', 500.0, true),
+            ('k_oracle_unmodeled', 'AmazonRDS', 'Oracle', 800.0, true);
+    """)
+
+    # Windows has compute + license component modeled
+    con.execute("""
+        INSERT INTO aws_li_to_gcp_li (aws_li_key, strategy, gcp_service, gcp_sku_id, component, mapping_confidence, projection_note)
+        VALUES 
+            ('k_win_modeled', 'break_down', 'Compute Engine', 'sku-core', 'core', 0.90, ''),
+            ('k_win_modeled', 'break_down', 'Compute Engine', '68CA-EFE5-B3EB', 'license', 0.90, 'Windows license');
+    """)
+
+    # Oracle has only base engine mapped with no license component
+    con.execute("""
+        INSERT INTO aws_li_to_gcp_li (aws_li_key, strategy, gcp_service, gcp_sku_id, component, mapping_confidence, projection_note)
+        VALUES 
+            ('k_oracle_unmodeled', 'map', 'Cloud SQL', 'sku-db', 'default', 0.85, 'Oracle engine');
+    """)
+
+    flag_license_exposure(con)
+    try:
+        import render_notes
+        render_notes.render_notes_for_db(con)
+    except Exception:
+        pass
+
+    res = con.execute("""
+        SELECT aws_li_key, component, mapping_confidence, projection_note, license_status
+        FROM aws_li_to_gcp_li
+        ORDER BY aws_li_key, component
+    """).fetchall()
+
+    win_rows = [r for r in res if r[0] == 'k_win_modeled']
+    oracle_rows = [r for r in res if r[0] == 'k_oracle_unmodeled']
+
+    # Windows rows should NOT have premium_not_modeled license status and should NOT be capped
+    for r in win_rows:
+        assert r[4] != 'premium_not_modeled'
+        assert r[2] == 0.90
+
+    # Oracle row should have license_status = 'premium_not_modeled' and confidence capped at 0.50
+    assert len(oracle_rows) == 1
+    assert oracle_rows[0][4] == 'premium_not_modeled'
+    assert "OS/engine licence premium that is not modeled" in oracle_rows[0][3]
+    assert oracle_rows[0][2] == 0.50
+
+    con.close()
+
+
+def test_l2_ubuntu_pro_and_suse_and_oracle_license_entries():
+    """L-2: _license_entries emits catalog SKUs for Ubuntu Pro and SUSE, and labeled passthrough for Oracle."""
+    from apply_static_mappings import _license_entries
+
+    # 1. Ubuntu Pro with 4 vCPUs
+    row_ubuntu = {
+        "operating_system": "Ubuntu Pro",
+        "operation": "RunInstances",
+        "usage_type": "BoxUsage:c5.xlarge",
+        "product": "Amazon Elastic Compute Cloud",
+    }
+    lics_u = _license_entries(row_ubuntu, "k_u", "us-central1", 4, 16.0)
+    assert len(lics_u) == 1
+    assert lics_u[0]["component"] == "license"
+    assert lics_u[0]["gcp_sku_id"] == "DC45-E5BB-8CDD"  # 4 to 5 vCPUs band
+    assert "Ubuntu Pro" in lics_u[0]["gcp_sku_name"]
+
+    # 2. SUSE Linux Enterprise Server with 8 vCPUs
+    row_suse = {
+        "operating_system": "SUSE Linux",
+        "operation": "RunInstances",
+        "usage_type": "BoxUsage:c5.2xlarge",
+        "product": "Amazon Elastic Compute Cloud",
+    }
+    lics_s = _license_entries(row_suse, "k_s", "us-central1", 8, 32.0)
+    assert len(lics_s) == 1
+    assert lics_s[0]["component"] == "license"
+    assert lics_s[0]["gcp_sku_id"] == "19BA-AC0D-D389"  # 6 or more vCPUs band
+    assert "SUSE" in lics_s[0]["gcp_sku_name"]
+
+    # 3. Oracle DB labeled passthrough
+    row_oracle = {
+        "operating_system": "Oracle",
+        "operation": "CreateDBInstance",
+        "usage_type": "InstanceUsage:db.m5.xlarge",
+        "product": "Amazon Relational Database Service",
+    }
+    lics_o = _license_entries(row_oracle, "k_o", "us-central1", 4, 16.0)
+    assert len(lics_o) == 1
+    assert lics_o[0]["strategy"] == "passthrough"
+    assert "Oracle license — BYOL; not modeled, add separately" in lics_o[0]["projection_note"]
+
+
+def test_l3_l4_render_report_and_export_display(tmp_path, monkeypatch):
+    """L-3 & L-4: render_report shows instance + license separately with a plus and sub-row; export_report has dedicated columns."""
+    import csv
+    import render_report
+    import export_report
+
+    job_dir = tmp_path / "job_lic"
+    audit_dir = job_dir / "projection-audit"
+    audit_dir.mkdir(parents=True)
+    db_file = audit_dir / "projection.duckdb"
+
+    con = duckdb.connect(str(db_file))
+    con.execute("""
+        CREATE TABLE aws_li_catalog (
+            aws_li_key TEXT PRIMARY KEY,
+            product TEXT,
+            instance_type TEXT,
+            instance_vcpus INTEGER,
+            instance_ram_gb DOUBLE,
+            instance_count DOUBLE,
+            usage_type TEXT,
+            operation TEXT,
+            aws_region TEXT,
+            gcp_region TEXT,
+            line_item_type TEXT,
+            mechanic_group TEXT,
+            pricing_model TEXT,
+            pricing_unit TEXT,
+            is_workload BOOLEAN,
+            total_usage DOUBLE,
+            aws_amortized_cost DOUBLE
+        );
+        CREATE TABLE aws_li_to_gcp_li (
+            aws_li_key TEXT,
+            rowid BIGINT,
+            strategy TEXT,
+            gcp_service TEXT,
+            gcp_machine_type TEXT,
+            gcp_sku_id TEXT,
+            gcp_sku_name TEXT,
+            component TEXT,
+            unit_multiplier DOUBLE,
+            projection_note TEXT,
+            mapping_confidence DOUBLE,
+            is_assumption BOOLEAN
+        );
+        CREATE TABLE gcp_projection (
+            aws_li_key TEXT,
+            component TEXT,
+            gcp_service TEXT,
+            gcp_machine_type TEXT,
+            gcp_region TEXT,
+            is_workload BOOLEAN,
+            gcp_projected_cost DOUBLE,
+            gcp_cost_1yr_cud DOUBLE,
+            gcp_cost_3yr_cud DOUBLE,
+            projection_status TEXT,
+            projection_note TEXT
+        );
+        CREATE TABLE run_results (
+            run_id TEXT,
+            ts_utc TEXT,
+            prospect TEXT
+        );
+    """)
+
+    con.execute("""
+        INSERT INTO aws_li_catalog (aws_li_key, product, instance_type, instance_vcpus, instance_ram_gb, instance_count, usage_type, operation, aws_region, gcp_region, line_item_type, mechanic_group, pricing_model, pricing_unit, is_workload, total_usage, aws_amortized_cost) VALUES
+            ('k_win', 'Amazon Elastic Compute Cloud', 'm5.xlarge', 4, 16.0, 1.0, 'BoxUsage:m5.xlarge', 'RunInstances:0002', 'us-east-1', 'us-central1', 'Usage', 'compute_breakdown', 'OnDemand', 'Hrs', true, 730, 200.0),
+            ('k_fallback', 'Amazon Elastic Compute Cloud', 'custom.unlisted', 4, 16.0, 1.0, 'BoxUsage:custom.unlisted', 'RunInstances:0002', 'us-east-1', 'us-central1', 'Usage', 'compute_breakdown', 'OnDemand', 'Hrs', true, 730, 50.0);
+        INSERT INTO aws_li_to_gcp_li VALUES
+            ('k_win', 1, 'break_down', 'Compute Engine', 'n2-standard-4', 'sku-core', 'N2 Core', 'core', 4.0, 'Base compute', 0.95, false),
+            ('k_win', 2, 'break_down', 'Compute Engine', 'n2-standard-4', 'sku-ram', 'N2 Ram', 'ram', 16.0, 'Base compute', 0.95, false),
+            ('k_win', 3, 'break_down', 'Compute Engine', 'n2-standard-4', '68CA-EFE5-B3EB', 'Licensing Fee for Windows Server 2025', 'license', 1.0, 'Windows license', 0.95, false),
+            ('k_fallback', 4, 'break_down', 'Compute Engine', 'n2-standard-4', 'sku-core', 'N2 Core', 'core', 4.0, 'Base compute', 0.95, false),
+            ('k_fallback', 5, 'break_down', 'Compute Engine', 'n2-standard-4', '68CA-EFE5-B3EB', 'Licensing Fee for Windows Server 2025', 'license', 1.0, 'Windows license', 0.95, false);
+        INSERT INTO gcp_projection VALUES
+            ('k_win', 'core', 'Compute Engine', 'n2-standard-4', 'us-central1', true, 100.0, 80.0, 60.0, 'mapped', 'OK'),
+            ('k_win', 'ram', 'Compute Engine', 'n2-standard-4', 'us-central1', true, 20.0, 16.0, 12.0, 'mapped', 'OK'),
+            ('k_win', 'license', 'Compute Engine', 'n2-standard-4', 'us-central1', true, 30.0, 30.0, 30.0, 'mapped', 'OK'),
+            ('k_fallback', 'core', 'Compute Engine', 'n2-standard-4', 'us-central1', true, 35.0, 28.0, 21.0, 'mapped', 'OK'),
+            ('k_fallback', 'license', 'Compute Engine', 'n2-standard-4', 'us-central1', true, 15.0, 15.0, 15.0, 'mapped', 'OK');
+        INSERT INTO run_results VALUES
+            ('run-test', '2026-10-15 00:00:00', 'Acme Corp');
+    """)
+    con.close()
+
+    monkeypatch.chdir(job_dir)
+    monkeypatch.setattr("render_report.JOB_DIR", str(job_dir))
+    monkeypatch.setattr("render_report.DB_PATH", str(db_file))
+    monkeypatch.setattr("export_report.JOB_DIR", str(job_dir))
+    monkeypatch.setattr("export_report.DB_PATH", str(db_file))
+
+    # Test HTML report rendering
+    render_report.main()
+    report_html_path = audit_dir / "report.html"
+    assert report_html_path.exists()
+    html = report_html_path.read_text(encoding="utf-8")
+
+    # 1. Shows GCP base + license separately (e.g. $120.00 + $30.00) and NOT merged into $150.00
+    assert "$120.00 + $30.00" in html
+    # 2. Phase 2: m5.xlarge has authoritative license_fraction -> AWS splits into base + license ($102.12 + $97.88 = $200.00)
+    assert "$102.12 + $97.88" in html
+    assert '<span class="plus-sign">+</span>$97.88' in html
+    assert "AWS license split estimated from AWS Price List Windows/Linux OD ratio." in html
+
+    # 3. Phase 1 fallback: custom.unlisted has no license_fraction -> shows (incl. OS license) label and one AWS OD figure
+    assert "custom.unlisted" in html
+    assert "(incl. OS license)" in html
+
+    # 4. Shows the GCP sub-row with the plus sign and license name
+    assert '<span class="plus-sign">+</span>$30.00' in html
+    assert "Licensing Fee for Windows Server 2025" in html
+
+    # Test CSV export
+    csv_out = str(job_dir / "export.csv")
+    monkeypatch.setattr("sys.argv", ["export_report.py", "--format", "csv", "--out", csv_out])
+    export_report.main()
+
+    with open(csv_out, encoding="utf-8") as f:
+        reader = list(csv.reader(f))
+    headers = reader[0]
+    row = reader[1]
+
+    # Verify dedicated columns exist
+    assert "instance_cost" in headers
+    assert "license_name" in headers
+    assert "license_cost" in headers
+
+    inst_cost_idx = headers.index("instance_cost")
+    lic_name_idx = headers.index("license_name")
+    lic_cost_idx = headers.index("license_cost")
+
+    assert float(row[inst_cost_idx]) == 120.0
+    assert "Licensing Fee for Windows Server 2025" in row[lic_name_idx]
+    assert float(row[lic_cost_idx]) == 30.0

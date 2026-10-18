@@ -43,6 +43,11 @@ from log_utils import get_logger
 from region_prefix import decode_region_prefix
 from aws_normalizer import canonical_service as _canonical_service
 from config_loader import load_data_config as _cfg
+try:
+    from diagnostics import diag, WARN
+except ImportError:
+    def diag(*a, **k): pass
+    WARN = "warn"
 from currency_utils import (
     detect_currency_and_rate,
     save_currency_info,
@@ -1808,6 +1813,8 @@ def main():
     """).fetchall()
     b_days = infer_billing_days(all_cat)
     
+    unresolved_specs = []
+
     for r in all_cat:
         key, total_usage, product, operation, aws_cost, usage_type, lic, os_name, db_eng, deploy_opt, vol_t, p_unit = r
         itype = None
@@ -1957,6 +1964,7 @@ def main():
             
         if not spec:
             conn.execute("UPDATE aws_li_catalog SET instance_type = ? WHERE aws_li_key = ?", (itype, key))
+            unresolved_specs.append((itype, float(aws_cost or 0.0)))
             continue
             
         # Classify workload
@@ -1989,6 +1997,14 @@ def main():
                 billing_days = ?, instance_count = ?, aws_effective_unit_rate = ?, workload_class = ?
             WHERE aws_li_key = ?
         """, (itype, spec.get("vcpus"), spec.get("ram_gb"), spec.get("arch"), b_days, instance_count, rate, w_class, key))
+
+    if unresolved_specs:
+        unspec_usd = sum(cost for _, cost in unresolved_specs)
+        examples = sorted(list({t for t, _ in unresolved_specs}))[:20]
+        diag(WARN, "instance_spec_unresolved", "ingest.py",
+             f"{len(unresolved_specs)} row(s) had unresolved instance specs: {', '.join(examples)}",
+             rows=len(unresolved_specs), usd=unspec_usd, phase=1,
+             detail={"example_instance_types": examples})
 
     # Stamp billing_format on every row so downstream scripts know what
     # information was available without re-detecting it from column presence.

@@ -1614,7 +1614,7 @@ def main():
 
     updates: list[tuple[str, str, str]] = []
     misc_reasons: dict[str, str] = {}   # aws_li_key → why it landed in misc
-    data_gaps: list[tuple[str, str, float]] = []  # (canonical, product, cost) — known service, no charge-type detail
+    data_gaps: list[tuple[str, str, float, str]] = []  # (canonical, product, cost, aws_li_key) — known service, no charge-type detail
     for raw in rows:
         row = dict(zip(col_names, raw))
         row["_bill_has_discounted_usage"] = bill_has_discounted
@@ -1633,7 +1633,8 @@ def main():
             try:
                 if json.loads(reason).get("data_gap"):
                     data_gaps.append((row.get("canonical") or "?", row.get("product") or "",
-                                      float(row.get("aws_amortized_cost") or 0)))
+                                      float(row.get("aws_amortized_cost") or 0),
+                                      row.get("aws_li_key") or ""))
             except (ValueError, TypeError):
                 pass
 
@@ -1687,18 +1688,20 @@ def main():
     # Surface them in the job run (and a file the report can read) so the operator
     # sees exactly which spend could not be projected and why.
     if data_gaps:
-        gap_total = sum(c for _, _, c in data_gaps)
+        gap_total = sum(c for _, _, c, _ in data_gaps)
         print(f"\nDATA GAPS: {len(data_gaps)} row(s), ${gap_total:,.2f} — service identified "
               f"but the bill has no charge-type detail (unit/operation/usage_type missing):")
-        for canon, prod, cost in sorted(data_gaps, key=lambda x: -x[2]):
+        for canon, prod, cost, _key in sorted(data_gaps, key=lambda x: -x[2]):
             print(f"  ${cost:>12,.2f}  {canon:<16} {prod[:50]}")
         try:
             gap_path = _safe_path(os.path.dirname(db_path), "data_gaps.json")
             with open(gap_path, "w", encoding="utf-8") as _gf:
                 json.dump(
+                    # aws_li_key is included so downstream writers (ensure_full_coverage.py)
+                    # can de-duplicate exactly by key instead of a (product, cost) heuristic.
                     {"count": len(data_gaps), "total_cost": round(gap_total, 2),
-                     "rows": [{"canonical": c, "product": p, "cost": round(co, 2)}
-                              for c, p, co in sorted(data_gaps, key=lambda x: -x[2])]},
+                     "rows": [{"aws_li_key": k, "canonical": c, "product": p, "cost": round(co, 2)}
+                              for c, p, co, k in sorted(data_gaps, key=lambda x: -x[2])]},
                     _gf, indent=2,
                 )
         except Exception as _e:  # pragma: no cover - best-effort reporting

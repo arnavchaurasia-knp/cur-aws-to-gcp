@@ -17,11 +17,12 @@ const catalogStaleDays = 7
 // StartCatalogRefresher launches a background goroutine that keeps the GCP
 // SKU catalog fresh. It checks catalog age on startup and then every week;
 // if the catalog is older than catalogStaleDays it runs
-// scripts/catalog_health_check.py --refresh inside the skill directory.
+// scripts/catalog_manager.py refresh inside the skill directory (fetch +
+// integrity-gate + rebuild catalog.duckdb in one step).
 //
 // Requires Python 3 on PATH and GCP credentials (GOOGLE_CLOUD_API_KEY env var
-// or `gcloud auth login`). If credentials are absent the health-check script
-// runs in audit-only mode and logs the gap without failing the server.
+// or `gcloud auth login`). If credentials are absent the refresh is a no-op
+// that logs the gap without failing the server.
 func StartCatalogRefresher(ctx context.Context) {
 	go func() {
 		// Run once immediately at startup, then on a weekly ticker.
@@ -92,9 +93,9 @@ const catalogRefreshTimeout = 2 * time.Minute
 // ignoring catalogStaleDays. Used by the forced "refresh now" admin action.
 func runCatalogRefreshNow() {
 	skillDir := skill.ResolveDir()
-	script := filepath.Join(skillDir, "scripts", "catalog_health_check.py")
+	script := filepath.Join(skillDir, "scripts", "catalog_manager.py")
 	if _, err := os.Stat(script); err != nil {
-		slog.Warn("catalog_health_check.py not found, skipping refresh", "path", script)
+		slog.Warn("catalog_manager.py not found, skipping refresh", "path", script)
 		return
 	}
 
@@ -108,7 +109,7 @@ func runCatalogRefreshNow() {
 	ctx, cancel := context.WithTimeout(context.Background(), catalogRefreshTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, python, script, "--refresh", "--skill-dir", skillDir)
+	cmd := exec.CommandContext(ctx, python, script, "refresh", "--skill-dir", skillDir)
 	cmd.Dir = skillDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

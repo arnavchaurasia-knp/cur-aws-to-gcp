@@ -30,6 +30,11 @@ except Exception as e:  # pragma: no cover
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config_loader import load_data_config as _cfg
+try:
+    from diagnostics import diag, ERROR
+except ImportError:
+    def diag(*a, **k): pass
+    ERROR = "error"
 
 _rc = _cfg("review-config")
 
@@ -176,31 +181,38 @@ def main():
     with open(out, "w", encoding="utf-8") as fh:
         fh.writelines(lines)
 
-    # Clamp violating rows to AWS-cost passthrough in the projection table.
-    # This ensures the report generates with accurate totals instead of blowup numbers.
+    # Clamp violating rows to needs_reprice in the projection table.
+    # G-4: clamp must NOT destroy deterministic mappings (preserves SKU identity).
     # Scoped to (aws_li_key, component): a break_down row's core/ram/storage
     # components share one aws_li_key. Clamping by aws_li_key alone reset every
-    # sibling component to passthrough whenever just one component blew up —
-    # e.g. a license component's ratio blowup would also wipe out a correctly
-    # sized core/RAM pair back to full AWS cost.
+    # sibling component whenever just one component blew up.
     bad_pairs = [(r[5], r[6]) for r in hard]
     clamped_note = ""
     if bad_pairs:
         try:
+            cols = {c[1].lower() for c in con.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+            needs_reprice_clause = "needs_reprice = TRUE," if "needs_reprice" in cols else ""
             con.executemany(
-                """
+                f"""
                 UPDATE aws_li_to_gcp_li
-                SET strategy = 'passthrough',
-                    gcp_sku_id = NULL, gcp_sku_name = NULL,
+                SET strategy = 'needs_reprice',
+                    passthrough_reason = 'clamped_outlier',
+                    decided_by = 'outlier_gate.py',
+                    {needs_reprice_clause}
                     projection_note = COALESCE(projection_note || ' ', '') ||
-                        '[outlier_gate: clamped to passthrough — gcp/aws ratio exceeded threshold]'
+                        '[outlier_gate: clamped to needs_reprice — gcp/aws ratio exceeded threshold]'
                 WHERE aws_li_key = ? AND component IS NOT DISTINCT FROM ?
                 """,
                 bad_pairs
             )
-            clamped_note = f"  {len(bad_pairs)} row(s) clamped to passthrough."
+            clamped_usd = sum(float(r[3] or 0.0) for r in hard)
+            diag(ERROR, "outlier_clamped", "outlier_gate.py",
+                 f"{len(bad_pairs)} row(s) clamped to needs_reprice due to cost blowup",
+                 rows=len(bad_pairs), usd=clamped_usd, phase=5)
+            clamped_note = f"  {len(bad_pairs)} row(s) clamped to needs_reprice."
         except Exception as e:
             clamped_note = f"  WARNING: could not clamp rows ({e}) — totals may be inflated."
+
 
     if bill_over and not bad_pairs:
         clamped_note = "  R4 whole-bill flag logged; individual rows within limits."

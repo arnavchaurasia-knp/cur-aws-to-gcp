@@ -27,6 +27,10 @@ def mock_db():
             unit_multiplier DOUBLE,
             projection_note TEXT
         );
+    """)
+    import row_state
+    row_state.ensure_schema(conn)
+    conn.execute("""
         CREATE TABLE gcp_sku_rates (
             gcp_sku_id TEXT,
             gcp_service TEXT,
@@ -68,7 +72,7 @@ def test_global_row_fallback_to_dominant_region(mock_db):
             ('k_global_has_glob_sku', 'AWS Shield', 'global', 'global', 'Usage', 'OnDemand', true, 1, 100);
     """)
     conn.execute("""
-        INSERT INTO aws_li_to_gcp_li VALUES
+        INSERT INTO aws_li_to_gcp_li (aws_li_key, strategy, gcp_service, gcp_sku_id, component, unit_multiplier, projection_note) VALUES
             ('k1', 'map', 'Compute Engine', 'SKU-VM', 'core', 1, NULL),
             ('k2', 'map', 'Compute Engine', 'SKU-VM', 'core', 1, NULL),
             ('k_global_no_glob_sku', 'map', 'Cloud DNS', 'SKU-REG-DNS', 'query', 1, NULL),
@@ -84,6 +88,14 @@ def test_global_row_fallback_to_dominant_region(mock_db):
             ('SKU-GLOB-ARMOR', 'Cloud Armor', 'Armor', 'Security', 'Armor', 'OnDemand', 'us-east1', 'mo', 120.0, 'cat', 'url');
     """)
 
+    conn.execute("""
+        UPDATE aws_li_to_gcp_li
+        SET rate_region_basis = 'global', rate_region_used = 'us-east1'
+        WHERE aws_li_key = 'k_global_no_glob_sku'
+    """)
+    import render_notes
+    render_notes.render_notes_for_db(conn)
+
     create_projection_view(conn)
 
     # 1. k_global_no_glob_sku should price at dominant region rate ($0.05 * 100 = 5.0)
@@ -93,7 +105,7 @@ def test_global_row_fallback_to_dominant_region(mock_db):
         WHERE aws_li_key = 'k_global_no_glob_sku'
     """).fetchone()
     assert row_no_glob[0] == pytest.approx(5.0)
-    assert "global charge; priced at us-east1 rate" in row_no_glob[1]
+    assert "priced at the us-east1 rate" in row_no_glob[1]
 
     # 2. k_global_has_glob_sku should price at global rate ($100.0 * 1 = 100.0), NOT us-east1 rate
     row_glob = conn.execute("""
@@ -110,7 +122,7 @@ def test_non_committable_items_cud_fallback_to_ondemand(mock_db):
     conn.execute("""
         INSERT INTO aws_li_catalog VALUES
             ('k_storage', 'Amazon S3', 'us-east-1', 'us-east1', 'Usage', 'OnDemand', true, 1000, 20);
-        INSERT INTO aws_li_to_gcp_li VALUES
+        INSERT INTO aws_li_to_gcp_li (aws_li_key, strategy, gcp_service, gcp_sku_id, component, unit_multiplier, projection_note) VALUES
             ('k_storage', 'map', 'Cloud Storage', 'SKU-GCS', 'storage', 1, NULL);
         INSERT INTO gcp_sku_rates VALUES
             ('SKU-GCS', 'Cloud Storage', 'Standard', 'Storage', 'GCS', 'OnDemand', 'us-east1', 'GB-mo', 0.020, 'cat', 'url');

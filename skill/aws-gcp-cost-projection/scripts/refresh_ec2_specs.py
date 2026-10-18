@@ -104,37 +104,91 @@ def _stream_products(fh):
 
 
 def build(region: str = "us-east-1", offline: str | None = None) -> dict:
+    import collections
+    import ijson
+
     specs: dict[str, dict] = {}
-    seen = 0
+    type_rates: dict[str, dict[str, float]] = collections.defaultdict(dict)
+    tracked_skus: dict[str, tuple[str, str]] = {}  # sku -> (itype, os_key)
 
     def consume(fh):
-        nonlocal seen
-        for product in _stream_products(fh):
-            if product.get("productFamily") != "Compute Instance":
-                continue
-            attr = product.get("attributes", {})
-            itype = attr.get("instanceType")
-            vcpu = attr.get("vcpu")
-            ram = _parse_memory(attr.get("memory", ""))
-            if not itype or not vcpu or ram is None:
-                continue
-            try:
-                vcpus = int(float(vcpu))
-            except ValueError:
-                continue
-            # First spec wins; specs are identical across OS/tenancy variants.
-            if itype not in specs:
-                st_gb = _parse_storage(attr.get("storage", ""))
-                spec_entry = {
-                    "vcpus": vcpus,
-                    "ram_gb": ram,
-                    "arch": _arch_of(attr.get("physicalProcessor", "")),
-                    "chip": attr.get("physicalProcessor", "") or None,
-                }
-                if st_gb:
-                    spec_entry["storage_gb"] = st_gb
-                specs[itype] = spec_entry
-                seen += 1
+        parser = ijson.parse(fh)
+        in_products = False
+        in_terms = False
+        current_sku = None
+        prod_family = None
+        attrs: dict[str, str] = {}
+
+        for prefix, event, val in parser:
+            if event == "map_key" and val == "products":
+                in_products = True
+            elif event == "map_key" and val == "terms":
+                in_products = False
+            elif event == "map_key" and val == "OnDemand":
+                in_terms = True
+            elif in_products:
+                if prefix == "products" and event == "map_key":
+                    current_sku = val
+                    prod_family = None
+                    attrs = {}
+                elif prefix.startswith("products.") and prefix.endswith(".productFamily"):
+                    prod_family = val
+                elif prefix.startswith("products.") and ".attributes." in prefix:
+                    attrs[prefix.split(".attributes.")[1]] = val
+                elif prefix.startswith("products.") and prefix.count(".") == 1 and event == "end_map":
+                    if prod_family == "Compute Instance":
+                        itype = attrs.get("instanceType")
+                        vcpu = attrs.get("vcpu")
+                        ram = _parse_memory(attrs.get("memory", ""))
+                        if itype and vcpu and ram is not None:
+                            try:
+                                vcpus = int(float(vcpu))
+                                if itype not in specs:
+                                    st_gb = _parse_storage(attrs.get("storage", ""))
+                                    spec_entry = {
+                                        "vcpus": vcpus,
+                                        "ram_gb": ram,
+                                        "arch": _arch_of(attrs.get("physicalProcessor", "")),
+                                        "chip": attrs.get("physicalProcessor", "") or None,
+                                    }
+                                    if st_gb:
+                                        spec_entry["storage_gb"] = st_gb
+                                    specs[itype] = spec_entry
+                            except ValueError:
+                                pass
+
+                        # Canonical products for license fraction tracking:
+                        # tenancy=Shared, preInstalledSw=NA, capacitystatus=Used
+                        if (attrs.get("tenancy") == "Shared" and
+                                attrs.get("preInstalledSw") == "NA" and
+                                attrs.get("capacitystatus") == "Used"):
+                            os_raw = (attrs.get("operatingSystem") or "").strip().lower()
+                            op = attrs.get("operation")
+                            os_key = None
+                            if os_raw == "linux":
+                                os_key = "linux"
+                            elif os_raw == "windows" and op == "RunInstances:0002":
+                                os_key = "windows"
+                            elif os_raw == "rhel":
+                                os_key = "rhel"
+                            elif os_raw == "suse":
+                                os_key = "suse"
+                            elif os_raw == "ubuntu pro":
+                                os_key = "ubuntu_pro"
+
+                            if os_key and itype and current_sku:
+                                tracked_skus[current_sku] = (itype, os_key)
+            elif in_terms:
+                if prefix.startswith("terms.OnDemand.") and prefix.endswith(".pricePerUnit.USD") and event == "string":
+                    parts = prefix.split(".")
+                    sku = parts[2]
+                    if sku in tracked_skus:
+                        try:
+                            price = float(val)
+                            itype, os_key = tracked_skus[sku]
+                            type_rates[itype][os_key] = price
+                        except ValueError:
+                            pass
 
     if offline:
         with open(offline, "rb") as fh:
@@ -145,6 +199,20 @@ def build(region: str = "us-east-1", offline: str | None = None) -> dict:
         req = urllib.request.Request(url, headers={"User-Agent": "refresh-ec2-specs"})
         with urllib.request.urlopen(req, timeout=600) as resp:
             consume(resp)
+
+    # Compute license_fraction for each instance type with available rates
+    for itype, spec in specs.items():
+        r = type_rates.get(itype, {})
+        linux_od = r.get("linux")
+        if not linux_od or linux_od <= 0:
+            continue
+        fractions = {}
+        for os_name in ("windows", "rhel", "suse", "ubuntu_pro"):
+            os_od = r.get(os_name)
+            if os_od and os_od > linux_od:
+                fractions[os_name] = round((os_od - linux_od) / os_od, 4)
+        if fractions:
+            spec["license_fraction"] = fractions
 
     return specs
 

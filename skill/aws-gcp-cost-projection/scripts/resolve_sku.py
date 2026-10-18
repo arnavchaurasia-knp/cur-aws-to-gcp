@@ -111,7 +111,7 @@ def get_valid_catalog_services() -> set[str]:
 
 
 def get_valid_catalog_skus() -> set[str]:
-    """Return all valid SKU IDs in catalog.duckdb."""
+    """Return all valid SKU IDs in catalog.duckdb that have a positive rate in tiered_rates."""
     global _VALID_SKUS_CACHE
     if _VALID_SKUS_CACHE is not None:
         return _VALID_SKUS_CACHE
@@ -121,11 +121,21 @@ def get_valid_catalog_skus() -> set[str]:
         return set()
 
     try:
-        rows = conn.execute("SELECT DISTINCT sku_id FROM skus WHERE sku_id IS NOT NULL").fetchall()
+        tables = {r[0] for r in conn.execute("SHOW TABLES").fetchall()}
+        if "tiered_rates" in tables:
+            rows = conn.execute("""
+                SELECT DISTINCT s.sku_id 
+                FROM skus s
+                JOIN tiered_rates t ON t.sku_id = s.sku_id
+                WHERE s.sku_id IS NOT NULL AND t.rate_usd > 0
+            """).fetchall()
+        else:
+            rows = conn.execute("SELECT DISTINCT sku_id FROM skus WHERE sku_id IS NOT NULL").fetchall()
         _VALID_SKUS_CACHE = {r[0] for r in rows if r[0]}
         return _VALID_SKUS_CACHE
     except Exception:
         return set()
+
 
 
 _STOP_WORDS = {
@@ -249,15 +259,28 @@ def resolve_intent_to_sku(
     svc_lookup = service_aliases.get(gcp_service, gcp_service)
 
     try:
-        rows = active_conn.execute("""
-            SELECT sku_id, description, usage_unit, service_regions
-            FROM skus
-            WHERE (service_name = ? OR service_name = ?)
-              AND usage_type = 'OnDemand'
-        """, [svc_lookup, gcp_service]).fetchall()
+        tables = {r[0] for r in active_conn.execute("SHOW TABLES").fetchall()}
+        has_tiered = "tiered_rates" in tables
+        if has_tiered:
+            rows = active_conn.execute("""
+                SELECT s.sku_id, s.description, s.usage_unit, s.service_regions
+                FROM skus s
+                JOIN tiered_rates t ON t.sku_id = s.sku_id
+                WHERE (s.service_name = ? OR s.service_name = ?)
+                  AND s.usage_type = 'OnDemand'
+                  AND t.rate_usd > 0
+            """, [svc_lookup, gcp_service]).fetchall()
+        else:
+            rows = active_conn.execute("""
+                SELECT s.sku_id, s.description, s.usage_unit, s.service_regions
+                FROM skus s
+                WHERE (s.service_name = ? OR s.service_name = ?)
+                  AND s.usage_type = 'OnDemand'
+            """, [svc_lookup, gcp_service]).fetchall()
 
         if not rows:
-            return ResolvedSKU(None, None, f"[no-catalog-sku: service '{gcp_service}' has no OnDemand SKUs]")
+            return ResolvedSKU(None, None, f"[no-catalog-sku: service '{gcp_service}' has no priced OnDemand SKUs]")
+
 
         best_exact_score, best_exact_res = (-1, 0), None
         best_any_score, best_any_res = (-1, 0), None

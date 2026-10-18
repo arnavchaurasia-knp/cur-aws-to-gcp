@@ -75,11 +75,18 @@ Load HA tier keywords from `data/storage-sku-keywords.json` → `db_ha_tier_keyw
 - Cloud SQL: `description NOT ILIKE '%{db_ha_tier_keywords["cloud_sql_ha"]}%'`
 - Memorystore: `description ILIKE '%{db_ha_tier_keywords["memorystore_zonal"]}%'`
 
+### Step 2.5 — DB Edition Tier Default (Enterprise, not Plus)
+
+- **Default edition = Enterprise** (standard), not Enterprise Plus, for like-for-like migration.
+- Upgrade to Enterprise Plus ONLY with explicit CUR evidence of Plus features (near-zero-downtime failover, Data Cache) or C4A ARM compatibility below.
+- If CUR gives no edition evidence and you pick by price-proximity, stamp: `[tier chosen by price-proximity — no CUR evidence of edition; confirm with customer]`.
+
 ### Step 3 — ARM routing
 
 If `instance_arch = 'arm64'` (Graviton-based RDS instances like db.r6g, db.m6g):
 - Cloud SQL Enterprise Plus is the only tier with C4A (ARM) support
 - Force `description ILIKE '%{db_ha_tier_keywords["cloud_sql_arm"]}%'`; add to `projection_note`: "C4A ARM compatibility requires Enterprise Plus"
+
 
 ### Step 4 — pair core + ram SKUs
 

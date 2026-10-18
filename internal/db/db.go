@@ -4,7 +4,8 @@ import (
 	"database/sql"
 	"strings"
 
-	_ "modernc.org/sqlite" // registers the sqlite3 driver for database/sql
+	_ "github.com/tursodatabase/libsql-client-go/libsql" // registers the libsql driver for Turso cloud SQLite
+	_ "modernc.org/sqlite"                              // registers the sqlite3 driver for local database/sql
 )
 
 type DB struct {
@@ -52,16 +53,33 @@ CREATE TABLE IF NOT EXISTS report_shares (
     expires_at DATETIME
 );`
 
-func Open(path string) (*DB, error) {
-	// WAL + a 5s busy_timeout so concurrent writers (the per-job watcher
-	// goroutines and the HTTP handlers) don't hit an instant SQLITE_BUSY. Without
-	// this a lost UpdateJobDone leaves a finished job stuck showing "running".
-	// Pin to a single connection so writes serialize cleanly through WAL.
-	conn, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
-	if err != nil {
-		return nil, err
+// Open opens a database connection. If remoteURL is provided and non-empty (e.g. Turso libsql://),
+// it connects to the cloud libSQL database. Otherwise, it opens the local SQLite file at path.
+func Open(path string, remoteURL ...string) (*DB, error) {
+	var conn *sql.DB
+	var err error
+
+	remote := ""
+	if len(remoteURL) > 0 {
+		remote = strings.TrimSpace(remoteURL[0])
 	}
-	conn.SetMaxOpenConns(1)
+
+	if remote != "" {
+		conn, err = sql.Open("libsql", remote)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// WAL + a 5s busy_timeout so concurrent writers (the per-job watcher
+		// goroutines and the HTTP handlers) don't hit an instant SQLITE_BUSY. Without
+		// this a lost UpdateJobDone leaves a finished job stuck showing "running".
+		// Pin to a single connection so writes serialize cleanly through WAL.
+		conn, err = sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+		if err != nil {
+			return nil, err
+		}
+		conn.SetMaxOpenConns(1)
+	}
 	if _, err := conn.Exec(schema); err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"github.com/facets/cur-web/internal/metrics"
 	"github.com/facets/cur-web/internal/notify"
 	"github.com/facets/cur-web/internal/skill"
+	"github.com/facets/cur-web/internal/storage"
 )
 
 const (
@@ -43,10 +45,29 @@ type Watcher struct {
 	spawner *Spawner
 	jobsDir string
 	notify  NotifyConfig
+	storage storage.Client
 }
 
 func NewWatcher(database *db.DB, spawner *Spawner, jobsDir string, nc NotifyConfig) *Watcher {
-	return &Watcher{db: database, spawner: spawner, jobsDir: jobsDir, notify: nc}
+	return &Watcher{db: database, spawner: spawner, jobsDir: jobsDir, notify: nc, storage: &storage.NoopClient{}}
+}
+
+func (w *Watcher) SetStorage(s storage.Client) {
+	if s != nil {
+		w.storage = s
+	}
+}
+
+func (w *Watcher) syncRemote(jobID, jobDir string) {
+	if w.storage != nil && w.storage.IsConfigured() {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if err := w.storage.SyncJobToRemote(ctx, jobID, jobDir); err != nil {
+				slog.Warn("storage sync failed", "job_id", jobID, "err", err)
+			}
+		}()
+	}
 }
 
 // Watch blocks until the job reaches a terminal state. Used for fresh runs
@@ -176,16 +197,28 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 				spend = extractAWSSpendFromHTML(string(content))
 			}
 		}
-		// Run the validator gate for audit/logging. Violations are logged as
-		// warnings but do NOT block the report — a report on disk is always served.
-		if ok, summary := runValidatorGate(jobDir); !ok {
-			slog.Warn("validation gate violations (report still served)", "job_id", jobID, "summary", summary)
+		outcome, vsummary := runValidatorGate(jobDir)
+		// The report is always served (see WORKORDER §0 P1). This only keeps the
+		// verdict: persist it next to the report so the team can tell afterwards
+		// whether the check was clean, reported violations, or never executed.
+		// Internal only — not surfaced to the customer or the job status.
+		writeValidationVerdict(jobDir, outcome, vsummary)
+		switch outcome {
+		case validatorFailed:
+			slog.Warn("validator reported violations", "job_id", jobID, "summary", vsummary)
+			metrics.ValidationViolations.Add(1)
+		case validatorNotRun:
+			slog.Warn("validator did not execute", "job_id", jobID, "detail", vsummary)
+			metrics.ValidationNotRun.Add(1)
+		default:
+			slog.Info("validator clean", "job_id", jobID)
 		}
 		if err := w.db.UpdateJobDone(jobID, spend); err != nil {
 			log.Printf("watcher %s: UpdateJobDone: %v", jobID, err)
 		}
 		metrics.JobsDone.Add(1)
 		slog.Info("job done", "job_id", jobID, "prospect", job.Prospect, "aws_spend", spend, "attempts", job.Attempts)
+		w.syncRemote(jobID, jobDir)
 		go func() {
 			if err := notify.SendJobReady(w.notify.Email, job.Owner, job.Owner, job.Prospect, jobID); err != nil {
 				slog.Warn("SendJobReady failed", "job_id", jobID, "err", err)
@@ -210,6 +243,7 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		}
 		metrics.JobsFailed.Add(1)
 		slog.Error("job failed", "job_id", jobID, "prospect", job.Prospect, "reason", reason, "attempts", job.Attempts)
+		w.syncRemote(jobID, jobDir)
 		go func() {
 			if err := notify.SendJobFailed(w.notify.Email, job.Owner, job.Owner, job.Prospect); err != nil {
 				slog.Warn("SendJobFailed failed", "job_id", jobID, "err", err)
@@ -231,6 +265,7 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		}
 		metrics.JobsFailed.Add(1)
 		slog.Error("job failed", "job_id", jobID, "prospect", job.Prospect, "reason", "quota_exhausted", "attempts", job.Attempts)
+		w.syncRemote(jobID, jobDir)
 		go func() {
 			if err := notify.SendJobFailed(w.notify.Email, job.Owner, job.Owner, job.Prospect); err != nil {
 				slog.Warn("SendJobFailed failed", "job_id", jobID, "err", err)
@@ -260,6 +295,7 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		}
 		metrics.JobsFailed.Add(1)
 		slog.Error("job failed", "job_id", jobID, "prospect", job.Prospect, "reason", errMsg, "attempts", job.Attempts)
+		w.syncRemote(jobID, jobDir)
 		go func() {
 			if err := notify.SendJobFailed(w.notify.Email, job.Owner, job.Owner, job.Prospect); err != nil {
 				slog.Warn("SendJobFailed failed", "job_id", jobID, "err", err)
@@ -404,32 +440,68 @@ func PidAlive(pid int) bool { return pidAlive(pid) }
 // query `ps -o stat` and treat a state starting with 'Z' as dead.
 
 
-// runValidatorGate runs the deterministic projection validator in check-only
-// mode against the job's projection.duckdb. Returns (passed, summary).
-//
-// Policy: fail-CLOSED on validator violations (exit 1) and on a malformed
-// projection (exit 2) — a report with hard violations must not be served as
-// "done". Fail-OPEN only when the validator literally cannot run (python or
-// the script missing), so an environment problem never blocks a good job.
-func runValidatorGate(jobDir string) (bool, string) {
+// ValidatorOutcome describes what actually happened when the gate ran.
+// "could not run" is deliberately distinct from "passed": in that case the
+// check produced no result at all, which the team needs to be able to see.
+type ValidatorOutcome int
+
+const (
+	ValidatorClean  ValidatorOutcome = iota // exit 0
+	ValidatorFailed                         // exit 1 or 2 — violations reported
+	ValidatorNotRun                         // could not execute at all
+)
+
+type validatorOutcome = ValidatorOutcome
+
+const (
+	validatorClean  = ValidatorClean
+	validatorFailed = ValidatorFailed
+	validatorNotRun = ValidatorNotRun
+)
+
+func runValidatorGate(jobDir string) (ValidatorOutcome, string) {
 	script := filepath.Join(skill.ResolveDir(), "scripts", "validate_fix.py")
 	if _, err := os.Stat(script); err != nil {
-		return true, "validator script absent; gate skipped"
+		return ValidatorNotRun, "validator script absent at " + script
 	}
-	// First run in autofix mode to automatically repair minor errors (e.g. regional SKU mismatches, missing CUD rates, per-N clamping)
-	if err := exec.Command("python3", script, jobDir).Run(); err != nil {
+	// Autofix pass first (regional SKU repair, per-N clamping, CUD synthesis).
+	if err := exec.Command(pythonBin(), script, jobDir).Run(); err != nil {
 		log.Printf("autofix pass failed for %s (non-fatal): %v", jobDir, err)
 	}
-
-	out, err := exec.Command("python3", script, "--check-only", jobDir).CombinedOutput()
+	out, err := exec.Command(pythonBin(), script, "--check-only", jobDir).CombinedOutput()
 	summary := strings.TrimSpace(string(out))
 	if err != nil {
-		// Non-zero exit (violations or malformed db) -> fail closed.
 		if _, ok := err.(*exec.ExitError); ok {
-			return false, summary
+			return ValidatorFailed, summary
 		}
-		// Could not start python at all -> fail open (env issue, not a data issue).
-		return true, "validator could not run (" + err.Error() + "); gate skipped"
+		return ValidatorNotRun, "validator could not execute (" + err.Error() + "): " + summary
 	}
-	return true, summary
+	return ValidatorClean, summary
+}
+
+// RunValidatorGate exports runValidatorGate for testing.
+func RunValidatorGate(jobDir string) (ValidatorOutcome, string) {
+	return runValidatorGate(jobDir)
+}
+
+// WriteValidationVerdict records the gate outcome as a file in the job dir so
+// the verdict survives log rotation. Internal artifact; nothing reads it
+// automatically.
+func WriteValidationVerdict(jobDir string, outcome ValidatorOutcome, summary string) {
+	label := "clean"
+	switch outcome {
+	case ValidatorFailed:
+		label = "violations"
+	case ValidatorNotRun:
+		label = "not_run"
+	}
+	body := label + "\n" + time.Now().UTC().Format(time.RFC3339) + "\n\n" + summary + "\n"
+	path := filepath.Join(filepath.Clean(jobDir), "validation_verdict.txt")
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		log.Printf("writeValidationVerdict: %v", err)
+	}
+}
+
+func writeValidationVerdict(jobDir string, outcome ValidatorOutcome, summary string) {
+	WriteValidationVerdict(jobDir, outcome, summary)
 }

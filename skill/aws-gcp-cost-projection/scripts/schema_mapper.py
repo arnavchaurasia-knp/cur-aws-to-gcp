@@ -255,11 +255,9 @@ def call_agy(prompt, timeout_s=300):
     agy = os.environ.get("AGY_PATH") or "agy"
     model = os.environ.get("AGY_MODEL", "gemini-3.8-flash")
     args = [agy, "--dangerously-skip-permissions", "--model", model, "-p", prompt]
-    env = os.environ.copy()
-    env["ELECTRON_RUN_AS_NODE"] = "1"   # Antigravity.exe is Electron; CLI mode
     try:
         r = subprocess.run(args, capture_output=True, text=True,
-                           timeout=timeout_s, env=env)
+                           timeout=timeout_s)
     except FileNotFoundError:
         return None, f"agy not found at {agy!r} (set AGY_PATH in .env)"
     except subprocess.TimeoutExpired:

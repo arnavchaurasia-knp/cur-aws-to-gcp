@@ -1,0 +1,209 @@
+{
+  "file": "aws_cur_style_report_enriched.csv",
+  "alias_resolved": {
+    "lineItem/UsageAccountId": "account_id",
+    "lineItem/LineItemType": "line_item_type",
+    "lineItem/ProductCode": "product_code",
+    "lineItem/UsageType": "usage_type",
+    "lineItem/Operation": "operation",
+    "lineItem/UsageAmount": "usage_quantity",
+    "lineItem/CurrencyCode": "currency",
+    "lineItem/UnblendedRate": "unit_price",
+    "lineItem/UnblendedCost": "cost",
+    "lineItem/LineItemDescription": "description",
+    "product/ProductName": "service",
+    "product/instanceType": "instance_type",
+    "product/region": "region",
+    "product/operatingSystem": "operating_system",
+    "product/vcpu": "instance_vcpus",
+    "product/memory": "instance_memory"
+  },
+  "model_proposals": [
+    {
+      "column": "identity/LineItemId",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "identity/TimeInterval",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "bill/InvoiceId",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "bill/InvoicingEntity",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "bill/BillingEntity",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "bill/BillType",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "bill/PayerAccountId",
+      "field": "account_id",
+      "verdict": "accept",
+      "reason": "identifier, 1 distinct",
+      "model_confidence": 0.9
+    },
+    {
+      "column": "bill/BillingPeriodStartDate",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "bill/BillingPeriodEndDate",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "lineItem/UsageStartDate",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "lineItem/UsageEndDate",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "lineItem/AvailabilityZone",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "lineItem/ResourceId",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "lineItem/NormalizationFactor",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "lineItem/NormalizedUsageAmount",
+      "field": "usage_quantity",
+      "verdict": "accept",
+      "reason": "numeric, 104 distinct",
+      "model_confidence": 0.85
+    },
+    {
+      "column": "lineItem/BlendedRate",
+      "field": "unit_price",
+      "verdict": "accept",
+      "reason": "numeric, 151 distinct",
+      "model_confidence": 0.9
+    },
+    {
+      "column": "lineItem/BlendedCost",
+      "field": "cost",
+      "verdict": "accept",
+      "reason": "numeric, 203 distinct",
+      "model_confidence": 0.95
+    },
+    {
+      "column": "lineItem/TaxType",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "lineItem/LegalEntity",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "product/servicecode",
+      "field": "product_code",
+      "verdict": "accept",
+      "reason": "23 distinct (ratio 0.046)",
+      "model_confidence": 0.95
+    },
+    {
+      "column": "product/instanceFamily",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "product/location",
+      "field": "region",
+      "verdict": "accept",
+      "reason": "7 distinct (ratio 0.014)",
+      "model_confidence": 0.85
+    },
+    {
+      "column": "product/tenancy",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "pricing/term",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "pricing/unit",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "pricing/publicOnDemandRate",
+      "field": "unit_price",
+      "verdict": "accept",
+      "reason": "numeric, 151 distinct",
+      "model_confidence": 0.85
+    },
+    {
+      "column": "pricing/publicOnDemandCost",
+      "field": "cost",
+      "verdict": "accept",
+      "reason": "numeric, 203 distinct",
+      "model_confidence": 0.85
+    },
+    {
+      "column": "reservation/ReservationARN",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "savingsPlan/SavingsPlanARN",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "resourceTags/user:Environment",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "product/physicalProcessor",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "product/clockSpeed",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "product/currentGeneration",
+      "field": null,
+      "verdict": "null"
+    },
+    {
+      "column": "specSource",
+      "field": null,
+      "verdict": "null"
+    }
+  ]
+}

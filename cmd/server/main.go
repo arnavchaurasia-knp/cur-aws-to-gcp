@@ -23,6 +23,7 @@ import (
 	"github.com/facets/cur-web/internal/logger"
 	"github.com/facets/cur-web/internal/notify"
 	"github.com/facets/cur-web/internal/preflight"
+	"github.com/facets/cur-web/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/joho/godotenv"
@@ -45,7 +46,7 @@ func main() {
 
 	os.MkdirAll(cfg.JobsDir(), 0755)
 
-	database, err := db.Open(cfg.DBPath())
+	database, err := db.Open(cfg.DBPath(), cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("db error: %v", err)
 	}
@@ -83,6 +84,21 @@ func main() {
 	}
 	watcher := jobs.NewWatcher(database, spawner, cfg.JobsDir(), notifyCfg)
 	jobHandler := jobs.NewHandler(database, cfg.JobsDir(), spawner, watcher, notifyCfg, cfg.AdminEmails)
+
+	storageClient, err := storage.New(context.Background(), storage.Config{
+		Endpoint:        cfg.S3Endpoint,
+		Bucket:          cfg.S3Bucket,
+		AccessKeyID:     cfg.S3AccessKey,
+		SecretAccessKey: cfg.S3SecretKey,
+		Region:          cfg.S3Region,
+	})
+	if err != nil {
+		slog.Warn("failed to initialize remote storage, falling back to local only", "err", err)
+		storageClient = &storage.NoopClient{}
+	}
+	watcher.SetStorage(storageClient)
+	jobHandler.SetStorage(storageClient)
+
 	if len(cfg.AdminEmails) > 0 {
 		log.Printf("admins configured: %d", len(cfg.AdminEmails))
 	}

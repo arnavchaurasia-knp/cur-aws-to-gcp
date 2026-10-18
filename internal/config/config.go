@@ -60,6 +60,16 @@ type Config struct {
 	// next=/facets; everyone else is rejected before a session is issued.
 	// Empty = the /facets login door is closed to everyone.
 	FacetsLoginEmails []string
+
+	// DatabaseURL enables connecting to Turso or cloud libSQL instead of local SQLite.
+	DatabaseURL string
+
+	// Cloud Object Storage (Cloudflare R2 / AWS S3 / Supabase Storage)
+	S3Endpoint  string
+	S3Bucket    string
+	S3AccessKey string
+	S3SecretKey string
+	S3Region    string
 }
 
 func (c *Config) JobsDir() string     { return c.DataDir + "/jobs" }
@@ -114,6 +124,46 @@ func LoadFromEnv() (*Config, error) {
 		}
 		dataDir = home + "/.cur-web"
 	}
+
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("TURSO_DATABASE_URL")
+	}
+
+	s3Endpoint := os.Getenv("S3_ENDPOINT")
+	if s3Endpoint == "" {
+		s3Endpoint = os.Getenv("R2_ENDPOINT")
+	}
+
+	s3Bucket := os.Getenv("S3_BUCKET")
+	if s3Bucket == "" {
+		s3Bucket = os.Getenv("R2_BUCKET")
+	}
+
+	s3AccessKey := os.Getenv("S3_ACCESS_KEY_ID")
+	if s3AccessKey == "" {
+		s3AccessKey = os.Getenv("R2_ACCESS_KEY_ID")
+	}
+	if s3AccessKey == "" {
+		s3AccessKey = os.Getenv("AWS_ACCESS_KEY_ID")
+	}
+
+	s3SecretKey := os.Getenv("S3_SECRET_ACCESS_KEY")
+	if s3SecretKey == "" {
+		s3SecretKey = os.Getenv("R2_SECRET_ACCESS_KEY")
+	}
+	if s3SecretKey == "" {
+		s3SecretKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
+	}
+
+	s3Region := os.Getenv("S3_REGION")
+	if s3Region == "" {
+		s3Region = os.Getenv("R2_REGION")
+	}
+	if s3Region == "" {
+		s3Region = "auto"
+	}
+
 	return &Config{
 		AGYPath:            os.Getenv("AGY_PATH"),
 		AGYModel:           model,
@@ -131,6 +181,12 @@ func LoadFromEnv() (*Config, error) {
 		AdminEmails:        parseAdminEmails(os.Getenv("ADMIN_EMAILS")),
 		AllowedDomains:     parseAllowedDomains(os.Getenv("ALLOWED_DOMAINS")),
 		FacetsLoginEmails:  parseAdminEmails(os.Getenv("FACETS_LOGIN_EMAILS")),
+		DatabaseURL:        dbURL,
+		S3Endpoint:         s3Endpoint,
+		S3Bucket:           s3Bucket,
+		S3AccessKey:        s3AccessKey,
+		S3SecretKey:        s3SecretKey,
+		S3Region:           s3Region,
 	}, nil
 }
 

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 calibrate_confidence.py — Service-specific confidence ceilings, post-merge.
 
@@ -86,78 +86,47 @@ def main():
         # customer actually needs to see. Confirmed real: an OpenSearch compute
         # row landed at mapping_confidence=0.70 with no "architecture review
         # recommended" text at all.
-        not_already_noted = ""
-        if note:
-            marker = note[:30].replace("'", "''")
-            not_already_noted = f" AND (m.projection_note IS NULL OR m.projection_note NOT ILIKE '%{marker}%')"
-
-        # Count rows needing the cap/note before updating
+        # Count rows needing the cap before updating
         n = con.execute(f"""
             SELECT COUNT(*) FROM aws_li_to_gcp_li m
             JOIN aws_li_catalog c USING (aws_li_key)
             {join_filter}
               AND COALESCE(m.mapping_confidence, 1.0) >= {ceiling}
-              {not_already_noted}
         """).fetchone()[0]
 
         if n == 0:
             continue
 
-        if note:
-            con.execute(f"""
-                UPDATE aws_li_to_gcp_li
-                SET mapping_confidence = LEAST(COALESCE(mapping_confidence, 1.0), {ceiling}),
-                    projection_note = COALESCE(projection_note, '') || ' [{note}]'
-                WHERE aws_li_key IN (
-                    SELECT c.aws_li_key FROM aws_li_catalog c
-                    JOIN aws_li_to_gcp_li m USING (aws_li_key)
-                    {join_filter}
-                      AND COALESCE(m.mapping_confidence, 1.0) >= {ceiling}
-                      {not_already_noted}
-                )
-            """)
-        else:
-            con.execute(f"""
-                UPDATE aws_li_to_gcp_li
-                SET mapping_confidence = LEAST(COALESCE(mapping_confidence, 1.0), {ceiling})
-                WHERE aws_li_key IN (
-                    SELECT c.aws_li_key FROM aws_li_catalog c
-                    JOIN aws_li_to_gcp_li m USING (aws_li_key)
-                    {join_filter}
-                      AND COALESCE(m.mapping_confidence, 1.0) >= {ceiling}
-                )
-            """)
+        con.execute(f"""
+            UPDATE aws_li_to_gcp_li
+            SET mapping_confidence = LEAST(COALESCE(mapping_confidence, 1.0), {ceiling})
+            WHERE aws_li_key IN (
+                SELECT c.aws_li_key FROM aws_li_catalog c
+                JOIN aws_li_to_gcp_li m USING (aws_li_key)
+                {join_filter}
+                  AND COALESCE(m.mapping_confidence, 1.0) >= {ceiling}
+            )
+        """)
 
         print(f"  calibrate_confidence: {label}: {n} row(s) capped at {ceiling:.0%}")
         total += n
 
-    # Windows: cap + license note (keyed on aws_li_catalog.operating_system or existing note)
+    # Windows / commercial license premium: cap confidence where license_status is premium_not_modeled
     n_win = con.execute("""
         SELECT COUNT(*) FROM aws_li_to_gcp_li m
         JOIN aws_li_catalog c USING (aws_li_key)
-        WHERE (c.operating_system ILIKE '%Windows%'
-               OR c.projection_note ILIKE '%Windows%'
-               OR c.projection_note ILIKE '%license-premium%')
+        WHERE m.license_status = 'premium_not_modeled'
           AND COALESCE(m.mapping_confidence, 1.0) >= 0.75
     """).fetchone()[0]
 
     if n_win:
         con.execute("""
             UPDATE aws_li_to_gcp_li
-            SET mapping_confidence = LEAST(COALESCE(mapping_confidence, 1.0), 0.75),
-                projection_note = CASE
-                    WHEN projection_note ILIKE '%license%' OR projection_note ILIKE '%BYOL%'
-                    THEN projection_note
-                    ELSE COALESCE(projection_note, '') ||
-                         ' [Windows license not included in GCP pricing; '
-                         'add BYOL or Windows Server premium before finalizing cost]'
-                END
+            SET mapping_confidence = LEAST(COALESCE(mapping_confidence, 1.0), 0.75)
             WHERE aws_li_key IN (
                 SELECT c.aws_li_key FROM aws_li_catalog c
                 JOIN aws_li_to_gcp_li m USING (aws_li_key)
-                WHERE (c.operating_system ILIKE '%Windows%'
-                       OR c.projection_note ILIKE '%Windows%'
-                       OR c.projection_note ILIKE '%license-premium%')
+                WHERE m.license_status = 'premium_not_modeled'
                   AND COALESCE(m.mapping_confidence, 1.0) >= 0.75
             )
         """)

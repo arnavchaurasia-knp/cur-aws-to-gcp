@@ -2,6 +2,7 @@
 package jobs
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/facets/cur-web/internal/metrics"
 	"github.com/facets/cur-web/internal/notify"
 	"github.com/facets/cur-web/internal/skill"
+	"github.com/facets/cur-web/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
@@ -40,10 +42,30 @@ type Handler struct {
 	watcher     *Watcher
 	notify      NotifyConfig
 	adminEmails []string
+	storage     storage.Client
 }
 
 func NewHandler(d *db.DB, jobsDir string, spawner *Spawner, watcher *Watcher, nc NotifyConfig, adminEmails []string) *Handler {
-	return &Handler{db: d, jobsDir: jobsDir, spawner: spawner, watcher: watcher, notify: nc, adminEmails: adminEmails}
+	return &Handler{db: d, jobsDir: jobsDir, spawner: spawner, watcher: watcher, notify: nc, adminEmails: adminEmails, storage: &storage.NoopClient{}}
+}
+
+func (h *Handler) SetStorage(s storage.Client) {
+	if s != nil {
+		h.storage = s
+	}
+}
+
+// ensureJobDirRestored restores job artifacts from cloud storage (Cloudflare R2 / S3)
+// if the local directory is missing due to a container restart on ephemeral storage.
+func (h *Handler) ensureJobDirRestored(ctx context.Context, id, jobDir string) {
+	if _, err := os.Stat(jobDir); os.IsNotExist(err) {
+		if h.storage != nil && h.storage.IsConfigured() {
+			_ = os.MkdirAll(jobDir, 0755)
+			if _, err := h.storage.RestoreJobFromRemote(ctx, id, jobDir); err != nil {
+				slog.Warn("RestoreJobFromRemote failed", "job_id", id, "err", err)
+			}
+		}
+	}
 }
 
 // isValidJobID returns true only for canonical UUID-format job IDs.
@@ -314,6 +336,7 @@ func (h *Handler) Refine(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
+	h.ensureJobDirRestored(r.Context(), id, jobDir)
 	// Issue 8: set running BEFORE spawning so any concurrent poll sees 'running'
 	if err := h.db.UpdateJobRunning(id); err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
@@ -354,6 +377,7 @@ func (h *Handler) Progress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
+	h.ensureJobDirRestored(r.Context(), id, jobDir)
 	p, _ := ReadProgress(jobDir, job.SessionID)
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	json.NewEncoder(w).Encode(p)
@@ -381,6 +405,7 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
+	h.ensureJobDirRestored(r.Context(), id, jobDir)
 	runIDParam := r.URL.Query().Get("run_id")
 	format := r.URL.Query().Get("format")
 
@@ -515,7 +540,9 @@ func (h *Handler) Runs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
-	dbPath := filepath.Join(h.jobsDir, id, projectionAuditDir, projectionDuckDB)
+	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
+	h.ensureJobDirRestored(r.Context(), id, jobDir)
+	dbPath := filepath.Join(jobDir, projectionAuditDir, projectionDuckDB)
 	runs, err := QueryRunResults(dbPath)
 	if err != nil {
 		// Issue 6: err.Error() includes full filesystem path — log server-side only
@@ -550,6 +577,7 @@ func (h *Handler) Summary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
+	h.ensureJobDirRestored(r.Context(), id, jobDir)
 	dbPath := filepath.Join(jobDir, projectionAuditDir, projectionDuckDB)
 	runs, err := QueryRunResults(dbPath)
 	if err != nil {

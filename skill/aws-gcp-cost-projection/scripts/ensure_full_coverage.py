@@ -40,6 +40,12 @@ except Exception as e:  # pragma: no cover
     sys.stderr.write(f"ensure_full_coverage: duckdb import failed ({e}); skipping\n")
     sys.exit(0)
 
+try:
+    from diagnostics import diag, ERROR
+except ImportError:
+    def diag(*a, **k): pass
+    ERROR = "error"
+
 NOTE = "[backstop] LLM left this row unmapped after retry — carried at AWS cost for manual review (ensure_full_coverage.py)"
 
 # commitment_discount/negative_cost rows are NOT ordinary unmapped rows: their
@@ -94,21 +100,26 @@ def main():
                 None, None, None,
                 "ignore" if _is_ignore(is_workload, mechanic_group, cost) else "passthrough",
                 1.0, gcp_region, NOTE, 0.10, bool(is_workload), False,
+                None if _is_ignore(is_workload, mechanic_group, cost) else "llm_dropped",
+                "ensure_full_coverage.py",
             )
             for (aws_li_key, gcp_region, is_workload, cost, product, mechanic_group) in rows
         ]
+        insert_ok = False
         try:
             con.executemany(
                 """
                 INSERT INTO aws_li_to_gcp_li
                     (aws_li_key, gcp_service, gcp_sku_id, gcp_sku_name, gcp_sku_unit,
                      strategy, unit_multiplier, gcp_region, projection_note,
-                     mapping_confidence, is_workload, break_down)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     mapping_confidence, is_workload, break_down,
+                     passthrough_reason, decided_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 records,
             )
             con.commit()
+            insert_ok = True
         except Exception as _insert_err:
             sys.stderr.write(f"ensure_full_coverage: non-fatal error ({_insert_err}); skipping DB INSERT\n")
 
@@ -116,14 +127,25 @@ def main():
         ignored_n = sum(1 for r in rows if _is_ignore(r[2], r[5], r[3]))
         zero_n = sum(1 for r in rows if (r[3] or 0) == 0)
         passthrough_n = len(rows) - ignored_n
-        print(f"ensure_full_coverage: backstopped {len(rows)} row(s) totaling "
-              f"${total_cost:,.2f} ({ignored_n} as ignore/commitment, "
-              f"{passthrough_n} as passthrough/Manual Review; {zero_n} zero-cost) — loud, not silent:")
-        for aws_li_key, _region, is_workload, cost, product, mechanic_group in sorted(rows, key=lambda r: -(r[3] or 0))[:20]:
-            tag = "ignore" if _is_ignore(is_workload, mechanic_group, cost) else "passthrough"
-            print(f"  {aws_li_key[:12]}  ${cost or 0:>10,.2f}  [{tag}]  {product}")
 
-        # FIX-3: Surface backstopped rows in data_gaps.json next to the DB
+        if rows:
+            diag(ERROR, "rows_unmapped_after_retry", "ensure_full_coverage.py",
+                 f"{len(rows)} row(s) had no mapping after the Phase-2 "
+                 f"retry; carried at AWS cost",
+                 rows=len(rows), usd=total_cost, phase=2)
+
+        if insert_ok:
+            print(f"ensure_full_coverage: backstopped {len(rows)} row(s) totaling "
+                  f"${total_cost:,.2f} ({ignored_n} as ignore/commitment, "
+                  f"{passthrough_n} as passthrough/Manual Review; {zero_n} zero-cost) — loud, not silent:")
+            for aws_li_key, _region, is_workload, cost, product, mechanic_group in sorted(rows, key=lambda r: -(r[3] or 0))[:20]:
+                tag = "ignore" if _is_ignore(is_workload, mechanic_group, cost) else "passthrough"
+                print(f"  {aws_li_key[:12]}  ${cost or 0:>10,.2f}  [{tag}]  {product}")
+        else:
+            print(f"ensure_full_coverage: INSERT FAILED — {len(rows)} row(s) totaling ${total_cost:,.2f} "
+                  f"remain UNMAPPED; coverage gate will flag them")
+
+        # FIX-3, FIX-5, FIX-6: Surface backstopped rows in data_gaps.json next to the DB
         try:
             gaps_path = os.path.join(os.path.dirname(os.path.abspath(db)), "data_gaps.json")
             existing_data = None
@@ -136,31 +158,65 @@ def main():
                 elif isinstance(existing_data, list):
                     existing_rows = existing_data
 
-            existing_keys = {
-                r.get("aws_li_key") for r in existing_rows
+            existing_by_key = {
+                r.get("aws_li_key"): r for r in existing_rows
                 if isinstance(r, dict) and "aws_li_key" in r
+            }
+            # Fallback identity ONLY for legacy/foreign rows that lack aws_li_key
+            # (e.g. a data_gaps.json written by an older classify_mechanics before it
+            # stamped the key). classify_mechanics now includes aws_li_key, so the
+            # common path de-duplicates exactly by key above; restricting this
+            # (product, cost) fallback to KEYLESS rows prevents a false-positive dedup
+            # between two genuinely different rows that happen to share (product, cost).
+            existing_product_cost = {
+                (r.get("product"), round(float(r.get("cost") or 0), 2))
+                for r in existing_rows
+                if isinstance(r, dict) and "aws_li_key" not in r
+                and "product" in r and "cost" in r
             }
 
             for aws_li_key, _region, is_workload, cost, product, mechanic_group in rows:
-                if aws_li_key not in existing_keys:
+                c_round = round(cost or 0.0, 2)
+                if not insert_ok:
+                    resolution = "INSERT_FAILED"
+                else:
                     resolution = "ignore" if _is_ignore(is_workload, mechanic_group, cost) else "passthrough"
-                    existing_rows.append({
-                        "aws_li_key": aws_li_key,
-                        "product": product,
-                        "cost": round(cost or 0.0, 2),
-                        "mechanic_group": mechanic_group,
-                        "reason": "LLM left row unmapped after Phase 2 retry",
-                        "resolution": resolution,
-                        "source": "ensure_full_coverage.py",
-                    })
-                    existing_keys.add(aws_li_key)
+
+                prior = existing_by_key.get(aws_li_key)
+                if prior is not None:
+                    # Already recorded. If an earlier run marked it INSERT_FAILED and
+                    # this run actually committed the mapping, refresh the stale
+                    # resolution so the data-gap banner doesn't keep over-reporting it.
+                    if insert_ok and prior.get("resolution") == "INSERT_FAILED":
+                        prior["resolution"] = resolution
+                    continue
+                if (product, c_round) in existing_product_cost:
+                    continue
+
+                new_row = {
+                    "aws_li_key": aws_li_key,
+                    "product": product,
+                    "cost": c_round,
+                    "mechanic_group": mechanic_group,
+                    "reason": "LLM left row unmapped after Phase 2 retry",
+                    "resolution": resolution,
+                    "source": "ensure_full_coverage.py",
+                }
+                existing_rows.append(new_row)
+                existing_by_key[aws_li_key] = new_row
+                existing_product_cost.add((product, c_round))
 
             if isinstance(existing_data, list):
                 out = existing_rows
             else:
+                # FIX-6a: Exclude "ignore" rows from banner count and total_cost
+                active_rows = [
+                    r for r in existing_rows
+                    if isinstance(r, dict) and r.get("resolution") != "ignore"
+                ]
                 out = {
-                    "count": len(existing_rows),
-                    "total_cost": round(sum(r.get("cost", 0.0) for r in existing_rows if isinstance(r, dict)), 2),
+                    "count": len(active_rows),
+                    "total_cost": round(sum(r.get("cost", 0.0) for r in active_rows), 2),
                     "rows": existing_rows,
                 }
             with open(gaps_path, "w", encoding="utf-8") as _gf:

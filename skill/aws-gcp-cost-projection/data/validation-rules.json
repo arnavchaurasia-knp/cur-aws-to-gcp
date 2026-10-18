@@ -59,8 +59,16 @@
       "description": "GCP SKU IDs follow the pattern XXXX-XXXX-XXXX (three 4-character hex groups). Any other format is not a real GCP SKU ID. Do not invent IDs — always get them from find-sku.sh or the bundled catalog.",
       "how_to_check": "Verify the gcp_sku_id matches the regex: [0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4} (case-insensitive). If it doesn't, it is not a real SKU.",
       "on_fail": "Run find-sku.sh to get a real SKU ID. Never write an invented one."
+    },
+    {
+      "id": "db_edition_default_enterprise",
+      "severity": "BLOCK",
+      "description": "Cloud SQL default edition is Enterprise (standard), not Enterprise Plus (~2x). The LLM may upgrade to Enterprise Plus ONLY with explicit CUR evidence that the source workload needs Plus-tier features (near-zero-downtime failover, Data Cache). When CUR gives no edition evidence, pick Enterprise (or price-closest) and stamp '[tier chosen by price-proximity — no CUR evidence of edition; confirm with customer]'.",
+      "how_to_check": "If gcp_sku_name or SKU description contains 'Enterprise Plus', verify that the source CUR line item has explicit evidence of Plus requirements (or ARM/C4A architecture requirement documented). Otherwise, reject the Plus pick.",
+      "on_fail": "Downgrade SKU to Cloud SQL Enterprise edition."
     }
   ],
+
   "gcp_api_knowledge_sources": [
     "GCP Cloud Billing Catalog API: https://cloud.google.com/billing/docs/reference/rest/v1/services.skus/list",
     "GCP Compute Engine pricing: https://cloud.google.com/compute/vm-instance-pricing",

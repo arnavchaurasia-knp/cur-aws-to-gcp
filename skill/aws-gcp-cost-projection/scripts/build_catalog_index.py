@@ -21,6 +21,29 @@ FINAL_PATH = os.path.join(DATA_DIR, "catalog.duckdb")
 
 
 def build():
+    # B6: Source integrity gating — verify all .json.gz source files are healthy
+    # before compiling catalog.duckdb. Never compile a corrupt or collapsed source dump.
+    try:
+        from catalog_manager import integrity_check_file, _load_meta
+        meta = _load_meta({"meta": os.path.join(DATA_DIR, "CATALOG_META.json")})
+        baselines = meta.get("sku_counts") or {}
+        gz_files_check = sorted(glob.glob(os.path.join(DATA_DIR, "skus", "*.json.gz")))
+        unhealthy = []
+        for gz_p in gz_files_check:
+            sid = os.path.basename(gz_p).replace(".json.gz", "")
+            res = integrity_check_file(gz_p, baselines.get(sid))
+            if res["status"] != "OK":
+                unhealthy.append((sid, res["status"], res["issues"]))
+        if unhealthy:
+            print(f"  build_catalog: REFUSING to build catalog.duckdb — {len(unhealthy)} source(s) unhealthy:", file=sys.stderr)
+            for sid, status, issues in unhealthy[:10]:
+                print(f"    {sid}: {status} ({'; '.join(issues)})", file=sys.stderr)
+            if len(unhealthy) > 10:
+                print(f"    ... and {len(unhealthy) - 10} more", file=sys.stderr)
+            raise RuntimeError(f"Source integrity check failed for {len(unhealthy)} file(s). catalog.duckdb retained as-is.")
+    except ImportError:
+        pass  # If catalog_manager not importable, proceed with build
+
     # Build into a temp directory on the same filesystem as DATA_DIR to allow atomic os.replace
     tmp_dir = tempfile.mkdtemp(dir=DATA_DIR)
     index_path = os.path.join(tmp_dir, "catalog.duckdb")

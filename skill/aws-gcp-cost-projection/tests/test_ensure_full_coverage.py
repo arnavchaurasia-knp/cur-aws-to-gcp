@@ -35,7 +35,9 @@ def _create_minimal_tables(con):
             projection_note TEXT,
             mapping_confidence DOUBLE,
             is_workload BOOLEAN,
-            break_down BOOLEAN
+            break_down BOOLEAN,
+            passthrough_reason TEXT,
+            decided_by TEXT
         )
     """)
 
@@ -45,7 +47,9 @@ def _create_minimal_tables(con):
 # ---------------------------------------------------------------------------
 
 def test_fix1_missing_column_exits_zero(tmp_path):
-    """Pointing at a DB with a broken schema (e.g. missing column) exits 0 and logs non-fatal error."""
+    """Pointing at a DB with a broken schema (e.g. missing column) exits 0 and logs non-fatal error.
+    FIX-5: Asserts that stdout does NOT falsely claim success ('backstopped'), DOES notify of INSERT failure,
+    and data_gaps.json marks rows as INSERT_FAILED."""
     db_path = tmp_path / "broken_schema.duckdb"
     con = duckdb.connect(str(db_path))
     con.execute("""
@@ -80,6 +84,19 @@ def test_fix1_missing_column_exits_zero(tmp_path):
     assert res.returncode == 0
     assert "non-fatal error" in res.stderr
     assert "skipping" in res.stderr
+    # FIX-5: Must NOT claim false backstopped success
+    assert "backstopped" not in res.stdout
+    assert "INSERT FAILED" in res.stdout
+    assert "remain UNMAPPED" in res.stdout
+
+    # Verify data_gaps.json was written with resolution: INSERT_FAILED
+    gaps_path = tmp_path / "data_gaps.json"
+    assert gaps_path.exists()
+    with open(gaps_path, "r", encoding="utf-8") as f:
+        gaps_data = json.load(f)
+    assert gaps_data["count"] == 1
+    assert gaps_data["total_cost"] == 100.0
+    assert gaps_data["rows"][0]["resolution"] == "INSERT_FAILED"
 
 
 def test_fix1_no_args_exits_zero():
@@ -163,11 +180,12 @@ def test_fix2_ignore_vs_passthrough_db_execution(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# FIX-3: Surface backstopped rows in data_gaps.json (observability)
+# FIX-3, FIX-6: Surface backstopped rows in data_gaps.json (observability)
 # ---------------------------------------------------------------------------
 
 def test_fix3_data_gaps_created_and_idempotent(tmp_path):
-    """Backstopped rows are surfaced in data_gaps.json next to DB; re-running is idempotent."""
+    """Backstopped rows are surfaced in data_gaps.json next to DB; re-running is idempotent.
+    FIX-6a: Exclude 'ignore' rows from count and total_cost so banner isn't inflated."""
     audit_dir = tmp_path / "projection-audit"
     audit_dir.mkdir()
     db_path = audit_dir / "projection.duckdb"
@@ -193,10 +211,11 @@ def test_fix3_data_gaps_created_and_idempotent(tmp_path):
     with open(gaps_path, "r", encoding="utf-8") as f:
         gaps_data = json.load(f)
 
-    # Conforms to repo schema: {"count": ..., "total_cost": ..., "rows": [...]}
-    assert gaps_data["count"] == 2
-    assert gaps_data["total_cost"] == 420.50
+    # FIX-6a: count and total_cost exclude 'ignore' rows ($300 non_workload excluded)
+    assert gaps_data["count"] == 1
+    assert gaps_data["total_cost"] == 120.50
     rows = gaps_data["rows"]
+    # All rows recorded in the rows list
     assert len(rows) == 2
 
     row_pass = next(r for r in rows if r["aws_li_key"] == "k_pass")
@@ -222,7 +241,8 @@ def test_fix3_data_gaps_created_and_idempotent(tmp_path):
 
     with open(gaps_path, "r", encoding="utf-8") as f:
         gaps_data2 = json.load(f)
-    assert gaps_data2["count"] == 2
+    assert gaps_data2["count"] == 1
+    assert gaps_data2["total_cost"] == 120.50
     assert len(gaps_data2["rows"]) == 2
 
 
@@ -266,6 +286,142 @@ def test_fix3_data_gaps_additive_merge_with_existing(tmp_path):
     assert merged["total_cost"] == 125.0
     keys = [r.get("aws_li_key") for r in merged["rows"]]
     assert "k_new" in keys
+
+
+def test_fix6b_data_gaps_deduplication_against_classify_mechanics(tmp_path):
+    """FIX-6b: classify_mechanics entry (no aws_li_key) matching (product, cost) must not be double-counted."""
+    db_path = tmp_path / "projection.duckdb"
+    con = duckdb.connect(str(db_path))
+    _create_minimal_tables(con)
+    con.execute("""
+        INSERT INTO aws_li_catalog VALUES
+            ('k_dup', 'us-west-1', true, 150.0, 'Amazon SageMaker', 'misc')
+    """)
+    con.close()
+
+    # Pre-populate data_gaps.json as classify_mechanics writes it
+    gaps_path = tmp_path / "data_gaps.json"
+    seed_content = {
+        "count": 1,
+        "total_cost": 150.0,
+        "rows": [
+            {
+                "canonical": "sagemaker",
+                "product": "Amazon SageMaker",
+                "cost": 150.0,
+            }
+        ],
+    }
+    with open(gaps_path, "w", encoding="utf-8") as f:
+        json.dump(seed_content, f, indent=2)
+
+    res = subprocess.run(
+        [sys.executable, SCRIPT_PATH, str(db_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0
+
+    with open(gaps_path, "r", encoding="utf-8") as f:
+        merged = json.load(f)
+
+    # Must NOT double-count to count=2, total_cost=300.0
+    assert merged["count"] == 1
+    assert merged["total_cost"] == 150.0
+    assert len(merged["rows"]) == 1
+
+
+def test_fix6b_keyed_same_product_cost_not_false_deduped(tmp_path):
+    """FIX-6b exactness: two genuinely DIFFERENT rows that share (product, cost) must
+    both be recorded when the existing entry carries an aws_li_key. The (product, cost)
+    fallback applies only to KEYLESS legacy rows, so it must not collapse distinct keyed rows."""
+    db_path = tmp_path / "projection.duckdb"
+    con = duckdb.connect(str(db_path))
+    _create_minimal_tables(con)
+    # New unmapped row shares product+cost with a DIFFERENT already-recorded keyed row.
+    con.execute("""
+        INSERT INTO aws_li_catalog VALUES
+            ('k_second', 'us-west-1', true, 150.0, 'Amazon SageMaker', 'misc')
+    """)
+    con.close()
+
+    gaps_path = tmp_path / "data_gaps.json"
+    seed_content = {
+        "count": 1,
+        "total_cost": 150.0,
+        "rows": [
+            # Already recorded, WITH a key, same (product, cost) but a different line item
+            {"aws_li_key": "k_first", "product": "Amazon SageMaker", "cost": 150.0,
+             "resolution": "passthrough", "source": "ensure_full_coverage.py"},
+        ],
+    }
+    with open(gaps_path, "w", encoding="utf-8") as f:
+        json.dump(seed_content, f, indent=2)
+
+    res = subprocess.run(
+        [sys.executable, SCRIPT_PATH, str(db_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0
+
+    with open(gaps_path, "r", encoding="utf-8") as f:
+        merged = json.load(f)
+
+    # Both distinct rows must be present — NOT collapsed by the (product, cost) fallback.
+    assert merged["count"] == 2
+    assert merged["total_cost"] == 300.0
+    keys = {r.get("aws_li_key") for r in merged["rows"]}
+    assert keys == {"k_first", "k_second"}
+
+
+def test_fix5_stale_insert_failed_refreshed_on_success(tmp_path):
+    """A row previously recorded as INSERT_FAILED must be refreshed to its real
+    resolution once a later successful run actually maps it — so the data-gap banner
+    stops over-reporting rows that are now mapped."""
+    audit_dir = tmp_path / "projection-audit"
+    audit_dir.mkdir()
+    db_path = audit_dir / "projection.duckdb"
+    con = duckdb.connect(str(db_path))
+    _create_minimal_tables(con)
+    con.execute("""
+        INSERT INTO aws_li_catalog VALUES
+            ('k_retry', 'us-east-1', true, 200.0, 'Retry Service', 'misc')
+    """)
+    con.close()
+
+    # Simulate a prior failed run: data_gaps.json already marks this key INSERT_FAILED.
+    gaps_path = audit_dir / "data_gaps.json"
+    seed = {
+        "count": 1,
+        "total_cost": 200.0,
+        "rows": [{
+            "aws_li_key": "k_retry", "product": "Retry Service", "cost": 200.0,
+            "mechanic_group": "misc", "reason": "prior failure",
+            "resolution": "INSERT_FAILED", "source": "ensure_full_coverage.py",
+        }],
+    }
+    with open(gaps_path, "w", encoding="utf-8") as f:
+        json.dump(seed, f, indent=2)
+
+    # This run's INSERT succeeds (full schema), so the stale entry must be refreshed.
+    res = subprocess.run(
+        [sys.executable, SCRIPT_PATH, str(db_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0
+    assert "backstopped" in res.stdout  # genuine success this run
+
+    with open(gaps_path, "r", encoding="utf-8") as f:
+        merged = json.load(f)
+
+    assert len(merged["rows"]) == 1          # not duplicated
+    row = merged["rows"][0]
+    assert row["aws_li_key"] == "k_retry"
+    assert row["resolution"] == "passthrough"  # refreshed from INSERT_FAILED
+    assert merged["count"] == 1
+    assert merged["total_cost"] == 200.0
 
 
 # ---------------------------------------------------------------------------
@@ -324,9 +480,9 @@ def test_fix4_tuple_parity_and_columns_smoke(tmp_path):
     con.close()
 
     assert inserted is not None
-    assert len(inserted) == 12
+    assert len(inserted) == 14
     # Verify values
-    aws_li_key, gcp_svc, sku_id, sku_nm, sku_u, strat, mult, reg, note, conf, wl, bd = inserted
+    aws_li_key, gcp_svc, sku_id, sku_nm, sku_u, strat, mult, reg, note, conf, wl, bd, pt_reason, decided_by = inserted
     assert aws_li_key == "smoke_1"
     assert gcp_svc == "Manual Review — Unmapped"
     assert sku_id is None
@@ -339,3 +495,5 @@ def test_fix4_tuple_parity_and_columns_smoke(tmp_path):
     assert conf == 0.10
     assert wl is True
     assert bd is False
+    assert pt_reason == "llm_dropped"
+    assert decided_by == "ensure_full_coverage.py"

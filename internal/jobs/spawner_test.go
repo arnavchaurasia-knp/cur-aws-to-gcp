@@ -3,6 +3,7 @@ package jobs_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/facets/cur-web/internal/jobs"
@@ -17,14 +18,36 @@ echo "fake agy running"
 echo '<div id="aws-total-spend">12345.00</div>' > report.html
 exit 0`
 
+func writeFakeAGY(t *testing.T, dir string) string {
+	if runtime.GOOS == "windows" {
+		p := filepath.Join(dir, "agy.bat")
+		content := "@echo off\r\necho %* > args.txt\r\necho fake agy running\r\necho ^<div id=\"aws-total-spend\"^>12345.00^</div^> > report.html\r\nexit /b 0\r\n"
+		require.NoError(t, os.WriteFile(p, []byte(content), 0755))
+		return p
+	}
+	p := filepath.Join(dir, "agy")
+	require.NoError(t, os.WriteFile(p, []byte(fakeAGY), 0755))
+	return p
+}
+
+func writeFailAGY(t *testing.T, dir string) string {
+	if runtime.GOOS == "windows" {
+		p := filepath.Join(dir, "agy-fail.bat")
+		require.NoError(t, os.WriteFile(p, []byte("@echo off\r\necho error 1>&2\r\nexit /b 1\r\n"), 0755))
+		return p
+	}
+	p := filepath.Join(dir, "agy-fail")
+	require.NoError(t, os.WriteFile(p, []byte("#!/bin/bash\necho 'error' >&2\nexit 1"), 0755))
+	return p
+}
+
 func TestSpawner_Success(t *testing.T) {
 	dir := t.TempDir()
 	jobDir := filepath.Join(dir, "job-1")
 	os.MkdirAll(jobDir, 0755)
 	os.WriteFile(filepath.Join(jobDir, "input.csv"), []byte("header,data"), 0644)
 
-	agyPath := filepath.Join(dir, "agy")
-	os.WriteFile(agyPath, []byte(fakeAGY), 0755)
+	agyPath := writeFakeAGY(t, dir)
 
 	s := jobs.NewSpawner(jobs.SpawnerConfig{
 		AGYPath: agyPath,
@@ -47,8 +70,7 @@ func TestSpawner_SessionIDNotForwardedOnFreshRun(t *testing.T) {
 	os.MkdirAll(jobDir, 0755)
 	os.WriteFile(filepath.Join(jobDir, "input.csv"), []byte("header,data"), 0644)
 
-	agyPath := filepath.Join(dir, "agy")
-	os.WriteFile(agyPath, []byte(fakeAGY), 0755)
+	agyPath := writeFakeAGY(t, dir)
 
 	s := jobs.NewSpawner(jobs.SpawnerConfig{AGYPath: agyPath})
 
@@ -68,8 +90,7 @@ func TestSpawner_NoConversationFlagOnFreshRun(t *testing.T) {
 	os.MkdirAll(jobDir, 0755)
 	os.WriteFile(filepath.Join(jobDir, "input.csv"), []byte("header,data"), 0644)
 
-	agyPath := filepath.Join(dir, "agy")
-	os.WriteFile(agyPath, []byte(fakeAGY), 0755)
+	agyPath := writeFakeAGY(t, dir)
 
 	s := jobs.NewSpawner(jobs.SpawnerConfig{AGYPath: agyPath})
 
@@ -86,8 +107,7 @@ func TestSpawner_Failure(t *testing.T) {
 	jobDir := filepath.Join(dir, "job-fail")
 	os.MkdirAll(jobDir, 0755)
 
-	agyPath := filepath.Join(dir, "agy-fail")
-	os.WriteFile(agyPath, []byte("#!/bin/bash\necho 'error' >&2\nexit 1"), 0755)
+	agyPath := writeFailAGY(t, dir)
 
 	s := jobs.NewSpawner(jobs.SpawnerConfig{
 		AGYPath: agyPath,
@@ -108,8 +128,7 @@ func TestSpawner_StopAllBlocksStart(t *testing.T) {
 	require.NoError(t, os.MkdirAll(jobDir, 0755))
 	os.WriteFile(filepath.Join(jobDir, "input.csv"), []byte("header,data"), 0644)
 
-	agyPath := filepath.Join(dataDir, "agy")
-	os.WriteFile(agyPath, []byte(fakeAGY), 0755)
+	agyPath := writeFakeAGY(t, dataDir)
 	s := jobs.NewSpawner(jobs.SpawnerConfig{AGYPath: agyPath})
 
 	// Without STOP_ALL the guard must NOT fire (no "halted" error short-circuit).

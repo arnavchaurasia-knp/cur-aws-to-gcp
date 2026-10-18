@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 apply_review_fixes.py — Phase 3 single application point.
 
@@ -36,12 +36,28 @@ def apply_candidate(conn, key: str, cand: dict, notes: list):
     action = cand.get("action")
 
     if action == "set_sku_and_map":
-        conn.execute("""
-            UPDATE aws_li_to_gcp_li
-            SET gcp_sku_id = ?, gcp_sku_name = ?, gcp_service = ?, strategy = 'map'
-            WHERE aws_li_key = ?
-        """, [cand["gcp_sku_id"], cand["gcp_sku_name"], cand.get("gcp_service"), key])
+        try:
+            cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+            if "needs_reprice" in cols:
+                conn.execute("""
+                    UPDATE aws_li_to_gcp_li
+                    SET gcp_sku_id = ?, gcp_sku_name = ?, gcp_service = ?, strategy = 'map', needs_reprice = FALSE
+                    WHERE aws_li_key = ?
+                """, [cand["gcp_sku_id"], cand["gcp_sku_name"], cand.get("gcp_service"), key])
+            else:
+                conn.execute("""
+                    UPDATE aws_li_to_gcp_li
+                    SET gcp_sku_id = ?, gcp_sku_name = ?, gcp_service = ?, strategy = 'map'
+                    WHERE aws_li_key = ?
+                """, [cand["gcp_sku_id"], cand["gcp_sku_name"], cand.get("gcp_service"), key])
+        except Exception:
+            conn.execute("""
+                UPDATE aws_li_to_gcp_li
+                SET gcp_sku_id = ?, gcp_sku_name = ?, gcp_service = ?, strategy = 'map'
+                WHERE aws_li_key = ?
+            """, [cand["gcp_sku_id"], cand["gcp_sku_name"], cand.get("gcp_service"), key])
         notes.append(f"- `{key}`: confirmed — SKU {cand['gcp_sku_id']} ({cand['gcp_sku_name']}), strategy=map")
+
 
     elif action == "fix_multipliers":
         if cand.get("core_multiplier") is not None:
@@ -72,6 +88,12 @@ def apply_override(conn, key: str, fix: dict, notes: list):
         updates = {"gcp_sku_id": gcp_sku_id, "gcp_sku_name": gcp_sku_name, "strategy": "map"}
         if gcp_service:
             updates["gcp_service"] = gcp_service
+        try:
+            cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+            if "needs_reprice" in cols:
+                updates["needs_reprice"] = False
+        except Exception:
+            pass
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         if component is not None:
             values = list(updates.values()) + [key, component]
@@ -81,6 +103,7 @@ def apply_override(conn, key: str, fix: dict, notes: list):
             values = list(updates.values()) + [key]
             conn.execute(f"UPDATE aws_li_to_gcp_li SET {set_clause} WHERE aws_li_key = ?", values)
             notes.append(f"- `{key}`: override — SKU {gcp_sku_id} ({gcp_sku_name}) — {reason}")
+
 
     if unit_mult is not None:
         comp_mult = component if component is not None else "core"
@@ -131,8 +154,23 @@ def main():
 
         if decision == "veto":
             vetoed += 1
+            # G-3: If the row was needs_reprice / couldn't be resolved, fallback to legitimate passthrough
+            try:
+                conn.execute("""
+                    UPDATE aws_li_to_gcp_li
+                    SET strategy = 'passthrough',
+                        passthrough_reason = 'llm_veto',
+                        decided_by = 'apply_review_fixes.py',
+                        needs_reprice = FALSE,
+                        projection_note = COALESCE(NULLIF(projection_note, '') || '; ', '') ||
+                            'no GCP rate found — carried at AWS cost'
+                    WHERE aws_li_key = ? AND (strategy = 'needs_reprice' OR needs_reprice = TRUE)
+                """, [key])
+            except Exception:
+                pass
             notes.append(f"- `{key}`: vetoed — {reason}")
             continue
+
 
         if decision == "confirm":
             cand_info = candidates.get(key, {})

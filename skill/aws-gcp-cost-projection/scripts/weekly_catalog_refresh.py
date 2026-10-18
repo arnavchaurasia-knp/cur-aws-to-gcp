@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Weekly catalog refresh — triggered by Windows Task Scheduler.
-Runs catalog_health_check.py --refresh, then rebuilds catalog.duckdb index."""
+Thin logging wrapper around `catalog_manager.py refresh`, which fetches from the
+GCP API (complete-only, atomic), gates on source integrity, and rebuilds
+catalog.duckdb — all in one step. (Previously this ran catalog_health_check.py
+--refresh and then build_catalog_index.py separately; catalog_manager folds both
+in and refuses to rebuild from a broken source.)"""
 import datetime
 import os
 import subprocess
@@ -27,11 +31,8 @@ def main():
     stamp = datetime.datetime.now().isoformat()
     lines = [f"\n--- {stamp} ---\n"]
 
-    print(f"[{stamp}] Running catalog health check + refresh...")
-    lines.append(run("catalog_health_check.py", ["--refresh"]))
-
-    print("Rebuilding catalog.duckdb index...")
-    lines.append(run("build_catalog_index.py"))
+    print(f"[{stamp}] Running catalog refresh (fetch + integrity-gate + rebuild)...")
+    lines.append(run("catalog_manager.py", ["refresh"]))
 
     lines.append("--- done ---\n")
 

@@ -1,0 +1,222 @@
+{
+  "_meta": {
+    "version": 1,
+    "table": "aws_li_to_gcp_li",
+    "description": "Declared row-state registry for aws_li_to_gcp_li. Single source of truth for DDL, value domains, writer permissions, and note rendering."
+  },
+  "fields": {
+    "aws_li_key": {
+      "sql_type": "TEXT",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "required": true,
+      "description": "MD5 hash identifying the unique AWS line item dedup tuple."
+    },
+    "gcp_service": {
+      "sql_type": "TEXT",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "GCP target service name (e.g. Compute Engine, Cloud Storage)."
+    },
+    "gcp_sku_id": {
+      "sql_type": "TEXT",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "Canonical GCP SKU ID or synthetic identifier."
+    },
+    "gcp_sku_name": {
+      "sql_type": "TEXT",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "GCP SKU description / display name from catalog."
+    },
+    "gcp_sku_unit": {
+      "sql_type": "TEXT",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "GCP billing unit (e.g. GiBy.mo, h, requests)."
+    },
+    "component": {
+      "sql_type": "TEXT",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "Component breakdown role: core, ram, storage, license, etc."
+    },
+    "strategy": {
+      "sql_type": "TEXT",
+      "kind": "enum",
+      "domain": {
+        "map":            { "note_template": null },
+        "break_down":     { "note_template": null },
+        "passthrough":    { "note_template": null },
+        "ignore":         { "note_template": null },
+        "needs_reprice":  { "note_template": "Carried at AWS cost pending re-pricing." },
+        "outlier_triage": { "note_template": null }
+      },
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "required": true,
+      "description": "How this row's GCP cost is produced."
+    },
+    "unit_multiplier": {
+      "sql_type": "DOUBLE",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "Numeric quantity multiplier to align AWS usage unit with GCP SKU unit."
+    },
+    "gcp_region": {
+      "sql_type": "TEXT",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "Target GCP region code (e.g. us-central1, europe-west1)."
+    },
+    "rate_source": {
+      "sql_type": "TEXT",
+      "kind": "enum",
+      "domain": {
+        "exact_sku":    { "note_template": null },
+        "word_overlap": { "note_template": "SKU matched by word overlap — verify before quoting." },
+        "no_rate":      { "note_template": "No GCP rate reachable for this SKU; carried at AWS cost." },
+        "no_catalog":   { "note_template": "GCP catalog unavailable at run time; carried at AWS cost." },
+        "passthrough":  { "note_template": null },
+        "ignored":      { "note_template": null },
+        "unknown":      { "note_template": "Rate provenance not recorded." }
+      },
+      "groups": {
+        "unresolved": ["no_rate", "no_catalog", "word_overlap", "unknown"]
+      },
+      "writable_by": ["pipeline"],
+      "description": "How the GCP rate for this row was obtained."
+    },
+    "rate_region_basis": {
+      "sql_type": "TEXT",
+      "kind": "enum",
+      "domain": {
+        "exact":              { "note_template": null },
+        "global":             { "note_template": "Global charge; priced at the {rate_region_used} rate." },
+        "dominant":           { "note_template": "No rate in {gcp_region}; priced at the {rate_region_used} rate." },
+        "cheapest_available": { "note_template": "No rate in {gcp_region}; priced at the cheapest available region ({rate_region_used})." }
+      },
+      "groups": {
+        "fallback": ["dominant", "cheapest_available"]
+      },
+      "writable_by": ["pipeline"],
+      "description": "Which region's rate was actually applied."
+    },
+    "rate_region_used": {
+      "sql_type": "TEXT",
+      "kind": "native",
+      "writable_by": ["pipeline"],
+      "description": "The specific region whose rate table provided pricing when rate_region_basis is not exact."
+    },
+    "license_status": {
+      "sql_type": "TEXT",
+      "kind": "enum",
+      "domain": {
+        "none":                { "note_template": null },
+        "premium_not_modeled": { "note_template": "AWS price includes an OS/engine licence premium that is not modeled on the GCP side." },
+        "modeled":             { "note_template": "Licence component priced explicitly." }
+      },
+      "writable_by": ["pipeline"],
+      "description": "Commercial license modeling status."
+    },
+    "review_flags": {
+      "sql_type": "TEXT",
+      "kind": "flagset",
+      "domain": {
+        "service_model_change":  { "note_template": "Service model differs between clouds — review the architecture, not just the price." },
+        "log_ingestion_model":   { "note_template": "Log ingestion is priced on a different basis on GCP." },
+        "architecture_review":   { "note_template": "Architecture review recommended." },
+        "verify_with_customer":  { "note_template": "Verify this assumption with the customer." },
+        "region_unavailable":    { "note_template": "Requested region unavailable for this resource." },
+        "cost_may_differ":       { "note_template": "Real cost may differ materially from this estimate." }
+      },
+      "writable_by": ["mapper", "pipeline"],
+      "description": "Caveats and warnings that do not change the number but change how it should be read."
+    },
+    "mapping_confidence": {
+      "sql_type": "DOUBLE",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "Estimated mapping confidence from 0.0 to 1.0."
+    },
+    "is_workload": {
+      "sql_type": "BOOLEAN",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "True if row represents customer workload spend, False for non-workload (tax, credits, support)."
+    },
+    "break_down": {
+      "sql_type": "BOOLEAN",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "True if single AWS line item is broken into multiple GCP component rows."
+    },
+    "gcp_machine_type": {
+      "sql_type": "TEXT",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "Target GCE machine type or Cloud SQL instance tier."
+    },
+    "is_assumption": {
+      "sql_type": "BOOLEAN",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "True if mapping relies on heuristic assumption."
+    },
+    "assumption_note": {
+      "sql_type": "TEXT",
+      "kind": "native",
+      "writable_by": ["mapper", "llm", "pipeline"],
+      "description": "Details about heuristic assumption made."
+    },
+    "passthrough_reason": {
+      "sql_type": "TEXT",
+      "kind": "enum",
+      "domain": {
+        "no_gcp_equivalent":          { "note_template": null },
+        "unit_model_mismatch":        { "note_template": null },
+        "accelerator_manual_sizing":  { "note_template": null },
+        "service_policy_review":      { "note_template": null },
+        "unresolved_sku":             { "note_template": null },
+        "storage_misroute_backstop":  { "note_template": null },
+        "echo_reset":                 { "note_template": null },
+        "detail_less_row":            { "note_template": null },
+        "llm_dropped":                { "note_template": null },
+        "llm_veto":                   { "note_template": null },
+        "clamped_outlier":            { "note_template": null },
+        "mapper_error":               { "note_template": null },
+        "unclassified":               { "note_template": null }
+      },
+      "writable_by": ["mapper", "pipeline"],
+      "description": "Standardized reason why row is carried at AWS cost or needs reprice."
+    },
+    "decided_by": {
+      "sql_type": "TEXT",
+      "kind": "native",
+      "writable_by": ["mapper", "pipeline"],
+      "description": "Script or source file that made the final strategy/passthrough decision."
+    },
+    "mapper_note": {
+      "sql_type": "TEXT",
+      "kind": "free_text",
+      "writable_by": ["mapper", "llm"],
+      "readable_as_logic": false,
+      "description": "The mapper's or LLM's own explanation. Rendered into the note; never matched against."
+    },
+    "projection_note": {
+      "sql_type": "TEXT",
+      "kind": "derived",
+      "writable_by": ["render_notes"],
+      "readable_as_logic": false,
+      "description": "Generated from state by scripts/render_notes.py. Output only."
+    }
+  },
+  "note_order": [
+    "passthrough_reason",
+    "rate_source",
+    "rate_region_basis",
+    "license_status",
+    "review_flags",
+    "mapper_note"
+  ]
+}

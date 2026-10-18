@@ -34,7 +34,12 @@ func Check() error {
 	}
 	// 3. required tools for the skill pipeline — warn only; server still starts
 	// so auth and UI work even without the full pipeline toolchain.
-	for _, tool := range []string{"python3", "duckdb", "jq", "gzip"} {
+	if _, err := exec.LookPath("python3"); err != nil {
+		if _, err := exec.LookPath("python"); err != nil {
+			log.Printf("WARNING: preflight: python3/python not found on PATH — job pipeline will fail, auth/UI unaffected")
+		}
+	}
+	for _, tool := range []string{"duckdb", "jq", "gzip"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			log.Printf("WARNING: preflight: %q not found on PATH — job pipeline will fail, auth/UI unaffected", tool)
 		}

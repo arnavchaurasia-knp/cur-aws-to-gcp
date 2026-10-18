@@ -57,7 +57,7 @@ WITH passthrough_rank AS (
   SELECT m.rowid AS row_id, m.aws_li_key,
          ROW_NUMBER() OVER (PARTITION BY m.aws_li_key ORDER BY m.rowid) AS rn
   FROM aws_li_to_gcp_li m
-  WHERE m.strategy = 'passthrough'
+  WHERE m.strategy IN ('passthrough', 'needs_reprice')
 ),
 od_pick AS (
   SELECT m.aws_li_key, m.gcp_sku_id,
@@ -148,26 +148,21 @@ SELECT  c.aws_li_key, c.product, c.aws_region, c.gcp_region,
         c.line_item_type, c.pricing_model, c.is_workload,
         c.total_usage, c.aws_amortized_cost,
         m.strategy, m.gcp_service, m.gcp_sku_id, m.component,
-        m.unit_multiplier,
-        CASE
-          WHEN od.dominant_note IS NOT NULL
-            THEN CASE
-                   WHEN m.projection_note IS NULL OR m.projection_note = '' THEN od.dominant_note
-                   WHEN m.projection_note LIKE '%' || od.dominant_note || '%' THEN m.projection_note
-                   ELSE m.projection_note || '; ' || od.dominant_note
-                 END
-          ELSE m.projection_note
-        END AS projection_note,
+        m.unit_multiplier, m.passthrough_reason, m.decided_by,
+        m.rate_region_basis, m.rate_region_used, m.license_status, m.review_flags,
+        m.projection_note AS projection_note,
         CASE m.strategy
           WHEN 'ignore'         THEN 0
           WHEN 'outlier_triage' THEN NULL
           WHEN 'passthrough'    THEN CASE WHEN COALESCE(pr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
+          WHEN 'needs_reprice'  THEN CASE WHEN COALESCE(pr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
           ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) * od.rate_usd
         END AS gcp_projected_cost,
         CASE m.strategy
           WHEN 'ignore'         THEN 0
           WHEN 'outlier_triage' THEN NULL
           WHEN 'passthrough'    THEN CASE WHEN COALESCE(pr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
+          WHEN 'needs_reprice'  THEN CASE WHEN COALESCE(pr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
           ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) *
                CASE WHEN c.pricing_model = 'Spot'
                     THEN od.rate_usd
@@ -178,12 +173,14 @@ SELECT  c.aws_li_key, c.product, c.aws_region, c.gcp_region,
           WHEN 'ignore'         THEN 0
           WHEN 'outlier_triage' THEN NULL
           WHEN 'passthrough'    THEN CASE WHEN COALESCE(pr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
+          WHEN 'needs_reprice'  THEN CASE WHEN COALESCE(pr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END
           ELSE c.total_usage * COALESCE(m.unit_multiplier, 1) *
                CASE WHEN c.pricing_model = 'Spot'
                     THEN od.rate_usd
                     ELSE COALESCE(c3.rate_usd, od.rate_usd)
                END
         END AS gcp_cost_3yr_cud
+
 FROM    aws_li_catalog c
 LEFT JOIN aws_li_to_gcp_li m ON m.aws_li_key = c.aws_li_key
 LEFT JOIN od_pick od ON od.aws_li_key = m.aws_li_key AND od.gcp_sku_id = m.gcp_sku_id
@@ -209,4 +206,12 @@ def create_projection_view(conn, dominant_region=None):
     row = conn.fetchone()
     if row and row[0] == "BASE TABLE":
         conn.execute("DROP TABLE gcp_projection")
+
+    # Defensive schema migration: ensure required columns exist on aws_li_to_gcp_li
+    try:
+        import row_state
+        row_state.ensure_schema(conn)
+    except Exception:
+        pass
+
     conn.execute(_build_projection_view_sql(clean_reg))

@@ -225,10 +225,25 @@ def build_guidance(row: dict, dispatch_result: dict | None) -> dict:
 
     # 3. Fallback: generic unknown-service guidance from _misc_reason
     completeness = _cm._info_completeness(row)
-    fb_strategy = "passthrough" if (float(cost) < 10.0 or completeness == "minimal") else "map"
+    # P-1: If the service is mappable, never emit an escape-passthrough; emit needs_reprice
+    is_mappable_svc = False
+    prod_check = (product or "").lower()
+    _MAPPABLE = [
+        "relational database", "rds", "aurora", "elasticache", "elastic block store", "ebs",
+        "data transfer", "datatransfer", "load balancing", "loadbalancer", "compute cloud", "ec2",
+        "simple storage", "s3",
+    ]
+    if any(m in prod_check for m in _MAPPABLE):
+        is_mappable_svc = True
+
+    if is_mappable_svc:
+        fb_strategy = "needs_reprice"
+    else:
+        fb_strategy = "passthrough" if (float(cost) < 10.0 or completeness == "minimal") else "map"
+
     fb_guidance = (
         "Service is unrecognized. Map by spend share: if aws_amortized_cost < $10/mo "
-        "set strategy='passthrough'. Otherwise find the closest GCP equivalent by product "
+        f"set strategy={fb_strategy!r}. Otherwise find the closest GCP equivalent by product "
         "name and usage_type, document your reasoning in mapping-notes.md, and set "
         "mapping_confidence ≤ 0.6."
     )
@@ -243,6 +258,7 @@ def build_guidance(row: dict, dispatch_result: dict | None) -> dict:
         "mapping_guidance": fb_guidance,
         "guardrails": guardrails,
     }
+
 
 
 def main() -> int:

@@ -45,7 +45,20 @@ except Exception as e:  # pragma: no cover
     sys.exit(2)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from apply_static_mappings import intentional_passthrough_exclude_clause, CUD_PCT_FALLBACK as _CUD_PCT_FALLBACK
+try:
+    from diagnostics import diag, ERROR
+except ImportError:
+    def diag(*a, **k): pass
+    ERROR = "error"
+from apply_static_mappings import (
+    intentional_passthrough_exclude_clause,
+    CUD_PCT_FALLBACK as _CUD_PCT_FALLBACK,
+    _s3_route_usage_type,
+    GCS_STANDARD,
+)
+
+S3_CLASS_DEFAULT_SKU = GCS_STANDARD
+
 
 MAPPABLE_SERVICE_PATTERNS = [
     "relational database service", "rds", "aurora",
@@ -477,6 +490,262 @@ def passthrough_budget_exceeded(con) -> list:
         }]
 
 
+def passthrough_integrity(con) -> list:
+    """Two checks:
+      1. a passthrough/needs_reprice row that never declared WHY (NULL reason)
+      2. defect-kind passthrough spend over the configured budget
+    """
+    import passthrough_reasons as _pr
+    violations = []
+    try:
+        undeclared = con.execute("""
+            SELECT m.aws_li_key, c.product, c.aws_amortized_cost
+            FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING(aws_li_key)
+            WHERE m.strategy IN ('passthrough', 'needs_reprice')
+              AND m.passthrough_reason IS NULL
+              AND c.aws_amortized_cost > 1
+            ORDER BY c.aws_amortized_cost DESC
+        """).fetchall()
+        for key, product, cost in undeclared:
+            violations.append({
+                "gate": "passthrough_integrity",
+                "aws_li_key": key,
+                "message": f"passthrough written with no passthrough_reason "
+                           f"({product}, ${cost:,.2f}) — the writing script must declare one",
+            })
+
+        defect_list = _pr.sql_in_list(_pr.DEFECT_REASONS)
+        row = con.execute(f"""
+            SELECT
+              COALESCE(SUM(CASE WHEN m.passthrough_reason IN ({defect_list})
+                                THEN c.aws_amortized_cost ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN c.is_workload THEN c.aws_amortized_cost ELSE 0 END), 0)
+            FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING(aws_li_key)
+        """).fetchone()
+        defect_spend, workload_spend = float(row[0]), float(row[1])
+        pct = (100.0 * defect_spend / workload_spend) if workload_spend else 0.0
+        if pct > _pr.DEFECT_BUDGET_PCT:
+            by_reason = con.execute(f"""
+                SELECT m.passthrough_reason, count(*), SUM(c.aws_amortized_cost)
+                FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING(aws_li_key)
+                WHERE m.passthrough_reason IN ({defect_list})
+                GROUP BY 1 ORDER BY 3 DESC
+            """).fetchall()
+            detail = "; ".join(f"{r}: {n} row(s), ${s:,.2f}" for r, n, s in by_reason)
+            violations.append({
+                "gate": "passthrough_integrity",
+                "aws_li_key": None,
+                "message": f"defect-kind passthrough is {pct:.1f}% of workload spend "
+                           f"(${defect_spend:,.2f}), over the "
+                           f"{_pr.DEFECT_BUDGET_PCT:.1f}% budget. Breakdown — {detail}",
+            })
+    except Exception as e:
+        violations.append({
+            "gate": "passthrough_integrity",
+            "aws_li_key": None,
+            "message": f"passthrough_integrity gate could not run: {e}",
+        })
+    return violations
+
+
+
+# ---------------------------------------------------------------------------
+# R-1: Relocated repair code from ensure_catalog_coverage.py
+# ---------------------------------------------------------------------------
+
+def _load_services():
+    skill_dir = os.environ.get("SKILL_DIR", "")
+    if not skill_dir:
+        skill_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(skill_dir, "data", "services.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return {s["displayName"]: s["serviceId"] for s in json.load(f)}
+
+
+def _load_catalog(service_id):
+    skill_dir = os.environ.get("SKILL_DIR", "")
+    if not skill_dir:
+        skill_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(skill_dir, "data", "skus", f"{service_id}.json.gz")
+    if not os.path.exists(path):
+        return []
+    import gzip
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _repair_null_sku_names(conn):
+    """
+    Phase 5 LLM sometimes sets strategy='passthrough' on object_storage rows
+    (when it can't find a rate), which clears gcp_sku_name. Re-inject the
+    correct SKU name from the S3 class lookup table so apply_rates.py can
+    resolve the SKU from the catalog.
+    Root cause: G-4 clamp destroying deterministic mappings.
+    """
+    note_exclude = intentional_passthrough_exclude_clause("m.projection_note")
+    rows = conn.execute(f"""
+        SELECT m.aws_li_key, cat.usage_type, cat.product
+        FROM aws_li_to_gcp_li m
+        JOIN aws_li_catalog cat USING (aws_li_key)
+        WHERE m.gcp_sku_name IS NULL
+          AND cat.mechanic_group = 'object_storage'
+          AND {note_exclude}
+    """).fetchall()
+
+    repaired = 0
+    for aws_li_key, usage_type, product in rows:
+        ut_lower = (usage_type or "").lower()
+        routed = _s3_route_usage_type(ut_lower)
+        sku_name = routed if routed and routed != "unknown" else S3_CLASS_DEFAULT_SKU
+
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li
+            SET gcp_service = 'Cloud Storage',
+                gcp_sku_name = ?,
+                strategy = 'map'
+            WHERE aws_li_key = ? AND gcp_sku_name IS NULL
+        """, (sku_name, aws_li_key))
+        print(f"  [repair] {aws_li_key[:12]}… ({usage_type}) → Cloud Storage / {sku_name}")
+        repaired += 1
+
+    if repaired:
+        print(f"  Repaired {repaired} NULL gcp_sku_name object_storage row(s)")
+    return repaired
+
+
+def _repair_illegal_passthrough(conn):
+    """
+    A passthrough on a mappable service (RDS/EBS/ELB/S3/…) is USUALLY a
+    mis-triage — GCP has an equivalent by definition, so passthrough there is
+    the LLM escaping a missing rate. Restore strategy='map' for any such row
+    that still carries a gcp_service + gcp_sku_name; apply_rates.py + the
+    global-fallback rate will then price it.
+    Root cause: G-1 / P-1 unresolvable mappable rows escaping to passthrough.
+    """
+    like, params = _mappable_pattern_clause("LOWER(cat.product)")
+    note_exclude = intentional_passthrough_exclude_clause("m.projection_note")
+    rows = conn.execute(f"""
+        SELECT m.aws_li_key, cat.product, m.gcp_service, m.gcp_sku_name
+        FROM aws_li_to_gcp_li m
+        JOIN aws_li_catalog cat USING (aws_li_key)
+        WHERE m.strategy = 'passthrough'
+          AND cat.is_workload = true
+          AND ({like})
+          AND {note_exclude}
+    """, params).fetchall()
+
+    restored, unresolved = 0, 0
+    for aws_li_key, product, gcp_service, gcp_sku_name in rows:
+        if gcp_service and gcp_sku_name:
+            conn.execute(
+                "UPDATE aws_li_to_gcp_li SET strategy = 'map' "
+                "WHERE aws_li_key = ? AND strategy = 'passthrough'",
+                (aws_li_key,),
+            )
+            print(f"  [repair] {aws_li_key[:12]}… passthrough→map ({product} / {gcp_sku_name})")
+            restored += 1
+        else:
+            print(f"  [warn] {aws_li_key[:12]}… passthrough on mappable {product!r} "
+                  f"but no gcp_service/gcp_sku_name to restore — needs a mapping")
+            unresolved += 1
+
+    if restored:
+        print(f"  Restored {restored} illegal-passthrough row(s) to strategy='map'")
+    if unresolved:
+        print(f"  {unresolved} mappable passthrough row(s) could not be auto-restored")
+    return restored
+
+
+def _downgrade_enterprise_plus(conn, services=None):
+    """Downgrade Cloud SQL 'Enterprise Plus' mappings to the standard 'Enterprise'
+    edition. Enterprise Plus is GCP's premium tier (~2x); for a like-for-like RDS
+    migration the Enterprise edition is the correct default.
+    Root cause: T-1 lack of deterministic Enterprise default in service specs.
+    """
+    rows = conn.execute("""
+        SELECT m.aws_li_key, m.gcp_sku_id, m.gcp_sku_name, c.gcp_region
+        FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING (aws_li_key)
+        WHERE m.gcp_service = 'Cloud SQL' AND m.gcp_sku_name LIKE '%Enterprise Plus%'
+    """).fetchall()
+    if not rows:
+        return 0
+
+    if services is None:
+        services = _load_services()
+
+    service_id = services.get("Cloud SQL") if services else None
+    catalog = _load_catalog(service_id) if service_id else []
+    if not catalog:
+        return 0
+
+    _ENGINE_KEYWORDS = ("postgresql", "postgres", "mysql", "sql server")
+
+    def _engine_of(text):
+        tl = (text or "").lower()
+        for kw in _ENGINE_KEYWORDS:
+            if kw in tl:
+                return "postgres" if kw.startswith("postgres") else kw
+        return None
+
+    def _chip_of(text):
+        import re as _re
+        m = _re.search(r'\b([cnt]\d[a-z]{0,2})\b', (text or "").lower())
+        return m.group(1) if m else None
+
+    def _find_enterprise(tier, kind, gcp_region, engine, chip):
+        for s in catalog:
+            d = s.get("description", "")
+            dl = d.lower()
+            if "enterprise" not in dl or "plus" in dl or "extended" in dl:
+                continue
+            if tier not in dl:
+                continue
+            if kind == "ram" and "ram" not in dl:
+                continue
+            if kind == "vcpu" and "vcpu" not in dl:
+                continue
+            if kind == "storage" and "storage" not in dl:
+                continue
+            if kind != "storage" and "storage" in dl:
+                continue
+            if engine and _engine_of(d) != engine:
+                continue
+            if chip and _chip_of(d) != chip:
+                continue
+            geo = s.get("geoTaxonomy", {})
+            regions = s.get("serviceRegions", [])
+            if geo.get("type") == "GLOBAL" or not gcp_region or gcp_region == "global" or gcp_region in regions:
+                return s["skuId"], d
+        return None, None
+
+    swapped = 0
+    for aws_li_key, sku_id, sku_name, gcp_region in rows:
+        nl = (sku_name or "").lower()
+        tier = "regional" if "regional" in nl else "zonal"
+        kind = "ram" if "ram" in nl else ("storage" if "storage" in nl else "vcpu")
+        engine = _engine_of(sku_name)
+        chip = _chip_of(sku_name)
+        new_id, new_name = _find_enterprise(tier, kind, gcp_region, engine, chip)
+        if not new_id and chip:
+            new_id, new_name = _find_enterprise(tier, kind, gcp_region, engine, None)
+        if new_id and new_id != sku_id:
+            conn.execute(
+                "UPDATE aws_li_to_gcp_li SET gcp_sku_id = ?, gcp_sku_name = ?, "
+                "projection_note = COALESCE(projection_note || ' ', '') || "
+                "'[tier-review: Enterprise Plus -> Enterprise — CUR evidence alone does not justify Plus-tier features (near-zero-downtime failover, Data Cache); confirm with customer if source workload needs them]' "
+                "WHERE aws_li_key = ? AND gcp_sku_id = ?",
+                (new_id, new_name, aws_li_key, sku_id),
+            )
+            print(f"  [downgrade] {aws_li_key[:12]}… Enterprise Plus → Enterprise ({kind}/{tier})")
+            swapped += 1
+
+    if swapped:
+        print(f"  Downgraded {swapped} Cloud SQL Enterprise Plus → Enterprise mapping(s)")
+    return swapped
+
+
 def main():
     args = [a for a in sys.argv[1:]]
     check_only = "--check-only" in args
@@ -501,12 +770,21 @@ def main():
     # ---------- AUTOFIX (skipped in --check-only) -------------------------
     clamped, zeroed_keys = [], []
     if not check_only:
+        # R-1: Relocated repair code from ensure_catalog_coverage.py
+        # G-4 root cause -> null-sku repair backstop
+        _repair_null_sku_names(con)
+        # G-1/P-1 root cause -> illegal-passthrough repair backstop
+        _repair_illegal_passthrough(con)
+        # T-1 root cause -> Enterprise-Plus downgrade backstop
+        _downgrade_enterprise_plus(con)
+
         rows = con.execute("""
             SELECT m.aws_li_key, m.component, m.unit_multiplier,
                    COALESCE(c.operation,'') op, COALESCE(c.usage_type,'') ut
             FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING (aws_li_key)
             WHERE m.unit_multiplier IS NOT NULL AND m.unit_multiplier > 1.0
         """).fetchall()
+
         for key, comp, mult, op, ut in rows:
             if PER_N_RE.search(f"{op} {ut}"):
                 con.execute(
@@ -837,7 +1115,8 @@ def main():
             """).fetchall()
             if no_rate_rows:
                 con.executemany(
-                    "UPDATE aws_li_to_gcp_li SET strategy='passthrough', gcp_sku_id=NULL, "
+                    "UPDATE aws_li_to_gcp_li SET strategy='passthrough', "
+                    "passthrough_reason='unresolved_sku', decided_by='validate_fix.py', gcp_sku_id=NULL, "
                     "projection_note=COALESCE(projection_note,'')||"
                     "' [validator: map-with-no-rate downgraded to passthrough]' "
                     "WHERE aws_li_key = ? AND component IS NOT DISTINCT FROM ?",
@@ -874,7 +1153,8 @@ def main():
             """).fetchall()
             for (svc,) in echo_fix_rows:
                 con.execute(
-                    "UPDATE aws_li_to_gcp_li SET strategy='passthrough', gcp_sku_id=NULL, "
+                    "UPDATE aws_li_to_gcp_li SET strategy='passthrough', "
+                    "passthrough_reason='echo_reset', decided_by='validate_fix.py', gcp_sku_id=NULL, "
                     "gcp_service='N/A (cost-parity passthrough)', "
                     "projection_note=COALESCE(projection_note,'')||"
                     "' [validator: echo bug — gcp_service was AWS name, reset to passthrough]' "
@@ -903,7 +1183,8 @@ def main():
             """).fetchall()
             if dl_rows:
                 con.executemany(
-                    "UPDATE aws_li_to_gcp_li SET strategy='passthrough', gcp_sku_id=NULL, "
+                    "UPDATE aws_li_to_gcp_li SET strategy='passthrough', "
+                    "passthrough_reason='detail_less_row', decided_by='validate_fix.py', gcp_sku_id=NULL, "
                     "mapping_confidence=LEAST(COALESCE(mapping_confidence, 0.2), 0.2), "
                     "projection_note=COALESCE(projection_note,'')||"
                     "' [validator: detail-less row downgraded to passthrough]' "
@@ -1173,6 +1454,7 @@ def main():
     # GATE: passthrough budget. If passthrough rows account for more than 5% of
     # total workload spend, the mapping phase has left too much unresolved.
     report["violations"]["passthrough_budget"] = passthrough_budget_exceeded(con)
+    report["violations"]["passthrough_integrity"] = passthrough_integrity(con)
 
     # GATE (Layer 4): NULL gcp_service on non-ignored workload rows.
     # Every mapped/passthrough workload row must name a GCP service. NULL means
@@ -1288,6 +1570,9 @@ def main():
     print(f"  verdict: diff(AWS-GCP_OD)=${t['diff_aws_minus_gcp_od']} -> {t['verdict']}")
     print("  gates  : " + "  ".join(f"{k}={counts[k]}" for k in counts))
     if n_hard:
+        diag(ERROR, "validator_violations", "validate_fix.py",
+             f"validator reported {n_hard} violation(s)",
+             rows=n_hard, phase=4, detail={"counts": counts}, job_dir=jobdir)
         print(f"  RESULT : FAIL — {n_hard} violation(s). See validation_report.json.")
         sys.exit(1)
     print("  RESULT : PASS — safe to render Phase 6." if not check_only

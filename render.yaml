@@ -20,3 +20,20 @@ services:
         value: "cur-web-session-secret-key-at-least-32-bytes-long-12345"
       - key: APP_BASE_URL
         sync: false
+      # 100% Free Persistent Database (Turso libSQL / SQLite Cloud - 9 GB free forever)
+      # Create free at https://turso.tech/ -> libsql://[dbname]-[org].turso.io?authToken=[token]
+      - key: DATABASE_URL
+        sync: false
+      # 100% Free Persistent Artifact Storage (Cloudflare R2 - 10 GB free forever, $0 egress fees)
+      # Create free at https://dash.cloudflare.com/ -> R2 -> Create bucket
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: "auto"
+

@@ -6,60 +6,138 @@ import sys
 
 import duckdb
 from currency_utils import load_currency_info
+from license_split import get_aws_license_split
+
+
+def _augment_aws_license_split(headers, rows, cur_sym):
+    """Insert AWS 'instance + license' split columns (L-5) so CSV/XLSX match the HTML
+    report. Uses the shared license_fraction logic; splits the row's AWS cost into
+    aws_instance_cost + aws_license_cost. Rows with no authoritative fraction keep the
+    full AWS cost as the instance cost and a blank license (never fabricated)."""
+    headers = list(headers)
+    try:
+        aws_cost_idx = headers.index(f"AWS Cost{cur_sym}")
+        inst_idx = headers.index("AWS Instance")
+        licname_idx = headers.index("license_name")
+    except ValueError:
+        return headers, [list(r) for r in rows]  # expected columns absent — no-op
+
+    ins_at = aws_cost_idx + 1
+    headers[ins_at:ins_at] = [f"AWS Instance Cost{cur_sym}", f"AWS License Cost{cur_sym}"]
+
+    out_rows = []
+    for r in rows:
+        r = list(r)
+        itype = r[inst_idx]
+        lic_name = r[licname_idx]
+        aws_cost = r[aws_cost_idx]
+        split = get_aws_license_split(itype, lic_name, aws_cost)
+        if split:
+            aws_base, aws_lic, _ = split
+        else:
+            aws_base, aws_lic = aws_cost, ""   # no fraction → full cost, blank license
+        r[ins_at:ins_at] = [aws_base, aws_lic]
+        out_rows.append(r)
+    return headers, out_rows
 
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 
 
-def _build_query(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0):
+def _build_query(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=None):
     cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
+    sku_name_col = "m.gcp_sku_id"
+    comp_col = "m.component"
+    if conn is not None:
+        try:
+            m_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+            if "gcp_sku_name" in m_cols:
+                sku_name_col = "COALESCE(NULLIF(m.gcp_sku_name, ''), m.gcp_sku_id)"
+            if "component" not in m_cols:
+                comp_col = "'default'"
+        except Exception:
+            pass
+
     return f"""
-WITH component_rank AS (
-    SELECT rowid AS row_id, aws_li_key,
-           ROW_NUMBER() OVER (PARTITION BY aws_li_key ORDER BY rowid) AS rn
-    FROM aws_li_to_gcp_li
-),
-per_item AS (
+WITH per_component AS (
     SELECT
+        c.aws_li_key,
         c.aws_amortized_cost,
         c.product,
         c.instance_type,
+        c.is_workload,
         p.gcp_service,
         p.gcp_machine_type,
         p.gcp_region,
         m.strategy,
         m.mapping_confidence,
-        (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END) * {aws_fx_rate} AS aws_cost,
+        {comp_col} AS comp,
+        {sku_name_col} AS sku_name,
         CASE
             WHEN m.strategy = 'ignore' THEN 0.0
             WHEN m.strategy IN ('map', 'break_down') AND p.gcp_projected_cost IS NOT NULL
                 THEN p.gcp_projected_cost * {fx_rate}
-            ELSE (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END) * {aws_fx_rate}
-        END AS gcp_od_cost,
+            ELSE NULL
+        END AS comp_od_cost,
         CASE
             WHEN m.strategy = 'ignore' THEN 0.0
             WHEN m.strategy IN ('map', 'break_down') AND p.gcp_projected_cost IS NOT NULL
                 THEN COALESCE(p.gcp_cost_1yr_cud, p.gcp_projected_cost) * {fx_rate}
-            ELSE (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END) * {aws_fx_rate}
-        END AS gcp_1yr_cost,
+            ELSE NULL
+        END AS comp_1yr_cost,
         CASE
             WHEN m.strategy = 'ignore' THEN 0.0
             WHEN m.strategy IN ('map', 'break_down') AND p.gcp_projected_cost IS NOT NULL
                 THEN COALESCE(p.gcp_cost_3yr_cud, p.gcp_projected_cost) * {fx_rate}
-            ELSE (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END) * {aws_fx_rate}
-        END AS gcp_3yr_cost,
-        CASE
-            WHEN m.strategy IN ('map', 'break_down') AND c.is_workload AND p.gcp_projected_cost IS NOT NULL AND c.aws_amortized_cost > 0
-                THEN 'A'
-            ELSE 'B'
-        END AS section
+            ELSE NULL
+        END AS comp_3yr_cost
     FROM aws_li_catalog c
     LEFT JOIN aws_li_to_gcp_li m USING (aws_li_key)
     LEFT JOIN gcp_projection p ON p.aws_li_key = m.aws_li_key AND p.component = m.component
-    LEFT JOIN component_rank cr ON cr.row_id = m.rowid
+),
+per_item AS (
+    SELECT
+        aws_li_key,
+        ANY_VALUE(product) AS product,
+        ANY_VALUE(instance_type) AS instance_type,
+        ANY_VALUE(gcp_service) AS gcp_service,
+        ANY_VALUE(gcp_machine_type) AS gcp_machine_type,
+        ANY_VALUE(gcp_region) AS gcp_region,
+        ANY_VALUE(strategy) AS strategy,
+        ANY_VALUE(mapping_confidence) AS mapping_confidence,
+        ANY_VALUE(aws_amortized_cost) AS raw_aws_cost,
+        ANY_VALUE(aws_amortized_cost) * {aws_fx_rate} AS aws_cost,
+        CASE
+            WHEN ANY_VALUE(strategy) = 'ignore' THEN 0.0
+            WHEN ANY_VALUE(strategy) IN ('map', 'break_down') AND COUNT(comp_od_cost) > 0
+                THEN SUM(COALESCE(comp_od_cost, 0.0))
+            ELSE ANY_VALUE(aws_amortized_cost) * {aws_fx_rate}
+        END AS gcp_od_cost,
+        CASE
+            WHEN ANY_VALUE(strategy) = 'ignore' THEN 0.0
+            WHEN ANY_VALUE(strategy) IN ('map', 'break_down') AND COUNT(comp_1yr_cost) > 0
+                THEN SUM(COALESCE(comp_1yr_cost, 0.0))
+            ELSE ANY_VALUE(aws_amortized_cost) * {aws_fx_rate}
+        END AS gcp_1yr_cost,
+        CASE
+            WHEN ANY_VALUE(strategy) = 'ignore' THEN 0.0
+            WHEN ANY_VALUE(strategy) IN ('map', 'break_down') AND COUNT(comp_3yr_cost) > 0
+                THEN SUM(COALESCE(comp_3yr_cost, 0.0))
+            ELSE ANY_VALUE(aws_amortized_cost) * {aws_fx_rate}
+        END AS gcp_3yr_cost,
+        CASE
+            WHEN ANY_VALUE(strategy) IN ('map', 'break_down') AND BOOL_OR(is_workload) AND COUNT(comp_od_cost) > 0 AND ANY_VALUE(aws_amortized_cost) > 0
+                THEN 'A'
+            ELSE 'B'
+        END AS section,
+        SUM(CASE WHEN comp NOT IN ('license', 'sql_license') THEN COALESCE(comp_od_cost, 0.0) ELSE 0.0 END) AS base_cost,
+        STRING_AGG(DISTINCT CASE WHEN comp IN ('license', 'sql_license') THEN COALESCE(NULLIF(sku_name, ''), comp) ELSE NULL END, ', ') AS lic_name,
+        NULLIF(SUM(CASE WHEN comp IN ('license', 'sql_license') THEN comp_od_cost ELSE NULL END), NULL) AS lic_cost
+    FROM per_component
+    GROUP BY aws_li_key
 )
 SELECT
-    ROW_NUMBER() OVER (ORDER BY aws_amortized_cost DESC) AS "#",
+    ROW_NUMBER() OVER (ORDER BY raw_aws_cost DESC)       AS "#",
     product                                              AS "AWS Service",
     COALESCE(instance_type, '')                          AS "AWS Instance",
     COALESCE(gcp_service, '')                            AS "GCP Service",
@@ -67,6 +145,9 @@ SELECT
     COALESCE(gcp_region, '')                             AS "Region",
     ROUND(aws_cost, 2)                                   AS "AWS Cost{cur_sym}",
     ROUND(gcp_od_cost, 2)                                AS "GCP OD{cur_sym}",
+    ROUND(base_cost, 2)                                  AS "instance_cost",
+    COALESCE(lic_name, '')                               AS "license_name",
+    ROUND(lic_cost, 2)                                   AS "license_cost",
     ROUND(aws_cost - gcp_od_cost, 2)                     AS "Diff{cur_sym}",
     ROUND(gcp_1yr_cost, 2)                               AS "GCP 1yr CUD{cur_sym}",
     ROUND(gcp_3yr_cost, 2)                               AS "GCP 3yr CUD{cur_sym}",
@@ -74,12 +155,24 @@ SELECT
     COALESCE(strategy, '')                               AS "Strategy",
     ROUND(COALESCE(mapping_confidence, 0), 2)            AS "Confidence"
 FROM per_item
-ORDER BY aws_amortized_cost DESC
+ORDER BY raw_aws_cost DESC
 """
 
 
-def _build_query_by_instance(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0):
+def _build_query_by_instance(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=None):
     cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
+    sku_name_col = "m.gcp_sku_id"
+    comp_col = "m.component"
+    if conn is not None:
+        try:
+            m_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+            if "gcp_sku_name" in m_cols:
+                sku_name_col = "COALESCE(NULLIF(m.gcp_sku_name, ''), m.gcp_sku_id)"
+            if "component" not in m_cols:
+                comp_col = "'default'"
+        except Exception:
+            pass
+
     return f"""
 WITH component_rank AS (
     SELECT rowid AS row_id, aws_li_key,
@@ -95,6 +188,9 @@ per_line_item AS (
         (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END) * {aws_fx_rate}
                                                                 AS aws_cost,
         COALESCE(p.gcp_projected_cost, 0) * {fx_rate}          AS gcp_od_cost,
+        (CASE WHEN {comp_col} NOT IN ('license', 'sql_license') THEN COALESCE(p.gcp_projected_cost, 0) ELSE 0 END) * {fx_rate} AS base_cost,
+        (CASE WHEN {comp_col} IN ('license', 'sql_license') THEN COALESCE(NULLIF({sku_name_col}, ''), {comp_col}) ELSE NULL END) AS lic_name,
+        (CASE WHEN {comp_col} IN ('license', 'sql_license') THEN COALESCE(p.gcp_projected_cost, 0) ELSE NULL END) * {fx_rate} AS lic_cost,
         COALESCE(p.gcp_cost_1yr_cud, p.gcp_projected_cost, 0) * {fx_rate} AS gcp_1yr_cost,
         COALESCE(p.gcp_cost_3yr_cud, p.gcp_projected_cost, 0) * {fx_rate} AS gcp_3yr_cost
     FROM aws_li_catalog c
@@ -112,6 +208,9 @@ SELECT
     COUNT(*)                                            AS "Line Items",
     ROUND(SUM(aws_cost), 2)                             AS "AWS Cost{cur_sym}",
     ROUND(SUM(gcp_od_cost), 2)                          AS "GCP OD{cur_sym}",
+    ROUND(SUM(base_cost), 2)                            AS "instance_cost",
+    COALESCE(STRING_AGG(DISTINCT lic_name, ', '), '')    AS "license_name",
+    ROUND(SUM(lic_cost), 2)                             AS "license_cost",
     ROUND(SUM(aws_cost) - SUM(gcp_od_cost), 2)          AS "Diff{cur_sym}",
     ROUND(SUM(gcp_1yr_cost), 2)                         AS "GCP 1yr CUD{cur_sym}",
     ROUND(SUM(gcp_3yr_cost), 2)                         AS "GCP 3yr CUD{cur_sym}"
@@ -233,17 +332,21 @@ def main():
     fx_rate = float(currency_info.get("fx_rate", 1.0))
     aws_fx_rate = float(currency_info.get("aws_fx_rate", 1.0))
 
-    query = _build_query(fx_rate, curr_code, aws_fx_rate)
-    inst_query = _build_query_by_instance(fx_rate, curr_code, aws_fx_rate)
+    query = _build_query(fx_rate, curr_code, aws_fx_rate, conn=conn)
+    inst_query = _build_query_by_instance(fx_rate, curr_code, aws_fx_rate, conn=conn)
     disc_query = _build_query_discounts(curr_code, aws_fx_rate)
+
+    cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
 
     result = conn.execute(query)
     headers = [d[0] for d in result.description]
     rows = result.fetchall()
+    headers, rows = _augment_aws_license_split(headers, rows, cur_sym)
 
     inst_result = conn.execute(inst_query)
     inst_headers = [d[0] for d in inst_result.description]
     inst_rows = inst_result.fetchall()
+    inst_headers, inst_rows = _augment_aws_license_split(inst_headers, inst_rows, cur_sym)
 
     try:
         disc_result = conn.execute(disc_query)

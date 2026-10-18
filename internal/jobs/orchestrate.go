@@ -161,7 +161,6 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"?scripts/calibrate_confidence.py $DB",
 				"?scripts/reconcile_capacity.py $DB",
 				"?scripts/verify_golden_mappings.py $DB",
-				"?scripts/ensure_full_coverage.py $DB",
 			},
 			Prompt: "Phase 2 — LLM mapping only. Strict protocol, no deviations.\n\n" +
 				"WORKING DIRECTORY: your job's absolute directory is <<JOB_DIR>>. Every\n" +
@@ -391,7 +390,10 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// repair, CUD synthesis, per-N clamping, illegal-passthrough repair)
 			// BEFORE the gate evaluates. Previously this only ran read-only in
 			// the watcher, so its repairs never applied in-pipeline (D4).
-			PostLLMScripts: []string{"?scripts/validate_fix.py $JOBDIR"},
+			PostLLMScripts: []string{
+				"?scripts/validate_fix.py $JOBDIR",
+				"?scripts/render_notes.py $DB",
+			},
 			CheckName:      "no_null_projected_cost",
 			// validate_fix.py already computes null_gcp_service and gcp_service_echo
 			// as hard violations in validation_report.json, but it's invoked as a
@@ -436,6 +438,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"?scripts/incremental_rerate.py",
 				"?scripts/validate_fix.py $JOBDIR",
 				"?scripts/outlier_gate.py $DB",
+				"?scripts/render_notes.py $DB",
 			},
 			Prompt: "Phase 5 — Outlier Triage. Strict protocol, no deviations.\n\n" +
 				"WORKING DIRECTORY: your job's absolute directory is <<JOB_DIR>>. Every\n" +
@@ -528,8 +531,12 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// generated — never depends on an LLM noticing something on its own.
 			// Appends to outlier_violations.md (already surfaced by render_report.py)
 			// rather than blocking; soft ('?') so a crash here never stops the report.
-			PreLLMScripts: []string{"?scripts/final_mapping_sanity_check.py $DB"},
+			PreLLMScripts: []string{
+				"?scripts/render_notes.py $DB",
+				"?scripts/final_mapping_sanity_check.py $DB",
+			},
 			Script:        "scripts/render_report.py",
+			PostLLMScripts: []string{"?scripts/run_diag_summary.py $JOBDIR"},
 		},
 	}
 }
@@ -543,6 +550,11 @@ func renderOrchestrator(inputExt string) (string, error) {
 	}
 	enc := base64.StdEncoding.EncodeToString(specs)
 	return fmt.Sprintf(orchestratorTemplate, enc), nil
+}
+
+// RenderOrchestratorForTest exports template rendering for test verification.
+func RenderOrchestratorForTest(inputExt string) (string, error) {
+	return renderOrchestrator(inputExt)
 }
 
 // StartOrchestrated writes run_all.py into jobDir and spawns it detached. The
@@ -775,6 +787,23 @@ def write_phase_checkpoint(num):
     with open(os.path.join(JOB_DIR, "phase_checkpoint.json"), "w") as f:
         json.dump({"last_completed": num, "ts": time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")}, f)
 
+def _diag(level, code, source, message, rows=0, usd=0.0, phase=None):
+    """Append a diagnostic record. Mirrors scripts/diagnostics.py's format.
+    Never raises."""
+    try:
+        rec = {"ts": time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S"),
+               "level": level, "code": code, "source": source,
+               "phase": phase, "message": str(message)[:2000],
+               "rows": int(rows or 0), "usd": round(float(usd or 0.0), 2),
+               "detail": {}}
+        log("[diag] " + level + " " + code + " :: " + str(message)[:500])
+        d = os.path.join(JOB_DIR, "projection-audit")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "diagnostics.jsonl"), "a", encoding="utf-8") as _f:
+            _f.write(json.dumps(rec, default=str) + "\n")
+    except Exception:
+        pass
+
 def run_script(script_cmd):
     """Run a skill script directly (no LLM). script_cmd may contain $DB / $JOBDIR.
 
@@ -795,6 +824,8 @@ def run_script(script_cmd):
     if result.returncode != 0:
         if soft:
             log("[SCRIPT] soft script exited %%d (non-fatal): %%s" %% (result.returncode, " ".join(full)))
+            _diag("error", "soft_script_failed", "orchestrator",
+                  "soft script exited " + str(result.returncode) + ": " + " ".join(full))
             return
         msg = "Script failed (exit %%d): %%s" %% (result.returncode, " ".join(full))
         log("[SCRIPT] FATAL: " + msg)
@@ -859,23 +890,9 @@ def run_agy(prompt, phase_label=""):
     return rc
 
 def gate(sql):
-    # Returns int violations, or None if the gate could not be evaluated.
-    #
-    # Previously shelled out to the external "duckdb" CLI binary (DUCKDB_BIN /
-    # PATH lookup via duckdbBin() in the Go spawner). Confirmed real: on a
-    # machine with no duckdb CLI installed anywhere (no PATH match, no
-    # ~/.local/bin/duckdb), duckdbBin() falls back to the literal string
-    # "duckdb", subprocess.check_output() then raises FileNotFoundError, and
-    # this function's own except-Exception silently returns None for EVERY
-    # gate on EVERY phase of EVERY job run on that machine -- "could not
-    # evaluate (skipping)" for mapping_coverage, null_gcp_service,
-    # passthrough_budget, every check this whole file defines. A job can run
-    # all 6 phases to completion with literally no gate ever having actually
-    # run, and nothing in the log distinguishes that from "ran and found zero
-    # violations". Using the duckdb PYTHON package directly (already a
-    # dependency of every other script in this pipeline, confirmed present on
-    # this exact machine throughout this session) removes the external-binary
-    # dependency entirely instead of trying to patch its discovery.
+    # Returns (violations:int|None, error:str|None).
+    # None violations means the gate could NOT be evaluated. The run continues;
+    # the condition is recorded so it is distinguishable from a clean check.
     try:
         import duckdb as _duckdb
         _con = _duckdb.connect(DB, read_only=True)
@@ -883,9 +900,11 @@ def gate(sql):
             row = _con.execute(sql).fetchone()
         finally:
             _con.close()
-        return int(row[0]) if row and row[0] is not None else None
-    except Exception:
-        return None
+        if not row or row[0] is None:
+            return None, "gate SQL returned no value"
+        return int(row[0]), None
+    except Exception as _e:
+        return None, "%%s: %%s" %% (type(_e).__name__, _e)
 
 def failed_structurally():
     p = os.path.join(JOB_DIR, "failure.txt")
@@ -1515,14 +1534,13 @@ def run_phase(ph):
             return
     sql = ph.get("check_sql")
     if sql:
-        v = gate(sql)
-        if v and v > 0 and ph.get("check_name") == "mapping_coverage":
-            # Deterministically backstop unmapped rows before deciding whether to invoke LLM
-            run_script("?scripts/ensure_full_coverage.py $DB")
-            v = gate(sql)
-
+        v, gerr = gate(sql)
         if v is None:
-            log("gate %%s: could not evaluate (skipping)" %% ph.get("check_name", "?"))
+            log("gate %%s: not evaluated (%%s) — continuing"
+                %% (ph.get("check_name","?"), gerr))
+            _diag("error", "check_not_evaluated", "orchestrator",
+                  "gate '" + str(ph.get("check_name","?")) + "' not evaluated: "
+                  + str(gerr), phase=ph["num"])
         elif v > 0:
             log("gate %%s FAILED: %%d violation(s) — re-running phase once" %% (ph.get("check_name","?"), v))
 
@@ -1560,27 +1578,34 @@ def run_phase(ph):
             for scmd in ph.get("post_llm_scripts") or []:
                 run_script(scmd)
 
-            v2 = gate(sql)
-            log("gate %%s after retry: %%s" %% (ph.get("check_name","?"), "PASS" if v2 == 0 else str(v2) + " remaining"))
+            v2, gerr2 = gate(sql)
+            if v2 is None:
+                log("gate %%s after retry: not evaluated (%%s) — continuing"
+                    %% (ph.get("check_name","?"), gerr2))
+                _diag("error", "check_not_evaluated", "orchestrator",
+                      "gate '" + str(ph.get("check_name","?")) + "' after retry not evaluated: "
+                      + str(gerr2), phase=ph["num"])
+            else:
+                log("gate %%s after retry: %%s" %% (ph.get("check_name","?"), "PASS" if v2 == 0 else str(v2) + " remaining"))
 
             # Last-resort backstop for mapping_coverage specifically: if the
             # LLM's own targeted retry still leaves rows with no mapping at
             # all, ensure_full_coverage.py exists for exactly this (its own
             # docstring: "an honest passthrough for a handful of leftover
-            # rows is a far better outcome than no report at all") but was
-            # never actually invoked anywhere in this orchestrator until now
-            # — confirmed real: 30 rows / $11,732.88 on a live job had zero
-            # aws_li_to_gcp_li entry at all (not even an honest passthrough
-            # label), and this gate had never caught it because gate() itself
-            # was silently failing to evaluate on a machine with no duckdb
-            # CLI installed (see gate()'s own comment). Runs only here, after
-            # the real LLM retry already had its shot — a quick targeted
-            # fix should still win over a generic "Manual Review" stamp.
+            # rows is a far better outcome than no report at all"). This is now
+            # the only invocation and it runs after the LLM retry has had its chance.
             if v2 and v2 > 0 and ph.get("check_name") == "mapping_coverage":
                 run_script("?scripts/ensure_full_coverage.py $DB")
-                v2 = gate(sql)
-                log("gate %%s after ensure_full_coverage backstop: %%s" %% (
-                    ph.get("check_name","?"), "PASS" if v2 == 0 else str(v2) + " remaining"))
+                v2, gerr_bs = gate(sql)
+                if v2 is None:
+                    log("gate %%s after ensure_full_coverage backstop: not evaluated (%%s) — continuing"
+                        %% (ph.get("check_name","?"), gerr_bs))
+                    _diag("error", "check_not_evaluated", "orchestrator",
+                          "gate '" + str(ph.get("check_name","?")) + "' after backstop not evaluated: "
+                          + str(gerr_bs), phase=ph["num"])
+                else:
+                    log("gate %%s after ensure_full_coverage backstop: %%s" %% (
+                        ph.get("check_name","?"), "PASS" if v2 == 0 else str(v2) + " remaining"))
 
             if v2 and v2 > 0:
                 msg = ("Phase %%d (%%s) gate '%%s' still reports %%d violation(s) after retry "

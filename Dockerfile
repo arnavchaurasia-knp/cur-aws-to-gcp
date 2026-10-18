@@ -54,6 +54,9 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 # Copy skills / projection scripts and data
 COPY skill/ /app/skill/
 
+# Compile catalog.duckdb index from bundled SKU datasets so it is permanently baked into the image
+RUN python /app/skill/aws-gcp-cost-projection/scripts/build_catalog_index.py
+
 # Default Environment Variables
 ENV PORT=8080
 ENV WEB_ROOT=/app/frontend/dist

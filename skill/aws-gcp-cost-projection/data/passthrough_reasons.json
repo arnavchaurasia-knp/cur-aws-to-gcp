@@ -1,0 +1,74 @@
+{
+  "_meta": {
+    "description": "Closed enum of reasons a row carries strategy='passthrough' or 'needs_reprice'. kind=intentional means the passthrough is the correct final answer and repair passes must not touch it. kind=defect means something failed and the row must be countable by gates.",
+    "version": 1
+  },
+  "defect_passthrough_budget_pct": 5.0,
+  "reasons": {
+    "no_gcp_equivalent": {
+      "kind": "intentional",
+      "label": "No GCP equivalent",
+      "description": "GCP has no comparable service or charge type. Permanent decision made by a static mapper or service_map."
+    },
+    "unit_model_mismatch": {
+      "kind": "intentional",
+      "label": "Unit models incompatible",
+      "description": "Both clouds charge for this, but in units that cannot be converted (e.g. S3 per-1k requests vs GCS class-A ops, Aurora I/O vs Cloud SQL)."
+    },
+    "accelerator_manual_sizing": {
+      "kind": "intentional",
+      "label": "Accelerator — manual sizing",
+      "description": "Inferentia/Trainium/GPU workload. No automatic equivalent; requires human sizing."
+    },
+    "service_policy_review": {
+      "kind": "intentional",
+      "label": "Policy: review",
+      "description": "data/service_map.json declares mode='review' for this service."
+    },
+    "unresolved_sku": {
+      "kind": "defect",
+      "label": "No SKU resolved",
+      "description": "We intended to map this row, but no catalog SKU or no region-reachable rate was found."
+    },
+    "storage_misroute_backstop": {
+      "kind": "defect",
+      "label": "Storage misroute backstop",
+      "description": "A non-storage service was mapped onto Cloud Storage and was rerouted to passthrough."
+    },
+    "echo_reset": {
+      "kind": "defect",
+      "label": "Echo bug reset",
+      "description": "gcp_service echoed the AWS product name back; reset to passthrough."
+    },
+    "detail_less_row": {
+      "kind": "defect",
+      "label": "No charge-type detail",
+      "description": "The source bill has no unit/operation/usage_type detail, so no mechanic can price the row."
+    },
+    "llm_dropped": {
+      "kind": "defect",
+      "label": "LLM left row unmapped",
+      "description": "The Phase-2 LLM produced no mapping for this row; ensure_full_coverage backstopped it."
+    },
+    "llm_veto": {
+      "kind": "defect",
+      "label": "LLM vetoed the fix",
+      "description": "A review or outlier candidate was vetoed and the row stayed at AWS cost."
+    },
+    "clamped_outlier": {
+      "kind": "defect",
+      "label": "Clamped over-projection",
+      "description": "The projected GCP cost exceeded the plausibility threshold and was clamped."
+    },
+    "mapper_error": {
+      "kind": "defect",
+      "label": "Mapper raised",
+      "description": "The deterministic mapper for this mechanic_group raised an exception."
+    },
+    "unclassified": {
+      "kind": "defect",
+      "label": "Reason not declared",
+      "description": "A passthrough was written without declaring a reason. Always a bug in the writing script. Also used for LLM-authored passthroughs, which may never self-declare intent."
+    }
+  }
+}

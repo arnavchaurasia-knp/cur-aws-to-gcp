@@ -21,7 +21,12 @@ try:
     import duckdb
 except Exception as e:  # pragma: no cover
     sys.stderr.write(f"fix_storage_misroute: duckdb import failed ({e}); skipping\n")
-    sys.exit(0)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from diagnostics import diag, WARN
+except ImportError:
+    def diag(*a, **k): pass
+    WARN = "warn"
 
 # AWS products that legitimately map to GCS object storage (substring, case-insens).
 # NB: do NOT use bare "s3" — it false-matches region codes like "APS3" in a
@@ -41,7 +46,7 @@ def main():
     )
     rows = con.execute(
         f"""
-        SELECT m.aws_li_key, c.product
+        SELECT m.aws_li_key, c.product, c.aws_amortized_cost
         FROM aws_li_to_gcp_li m
         JOIN aws_li_catalog c USING (aws_li_key)
         WHERE lower(trim(m.gcp_service)) = 'cloud storage'
@@ -57,10 +62,13 @@ def main():
     note = ("MANUAL REVIEW: auto-rerouted from Cloud Storage (not an object-storage "
             "service); carried at AWS cost pending a researched GCP mapping.")
     keys = [r[0] for r in rows]
+    rerouted_usd = sum(float(r[2] or 0.0) for r in rows)
     con.executemany(
         """
         UPDATE aws_li_to_gcp_li
         SET strategy = 'passthrough',
+            passthrough_reason = 'storage_misroute_backstop',
+            decided_by = 'fix_storage_misroute.py',
             gcp_sku_id = NULL,
             mapping_confidence = 20,
             projection_note = ?
@@ -69,8 +77,12 @@ def main():
         [(note, k) for k in keys],
     )
 
+    diag(WARN, "storage_misroute_rerouted", "fix_storage_misroute.py",
+         f"{len(rows)} non-storage row(s) rerouted off Cloud Storage to passthrough",
+         rows=len(rows), usd=rerouted_usd, phase=2)
+
     from collections import Counter
-    by_prod = Counter(p for _, p in rows)
+    by_prod = Counter(p for _, p, _ in rows)
     print(f"fix_storage_misroute: rerouted {len(rows)} non-storage row(s) off Cloud Storage -> passthrough")
     for prod, n in by_prod.most_common(12):
         print(f"  {n:4d}  {prod}")

@@ -206,7 +206,7 @@ def main():
         WHERE  m.strategy IN ('map','break_down')
           AND  m.gcp_service IN ({_CUD_SERVICES_SQL})
           AND  m.component IN ('core','ram')
-          AND  m.projection_note NOT LIKE '%no-rate-fallback%'
+          AND  COALESCE(m.rate_source, '') NOT IN ('no_rate', 'no_catalog')
           AND  m.gcp_sku_name NOT ILIKE '%preemptible%'
           AND  m.gcp_sku_name NOT ILIKE '%spot%'
           AND  NOT EXISTS (SELECT 1 FROM gcp_sku_rates r
@@ -290,7 +290,7 @@ def main():
         WHERE  m.strategy IN ('map','break_down')
           AND  p.gcp_projected_cost IS NULL
           AND  c.aws_amortized_cost > {_I_FLOOR}
-          AND  m.projection_note NOT LIKE '%no-rate-fallback%'
+          AND  COALESCE(m.rate_source, '') NOT IN ('no_rate', 'no_catalog')
         ORDER BY c.aws_amortized_cost DESC
     """)
 

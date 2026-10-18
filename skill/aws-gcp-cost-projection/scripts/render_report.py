@@ -119,6 +119,11 @@ def _short_aws_label(product):
     return label or str(product)
 
 
+# AWS instance+license split: shared single source of truth (used by export_report too).
+from license_split import load_ec2_specs as _load_ec2_specs, get_aws_license_split as _get_aws_license_split
+
+
+
 # Signal phrases that only ever show up in internal engineering commentary
 # (references to our own function/file names, "mode" bookkeeping, or bug-fix
 # narration) — never in a customer-facing pricing rationale. Used to strip
@@ -626,6 +631,9 @@ CSS = """
   .why-expand[open] .why-toggle-arrow { transform: rotate(90deg); }
   .why-detail-rows { margin-top: 4px; padding-top: 4px; border-top: 1px dashed #E8EAED; display: flex; flex-direction: column; gap: 3px; }
   .cost-tier-note { font-size: 9px; font-weight: 300; color: #9AA0A6; font-style: italic; margin-top: 2px; }
+  .row-license-sub td { background: #fafafa; font-size: 11px; padding: 4px 12px; border-top: none; }
+  .row-license-sub:hover td { background: #f1f3f4; }
+  .plus-sign { font-weight: 600; color: #1A73E8; margin-right: 3px; }
   .strat-pt { font-size: 10px; color: #80868B; margin-left: 4px; }
   .cud-na-marker { font-size: 10px; color: #EA8600; cursor: help; margin-left: 1px; }
   .legend { font-style: italic; color: #5F6368; font-size: 12px; margin-top: 8px; }
@@ -929,7 +937,11 @@ def main():
             c.instance_type,
             ANY_VALUE(m.gcp_sku_name)                                          AS gcp_sku_name,
             {_machine_type_expr}                                               AS gcp_machine_type,
-            {_assumption_expr}                                                 AS is_assumption
+            {_assumption_expr}                                                 AS is_assumption,
+            c.aws_li_key,
+            SUM(CASE WHEN m.component NOT IN ('license', 'sql_license') THEN p.gcp_projected_cost ELSE 0.0 END) * {fx_rate} AS gcp_base_od,
+            SUM(CASE WHEN m.component IN ('license', 'sql_license') THEN p.gcp_projected_cost ELSE 0.0 END) * {fx_rate} AS gcp_lic_od,
+            STRING_AGG(DISTINCT CASE WHEN m.component IN ('license', 'sql_license') THEN COALESCE(NULLIF(m.gcp_sku_name, ''), m.component) ELSE NULL END, ', ') AS lic_name
         FROM aws_li_catalog c
         LEFT JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
         LEFT JOIN gcp_projection    p ON c.aws_li_key = p.aws_li_key
@@ -1119,7 +1131,7 @@ def main():
     sec_b_rows = []
 
     for r in rows:
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump = r
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name = r
         if (aws or 0.0) < 0:
             continue
 
@@ -1131,7 +1143,7 @@ def main():
             sec_b_rows.append(r)
 
     def _render_row(r, idx, force_pt=False):
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump = r
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name = r
 
         ptype  = pill_type(gcp_svc, product)
         p_html = pill_html(ptype)
@@ -1189,6 +1201,8 @@ def main():
         desc_html += why_html
         desc_html += cost_tier_html
 
+        has_license_modeled = (gcp_lic_od is not None and gcp_lic_od > 0.005 and bool(lic_name) and not is_pt and not is_ignore)
+
         if is_ignore:
             od_str   = fmt(0.0)
             cud1_str = fmt(0.0)
@@ -1205,7 +1219,14 @@ def main():
             cud3_str = '—'
             diff_td  = '<td class="num">—</td>'
         else:
-            od_str = f"{fmt(od)}*" if is_assump else fmt(od)
+            if has_license_modeled:
+                base_val = gcp_base_od or 0.0
+                lic_val = gcp_lic_od or 0.0
+                od_str = f"{fmt(base_val)} + {fmt(lic_val)}"
+                if is_assump:
+                    od_str += "*"
+            else:
+                od_str = f"{fmt(od)}*" if is_assump else fmt(od)
             diff = aws - od
             if abs(diff) < 0.005:
                 diff_td = '<td class="num">—</td>'
@@ -1214,7 +1235,23 @@ def main():
             else:
                 diff_td = f'<td class="num red">−{fmt(abs(diff))}</td>'
 
-        aws_instance_str = _html.escape(str(instance_type or _short_aws_label(product) or "—"))
+        # L-4: AWS side instance + license split (Phase 2)
+        raw_instance = instance_type or _short_aws_label(product) or "—"
+        aws_lic_split = None
+        if has_license_modeled:
+            aws_lic_split = _get_aws_license_split(instance_type, lic_name, aws)
+
+        if aws_lic_split:
+            aws_base_cost, aws_lic_cost, _os_key = aws_lic_split
+            aws_instance_str = _html.escape(str(raw_instance))
+            aws_cost_cell = f"{fmt(aws_base_cost)} + {fmt(aws_lic_cost)}"
+        elif has_license_modeled or ("license" in (notes or "").lower() and "oracle" in (product or "").lower()):
+            aws_instance_str = f"{_html.escape(str(raw_instance))} <span style='font-size:10px;color:#5F6368'>(incl. OS license)</span>"
+            aws_cost_cell = fmt(aws)
+        else:
+            aws_instance_str = _html.escape(str(raw_instance))
+            aws_cost_cell = fmt(aws)
+
         if is_ignore:
             top_line = gcp_sku_name or gcp_svc or "Free on GCP"
             future_start_m = re.search(
@@ -1238,7 +1275,7 @@ def main():
 
         row_class = ' class="row-passthrough"' if is_pt else (' class="row-free"' if is_ignore else "")
 
-        return (
+        main_row_html = (
             f"<tr{row_class}>"
             f"<td style='color:#80868B;font-size:11px'>{idx}</td>"
             f"<td style='white-space:nowrap'>"
@@ -1250,7 +1287,7 @@ def main():
             f"<td style='font-size:11px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word'>{aws_instance_str}</td>"
             f"<td style='font-size:11px;color:#5F6368;min-width:220px;max-width:320px;white-space:normal;word-break:break-word'>{gcp_mapping_str}</td>"
             f"<td style='font-size:11px;color:#5F6368;white-space:nowrap'>{region_str}</td>"
-            f'<td class="num">{fmt(aws)}</td>'
+            f'<td class="num">{aws_cost_cell}</td>'
             f'<td class="num">{od_str}</td>'
             f'<td class="num extra-col"{cud1_td_extra}>{cud1_str}</td>'
             f'<td class="num extra-col"{cud3_td_extra}>{cud3_str}</td>'
@@ -1258,6 +1295,32 @@ def main():
             f'<td class="extra-col">{desc_html}</td>'
             f"</tr>\n"
         )
+
+        sub_row_html = ""
+        if has_license_modeled:
+            aws_sub_cell = ""
+            aws_ratio_note = ""
+            if aws_lic_split:
+                _base, a_lic, _ = aws_lic_split
+                aws_sub_cell = f'<span class="plus-sign">+</span>{fmt(a_lic)}'
+                aws_ratio_note = '<div style="font-size:9px;color:#80868B;font-style:italic">AWS license split estimated from AWS Price List Windows/Linux OD ratio.</div>'
+
+            sub_row_html = (
+                f'<tr class="row-license-sub">'
+                f'<td></td>'
+                f'<td colspan="2"><span class="plus-sign">+</span> {_html.escape(str(lic_name))}{aws_ratio_note}</td>'
+                f'<td style="color:#5F6368">{region_str}</td>'
+                f'<td></td>'
+                f'<td class="num">{aws_sub_cell}</td>'
+                f'<td class="num"><span class="plus-sign">+</span>{fmt(gcp_lic_od)}</td>'
+                f'<td class="num extra-col"></td>'
+                f'<td class="num extra-col"></td>'
+                f'<td></td>'
+                f'<td class="extra-col"></td>'
+                f'</tr>\n'
+            )
+
+        return main_row_html + sub_row_html
 
     # ── Render Section A Rows & Subtotal ──────────────────────────────────────
     sec_a_html = ""
@@ -1625,6 +1688,53 @@ def main():
     if not os.path.exists(gap_json_path):
         gap_json_path = os.path.join(JOB_DIR, "data_gaps.json")
     data_gap_html = ""
+
+    # P-2: Query any un-resolved needs_reprice rows
+    reprice_rows = []
+    try:
+        cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+        reprice_cond = "m.strategy = 'needs_reprice'" + (" OR m.needs_reprice = TRUE" if "needs_reprice" in cols else "")
+        reprice_rows = conn.execute(f"""
+            SELECT c.aws_li_key, c.product, c.usage_type, c.aws_amortized_cost
+            FROM aws_li_catalog c
+            JOIN aws_li_to_gcp_li m USING (aws_li_key)
+            WHERE ({reprice_cond}) AND c.is_workload
+        """).fetchall()
+    except Exception as _re:
+        log.debug(f"Could not query needs_reprice rows: {_re}")
+
+    reprice_total = sum(r[3] or 0.0 for r in reprice_rows) * aws_fx_rate
+    reprice_count = len(reprice_rows)
+
+    # Sync into data_gaps.json
+    if reprice_count > 0:
+        try:
+            current_gaps = {"count": 0, "total_cost": 0.0, "items": []}
+            if os.path.exists(gap_json_path):
+                with open(gap_json_path, encoding="utf-8") as _gf:
+                    current_gaps = json.load(_gf)
+            # Add needs_reprice section/items if not already present
+            existing_keys = {item.get("aws_li_key") for item in current_gaps.get("items", []) if "aws_li_key" in item}
+            new_items = []
+            for r in reprice_rows:
+                if r[0] not in existing_keys:
+                    new_items.append({
+                        "aws_li_key": r[0],
+                        "product": r[1],
+                        "usage_type": r[2],
+                        "aws_cost": float(r[3] or 0.0),
+                        "gap_type": "needs_reprice",
+                        "reason": "rate could not be resolved for mappable row — carried at AWS cost",
+                    })
+            if new_items:
+                current_gaps.setdefault("items", []).extend(new_items)
+                current_gaps["count"] = len(current_gaps["items"])
+                current_gaps["total_cost"] = sum(it.get("aws_cost", 0.0) for it in current_gaps["items"])
+                with open(gap_json_path, "w", encoding="utf-8") as _gf:
+                    json.dump(current_gaps, _gf, indent=2)
+        except Exception as _gwe:
+            log.warning(f"Could not update data_gaps.json with needs_reprice: {_gwe}")
+
     if os.path.exists(gap_json_path):
         try:
             with open(gap_json_path, encoding="utf-8") as _gf:
@@ -1636,13 +1746,24 @@ def main():
                     f'<div style="background:#FEF3C7;border:1px solid #F59E0B;border-radius:8px;'
                     f'padding:16px;margin:20px 0;color:#92400E;">'
                     f'<strong style="font-size:15px">&#9888; Data Gap Warning:</strong> '
-                    f'<strong>${_gt:,.2f}</strong> across {_gc} line item(s) could not be classified — '
-                    f'source bill lacked line-item detail (passed through at 1:1 AWS cost parity; '
-                    f'no non-passthrough GCP estimate was guessed).'
+                    f'<strong>${_gt:,.2f}</strong> across {_gc} line item(s) could not be classified or fully priced — '
+                    f'carried at 1:1 AWS cost parity; needs a rate / review.'
                     f'</div>'
                 )
         except Exception as _ge:
             log.warning(f"Could not read data_gaps.json: {_ge}")
+
+    # Explicit banner for needs_reprice if any leftovers exist
+    if reprice_count > 0:
+        data_gap_html += (
+            f'<div style="background:#FFFBEB;border:1px solid #D97706;border-radius:8px;'
+            f'padding:16px;margin:20px 0;color:#B45309;">'
+            f'<strong style="font-size:15px">&#9888; Rate Resolution Gap:</strong> '
+            f'<strong>{curr_symbol}{reprice_total:,.2f}</strong> across {reprice_count} mappable line item(s) '
+            f'could not be priced on GCP — carried at AWS cost; needs a rate.'
+            f'</div>'
+        )
+
 
     currency_notice_html = ""
     if curr_code != "USD":
@@ -1728,7 +1849,10 @@ def main():
     <th>Region</th>
     <th class="num">AWS</th>
     <th class="num">GCP OD</th>
+    <th class="num extra-col">GCP 1yr CUD</th>
+    <th class="num extra-col">GCP 3yr CUD</th>
     <th class="num">Diff</th>
+    <th class="extra-col">Details</th>
   </tr>
   {detail_rows_html}
 </table></div>
@@ -1828,11 +1952,18 @@ def main():
                     _gap_data = json.load(_gf)
                 if _gap_data.get("count", 0) > 0 and _gap_data.get("total_cost", 0) > 0:
                     summary_lines.extend([
-                        f"> ⚠️ **DATA GAP WARNING**: {curr_symbol}{_gap_data['total_cost']:,.2f} across {_gap_data['count']} line item(s) could not be classified — source bill lacked line-item detail (passed through at 1:1 AWS cost).",
+                        f"> ⚠️ **DATA GAP WARNING**: {curr_symbol}{_gap_data['total_cost']:,.2f} across {_gap_data['count']} line item(s) could not be classified or fully priced (carried at 1:1 AWS cost).",
                         "",
                     ])
             except Exception:
                 pass
+
+        if reprice_count > 0:
+            summary_lines.extend([
+                f"> ⚠️ **UNRESOLVED RATES (needs_reprice)**: {curr_symbol}{reprice_total:,.2f} across {reprice_count} mappable line item(s) could not be priced on GCP — carried at AWS cost; needs a rate.",
+                "",
+            ])
+
 
         summary_lines.extend([
             "| Pricing Tier | Monthly Estimate | vs AWS List |",

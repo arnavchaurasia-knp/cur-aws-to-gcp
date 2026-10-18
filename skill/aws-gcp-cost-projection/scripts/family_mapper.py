@@ -21,6 +21,8 @@ from apply_static_mappings import (
     parse_instance,
     get_gcp_family,
     _RHEL_VCPU_BANDS,
+    _UBUNTU_PRO_VCPU_BANDS,
+    _SUSE_VCPU_BANDS,
     _license_entries,
     _gce_machine_type_label,
     map_gce_row,

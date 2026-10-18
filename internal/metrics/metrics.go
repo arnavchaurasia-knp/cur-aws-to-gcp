@@ -10,4 +10,7 @@ var (
 	JobsFailed    = expvar.NewInt("jobs_failed")
 	JobsRetried   = expvar.NewInt("jobs_retried")
 	JobsCancelled = expvar.NewInt("jobs_cancelled")
+
+	ValidationViolations = expvar.NewInt("validation_violations")
+	ValidationNotRun     = expvar.NewInt("validation_not_run")
 )

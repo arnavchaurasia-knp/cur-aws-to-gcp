@@ -39,14 +39,47 @@ _MAX_MULT_RAM_GB = _review_cfg.get("max_unit_multiplier_ram_gb", 8192)
 _SKU_ID_RE = re.compile(r'^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$')
 
 
+try:
+    from apply_static_mappings import INTENTIONAL_PASSTHROUGH_NOTE_ILIKE
+except Exception:
+    INTENTIONAL_PASSTHROUGH_NOTE_ILIKE = [
+        "%no GCS equivalent%",
+        "%no GCP equivalent%",
+        "%no direct GCP equivalent%",
+    ]
+try:
+    from projection_view import compute_dominant_region
+except Exception:
+    compute_dominant_region = lambda _c: "us-central1"
+
+
+def _is_intentional_passthrough_note(note: str | None, reason: str | None = None) -> bool:
+    if reason:
+        try:
+            import passthrough_reasons as _pr
+            return reason in _pr.INTENTIONAL_REASONS
+        except Exception:
+            pass
+    if not note:
+        return False
+    note_lower = note.lower()
+    for pattern in INTENTIONAL_PASSTHROUGH_NOTE_ILIKE:
+        if pattern.replace("%", "").lower() in note_lower:
+            return True
+    return False
+
+
 def validate_override(conn, aws_li_key, component, fix):
     """
-    Final format/schema gate before writing an LLM override to the DB.
+    Final format/schema/rate gate before writing an LLM override to the DB.
     Returns (ok: bool, reason: str).
 
-    Does NOT re-run business-logic rules — those are the LLM's responsibility
-    per data/validation-rules.json. Only catches format errors that are
-    cheap to detect and catastrophic if written.
+    Enforces:
+      1. SKU ID format (XXXX-XXXX-XXXX).
+      2. Multiplier type and sanity bounds.
+      3. G-2: Protection for intentional-passthrough rows (e.g. no GCP equivalent).
+      4. G-1: Sourced from facts — SKU must exist in gcp_sku_rates with an OnDemand
+         rate in the row's region, global, or dominant region (no fabrication).
     """
     gcp_sku_id  = fix.get("gcp_sku_id")
     unit_mult   = fix.get("unit_multiplier")
@@ -81,4 +114,86 @@ def validate_override(conn, aws_li_key, component, fix):
                 f"update max_unit_multiplier_* in data/review-config.json."
             )
 
+    # 3. G-2: Enforce intentional-passthrough protection in the guard
+    # If the current row's projection_note or passthrough_reason marks it as intentional passthrough and
+    # the override sets strategy='map' (or provides a SKU to map), reject.
+    override_strategy = fix.get("strategy")
+    is_mapping = override_strategy == "map" or (override_strategy is None and bool(gcp_sku_id))
+
+    if conn is not None and aws_li_key:
+        try:
+            cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+            reason_expr = "passthrough_reason" if "passthrough_reason" in cols else "NULL"
+            curr_row = conn.execute(
+                f"SELECT projection_note, {reason_expr} FROM aws_li_to_gcp_li WHERE aws_li_key = ? LIMIT 1",
+                [aws_li_key]
+            ).fetchone()
+            if curr_row and _is_intentional_passthrough_note(curr_row[0], curr_row[1]):
+                if is_mapping:
+                    return False, (
+                        f"Row {aws_li_key} is an intentional passthrough ({curr_row[0]!r}, reason={curr_row[1]!r}). "
+                        f"Overriding to strategy='map' violates intentional-passthrough protection."
+                    )
+        except Exception as e:
+            # Table might not exist or other query error in isolated unit tests
+            pass
+
+    # 4. G-1: SKU must exist in catalog with a real rate in gcp_sku_rates
+    # (fallback: row region -> global -> dominant region)
+    if conn is not None and gcp_sku_id:
+        # Check if gcp_sku_rates table exists
+        try:
+            has_rates = conn.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = 'gcp_sku_rates'"
+            ).fetchone()
+        except Exception:
+            has_rates = None
+
+        if has_rates:
+            # Find row's region
+            row_region = None
+            try:
+                cat_row = conn.execute(
+                    "SELECT gcp_region FROM aws_li_catalog WHERE aws_li_key = ? LIMIT 1",
+                    [aws_li_key]
+                ).fetchone()
+                if cat_row and cat_row[0]:
+                    row_region = cat_row[0].strip()
+            except Exception:
+                pass
+
+            if not row_region:
+                try:
+                    map_row = conn.execute(
+                        "SELECT gcp_region FROM aws_li_to_gcp_li WHERE aws_li_key = ? LIMIT 1",
+                        [aws_li_key]
+                    ).fetchone()
+                    if map_row and map_row[0]:
+                        row_region = map_row[0].strip()
+                except Exception:
+                    pass
+
+            dom_region = compute_dominant_region(conn)
+            regions_to_check = [r for r in [row_region, "global", dom_region] if r]
+
+            # Query gcp_sku_rates
+            placeholders = ",".join(["?"] * len(regions_to_check))
+            rate_row = conn.execute(
+                f"""
+                SELECT region, rate_usd FROM gcp_sku_rates
+                WHERE gcp_sku_id = ?
+                  AND pricing_type = 'OnDemand'
+                  AND region IN ({placeholders})
+                LIMIT 1
+                """,
+                [gcp_sku_id] + regions_to_check
+            ).fetchone()
+
+            if not rate_row:
+                return False, (
+                    f"gcp_sku_id {gcp_sku_id!r} has no OnDemand rate in gcp_sku_rates "
+                    f"for region(s) {regions_to_check}. SKU must exist in catalog with a real rate."
+                )
+
     return True, ""
+

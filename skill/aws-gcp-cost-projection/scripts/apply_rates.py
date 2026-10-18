@@ -149,6 +149,7 @@ def enforce_accelerator_passthrough(conn):
                      "projection_note='accelerator component folded into passthrough' "
                      "WHERE aws_li_key=? AND rowid<>?", [k, keep])
         conn.execute("UPDATE aws_li_to_gcp_li SET strategy='passthrough', "
+                     "passthrough_reason='accelerator_manual_sizing', decided_by='apply_rates.py', "
                      "gcp_service='Manual Sizing Required', gcp_sku_id=NULL, gcp_sku_name=NULL, "
                      "unit_multiplier=NULL, mapping_confidence=0.3, component='accelerator', "
                      "projection_note='AI accelerator (Inferentia/Trainium/GPU) — Manual sizing required (A3/A2/G2/L4/H100/etc.)' "
@@ -297,6 +298,8 @@ def fix_managed_db_storage_rows(conn, *_ignored):
             conn.execute("""
                 UPDATE aws_li_to_gcp_li SET
                     strategy = 'passthrough',
+                    passthrough_reason = 'unit_model_mismatch',
+                    decided_by = 'apply_rates.py',
                     gcp_sku_id = NULL, gcp_sku_name = NULL,
                     component = 'storage',
                     unit_multiplier = 1.0,
@@ -327,26 +330,36 @@ def fix_managed_db_storage_rows(conn, *_ignored):
 
 
 def flag_license_exposure(conn):
-    """Flag Windows / SQL Server / Oracle rows so a commercial-license bill is
-    never SILENTLY under-projected. GCP compute here is priced license-EXCLUSIVE
-    (no Windows/SQL Server premium modeled), so we cap confidence and stamp a
-    projection_note. Runs after the Phase-5 LLM (so it can't be clobbered) and
-    in Phase 4. Idempotent via the marker guard. Deterministic — no rate table."""
+    """Flag commercial-license rows whose GCP license is NOT modeled, so such a
+    bill is never SILENTLY under-projected. Windows / SQL Server / RHEL / Ubuntu Pro
+    / SUSE licenses ARE modeled now (apply_static_mappings emits a 'license' /
+    'sql_license' component), so those rows are EXCLUDED here via the NOT EXISTS
+    check and keep full confidence. Only rows with a commercial OS/DB (e.g. Oracle
+    BYOL) that received NO license component get the note + confidence cap. Runs
+    after the Phase-5 LLM (so it can't be clobbered) and in Phase 4. Idempotent via
+    the marker guard. Deterministic — no rate table."""
     try:
         rows = conn.execute(f"""
             SELECT DISTINCT m.aws_li_key,
                    COALESCE(cat.operating_system,'') os, COALESCE(cat.database_engine,'') eng
             FROM aws_li_to_gcp_li m JOIN aws_li_catalog cat USING (aws_li_key)
             WHERE cat.is_workload AND m.strategy IN ('map','break_down')
-              AND COALESCE(m.projection_note,'') NOT LIKE '%license-premium-not-modeled%'
+              AND COALESCE(m.license_status, '') != 'premium_not_modeled'
               AND (
                 LOWER(COALESCE(cat.operating_system,'')) LIKE '%windows%'
+                OR LOWER(COALESCE(cat.operating_system,'')) LIKE '%oracle%'
                 OR LOWER(COALESCE(cat.database_engine,'')) LIKE '%sql server%'
                 OR LOWER(COALESCE(cat.database_engine,'')) LIKE '%sqlserver%'
                 OR LOWER(COALESCE(cat.database_engine,'')) LIKE '%oracle%'
                 OR LOWER(COALESCE(cat.operation,'')) LIKE '%sql server%'
                 OR LOWER(COALESCE(cat.operation,'')) LIKE '%oracle%'
                 OR LOWER(COALESCE(cat.usage_type,'')) LIKE '%windows%'
+                OR LOWER(COALESCE(cat.product,'')) LIKE '%oracle%'
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM aws_li_to_gcp_li lic
+                WHERE lic.aws_li_key = m.aws_li_key
+                  AND lic.component IN ('license', 'sql_license')
               )
         """).fetchall()
     except Exception as e:
@@ -355,16 +368,12 @@ def flag_license_exposure(conn):
 
     flagged = 0
     for aws_li_key, os_, eng in rows:
-        lic = "Windows" if "windows" in os_.lower() else (eng or "commercial")
-        note = (f"{_LICENSE_MARKER} {lic} license premium NOT modeled — GCP compute is "
-                f"priced license-exclusive; add OS/DB licensing separately.")
         conn.execute("""
             UPDATE aws_li_to_gcp_li
-            SET projection_note = CASE WHEN projection_note IS NULL OR projection_note=''
-                                       THEN ? ELSE projection_note || ' ' || ? END,
+            SET license_status = 'premium_not_modeled',
                 mapping_confidence = LEAST(COALESCE(mapping_confidence, 1.0), 0.5)
             WHERE aws_li_key = ?
-        """, (note, note, aws_li_key))
+        """, (aws_li_key,))
         flagged += 1
     if flagged:
         log.info(f"Flagged {flagged} license-exposed row(s) — confidence capped")
@@ -405,26 +414,13 @@ def main():
 
     conn = duckdb.connect(DB_PATH)
 
-    # Deterministic mapping-correctness enforcement (runs before SKU resolution
-    # so corrected rows get the right rate). Both override the LLM's choices:
-    #   - accelerators (Inferentia/Trainium/GPU) → single passthrough, never CPU VM
-    #   - ElastiCache → Memorystore for Memcached, never Cloud SQL
-    enforce_accelerator_passthrough(conn)
-    remap_elasticache_to_memorystore(conn)
-    fix_managed_db_storage_rows(conn)
-
     try:
-        conn.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN rate_source VARCHAR")
-    except Exception:
-        pass  # column already exists
-    try:
-        conn.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN gcp_sku_unit VARCHAR")
-    except Exception:
-        pass  # column already exists
-    try:
-        conn.execute("ALTER TABLE aws_li_to_gcp_li ADD COLUMN component VARCHAR")
-    except Exception:
-        pass  # column already exists
+        import row_state
+        row_state.ensure_schema(conn)
+        import backfill_row_state
+        backfill_row_state.backfill_row_state(conn)
+    except Exception as e:
+        log.warning(f"ensure_schema / backfill_row_state failed: {e}")
 
     # Snapshot rows whose sku_id was already pinned before apply_rates ran.
     # These come from static mappers (resolve_sku) or from LLM-provided exact IDs.
@@ -491,15 +487,22 @@ def main():
             resolved += 1
             log.debug(f"Resolved SKU: {gcp_service} / {gcp_sku_name!r} -> {res.sku_id}")
         else:
-            note = res.note or "[unresolved-sku: no catalog match — passthrough]"
+            note = res.note or "[unresolved-sku: no catalog match — needs reprice]"
+            try:
+                cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+                reprice_col_clause = "needs_reprice = TRUE," if "needs_reprice" in cols else ""
+            except Exception:
+                reprice_col_clause = ""
             conn.execute(
                 f"""UPDATE aws_li_to_gcp_li 
-                   SET strategy = 'passthrough',
+                   SET strategy = 'needs_reprice',
+                       {reprice_col_clause}
                        rate_source = COALESCE(rate_source, 'no_rate'),
                        projection_note = COALESCE(NULLIF(projection_note, '') || '; ', '') || ?
                    WHERE aws_li_key = ? AND gcp_sku_id IS NULL {comp_filter}""",
                 [note, aws_li_key] + comp_args,
             )
+
 
     if resolved:
         log.info(f"Auto-resolved {resolved} NULL gcp_sku_id row(s) via catalog word-overlap")
@@ -559,21 +562,26 @@ def main():
         conn.execute("""
             UPDATE aws_li_to_gcp_li
             SET strategy = 'passthrough',
-                rate_source = 'no_rate',
-                projection_note = COALESCE(projection_note || ' ', '') ||
-                    '[no-catalog: catalog.duckdb missing — refresh with scripts/refresh-catalog.sh]'
+                passthrough_reason = 'unresolved_sku',
+                decided_by = 'apply_rates.py',
+                rate_source = 'no_catalog'
             WHERE strategy IN ('map', 'break_down')
         """)
         conn.execute("""
             UPDATE aws_li_to_gcp_li
-            SET rate_source = 'no_rate'
+            SET rate_source = 'no_catalog'
             WHERE rate_source IS NULL
         """)
         count = conn.execute(
             "SELECT COUNT(*) FROM aws_li_to_gcp_li WHERE strategy = 'passthrough' "
-            "AND projection_note LIKE '%no-catalog%'"
+            "AND rate_source = 'no_catalog'"
         ).fetchone()[0]
         _write_rate_gaps([("ALL", "ALL", "N/A — catalog.duckdb missing", count)])
+        try:
+            import render_notes
+            render_notes.render_notes_for_db(conn)
+        except Exception as e:
+            log.warning(f"render_notes_for_db in apply_rates failed: {e}")
         create_projection_view(conn)
         log.info(f"Rate fill skipped — {count} row(s) set to passthrough. "
               f"Run: bash scripts/refresh-catalog.sh  to rebuild the catalog.")
@@ -665,7 +673,35 @@ def main():
                     ON CONFLICT DO NOTHING
                 """, (sku_id, gcp_service, desc, rf, rg, ut, region, unit, base_rate,
                       "catalog.duckdb", f"catalog.duckdb#{sku_id}"))
-                
+
+        # Normalize gcp_service to match the catalog's canonical service_name for all mapped rows (NAME-1).
+        # Must run BEFORE CUD synthesis (~700), outlier checks, and report grouping so name-keyed
+        # steps (like cud_pct.json lookup) match by construction rather than failing on LLM casual names.
+        norm_count = conn.execute("""
+            SELECT COUNT(*) FROM aws_li_to_gcp_li m
+            JOIN (
+                SELECT r.gcp_sku_id, r.gcp_service AS canonical_service
+                FROM gcp_sku_rates r
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY r.gcp_sku_id ORDER BY r.gcp_service, r.region) = 1
+            ) c ON m.gcp_sku_id = c.gcp_sku_id
+            WHERE m.strategy IN ('map', 'break_down')
+              AND m.gcp_service != c.canonical_service
+        """).fetchone()[0]
+        if norm_count:
+            conn.execute("""
+                UPDATE aws_li_to_gcp_li m
+                SET gcp_service = c.canonical_service
+                FROM (
+                    SELECT r.gcp_sku_id, r.gcp_service AS canonical_service
+                    FROM gcp_sku_rates r
+                    QUALIFY ROW_NUMBER() OVER (PARTITION BY r.gcp_sku_id ORDER BY r.gcp_service, r.region) = 1
+                ) c
+                WHERE m.gcp_sku_id = c.gcp_sku_id
+                  AND m.strategy IN ('map', 'break_down')
+                  AND m.gcp_service != c.canonical_service
+            """)
+            log.info(f"Normalized gcp_service for {norm_count} rows to match SKU catalog (NAME-1)")
+
         # Unit consistency check: demoted to debug (G-1b) because unit validation
         # is now enforced upfront at resolution time in resolve_intent_to_sku.
         try:
@@ -890,6 +926,62 @@ def main():
         # detect_outliers.py re-creates it idempotently from the same shared SQL.
         create_projection_view(conn)
 
+        dominant_region = compute_dominant_region(conn)
+
+        # Sanity check: any mapped row whose SKU has SOME rate rows but none reachable
+        # for its specific region silently projects $0. Catch and route to outlier_triage.
+        # REGION-1: A row is reachable if it has a rate in its own region, global (including global-fallback),
+        # or the dominant region. Only rows with NO rate anywhere go to outlier_triage.
+        unreachable = conn.execute("""
+            SELECT m.gcp_service, c.gcp_region, m.gcp_sku_id, COUNT(*) AS unreachable_rows
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog c USING (aws_li_key)
+            WHERE m.gcp_sku_id IS NOT NULL
+              AND m.strategy IN ('map','break_down')
+              AND NOT EXISTS (
+                  SELECT 1 FROM gcp_sku_rates r
+                  WHERE r.gcp_sku_id = m.gcp_sku_id
+                    AND (
+                        r.region = c.gcp_region
+                        OR r.region = 'global'
+                        OR r.region = ?
+                    )
+              )
+            GROUP BY m.gcp_service, c.gcp_region, m.gcp_sku_id
+        """, [dominant_region]).fetchall()
+
+        if unreachable:
+            _write_rate_gaps(unreachable)
+            # Batch update unreachable rows into outlier_triage (AR-O)
+            conn.execute("""
+                UPDATE aws_li_to_gcp_li
+                SET strategy = 'outlier_triage',
+                    projection_note = COALESCE(NULLIF(projection_note, '') || ' ', '') ||
+                        '[rate-fill-gap: no rate for region — routed to Phase 5]'
+                WHERE strategy IN ('map', 'break_down')
+                  AND gcp_sku_id IS NOT NULL
+                  AND aws_li_key IN (
+                      SELECT m.aws_li_key
+                      FROM aws_li_to_gcp_li m
+                      JOIN aws_li_catalog c USING (aws_li_key)
+                      WHERE m.strategy IN ('map', 'break_down')
+                        AND m.gcp_sku_id IS NOT NULL
+                        AND NOT EXISTS (
+                            SELECT 1 FROM gcp_sku_rates r
+                            WHERE r.gcp_sku_id = m.gcp_sku_id
+                              AND (
+                                  r.region = c.gcp_region
+                                  OR r.region = 'global'
+                                  OR r.region = ?
+                              )
+                        )
+                  )
+            """, [dominant_region])
+            create_projection_view(conn, dominant_region)
+            log.info(f"Sanity check: {len(unreachable)} unreachable SKU/region pair(s) moved to outlier_triage")
+        else:
+            log.info("Sanity check: all mapped SKUs have reachable rates")
+
         # Safety net: any mapped row still lacking an OnDemand rate after fill
         # (e.g. resolved to a Preemptible-only SKU, or SKU genuinely absent from catalog)
         # must not block the gate. Convert to passthrough so the report always generates.
@@ -903,18 +995,24 @@ def main():
         if null_keys:
             keys = [k[0] for k in null_keys]
             placeholders = ",".join(["?" for _ in keys])
+            try:
+                cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+                reprice_col_clause = "needs_reprice = TRUE," if "needs_reprice" in cols else ""
+            except Exception:
+                reprice_col_clause = ""
             conn.execute(
                 f"""
                 UPDATE aws_li_to_gcp_li
-                SET strategy = 'passthrough',
-                    projection_note = COALESCE(projection_note || ' ', '') ||
-                        '[no-rate-fallback: passthrough at cost parity — OnDemand rate missing for resolved SKU]'
+                SET strategy = 'needs_reprice',
+                    {reprice_col_clause}
+                    rate_source = 'no_rate'
                 WHERE aws_li_key IN ({placeholders})
                 """,
                 keys,
             )
-            create_projection_view(conn)
-            log.info(f"Rate-gap fallback: {len(keys)} NULL-cost row(s) set to passthrough")
+            create_projection_view(conn, dominant_region)
+            log.info(f"Rate-gap fallback: {len(keys)} NULL-cost row(s) set to needs_reprice")
+
 
         # ── Populate rate_source ───────────────────────────────────────────────────
         # Order matters: no_rate first (subset of passthrough), then passthrough,
@@ -931,11 +1029,6 @@ def main():
         # made the report's "N passthrough rows — no reliable GCP equivalent;
         # manual sizing required" caption apply to every ignore row too, wildly
         # overstating how many rows actually need manual review.
-        conn.execute("""
-            UPDATE aws_li_to_gcp_li
-            SET rate_source = 'no_rate'
-            WHERE projection_note LIKE '%no-rate-fallback%'
-        """)
         conn.execute("""
             UPDATE aws_li_to_gcp_li
             SET rate_source = 'passthrough'
@@ -962,86 +1055,11 @@ def main():
             """, list(word_overlap_keys))
         conn.execute("UPDATE aws_li_to_gcp_li SET rate_source = 'unknown' WHERE rate_source IS NULL")
 
-        # Normalize gcp_service to match the catalog's gcp_service field for all mapped rows.
-        # The LLM often writes shortened names ("Cloud KMS", "Memorystore", "Cloud Run") that
-        # differ from the catalog's canonical name ("Cloud Key Management Service (KMS)", etc.).
-        # detect_outliers query D flags these mismatches. Fixing here avoids 700+ false positives.
-        norm_count = conn.execute("""
-            SELECT COUNT(*) FROM aws_li_to_gcp_li m
-            JOIN (
-                SELECT r.gcp_sku_id, r.gcp_service AS canonical_service
-                FROM gcp_sku_rates r
-                QUALIFY ROW_NUMBER() OVER (PARTITION BY r.gcp_sku_id ORDER BY r.gcp_service, r.region) = 1
-            ) c ON m.gcp_sku_id = c.gcp_sku_id
-            WHERE m.strategy IN ('map', 'break_down')
-              AND m.gcp_service != c.canonical_service
-        """).fetchone()[0]
-        if norm_count:
-            conn.execute("""
-                UPDATE aws_li_to_gcp_li m
-                SET gcp_service = c.canonical_service
-                FROM (
-                    SELECT r.gcp_sku_id, r.gcp_service AS canonical_service
-                    FROM gcp_sku_rates r
-                    QUALIFY ROW_NUMBER() OVER (PARTITION BY r.gcp_sku_id ORDER BY r.gcp_service, r.region) = 1
-                ) c
-                WHERE m.gcp_sku_id = c.gcp_sku_id
-                  AND m.strategy IN ('map', 'break_down')
-                  AND m.gcp_service != c.canonical_service
-            """)
-            log.info(f"Normalized gcp_service for {norm_count} rows to match SKU catalog")
-
-        dominant_region = compute_dominant_region(conn)
-
-        # Sanity check: any mapped row whose SKU has SOME rate rows but none reachable
-        # for its specific region silently projects $0. Catch and route to outlier_triage.
-        # Global rows can fall back to dominant_region per H-4.
-        unreachable = conn.execute("""
-            SELECT m.gcp_service, c.gcp_region, m.gcp_sku_id, COUNT(*) AS unreachable_rows
-            FROM aws_li_to_gcp_li m
-            JOIN aws_li_catalog c USING (aws_li_key)
-            WHERE m.gcp_sku_id IS NOT NULL
-              AND m.strategy IN ('map','break_down')
-              AND NOT EXISTS (
-                  SELECT 1 FROM gcp_sku_rates r
-                  WHERE r.gcp_sku_id = m.gcp_sku_id
-                    AND (
-                        r.region = c.gcp_region
-                        OR (r.region = 'global' AND r.source != 'global-fallback')
-                        OR (COALESCE(NULLIF(c.gcp_region, ''), 'global') = 'global' AND (r.region = 'global' OR r.region = ?))
-                    )
-              )
-            GROUP BY m.gcp_service, c.gcp_region, m.gcp_sku_id
-        """, [dominant_region]).fetchall()
-
-        if unreachable:
-            _write_rate_gaps(unreachable)
-            for svc, region, sku_id, count in unreachable:
-                if region is None:
-                    region_filter = "c.gcp_region IS NULL"
-                    params = [sku_id]
-                else:
-                    region_filter = "c.gcp_region = ?"
-                    params = [sku_id, region]
-
-                conn.execute(f"""
-                    UPDATE aws_li_to_gcp_li SET strategy = 'outlier_triage',
-                        projection_note = COALESCE(NULLIF(projection_note, '') || ' ', '') ||
-                            '[rate-fill-gap: no rate for region — routed to Phase 5]'
-                    WHERE gcp_sku_id = ? 
-                      AND strategy IN ('map','break_down')
-                      AND aws_li_key IN (
-                          SELECT aws_li_key FROM aws_li_catalog c WHERE {region_filter}
-                      )
-                """, params)
-            log.info(f"Sanity check: {len(unreachable)} unreachable SKU/region pair(s) moved to outlier_triage")
-        else:
-            log.info("Sanity check: all mapped SKUs have reachable rates")
-
-        # Annotate global rows priced at the dominant region rate (H-4)
+        # Annotate global rows and region-fallback rows priced at the dominant region rate (H-4 / REGION-1)
         conn.execute("""
             UPDATE aws_li_to_gcp_li
-            SET projection_note = COALESCE(NULLIF(projection_note, '') || '; ', '') || 'global charge; priced at ' || ? || ' rate'
+            SET rate_region_basis = 'global',
+                rate_region_used = ?
             WHERE aws_li_key IN (
                 SELECT c.aws_li_key
                 FROM aws_li_catalog c
@@ -1051,14 +1069,48 @@ def main():
                   AND m.gcp_sku_id IS NOT NULL
                   AND m.strategy IN ('map', 'break_down')
                   AND NOT EXISTS (
-                      SELECT 1 FROM gcp_sku_rates r WHERE r.gcp_sku_id = m.gcp_sku_id AND r.region = 'global'
+                      SELECT 1 FROM gcp_sku_rates r WHERE r.gcp_sku_id = m.gcp_sku_id AND r.region = 'global' AND r.source != 'global-fallback'
                   )
                   AND EXISTS (
-                      SELECT 1 FROM gcp_sku_rates r WHERE r.gcp_sku_id = m.gcp_sku_id AND r.region = ?
+                      SELECT 1 FROM gcp_sku_rates r WHERE r.gcp_sku_id = m.gcp_sku_id AND (r.region = ? OR (r.region = 'global' AND r.source = 'global-fallback'))
                   )
             )
-            AND (projection_note IS NULL OR projection_note NOT LIKE '%' || 'global charge; priced at ' || ? || ' rate' || '%')
-        """, [dominant_region, dominant_region, dominant_region])
+            AND rate_region_basis IS NULL
+        """, [dominant_region, dominant_region])
+
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li
+            SET rate_region_basis = 'dominant',
+                rate_region_used = ?
+            FROM aws_li_catalog c
+            WHERE aws_li_to_gcp_li.aws_li_key = c.aws_li_key
+              AND c.gcp_region IS NOT NULL AND c.gcp_region != '' AND c.gcp_region != 'global'
+              AND aws_li_to_gcp_li.gcp_sku_id IS NOT NULL
+              AND aws_li_to_gcp_li.strategy IN ('map', 'break_down')
+              AND NOT EXISTS (
+                  SELECT 1 FROM gcp_sku_rates r
+                  WHERE r.gcp_sku_id = aws_li_to_gcp_li.gcp_sku_id
+                    AND r.region = c.gcp_region
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM gcp_sku_rates r
+                  WHERE r.gcp_sku_id = aws_li_to_gcp_li.gcp_sku_id
+                    AND r.region = 'global'
+                    AND r.source != 'global-fallback'
+              )
+              AND EXISTS (
+                  SELECT 1 FROM gcp_sku_rates r
+                  WHERE r.gcp_sku_id = aws_li_to_gcp_li.gcp_sku_id
+                    AND (r.region = ? OR (r.region = 'global' AND r.source = 'global-fallback'))
+              )
+              AND aws_li_to_gcp_li.rate_region_basis IS NULL
+        """, [dominant_region, dominant_region])
+
+        try:
+            import render_notes
+            render_notes.render_notes_for_db(conn)
+        except Exception as e:
+            log.warning(f"render_notes_for_db in apply_rates failed: {e}")
 
         # Re-create projection view with dominant region
         create_projection_view(conn, dominant_region)
@@ -1067,10 +1119,7 @@ def main():
         conn.execute("""
             UPDATE aws_li_to_gcp_li
             SET mapping_confidence = LEAST(mapping_confidence, 0.4)
-            WHERE aws_li_key IN (
-                SELECT aws_li_key FROM gcp_projection
-                WHERE projection_note LIKE '%cheapest available region%'
-            )
+            WHERE rate_region_basis = 'cheapest_available'
         """)
         conn.execute("COMMIT")
         log.info("Rate fill complete")

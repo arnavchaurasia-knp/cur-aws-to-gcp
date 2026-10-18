@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 auto_review.py — Phase 3 suggestion engine. NEVER modifies the database.
 
@@ -58,18 +58,21 @@ def main():
     # ------------------------------------------------------------------ #
 
     note_exclude = intentional_passthrough_exclude_clause("m.projection_note")
+    cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+    reprice_cond = "OR m.strategy = 'needs_reprice'" + (" OR m.needs_reprice = TRUE" if "needs_reprice" in cols else "")
     illegal_rows = conn.execute(f"""
         SELECT c.aws_li_key, c.product, c.usage_type, c.operation,
                ROUND(c.aws_amortized_cost, 2) AS cost,
                c.gcp_region,
                m.gcp_service, m.gcp_sku_name, m.gcp_sku_id, m.projection_note
         FROM aws_li_catalog c JOIN aws_li_to_gcp_li m USING(aws_li_key)
-        WHERE m.strategy = 'passthrough'
+        WHERE (m.strategy = 'passthrough' {reprice_cond})
           AND c.is_workload
           AND c.aws_amortized_cost >= {_PASSTHROUGH_MATERIALITY_USD}
           AND {note_exclude}
         ORDER BY c.aws_amortized_cost DESC
     """).fetchall()
+
 
     # ------------------------------------------------------------------ #
     # 2. Detect spec violations (break_down multiplier wrong)              #

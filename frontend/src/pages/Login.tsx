@@ -113,13 +113,15 @@ export function Login() {
         <div className="flex-1 flex flex-col justify-center my-auto py-4">
           <div className="max-w-md w-full flex flex-col gap-5">
             <div className="anim-fade-in-up delay-100 text-center">
-              <span className="inline-block px-2.5 py-0.5 rounded-full bg-[#645DF6]/10 text-[#645DF6] text-[10px] font-semibold tracking-wider uppercase mb-1">
-                Migration TCO Tool
-              </span>
-              <p className="text-gray-400 text-[11px] font-medium tracking-wide uppercase mb-2">
+              <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-gray-900">
+                GCP TCO Analyzer
+              </h1>
+              <p className="text-[#645DF6] text-xs sm:text-sm font-semibold tracking-wider uppercase mt-1.5 mb-3">
                 AWS → GCP Estimator
               </p>
-              <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Sign in</h1>
+              <h2 className="text-lg font-semibold tracking-tight text-gray-700">
+                Sign in
+              </h2>
             </div>
 
             {/* Email + Password login form */}
@@ -247,13 +249,17 @@ export function Login() {
 
         <div
           ref={glyphRef}
-          className="relative flex flex-col items-center mb-8"
+          className="relative flex flex-col items-center mb-6"
           style={{ '--drop-dist': `${dropDistance}px` } as React.CSSProperties}
         >
           <div className="login-drop-line" />
           <div className="login-drop-dot" />
-          <div className="login-glyph-wrap relative rounded-full">
-            <img src={facetsFIcon} alt="" className="h-16 relative z-10" />
+          <div className="login-glyph-wrap relative rounded-2xl flex items-center justify-center">
+            <img
+              src={facetsFIcon}
+              alt="Facets"
+              className="w-[320px] max-w-[85vw] h-auto relative z-10 transition-transform duration-300 drop-shadow-[0_12px_28px_rgba(0,0,0,0.5)]"
+            />
           </div>
         </div>
 

@@ -111,7 +111,7 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
         <aside className="lg:border-l lg:border-white/10 lg:pl-8 flex flex-col gap-6">
           <div className="anim-fade-in delay-250">
             <p className="text-xs uppercase tracking-wider text-gray-400 mb-3">Your Reports</p>
-            <JobList jobs={jobs} />
+            <JobList jobs={jobs} onJobDeleted={deletedId => setJobs(prev => prev.filter(j => j.id !== deletedId))} />
           </div>
           <div className="anim-fade-in delay-325">
             <ContactCard />

@@ -173,3 +173,24 @@ export async function shareJob(id: string): Promise<{ token: string; url: string
   }
   return res.json()
 }
+
+export interface DeletedJob {
+  id: string
+  owner: string
+  prospect: string
+  status: string
+  input_ext?: string
+  aws_spend: number | null
+  error: string
+  session_id: string
+  created_at: string
+  deleted_at: string
+  deleted_by: string
+}
+
+export async function listDeletedJobs(): Promise<DeletedJob[]> {
+  const res = await fetch('/api/admin/deleted-jobs')
+  if (!res.ok) return []
+  return res.json()
+}
+

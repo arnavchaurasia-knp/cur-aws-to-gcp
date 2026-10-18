@@ -125,3 +125,18 @@ export async function cancelJob(id: string): Promise<{ id: string; status: strin
   }
   return res.json()
 }
+
+export async function deleteJob(id: string): Promise<void> {
+  const res = await fetch(`/api/jobs/${id}`, { method: 'DELETE' })
+  if (!res.ok && res.status !== 204) {
+    let msg = `delete failed (${res.status})`
+    try {
+      const text = await res.text()
+      if (text) msg = text
+    } catch {
+      // ignore
+    }
+    throw new Error(msg)
+  }
+}
+

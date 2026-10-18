@@ -1,16 +1,17 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { Nav } from '../components/Nav'
 import { JobList } from '../components/JobList'
 import { RunHistory } from '../components/RunHistory'
 import { Summary } from '../components/Summary'
 import { ContactCard } from '../components/ContactCard'
 import { Reveal } from '../components/Reveal'
-import { getJob, getProgress, listJobs, downloadURL, refineJob, retryJob, cancelJob, getRuns, getSummary } from '../api/jobs'
+import { getJob, getProgress, listJobs, downloadURL, refineJob, retryJob, cancelJob, deleteJob, getRuns, getSummary } from '../api/jobs'
 import type { Job, Progress, RunResult } from '../api/jobs'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { TOTAL_PHASES } from '../lib/phases'
+import { toast } from 'sonner'
 
 function formatDollars(n: number): string {
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -261,6 +262,7 @@ function PhaseProgress({ phase }: Readonly<{ phase: number }>) {
 
 export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const [job, setJob] = useState<Job | null>(null)
   const [jobs, setJobs] = useState<Job[]>([])
   const [progress, setProgress] = useState<Progress | null>(null)
@@ -272,9 +274,24 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
   const [refineError, setRefineError] = useState<string | null>(null)
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const [cancelling, setCancelling] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
+
+  const submitDelete = async () => {
+    if (!id || !job) return
+    if (!confirm(`Delete this job run for "${job.prospect}"? It will be removed from your active reports.`)) return
+    setDeleting(true)
+    try {
+      await deleteJob(id)
+      toast.success(`Job run for "${job.prospect}" deleted`)
+      navigate('/', { replace: true })
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Delete failed')
+      setDeleting(false)
+    }
+  }
 
   const submitCancel = async () => {
     if (!id || !confirm('Stop this estimation run?')) return
@@ -522,7 +539,22 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
             </div>
           )}
 
-          <Link to="/" className="nav-link text-xs text-[#645DF6] self-start">← New Estimation</Link>
+          <div className="flex items-center justify-between pt-2 border-t border-white/5">
+            <Link to="/" className="nav-link text-xs text-[#645DF6]">← New Estimation</Link>
+            {(job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') && (
+              <button
+                type="button"
+                onClick={submitDelete}
+                disabled={deleting}
+                className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-red-400 transition-colors duration-150 disabled:opacity-40 cursor-pointer"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor">
+                  <path d="M2.5 4h11m-9.5 0v9a1 1 0 001 1h6a1 1 0 001-1v-9M5.5 4V2.5a1 1 0 011-1h3a1 1 0 011 1V4" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                <span>{deleting ? 'Deleting…' : 'Delete Job Run'}</span>
+              </button>
+            )}
+          </div>
         </main>
         <aside className="lg:border-l lg:border-white/10 lg:pl-8 flex flex-col gap-6">
           <div className="anim-fade-in delay-175">

@@ -174,11 +174,76 @@ func (d *DB) UpdateJobCancelled(id string) error {
 	return err
 }
 
-// DeleteJob removes a job row. Callers must ensure the job is in a terminal
-// state (done/failed/cancelled) before calling this.
+// DeleteJob removes a job row and archives it into deleted_jobs.
 func (d *DB) DeleteJob(id string) error {
-	_, err := d.conn.Exec(`DELETE FROM jobs WHERE id=?`, id)
-	return err
+	return d.ArchiveAndDeleteJob(id, "admin")
+}
+
+// ArchiveAndDeleteJob preserves the job record in the deleted_jobs table
+// before deleting it from active jobs.
+func (d *DB) ArchiveAndDeleteJob(id, deletedBy string) error {
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, _ = tx.Exec(`
+		INSERT INTO deleted_jobs (id, owner, prospect, status, input_ext, aws_spend, error, session_id, created_at, deleted_at, deleted_by)
+		SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, created_at, datetime('now'), ?
+		FROM jobs WHERE id = ?
+	`, deletedBy, id)
+
+	_, err = tx.Exec(`DELETE FROM jobs WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+type DeletedJob struct {
+	ID        string   `json:"id"`
+	Owner     string   `json:"owner"`
+	Prospect  string   `json:"prospect"`
+	Status    string   `json:"status"`
+	InputExt  string   `json:"input_ext"`
+	AWSSpend  *float64 `json:"aws_spend"`
+	Error     string   `json:"error"`
+	SessionID string   `json:"session_id"`
+	CreatedAt string   `json:"created_at"`
+	DeletedAt string   `json:"deleted_at"`
+	DeletedBy string   `json:"deleted_by"`
+}
+
+// ListDeletedJobs returns all archived deleted jobs, newest-deleted first.
+func (d *DB) ListDeletedJobs() ([]*DeletedJob, error) {
+	rows, err := d.conn.Query(`
+		SELECT id, owner, prospect, status, input_ext, aws_spend, COALESCE(error, ''), COALESCE(session_id, ''),
+		       COALESCE(created_at, ''), deleted_at, deleted_by
+		FROM deleted_jobs
+		ORDER BY deleted_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []*DeletedJob
+	for rows.Next() {
+		var j DeletedJob
+		var spend sql.NullFloat64
+		if err := rows.Scan(
+			&j.ID, &j.Owner, &j.Prospect, &j.Status, &j.InputExt, &spend,
+			&j.Error, &j.SessionID, &j.CreatedAt, &j.DeletedAt, &j.DeletedBy,
+		); err != nil {
+			return nil, err
+		}
+		if spend.Valid {
+			j.AWSSpend = &spend.Float64
+		}
+		list = append(list, &j)
+	}
+	return list, nil
 }
 
 // ListAllJobsFiltered supports the admin jobs page: pagination plus optional

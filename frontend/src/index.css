@@ -5,12 +5,23 @@
   --facets-teal: #00C2BB;
 }
 
-/* ── Global page base ───────────────────────────────────────── */
+/* ── Global page base & high refresh rate (120Hz/144Hz+) ─────── */
+html {
+  scroll-behavior: smooth;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 body {
   background-color: #0a0a0f;
   /* subtle dot grid */
   background-image: radial-gradient(rgba(255,255,255,0.032) 1px, transparent 1px);
   background-size: 22px 22px;
+  overflow-x: hidden;
+  /* GPU layer promotion for jitter-free 120Hz/144Hz rendering */
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
 }
 
 /* ── Custom scrollbar ───────────────────────────────────────── */
@@ -62,11 +73,26 @@ select:focus {
   66%       { transform: translate(-15px, 10px) scale(0.97); }
 }
 
-/* ── Utility animation classes ──────────────────────────────── */
-.anim-fade-in-up  { animation: fade-in-up  0.5s cubic-bezier(0.22,1,0.36,1) both; }
-.anim-fade-in     { animation: fade-in     0.4s ease-out both; }
-.anim-slide-down  { animation: slide-down  0.35s cubic-bezier(0.22,1,0.36,1) both; }
-.anim-scale-in    { animation: scale-in    0.3s cubic-bezier(0.22,1,0.36,1) both; }
+/* ── Utility animation classes (GPU composited for 120Hz/144Hz+) ── */
+.anim-fade-in-up  {
+  animation: fade-in-up 0.45s cubic-bezier(0.22,1,0.36,1) both;
+  will-change: transform, opacity;
+  transform: translateZ(0);
+}
+.anim-fade-in     {
+  animation: fade-in 0.35s ease-out both;
+  will-change: opacity;
+}
+.anim-slide-down  {
+  animation: slide-down 0.35s cubic-bezier(0.22,1,0.36,1) both;
+  will-change: transform, opacity;
+  transform: translateZ(0);
+}
+.anim-scale-in    {
+  animation: scale-in 0.3s cubic-bezier(0.22,1,0.36,1) both;
+  will-change: transform, opacity;
+  transform: translateZ(0);
+}
 .anim-glow-breathe { animation: glow-breathe 2.8s ease-in-out infinite; }
 
 /* ── Stagger delays ─────────────────────────────────────────── */

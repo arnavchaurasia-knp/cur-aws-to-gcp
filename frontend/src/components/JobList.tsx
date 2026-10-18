@@ -1,5 +1,8 @@
 import type { Job } from '../api/jobs'
+import { deleteJob } from '../api/jobs'
 import { useNavigate } from 'react-router-dom'
+import { useState } from 'react'
+import { toast } from 'sonner'
 
 const statusColor: Record<string, string> = {
   pending:   'text-gray-400',
@@ -31,27 +34,69 @@ function StatusBadge({ status }: Readonly<{ status: string }>) {
   )
 }
 
-export function JobList({ jobs }: Readonly<{ jobs: Job[] }>) {
+export function JobList({ jobs, onJobDeleted }: Readonly<{ jobs: Job[]; onJobDeleted?: (id: string) => void }>) {
   const nav = useNavigate()
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  const handleDelete = async (e: React.MouseEvent, id: string, prospect: string) => {
+    e.stopPropagation()
+    if (!confirm(`Delete report for "${prospect}"?`)) return
+    setDeletingId(id)
+    try {
+      await deleteJob(id)
+      toast.success(`Report for "${prospect}" deleted`)
+      if (onJobDeleted) {
+        onJobDeleted(id)
+      } else {
+        window.location.reload()
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Delete failed')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   if (!jobs.length) return <p className="text-sm text-gray-500">No reports yet</p>
   return (
     <ul className="divide-y divide-white/10 text-sm">
-      {jobs.map((j, i) => (
-        <li
-          key={j.id}
-          role="button"
-          tabIndex={0}
-          className="flex justify-between items-center py-2 cursor-pointer
-            hover:bg-white/[0.04] px-1 rounded transition-colors duration-150
-            anim-fade-in-up"
-          style={{ animationDelay: `${i * 55}ms` }}
-          onClick={() => nav(`/jobs/${j.id}`)}
-          onKeyDown={e => { if (e.key === 'Enter') nav(`/jobs/${j.id}`) }}
-        >
-          <span className="text-gray-200 truncate max-w-[140px]">{j.prospect}</span>
-          <StatusBadge status={j.status} />
-        </li>
-      ))}
+      {jobs.map((j, i) => {
+        const isTerminal = j.status === 'done' || j.status === 'failed' || j.status === 'cancelled'
+        return (
+          <li
+            key={j.id}
+            role="button"
+            tabIndex={0}
+            className="group flex justify-between items-center py-2 cursor-pointer
+              hover:bg-white/[0.04] px-1 rounded transition-colors duration-150
+              anim-fade-in-up"
+            style={{ animationDelay: `${i * 55}ms` }}
+            onClick={() => nav(`/jobs/${j.id}`)}
+            onKeyDown={e => { if (e.key === 'Enter') nav(`/jobs/${j.id}`) }}
+          >
+            <span className="text-gray-200 truncate max-w-[130px] font-medium" title={j.prospect}>
+              {j.prospect}
+            </span>
+            <div className="flex items-center gap-2">
+              <StatusBadge status={j.status} />
+              {isTerminal && (
+                <button
+                  type="button"
+                  title="Delete report"
+                  onClick={e => handleDelete(e, j.id, j.prospect)}
+                  disabled={deletingId === j.id}
+                  className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 rounded transition-opacity duration-150 disabled:opacity-40"
+                  aria-label="Delete report"
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor">
+                    <path d="M2.5 4h11m-9.5 0v9a1 1 0 001 1h6a1 1 0 001-1v-9M5.5 4V2.5a1 1 0 011-1h3a1 1 0 011 1V4" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+              )}
+            </div>
+          </li>
+        )
+      })}
     </ul>
   )
 }

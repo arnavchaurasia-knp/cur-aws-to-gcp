@@ -183,8 +183,8 @@ func main() {
 		r.Post("/api/jobs/{id}/refine", jobHandler.Refine)
 		r.Get("/api/jobs/{id}/download", jobHandler.Download)
 		r.Get("/api/jobs/{id}/runs", jobHandler.Runs)
-		r.Get("/api/jobs/{id}/summary", jobHandler.Summary)
 		r.Post("/api/jobs/{id}/share", jobHandler.ShareJob)
+		r.Delete("/api/jobs/{id}", jobHandler.Delete)
 
 		// Admin-only routes, gated by auth.RequireAdmin in addition to the
 		// session check already applied by this group.
@@ -196,6 +196,7 @@ func main() {
 			r.Post("/api/admin/jobs/resume-all", jobHandler.ResumeAll)
 			r.Get("/api/admin/system/state", jobHandler.SystemState)
 			r.Delete("/api/admin/jobs/{id}", jobHandler.AdminDeleteJob)
+			r.Get("/api/admin/deleted-jobs", jobHandler.AdminListDeletedJobs)
 			r.Get("/api/admin/users", jobHandler.AdminListUsers)
 			r.Post("/api/admin/users/{email}/role", jobHandler.AdminSetUserRole)
 			r.Get("/api/admin/catalog/status", jobHandler.AdminCatalogStatus)

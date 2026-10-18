@@ -275,12 +275,26 @@ func (h *Handler) AdminDeleteJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"failed to remove job directory"}`, http.StatusInternalServerError)
 		return
 	}
-	if err := h.db.DeleteJob(id); err != nil {
+	if err := h.db.ArchiveAndDeleteJob(id, sess.Email); err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
 	_ = h.db.LogAdminAction(sess.Email, "delete_job", id, "")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// AdminListDeletedJobs lists all archived deleted jobs for compliance and auditing.
+func (h *Handler) AdminListDeletedJobs(w http.ResponseWriter, r *http.Request) {
+	list, err := h.db.ListDeletedJobs()
+	if err != nil {
+		http.Error(w, `{"error":"failed to query deleted jobs"}`, http.StatusInternalServerError)
+		return
+	}
+	if list == nil {
+		list = []*db.DeletedJob{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(list)
 }
 
 // ─────────────────────────────────────────────────────────────────────────

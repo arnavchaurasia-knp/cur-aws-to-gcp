@@ -51,6 +51,20 @@ CREATE TABLE IF NOT EXISTS report_shares (
     created_by TEXT,
     created_at DATETIME DEFAULT (datetime('now')),
     expires_at DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS deleted_jobs (
+    id         TEXT PRIMARY KEY,
+    owner      TEXT NOT NULL,
+    prospect   TEXT NOT NULL,
+    status     TEXT NOT NULL,
+    input_ext  TEXT,
+    aws_spend  REAL,
+    error      TEXT,
+    session_id TEXT,
+    created_at DATETIME,
+    deleted_at DATETIME DEFAULT (datetime('now')),
+    deleted_by TEXT NOT NULL
 );`
 
 // Open opens a database connection. If remoteURL is provided and non-empty (e.g. Turso libsql://),

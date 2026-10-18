@@ -743,3 +743,54 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	json.NewEncoder(w).Encode(map[string]string{"id": id, "status": res.Status})
 }
+
+// Delete allows the job owner (or admin) to archive and delete a finished/failed/cancelled job.
+func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if !isValidJobID(id) {
+		http.Error(w, `{"error":"invalid job id"}`, http.StatusBadRequest)
+		return
+	}
+	jobDir, ok := safeJobDir(h.jobsDir, id)
+	if !ok {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	job, err := h.db.GetJob(id)
+	if err != nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.canAccess(sess, job) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	switch job.Status {
+	case "done", "failed", "cancelled":
+		// terminal status — eligible to delete
+	default:
+		http.Error(w, `{"error":"can only delete a job in a terminal state (done, failed, cancelled)"}`, http.StatusConflict)
+		return
+	}
+
+	// Remove working directory on disk
+	_ = os.RemoveAll(jobDir)
+
+	deleter := sess.Email
+	if deleter == "" {
+		deleter = "user"
+	}
+
+	if err := h.db.ArchiveAndDeleteJob(id, deleter); err != nil {
+		http.Error(w, `{"error":"failed to archive and delete job"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}

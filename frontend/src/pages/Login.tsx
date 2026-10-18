@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import facetsLogo from '../assets/facets-logo-full.svg'
 import facetsFIcon from '../assets/facets-logo-f.svg'
 import { useTitle } from '../lib/useTitle'
@@ -10,39 +11,161 @@ const FEATURES = [
 
 export function Login() {
   useTitle('Sign in')
+  const [email, setEmail] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const err = params.get('error')
+    if (err === 'google_oauth_not_configured') {
+      setErrorMsg('Google OAuth is not configured on this server. Please enter your work email below.')
+    } else if (err === 'forbidden') {
+      setErrorMsg('Access denied: account domain is not permitted.')
+    } else if (err) {
+      setErrorMsg(`Authentication error: ${err}`)
+    }
+  }, [])
+
+  const handleEmailSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const cleanEmail = email.trim()
+    if (!cleanEmail) return
+
+    setLoading(true)
+    setErrorMsg(null)
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({ email: cleanEmail }),
+      })
+
+      if (!res.ok) {
+        const text = await res.text()
+        throw new Error(text || 'Sign-in failed')
+      }
+
+      // Hard redirect to reload session state in App
+      window.location.replace('/')
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to sign in. Please try again.')
+      setLoading(false)
+    }
+  }
+
+  const handleQuickLogin = (quickEmail: string) => {
+    setEmail(quickEmail)
+    setErrorMsg(null)
+  }
+
   return (
     <div className="min-h-screen flex">
-      {/* left panel — light, like a conventional login form */}
-      <div className="w-full lg:w-[440px] shrink-0 bg-white text-gray-900 flex flex-col px-10 sm:px-14 py-10 relative z-10">
-        <img src={facetsLogo} alt="Facets" className="h-6 anim-fade-in-up" />
+      {/* left panel — clean, accessible, modern sign-in */}
+      <div className="w-full lg:w-[480px] shrink-0 bg-white text-gray-900 flex flex-col px-8 sm:px-12 py-10 relative z-10 overflow-y-auto">
+        <img src={facetsLogo} alt="Facets" className="h-6 w-fit anim-fade-in-up" />
 
-        <div className="flex-1 flex flex-col justify-center">
-          <div className="max-w-sm w-full flex flex-col gap-8">
+        <div className="flex-1 flex flex-col justify-center my-8">
+          <div className="max-w-md w-full flex flex-col gap-6">
             <div className="anim-fade-in-up delay-100">
               <h1 className="text-3xl font-semibold tracking-tight text-gray-900">Sign in</h1>
-              <p className="text-[#645DF6] text-xs tracking-widest uppercase font-medium mt-3">
+              <p className="text-[#645DF6] text-xs tracking-widest uppercase font-semibold mt-2">
                 AWS → GCP Cost Estimator
               </p>
             </div>
 
+            {errorMsg && (
+              <div className="p-3.5 rounded-lg bg-amber-50 border border-amber-200/80 text-amber-900 text-xs leading-relaxed anim-fade-in">
+                {errorMsg}
+              </div>
+            )}
+
+            {/* Email login form */}
+            <form onSubmit={handleEmailSubmit} className="flex flex-col gap-4 anim-fade-in-up delay-175">
+              <div>
+                <label htmlFor="work-email" className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-2">
+                  Work Email
+                </label>
+                <input
+                  id="work-email"
+                  type="email"
+                  required
+                  placeholder="name@facets.cloud"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  className="w-full px-4 py-3 text-sm bg-gray-50 border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#645DF6] focus:border-transparent transition-all"
+                />
+                <p className="text-[11px] text-gray-500 mt-1.5">
+                  Sign in with an <span className="font-medium text-gray-700">@facets</span> email for full admin access.
+                </p>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading || !email.trim()}
+                className="cursor-pointer w-full flex items-center justify-center gap-2 bg-[#645DF6] hover:bg-[#5249e0] text-white px-5 py-3 rounded-lg font-medium text-sm shadow-sm transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed hover:shadow hover:scale-[1.01] active:scale-[0.99]"
+              >
+                {loading ? (
+                  <span className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <span>Continue with Email</span>
+                )}
+              </button>
+            </form>
+
+            {/* Divider */}
+            <div className="flex items-center gap-3 anim-fade-in-up delay-250">
+              <div className="flex-1 h-px bg-gray-200" />
+              <span className="text-xs text-gray-400 uppercase tracking-widest font-medium">or</span>
+              <div className="flex-1 h-px bg-gray-200" />
+            </div>
+
+            {/* Google OAuth Button */}
             <button
+              type="button"
               onClick={() => { window.location.assign('/api/auth/login') }}
-              className="cursor-pointer flex items-center justify-center gap-3 bg-white text-gray-700 px-6 py-3.5 rounded-lg font-medium
-                border border-gray-300 hover:bg-gray-50 hover:border-gray-400 hover:scale-[1.02] active:scale-[0.99]
-                transition-all duration-150 anim-fade-in-up delay-250"
+              className="cursor-pointer flex items-center justify-center gap-3 bg-white text-gray-700 px-5 py-3 rounded-lg font-medium text-sm
+                border border-gray-300 hover:bg-gray-50 hover:border-gray-400 hover:scale-[1.01] active:scale-[0.99]
+                transition-all duration-150 anim-fade-in-up delay-300 shadow-sm"
             >
               <GoogleIcon />
               Sign in with Google
             </button>
 
-            <p className="text-xs text-gray-400 anim-fade-in-up delay-325">@google.com or @facets.cloud accounts only</p>
+            {/* Quick-fill helper chips */}
+            <div className="pt-2 border-t border-gray-100 anim-fade-in-up delay-350">
+              <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                Quick Sign-in Options:
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleQuickLogin('admin@facets.cloud')}
+                  className="text-xs px-2.5 py-1.5 rounded-md bg-purple-50 hover:bg-purple-100 text-[#645DF6] border border-purple-200/80 font-medium transition-colors cursor-pointer"
+                  title="Fills admin@facets.cloud (Admin routes enabled)"
+                >
+                  ⚡ admin@facets.cloud (Admin)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleQuickLogin('client@company.com')}
+                  className="text-xs px-2.5 py-1.5 rounded-md bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200 font-medium transition-colors cursor-pointer"
+                  title="Fills client@company.com (Admin routes hidden)"
+                >
+                  client@company.com (Viewer)
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
         <p className="text-xs text-gray-400 anim-fade-in delay-500">© {new Date().getFullYear()} Facets.cloud</p>
       </div>
 
-      {/* right panel — dark, animated, no static illustration */}
+      {/* right panel — dark, animated presentation */}
       <div className="login-bg hidden lg:flex flex-1 flex-col items-center justify-center relative overflow-hidden px-16 text-white">
         <div className="login-orb absolute top-1/4 left-1/4 w-96 h-96 rounded-full pointer-events-none"
              style={{ background: 'radial-gradient(circle, rgba(100,93,246,0.16) 0%, transparent 70%)' }} />
@@ -78,22 +201,6 @@ export function Login() {
             ))}
           </ul>
         </div>
-
-        {/* "Powered by Facets" — doubles as a discreet secondary entry point
-            into the same Google sign-in flow. There's no separate admin
-            login: server-side, the resulting session is granted admin only
-            if its email is in ADMIN_EMAILS (see auth.Session.IsAdmin) — this
-            button is just an alternate, low-visibility way in for that case. */}
-        <button
-          onClick={() => { window.location.assign('/api/auth/login?next=/facets') }}
-          className="cursor-pointer group absolute bottom-6 right-8 flex items-center gap-2 text-xs text-gray-500
-            hover:text-gray-300 transition-colors duration-200 z-10"
-          title="Sign in"
-        >
-          Powered by
-          <img src={facetsFIcon} alt="Facets"
-               className="h-4 opacity-80 transition-transform duration-200 group-hover:scale-110" />
-        </button>
       </div>
     </div>
   )

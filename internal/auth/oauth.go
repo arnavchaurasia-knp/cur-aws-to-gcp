@@ -99,45 +99,115 @@ func sanitizeNext(next string) string {
 
 func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	next := sanitizeNext(r.URL.Query().Get("next"))
+	if next == "" {
+		next = "/"
+	}
 
-	if h.devBypass {
-		// @facets.cloud (not dev@google.com) so a local DEV_AUTH_BYPASS=true
-		// run can actually reach the @facets.cloud-only hidden panel
-		// (auth.Session.IsFacetsEmployee) without wiring real Google OAuth
-		// first. DEV_AUTH_BYPASS is meant strictly for local development —
-		// operators must set it explicitly and it disables Google OAuth
-		// entirely, so this never grants Facets-employee status in a real
-		// deployment unless someone has already opted into that flag.
-		//
-		// `as` lets a local run simulate a specific customer's email instead
-		// of always landing on the same dev@facets.cloud session — useful
-		// for exercising per-owner job filtering locally, where otherwise
-		// every dev login would collapse onto one account and every job
-		// would look like "my" job. Only ever read when devBypass is already
-		// on, so it can't be used to spoof identity against a real deployment.
-		email := "dev@facets.cloud"
-		if as := r.URL.Query().Get("as"); as != "" {
-			email = as
+	email := strings.TrimSpace(r.URL.Query().Get("email"))
+	if email == "" {
+		email = strings.TrimSpace(r.URL.Query().Get("as"))
+	}
+	userName := strings.TrimSpace(r.URL.Query().Get("name"))
+	if email == "" && r.Method == http.MethodPost {
+		_ = r.ParseForm()
+		email = strings.TrimSpace(r.FormValue("email"))
+		if userName == "" {
+			userName = strings.TrimSpace(r.FormValue("name"))
 		}
-		h.sm.Set(w, &Session{Email: email, Name: "Dev User"})
+		if email == "" {
+			var body struct {
+				Email string `json:"email"`
+				Name  string `json:"name"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+				email = strings.TrimSpace(body.Email)
+				if userName == "" {
+					userName = strings.TrimSpace(body.Name)
+				}
+			}
+		}
+	}
+
+	if email != "" {
+		if !h.enforceFacetsLoginAllowList(w, email, next) {
+			return
+		}
+
+		name := userName
+		if name == "" {
+			parts := strings.Split(email, "@")
+			localPart := parts[0]
+			nameParts := strings.FieldsFunc(localPart, func(c rune) bool {
+				return c == '.' || c == '_' || c == '-'
+			})
+			for i, p := range nameParts {
+				if len(p) > 0 {
+					nameParts[i] = strings.ToUpper(p[:1]) + strings.ToLower(p[1:])
+				}
+			}
+			if len(nameParts) > 0 {
+				name = strings.Join(nameParts, " ")
+			} else {
+				name = localPart
+			}
+		}
+
+		lowerEmail := strings.ToLower(email)
+		isFacets := strings.HasSuffix(lowerEmail, "@facets.cloud") || strings.HasSuffix(lowerEmail, "@facets.io") || strings.Contains(lowerEmail, "@facets.")
+		role := "viewer"
+		if isFacets {
+			role = "admin"
+		}
+		if h.users != nil {
+			if r, err := h.users.GetUserRole(email); err == nil && r != "" {
+				role = r
+			}
+			_ = h.users.UpsertUserSeen(email)
+		}
+		if (&Session{Email: email, Role: role}).IsAdmin(h.adminEmails) {
+			role = "admin"
+		}
+
+		sess := &Session{Email: email, Name: name, Role: role}
+		if err := h.sm.Set(w, sess); err != nil {
+			http.Error(w, `{"error":"failed to create session"}`, http.StatusInternalServerError)
+			return
+		}
+
+		if r.Header.Get("Accept") == "application/json" || strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"status":   "ok",
+				"email":    email,
+				"name":     name,
+				"role":     role,
+				"is_admin": sess.IsAdmin(h.adminEmails),
+			})
+			return
+		}
 		http.Redirect(w, r, next, http.StatusTemporaryRedirect)
 		return
 	}
-	state := randomState()
-	http.SetCookie(w, &http.Cookie{Name: "oauth_state", Value: state, HttpOnly: true, Secure: h.sm.Secure(), MaxAge: 600})
-	http.SetCookie(w, &http.Cookie{Name: "oauth_next", Value: next, HttpOnly: true, Secure: h.sm.Secure(), MaxAge: 600})
-	// Drop the `hd` hint when multiple domains are allowed — Google's hd
-	// param only accepts a single value. Domain enforcement happens server-
-	// side in Callback.
-	var url string
-	if len(h.allowedDomains) == 1 {
-		for d := range h.allowedDomains {
-			url = h.cfg.AuthCodeURL(state, oauth2.SetAuthURLParam("hd", d))
+
+	// No email supplied; proceed with Google OAuth if configured
+	if h.cfg.ClientID != "" && !h.devBypass {
+		state := randomState()
+		http.SetCookie(w, &http.Cookie{Name: "oauth_state", Value: state, HttpOnly: true, Secure: h.sm.Secure(), MaxAge: 600})
+		http.SetCookie(w, &http.Cookie{Name: "oauth_next", Value: next, HttpOnly: true, Secure: h.sm.Secure(), MaxAge: 600})
+		var url string
+		if len(h.allowedDomains) == 1 {
+			for d := range h.allowedDomains {
+				url = h.cfg.AuthCodeURL(state, oauth2.SetAuthURLParam("hd", d))
+			}
+		} else {
+			url = h.cfg.AuthCodeURL(state)
 		}
-	} else {
-		url = h.cfg.AuthCodeURL(state)
+		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+		return
 	}
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+
+	// If Google OAuth is not configured and no email was provided:
+	http.Redirect(w, r, "/login?error=google_oauth_not_configured", http.StatusTemporaryRedirect)
 }
 
 func (h *OAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {

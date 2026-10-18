@@ -37,7 +37,14 @@ export default function App() {
     </div>
   )
 
-  const isFacetsEmployee = !!user?.email.toLowerCase().endsWith('@facets.cloud')
+  const email = (user?.email || '').toLowerCase()
+  const isFacetsUser = Boolean(
+    email && (
+      email.endsWith('@facets.cloud') ||
+      email.endsWith('@facets.io') ||
+      email.includes('@facets.')
+    )
+  )
 
   return (
     <BrowserRouter>
@@ -45,19 +52,14 @@ export default function App() {
         <Route path="/login" element={user ? <Navigate to="/" /> : <Login />} />
         <Route path="/" element={user ? <Upload user={user} /> : <Navigate to="/login" />} />
         <Route path="/jobs/:id" element={user ? <JobStatus user={user} /> : <Navigate to="/login" />} />
-        <Route path="/admin" element={user?.is_admin ? <AdminJobs user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/users" element={user?.is_admin ? <AdminUsers user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/catalog" element={user?.is_admin ? <AdminCatalog user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/audit" element={user?.is_admin ? <AdminAudit user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/analytics" element={user?.is_admin ? <AdminAnalytics user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin" element={user && isFacetsUser ? <AdminJobs user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin/users" element={user && isFacetsUser ? <AdminUsers user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin/catalog" element={user && isFacetsUser ? <AdminCatalog user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin/audit" element={user && isFacetsUser ? <AdminAudit user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin/analytics" element={user && isFacetsUser ? <AdminAnalytics user={user} /> : <Navigate to="/" />} />
         <Route path="/reports/:token" element={<SharedReport />} />
-        {/* Not linked from any customer-facing nav. Reached via the small
-            marker Nav renders next to the logo, itself shown only for
-            @facets.cloud sessions. The real gate is server-side (every
-            /api/facets/* handler re-checks auth.Session.IsFacetsEmployee);
-            this client check just keeps a non-Facets user redirected here
-            some other way from seeing anything. */}
-        <Route path="/facets" element={isFacetsEmployee && user ? <Facets user={user} /> : <Navigate to="/" />} />
+        {/* Visible and accessible only for @facets sessions */}
+        <Route path="/facets" element={user && isFacetsUser ? <Facets user={user} /> : <Navigate to="/" />} />
         <Route path="*" element={<Navigate to={user ? "/" : "/login"} replace />} />
       </Routes>
     </BrowserRouter>

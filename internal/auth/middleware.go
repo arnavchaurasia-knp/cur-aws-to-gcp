@@ -8,18 +8,13 @@ import (
 // ExportedCtxKey is exported so handler tests in other packages can inject sessions.
 type ExportedCtxKey struct{}
 
-func Middleware(sm *SessionManager, devBypass ...bool) func(http.Handler) http.Handler {
-	bypass := len(devBypass) > 0 && devBypass[0]
+func Middleware(sm *SessionManager, _ ...bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			sess, err := sm.Get(r)
 			if err != nil {
-				if bypass {
-					sess = &Session{Email: "dev@facets.cloud", Name: "Dev User", Role: "admin"}
-				} else {
-					http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-					return
-				}
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
 			}
 			ctx := context.WithValue(r.Context(), ExportedCtxKey{}, sess)
 			next.ServeHTTP(w, r.WithContext(ctx))

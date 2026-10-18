@@ -152,6 +152,7 @@ func main() {
 
 	// Auth (no session required)
 	r.Get("/api/auth/login", oauthH.Login)
+	r.Post("/api/auth/login", oauthH.Login)
 	r.Get("/api/auth/callback", oauthH.Callback)
 	r.Get("/api/auth/logout", oauthH.Logout)
 	r.Post("/api/auth/logout", oauthH.Logout)

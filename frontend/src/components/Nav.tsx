@@ -1,9 +1,26 @@
 import facetsFIcon from '../assets/facets-logo-f.svg'
 import type { UserInfo } from '../api/auth'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { useState } from 'react'
 
 export function Nav({ user }: Readonly<{ user: UserInfo }>) {
+  const location = useLocation()
+  const email = (user?.email || '').toLowerCase()
+  const isFacetsUser = Boolean(
+    email && (
+      email.endsWith('@facets.cloud') ||
+      email.endsWith('@facets.io') ||
+      email.includes('@facets.')
+    )
+  )
+
+  const navItemClass = (path: string) => {
+    const isActive = location.pathname === path
+    return isActive
+      ? 'nav-link text-[#00C2BB] font-medium'
+      : 'nav-link text-gray-400 hover:text-white transition-colors'
+  }
+
   return (
     <nav className="flex items-center justify-between px-6 py-3 border-b border-white/10 anim-slide-down backdrop-blur-sm bg-[#0a0a0f]/80 sticky top-0 z-30">
       <div className="flex items-center gap-3">
@@ -17,32 +34,32 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
         </Link>
       </div>
       <div className="flex items-center gap-4 text-sm text-gray-400">
-        {user.is_admin && (
+        {isFacetsUser && (
           <div className="hidden sm:flex items-center gap-4">
-            <Link to="/admin" className="nav-link text-[#00C2BB]">All Reports</Link>
-            <Link to="/admin/users" className="nav-link text-gray-400 hover:text-white">Users</Link>
-            <Link to="/admin/catalog" className="nav-link text-gray-400 hover:text-white">Catalog</Link>
-            <Link to="/admin/analytics" className="nav-link text-gray-400 hover:text-white">Analytics</Link>
-            <Link to="/admin/audit" className="nav-link text-gray-400 hover:text-white">Audit</Link>
+            <Link to="/admin" className={navItemClass('/admin')}>All Reports</Link>
+            <Link to="/admin/users" className={navItemClass('/admin/users')}>Users</Link>
+            <Link to="/admin/catalog" className={navItemClass('/admin/catalog')}>Catalog</Link>
+            <Link to="/admin/analytics" className={navItemClass('/admin/analytics')}>Analytics</Link>
+            <Link to="/admin/audit" className={navItemClass('/admin/audit')}>Audit</Link>
           </div>
         )}
-        {user.is_admin && (
+        {isFacetsUser && (
           <Link to="/admin" className="sm:hidden nav-link text-[#00C2BB]">Admin</Link>
         )}
-        <UserMenu user={user} />
+        <UserMenu user={user} isFacetsUser={isFacetsUser} />
       </div>
     </nav>
   )
 }
 
-function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
+function UserMenu({ user, isFacetsUser }: Readonly<{ user: UserInfo; isFacetsUser?: boolean }>) {
   const [open, setOpen] = useState(false)
   const initial = (user.name || user.email || '?').trim().charAt(0).toUpperCase()
   return (
     <div className="relative">
       <button
         onClick={() => setOpen(v => !v)}
-        className="flex items-center gap-2 rounded-full p-0.5 pr-2 hover:bg-white/5 transition-colors duration-150"
+        className="flex items-center gap-2 rounded-full p-0.5 pr-2 hover:bg-white/5 transition-colors duration-150 cursor-pointer"
         aria-haspopup="true"
         aria-expanded={open}
       >
@@ -78,6 +95,11 @@ function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
             <div className="px-4 py-3 border-b border-white/10">
               <p className="text-sm font-medium text-white truncate">{user.name || 'Signed in'}</p>
               <p className="text-xs text-gray-400 truncate">{user.email}</p>
+              {isFacetsUser && (
+                <span className="inline-block mt-1.5 px-2 py-0.5 text-[10px] uppercase font-semibold tracking-wider bg-[#00C2BB]/15 text-[#00C2BB] border border-[#00C2BB]/30 rounded">
+                  Facets Team
+                </span>
+              )}
             </div>
             <button
               onClick={async () => {
@@ -85,7 +107,7 @@ function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
                 await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
                 window.location.replace('/login')
               }}
-              className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-white/5 hover:text-white transition-colors duration-150"
+              className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-white/5 hover:text-white transition-colors duration-150 cursor-pointer"
             >
               Sign Out
             </button>

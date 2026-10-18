@@ -312,8 +312,10 @@ func (h *Handler) AdminSetUserRole(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"role must be one of viewer, admin, facets"}`, http.StatusBadRequest)
 		return
 	}
-	if body.Role == "admin" && !strings.HasSuffix(strings.ToLower(email), "@facets.cloud") {
-		http.Error(w, `{"error":"admin role is restricted to @facets.cloud accounts"}`, http.StatusForbidden)
+	lowerEmail := strings.ToLower(email)
+	isFacets := strings.HasSuffix(lowerEmail, "@facets.cloud") || strings.HasSuffix(lowerEmail, "@facets.io") || strings.Contains(lowerEmail, "@facets.")
+	if body.Role == "admin" && !isFacets {
+		http.Error(w, `{"error":"admin role is restricted to @facets accounts"}`, http.StatusForbidden)
 		return
 	}
 	if err := h.db.SetUserRole(email, body.Role); err != nil {

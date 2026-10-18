@@ -39,8 +39,11 @@ func (s *Session) IsAdmin(adminEmails []string) bool {
 	if s == nil {
 		return false
 	}
-	// Admin is restricted to @facets.cloud accounts.
+	// Admin is strictly restricted to @facets accounts.
 	if !s.IsFacetsEmployee() {
+		return false
+	}
+	if s.Role == "viewer" {
 		return false
 	}
 	if s.Role == "admin" {
@@ -52,19 +55,19 @@ func (s *Session) IsAdmin(adminEmails []string) bool {
 			return true
 		}
 	}
-	return false
+	// All @facets accounts default to admin
+	return true
 }
 
 // IsFacetsEmployee reports whether this session's email is on the
-// @facets.cloud domain. Gates the internal-only portfolio-summary/logs
-// panel — separate from IsAdmin, since admin access and Facets-employee
-// status aren't the same grant (an admin email could be a customer domain
-// in some deployments, and vice versa isn't assumed either).
+// @facets domain. Gates the internal-only portfolio-summary/logs
+// panel and admin routes.
 func (s *Session) IsFacetsEmployee() bool {
 	if s == nil {
 		return false
 	}
-	return strings.HasSuffix(strings.ToLower(s.Email), "@facets.cloud")
+	lower := strings.ToLower(s.Email)
+	return strings.HasSuffix(lower, "@facets.cloud") || strings.HasSuffix(lower, "@facets.io") || strings.Contains(lower, "@facets.")
 }
 
 type SessionManager struct {

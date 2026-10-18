@@ -567,11 +567,16 @@ func (s *Spawner) StartOrchestrated(jobDir, inputExt string) (int, error) {
 		return 0, fmt.Errorf("orchestration halted: STOP_ALL is active")
 	}
 
+	cleanJobDir := filepath.Clean(jobDir)
+	if err := os.MkdirAll(cleanJobDir, 0755); err != nil {
+		return 0, fmt.Errorf("mkdir jobDir: %w", err)
+	}
+
 	script, err := renderOrchestrator(inputExt)
 	if err != nil {
 		return 0, fmt.Errorf("render orchestrator: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(filepath.Clean(jobDir), "run_all.py"), []byte(script), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(cleanJobDir, "run_all.py"), []byte(script), 0644); err != nil {
 		return 0, fmt.Errorf("write run_all.py: %w", err)
 	}
 

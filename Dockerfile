@@ -37,7 +37,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     gzip \
     procps \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install DuckDB CLI binary for orchestration gates and checks
+RUN curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.1.3/duckdb_cli-linux-amd64.zip -o /tmp/duckdb.zip \
+    && unzip /tmp/duckdb.zip -d /usr/local/bin \
+    && rm /tmp/duckdb.zip \
+    && chmod +x /usr/local/bin/duckdb
 
 # Install required Python dependencies
 RUN pip install --no-cache-dir \
@@ -64,6 +71,7 @@ ENV DATA_DIR=/data
 ENV AGY_PATH=agy
 ENV DEV_AUTH_BYPASS=true
 ENV SESSION_SECRET=cur-web-session-secret-key-at-least-32-bytes-long-12345
+ENV SKILL_DIR=/app/skill/aws-gcp-cost-projection
 
 # Create data directory for jobs and databases
 RUN mkdir -p /data

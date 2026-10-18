@@ -269,6 +269,8 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
+	h.ensureJobDirRestored(r.Context(), id, jobDir)
+	_ = os.MkdirAll(jobDir, 0755)
 	// Remove failure.txt so the watcher doesn't immediately re-fail on the same
 	// structural error. The orchestrator reads phase_checkpoint.json at startup
 	// and resumes from the next unfinished phase — no manual START_PHASE injection

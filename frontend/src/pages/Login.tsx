@@ -86,7 +86,15 @@ export function Login() {
     <div className="min-h-screen flex">
       {/* left panel — clean, accessible, modern sign-in */}
       <div className="w-full lg:w-[480px] shrink-0 bg-white text-gray-900 flex flex-col px-8 sm:px-12 py-10 relative z-10 overflow-y-auto">
-        <img src={facetsLogo} alt="Facets" className="h-6 w-fit anim-fade-in-up" />
+        <a
+          href="https://www.facets.cloud"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="w-fit inline-block hover:opacity-85 transition-opacity anim-fade-in-up"
+          title="Visit facets.cloud"
+        >
+          <img src={facetsLogo} alt="Facets" className="h-6 w-fit" />
+        </a>
 
         <div className="flex-1 flex flex-col justify-center my-8">
           <div className="max-w-md w-full flex flex-col gap-6">
@@ -177,7 +185,38 @@ export function Login() {
           </div>
         </div>
 
-        <p className="text-xs text-gray-400 anim-fade-in delay-500">© {new Date().getFullYear()} Facets.cloud</p>
+        {/* Proper footer pinned to the bottom */}
+        <footer className="mt-auto pt-6 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-gray-400 anim-fade-in delay-500">
+          <span>© {new Date().getFullYear()} Facets.cloud</span>
+          <div className="flex items-center gap-3 text-gray-400">
+            <a
+              href="https://www.facets.cloud/privacy-policy"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-gray-600 transition-colors"
+            >
+              Privacy
+            </a>
+            <span>•</span>
+            <a
+              href="https://www.facets.cloud/terms-of-service"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-gray-600 transition-colors"
+            >
+              Terms
+            </a>
+            <span>•</span>
+            <a
+              href="https://www.facets.cloud"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-gray-600 transition-colors"
+            >
+              Website
+            </a>
+          </div>
+        </footer>
       </div>
 
       {/* right panel — dark, animated presentation */}
@@ -200,13 +239,14 @@ export function Login() {
         </div>
 
         <div className="max-w-md relative z-10 text-center anim-fade-in-up delay-175">
-          <p className="login-eyebrow text-xs uppercase tracking-[0.3em] text-[#00C2BB] mb-4">AI-Powered Migration</p>
+          <p className="login-eyebrow text-xs uppercase tracking-[0.3em] text-[#00C2BB] mb-4">Intelligent Cloud Migration</p>
           <h2 className="text-3xl font-semibold leading-tight tracking-tight">
-            Estimate cloud costs <span className="login-gradient-text">10x faster</span>
+            Estimate cloud costs <span className="login-gradient-text">with SKU-level precision</span>
           </h2>
           <p className="text-gray-400 text-sm mt-4 leading-relaxed">
-            An AI agent classifies every line item on your AWS bill, maps it to its
-            Google Cloud equivalent, and prices it out — on-demand and committed-use.
+            Deterministically maps every line item on your AWS bill to its exact
+            Google Cloud equivalent, pricing out on-demand, 1-year, and 3-year
+            committed-use discounts with auditable accuracy.
           </p>
 
           <ul className="mt-8 flex flex-col gap-3 items-start mx-auto w-fit text-left">

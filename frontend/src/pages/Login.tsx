@@ -98,7 +98,7 @@ export function Login() {
 
         <div className="flex-1 flex flex-col justify-center my-8">
           <div className="max-w-md w-full flex flex-col gap-6">
-            <div className="anim-fade-in-up delay-100">
+            <div className="anim-fade-in-up delay-100 text-center">
               <h1 className="text-3xl font-semibold tracking-tight text-gray-900">Sign in</h1>
               <p className="text-[#645DF6] text-xs tracking-widest uppercase font-semibold mt-2">
                 AWS → GCP Cost Estimator

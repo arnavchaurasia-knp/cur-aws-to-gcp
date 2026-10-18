@@ -54,7 +54,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   const [statusFilter, setStatusFilter] = useState('')
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
-  const [query, setQuery] = useState<string>('')
+  const [query, setQuery] = useState<string>(() => new URLSearchParams(window.location.search).get('q') || '')
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [rowError, setRowError] = useState<Record<string, string>>({})
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())

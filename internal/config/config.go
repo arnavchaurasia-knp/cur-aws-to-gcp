@@ -40,6 +40,7 @@ type Config struct {
 	AppBaseURL         string
 	SlackWebhookURL    string
 	DevAuthBypass      bool
+	AdminPassword      string
 	// AGYPath is the path to the agy binary. From $AGY_PATH; defaults to
 	// "agy" (expects it on PATH). Set this on Windows where the binary lives
 	// at a fixed path and is not on PATH.
@@ -182,6 +183,7 @@ func LoadFromEnv() (*Config, error) {
 		AppBaseURL:         os.Getenv("APP_BASE_URL"),
 		SlackWebhookURL:    os.Getenv("SLACK_WEBHOOK_URL"),
 		DevAuthBypass:      devBypass,
+		AdminPassword:      os.Getenv("ADMIN_PASSWORD"),
 		AdminEmails:        parseAdminEmails(os.Getenv("ADMIN_EMAILS")),
 		AllowedDomains:     parseAllowedDomains(os.Getenv("ALLOWED_DOMAINS")),
 		FacetsLoginEmails:  parseAdminEmails(os.Getenv("FACETS_LOGIN_EMAILS")),
@@ -196,7 +198,7 @@ func LoadFromEnv() (*Config, error) {
 
 func parseAllowedDomains(raw string) []string {
 	if raw == "" {
-		return DefaultAllowedDomains
+		return []string{"*"}
 	}
 	parts := strings.Split(raw, ",")
 	out := make([]string, 0, len(parts))

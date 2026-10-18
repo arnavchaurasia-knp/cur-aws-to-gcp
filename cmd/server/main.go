@@ -69,6 +69,7 @@ func main() {
 	)
 	oauthH.SetFacetsLoginEmails(cfg.FacetsLoginEmails)
 	oauthH.SetUserStore(database)
+	oauthH.SetAdminPassword(cfg.AdminPassword)
 	if cfg.DevAuthBypass {
 		log.Println("WARNING: DEV_AUTH_BYPASS=true — Google OAuth disabled, /api/auth/login sets a fake dev@facets.cloud session")
 	}

@@ -1,7 +1,85 @@
 // internal/db/users.go
 package db
 
-import "database/sql"
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"database/sql"
+	"encoding/hex"
+	"strings"
+)
+
+func hashPassword(password string) string {
+	salt := make([]byte, 16)
+	_, _ = rand.Read(salt)
+	h := sha256.Sum256(append(salt, []byte(password)...))
+	return hex.EncodeToString(salt) + ":" + hex.EncodeToString(h[:])
+}
+
+func verifyPassword(password, stored string) bool {
+	parts := strings.Split(stored, ":")
+	if len(parts) != 2 {
+		return false
+	}
+	salt, err := hex.DecodeString(parts[0])
+	if err != nil {
+		return false
+	}
+	expectedHash, err := hex.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+	actualHash := sha256.Sum256(append(salt, []byte(password)...))
+	return subtle.ConstantTimeCompare(actualHash[:], expectedHash) == 1
+}
+
+// AuthenticateUser verifies or creates credentials for email.
+// If the user does not exist, it registers them with the given password.
+// If the user exists without password, it associates this password.
+// If the user exists with password, it checks password matching.
+func (d *DB) AuthenticateUser(email, password string) (bool, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" || password == "" {
+		return false, nil
+	}
+
+	var storedHash sql.NullString
+	var role string
+	err := d.conn.QueryRow(`SELECT password_hash, role FROM users WHERE email = ?`, email).Scan(&storedHash, &role)
+	if err == sql.ErrNoRows {
+		isFacets := strings.HasSuffix(email, "@facets.cloud") || strings.HasSuffix(email, "@facets.io") || strings.Contains(email, "@facets.")
+		newRole := "viewer"
+		if isFacets {
+			newRole = "admin"
+		}
+		newHash := hashPassword(password)
+		_, err := d.conn.Exec(`INSERT INTO users (email, role, password_hash) VALUES (?, ?, ?)`, email, newRole, newHash)
+		if err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	if !storedHash.Valid || storedHash.String == "" {
+		newHash := hashPassword(password)
+		_, err := d.conn.Exec(`UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE email = ?`, newHash, email)
+		if err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	if !verifyPassword(password, storedHash.String) {
+		return false, nil
+	}
+
+	_, _ = d.conn.Exec(`UPDATE users SET updated_at = datetime('now') WHERE email = ?`, email)
+	return true, nil
+}
 
 // UpsertUserSeen records that email successfully logged in, creating a
 // `viewer`-role row on first sight and bumping updated_at on every

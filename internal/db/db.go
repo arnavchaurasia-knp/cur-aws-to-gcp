@@ -90,6 +90,7 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 		`ALTER TABLE jobs ADD COLUMN agent_pid INTEGER DEFAULT 0`,
 		`ALTER TABLE jobs ADD COLUMN attempts INTEGER DEFAULT 1`,
 		`ALTER TABLE jobs ADD COLUMN cancelled_at DATETIME`,
+		`ALTER TABLE users ADD COLUMN password_hash TEXT`,
 	} {
 		if _, err := conn.Exec(ddl); err != nil {
 			msg := err.Error()

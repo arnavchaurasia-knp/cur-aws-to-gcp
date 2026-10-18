@@ -19,6 +19,7 @@ import (
 type userStore interface {
 	UpsertUserSeen(email string) error
 	GetUserRole(email string) (string, error)
+	AuthenticateUser(email, password string) (bool, error)
 }
 
 type OAuthHandler struct {
@@ -26,6 +27,7 @@ type OAuthHandler struct {
 	sm                *SessionManager
 	redirectAfter     string
 	devBypass         bool
+	adminPassword     string
 	allowedDomains    map[string]bool
 	adminEmails       []string
 	facetsLoginEmails map[string]bool
@@ -51,6 +53,11 @@ func NewOAuthHandler(clientID, clientSecret, redirectURI string, sm *SessionMana
 		allowedDomains: allowed,
 		adminEmails:    adminEmails,
 	}
+}
+
+// SetAdminPassword installs the fallback admin password.
+func (h *OAuthHandler) SetAdminPassword(pwd string) {
+	h.adminPassword = pwd
 }
 
 // SetFacetsLoginEmails installs the FACETS_LOGIN_EMAILS allow-list (lowercased
@@ -107,20 +114,24 @@ func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if email == "" {
 		email = strings.TrimSpace(r.URL.Query().Get("as"))
 	}
-	userName := strings.TrimSpace(r.URL.Query().Get("name"))
-	if email == "" && r.Method == http.MethodPost {
+	var password, userName string
+
+	if r.Method == http.MethodPost {
 		_ = r.ParseForm()
-		email = strings.TrimSpace(r.FormValue("email"))
-		if userName == "" {
-			userName = strings.TrimSpace(r.FormValue("name"))
+		if email == "" {
+			email = strings.TrimSpace(r.FormValue("email"))
 		}
+		password = strings.TrimSpace(r.FormValue("password"))
+		userName = strings.TrimSpace(r.FormValue("name"))
 		if email == "" {
 			var body struct {
-				Email string `json:"email"`
-				Name  string `json:"name"`
+				Email    string `json:"email"`
+				Password string `json:"password"`
+				Name     string `json:"name"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
 				email = strings.TrimSpace(body.Email)
+				password = strings.TrimSpace(body.Password)
 				if userName == "" {
 					userName = strings.TrimSpace(body.Name)
 				}
@@ -128,8 +139,31 @@ func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 1. If an email is supplied (via form or POST), authenticate with password
 	if email != "" {
 		if !h.enforceFacetsLoginAllowList(w, email, next) {
+			return
+		}
+
+		authenticated := false
+		if h.users != nil && password != "" {
+			if ok, err := h.users.AuthenticateUser(email, password); err == nil && ok {
+				authenticated = true
+			}
+		}
+		if !authenticated && h.adminPassword != "" && password == h.adminPassword {
+			authenticated = true
+		}
+		if !authenticated && h.devBypass && password != "" {
+			authenticated = true
+		}
+
+		if !authenticated {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "Invalid email or password. Please use 'Sign in with Google' or enter valid credentials.",
+			})
 			return
 		}
 
@@ -189,42 +223,57 @@ func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// No email supplied; proceed with Google OAuth if configured
-	if h.cfg.ClientID != "" && !h.devBypass {
+	// 2. No email supplied (GET /api/auth/login) — initiate Google OAuth flow
+	if h.cfg.ClientID != "" {
 		state := randomState()
-		http.SetCookie(w, &http.Cookie{Name: "oauth_state", Value: state, HttpOnly: true, Secure: h.sm.Secure(), MaxAge: 600})
-		http.SetCookie(w, &http.Cookie{Name: "oauth_next", Value: next, HttpOnly: true, Secure: h.sm.Secure(), MaxAge: 600})
+		http.SetCookie(w, &http.Cookie{Name: "oauth_state", Value: state, HttpOnly: true, Secure: h.sm.Secure(), Path: "/", MaxAge: 600})
+		http.SetCookie(w, &http.Cookie{Name: "oauth_next", Value: next, HttpOnly: true, Secure: h.sm.Secure(), Path: "/", MaxAge: 600})
+
+		redirectURI := h.cfg.RedirectURL
+		if strings.HasSuffix(r.Host, "onrender.com") && !strings.Contains(redirectURI, "onrender.com") {
+			redirectURI = "https://" + r.Host + "/api/auth/callback"
+		}
+		cfgCopy := *h.cfg
+		cfgCopy.RedirectURL = redirectURI
+
 		var url string
-		if len(h.allowedDomains) == 1 {
+		if len(h.allowedDomains) == 1 && !h.allowedDomains["*"] {
 			for d := range h.allowedDomains {
-				url = h.cfg.AuthCodeURL(state, oauth2.SetAuthURLParam("hd", d))
+				url = cfgCopy.AuthCodeURL(state, oauth2.SetAuthURLParam("hd", d))
 			}
 		} else {
-			url = h.cfg.AuthCodeURL(state)
+			url = cfgCopy.AuthCodeURL(state)
 		}
 		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 		return
 	}
 
-	// If Google OAuth is not configured and no email was provided:
 	http.Redirect(w, r, "/login?error=google_oauth_not_configured", http.StatusTemporaryRedirect)
 }
 
 func (h *OAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	stateCookie, err := r.Cookie("oauth_state")
 	if err != nil || stateCookie.Value != r.URL.Query().Get("state") {
-		http.Error(w, "invalid state", http.StatusBadRequest)
+		http.Redirect(w, r, "/login?error=invalid_state", http.StatusTemporaryRedirect)
 		return
 	}
-	token, err := h.cfg.Exchange(context.Background(), r.URL.Query().Get("code"))
+
+	redirectURI := h.cfg.RedirectURL
+	if strings.HasSuffix(r.Host, "onrender.com") && !strings.Contains(redirectURI, "onrender.com") {
+		redirectURI = "https://" + r.Host + "/api/auth/callback"
+	}
+	cfgCopy := *h.cfg
+	cfgCopy.RedirectURL = redirectURI
+
+	token, err := cfgCopy.Exchange(context.Background(), r.URL.Query().Get("code"))
 	if err != nil {
-		http.Error(w, "token exchange failed", http.StatusInternalServerError)
+		http.Redirect(w, r, "/login?error=token_exchange_failed", http.StatusTemporaryRedirect)
 		return
 	}
-	client := h.cfg.Client(context.Background(), token)
+	client := cfgCopy.Client(context.Background(), token)
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
 	if err != nil {
-		http.Error(w, "userinfo failed", http.StatusInternalServerError)
+		http.Redirect(w, r, "/login?error=userinfo_failed", http.StatusTemporaryRedirect)
 		return
 	}
 	defer resp.Body.Close()
@@ -235,46 +284,56 @@ func (h *OAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		Picture string `json:"picture"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		http.Error(w, "decode failed", http.StatusInternalServerError)
+		http.Redirect(w, r, "/login?error=decode_failed", http.StatusTemporaryRedirect)
 		return
 	}
-	if !h.allowedDomains[info.HD] {
-		http.Error(w, "forbidden: account domain not allowed", http.StatusForbidden)
-		return
+
+	userDomain := strings.ToLower(info.HD)
+	if userDomain == "" {
+		parts := strings.Split(info.Email, "@")
+		if len(parts) == 2 {
+			userDomain = strings.ToLower(parts[1])
+		}
+	}
+
+	if len(h.allowedDomains) > 0 && !h.allowedDomains["*"] {
+		if !h.allowedDomains[userDomain] && !h.allowedDomains[strings.ToLower(info.HD)] {
+			http.Redirect(w, r, "/login?error=forbidden", http.StatusTemporaryRedirect)
+			return
+		}
 	}
 
 	next := "/"
 	if c, err := r.Cookie("oauth_next"); err == nil {
 		next = sanitizeNext(c.Value)
 	}
-	// Facets lockdown: next=/facets requires the email be on the
-	// FACETS_LOGIN_EMAILS allow-list. Checked before h.sm.Set — an unlisted
-	// email must never get a session out of this path at all.
 	if !h.enforceFacetsLoginAllowList(w, info.Email, next) {
 		return
 	}
 
-	role := ""
+	lowerEmail := strings.ToLower(info.Email)
+	isFacets := strings.HasSuffix(lowerEmail, "@facets.cloud") || strings.HasSuffix(lowerEmail, "@facets.io") || strings.Contains(lowerEmail, "@facets.")
+	role := "viewer"
+	if isFacets {
+		role = "admin"
+	}
 	if h.users != nil {
-		if r, err := h.users.GetUserRole(info.Email); err == nil {
+		if r, err := h.users.GetUserRole(info.Email); err == nil && r != "" {
 			role = r
 		}
 		_ = h.users.UpsertUserSeen(info.Email)
 	}
-	if role == "" {
-		// No users-table row yet (or lookup failed) — fall back to the
-		// admin-email-list bootstrap so existing ADMIN_EMAILS deployments
-		// keep working unchanged.
-		if (&Session{Email: info.Email}).IsAdmin(h.adminEmails) {
-			role = "admin"
-		} else {
-			role = "viewer"
-		}
+	if (&Session{Email: info.Email, Role: role}).IsAdmin(h.adminEmails) {
+		role = "admin"
 	}
 
-	h.sm.Set(w, &Session{Email: info.Email, Name: info.Name, Picture: info.Picture, Role: role})
+	if err := h.sm.Set(w, &Session{Email: info.Email, Name: info.Name, Picture: info.Picture, Role: role}); err != nil {
+		http.Redirect(w, r, "/login?error=session_failed", http.StatusTemporaryRedirect)
+		return
+	}
 
 	http.SetCookie(w, &http.Cookie{Name: "oauth_next", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: h.sm.Secure()})
+	http.SetCookie(w, &http.Cookie{Name: "oauth_state", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: h.sm.Secure()})
 	http.Redirect(w, r, next, http.StatusTemporaryRedirect)
 }
 

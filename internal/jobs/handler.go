@@ -118,8 +118,14 @@ func (h *Handler) canAccess(sess *auth.Session, job *db.Job) bool {
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
-	r.ParseMultipartForm(200 << 20) // 200 MB
-	prospect := r.FormValue("prospect_name")
+	// Limit in-memory buffer to 10 MB; anything larger streams to temporary files
+	// on disk so uploads never exceed the 512MB RAM limit on free-tier containers.
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		slog.Error("ParseMultipartForm failed", "err", err)
+		http.Error(w, `{"error":"failed to parse upload: `+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+	prospect := strings.TrimSpace(r.FormValue("prospect_name"))
 	if len(prospect) == 0 || len(prospect) > 500 {
 		http.Error(w, `{"error":"prospect_name must be 1-500 characters"}`, http.StatusBadRequest)
 		return

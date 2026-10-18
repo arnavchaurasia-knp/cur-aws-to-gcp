@@ -79,11 +79,16 @@ func (c *Config) StopAllPath() string { return c.DataDir + "/STOP_ALL" }
 func LoadFromEnv() (*Config, error) {
 	devBypass := os.Getenv("DEV_AUTH_BYPASS") == "true"
 
-	if devBypass && os.Getenv("APP_BASE_URL") == "" {
-		if renderURL := os.Getenv("RENDER_EXTERNAL_URL"); renderURL != "" {
-			_ = os.Setenv("APP_BASE_URL", renderURL)
-		} else {
-			_ = os.Setenv("APP_BASE_URL", "http://localhost:8080")
+	if devBypass {
+		if os.Getenv("SESSION_SECRET") == "" {
+			_ = os.Setenv("SESSION_SECRET", "cur-web-default-session-secret-key-32-bytes")
+		}
+		if os.Getenv("APP_BASE_URL") == "" {
+			if renderURL := os.Getenv("RENDER_EXTERNAL_URL"); renderURL != "" {
+				_ = os.Setenv("APP_BASE_URL", renderURL)
+			} else {
+				_ = os.Setenv("APP_BASE_URL", "http://localhost:8080")
+			}
 		}
 	}
 

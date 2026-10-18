@@ -12,6 +12,7 @@ import { Facets } from './pages/Facets'
 import { useEffect, useState } from 'react'
 import { getMe } from './api/auth'
 import type { UserInfo } from './api/auth'
+import { Toaster } from 'sonner'
 
 export default function App() {
   const [user, setUser] = useState<UserInfo | null | undefined>(undefined)
@@ -48,6 +49,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      <Toaster position="top-center" richColors closeButton theme="dark" />
       <Routes>
         <Route path="/login" element={user ? <Navigate to="/" /> : <Login />} />
         <Route path="/" element={user ? <Upload user={user} /> : <Navigate to="/login" />} />

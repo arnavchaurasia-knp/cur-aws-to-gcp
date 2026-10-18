@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { toast } from 'sonner'
 import facetsLogo from '../assets/facets-logo-full.svg'
 import facetsFIcon from '../assets/facets-logo-f.svg'
 import { useTitle } from '../lib/useTitle'
@@ -14,7 +15,6 @@ export function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
-  const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   const glyphRef = useRef<HTMLDivElement>(null)
   const [dropDistance, setDropDistance] = useState<number>(340)
@@ -35,13 +35,23 @@ export function Login() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
+
+    // Handle case where user configured /login as redirect in Google Console
+    const code = params.get('code')
+    const state = params.get('state')
+    if (code) {
+      toast.loading('Completing Google authentication…')
+      window.location.replace(`/api/auth/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state || '')}`)
+      return
+    }
+
     const err = params.get('error')
     if (err === 'google_oauth_not_configured') {
-      setErrorMsg('Google OAuth is not configured on this server. Please sign in with email and password below.')
+      toast.error('Google OAuth is not configured on this server. Please sign in with email and password below.', { duration: 6000 })
     } else if (err === 'forbidden') {
-      setErrorMsg('Access denied: account domain is not permitted.')
+      toast.error('Access denied: account domain is not permitted.', { duration: 5000 })
     } else if (err) {
-      setErrorMsg(`Authentication error: ${err}`)
+      toast.error(`Authentication error: ${err}`, { duration: 5000 })
     }
     // Clean up error query param from address bar so it does not persist across refreshes
     if (err) {
@@ -55,7 +65,6 @@ export function Login() {
     if (!cleanEmail || !password) return
 
     setLoading(true)
-    setErrorMsg(null)
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -78,10 +87,11 @@ export function Login() {
         throw new Error(msg)
       }
 
+      toast.success('Signed in successfully!')
       // Hard redirect to reload session state in App
       window.location.replace('/')
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to sign in. Please try again.')
+      toast.error(err.message || 'Failed to sign in. Please try again.')
       setLoading(false)
     }
   }
@@ -108,21 +118,6 @@ export function Login() {
                 AWS → GCP Cost Estimator
               </p>
             </div>
-
-            {errorMsg && (
-              <div className="p-3.5 rounded-lg bg-amber-50 border border-amber-200/80 text-amber-900 text-xs leading-relaxed anim-fade-in flex items-start justify-between gap-3">
-                <span>{errorMsg}</span>
-                <button
-                  type="button"
-                  onClick={() => setErrorMsg(null)}
-                  className="text-amber-700 hover:text-amber-950 font-bold px-1 transition-colors"
-                  aria-label="Dismiss error"
-                  title="Dismiss"
-                >
-                  ✕
-                </button>
-              </div>
-            )}
 
             {/* Email + Password login form */}
             <form onSubmit={handleEmailSubmit} className="flex flex-col gap-4 anim-fade-in-up delay-175">
@@ -184,7 +179,6 @@ export function Login() {
               <button
                 type="button"
                 onClick={() => {
-                  setErrorMsg(null)
                   window.location.assign('/api/auth/login')
                 }}
                 className="cursor-pointer w-full flex items-center justify-center gap-3 bg-white text-gray-800 px-5 py-3 rounded-lg font-medium text-sm

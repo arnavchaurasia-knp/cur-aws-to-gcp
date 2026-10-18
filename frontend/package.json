@@ -14,7 +14,8 @@
     "react-dom": "^19.2.5",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.15.0",
-    "recharts": "^3.10.1"
+    "recharts": "^3.10.1",
+    "sonner": "^2.0.8"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

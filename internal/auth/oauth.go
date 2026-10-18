@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 
 	"golang.org/x/oauth2"
@@ -224,16 +225,46 @@ func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. No email supplied (GET /api/auth/login) — initiate Google OAuth flow
-	if h.cfg.ClientID != "" {
+	clientID := h.cfg.ClientID
+	if clientID == "" {
+		clientID = os.Getenv("GOOGLE_CLIENT_ID")
+	}
+	clientSecret := h.cfg.ClientSecret
+	if clientSecret == "" {
+		clientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
+	}
+	redirectURI := h.cfg.RedirectURL
+	if redirectURI == "" {
+		redirectURI = os.Getenv("GOOGLE_REDIRECT_URI")
+	}
+
+	if clientID != "" {
+		h.cfg.ClientID = clientID
+		h.cfg.ClientSecret = clientSecret
+		h.cfg.RedirectURL = redirectURI
+
 		state := randomState()
 		http.SetCookie(w, &http.Cookie{Name: "oauth_state", Value: state, HttpOnly: true, Secure: h.sm.Secure(), Path: "/", MaxAge: 600})
+
+		// Track origin port (e.g. if request came from Vite on 5173)
+		if ref := r.Header.Get("Referer"); ref != "" && strings.Contains(ref, ":5173") && next == "/" {
+			next = "http://localhost:5173/"
+		}
 		http.SetCookie(w, &http.Cookie{Name: "oauth_next", Value: next, HttpOnly: true, Secure: h.sm.Secure(), Path: "/", MaxAge: 600})
 
-		redirectURI := h.cfg.RedirectURL
-		if strings.HasSuffix(r.Host, "onrender.com") && !strings.Contains(redirectURI, "onrender.com") {
+		if redirectURI == "" {
+			scheme := "http"
+			if r.TLS != nil || strings.HasPrefix(h.redirectAfter, "https://") || strings.HasSuffix(r.Host, "onrender.com") {
+				scheme = "https"
+			}
+			redirectURI = scheme + "://" + r.Host + "/api/auth/callback"
+		} else if strings.HasSuffix(r.Host, "onrender.com") && !strings.Contains(redirectURI, "onrender.com") {
 			redirectURI = "https://" + r.Host + "/api/auth/callback"
 		}
+
 		cfgCopy := *h.cfg
+		cfgCopy.ClientID = clientID
+		cfgCopy.ClientSecret = clientSecret
 		cfgCopy.RedirectURL = redirectURI
 
 		var url string

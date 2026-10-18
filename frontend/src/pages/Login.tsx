@@ -113,13 +113,13 @@ export function Login() {
         <div className="flex-1 flex flex-col justify-center my-auto py-4">
           <div className="max-w-md w-full flex flex-col gap-5">
             <div className="anim-fade-in-up delay-100 text-center">
-              <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-gray-900">
+              <h1 className="text-2xl sm:text-[28px] font-semibold tracking-tight text-gray-900 font-['Plus_Jakarta_Sans',sans-serif]">
                 GCP TCO Analyzer
               </h1>
-              <p className="text-[#645DF6] text-xs sm:text-sm font-semibold tracking-wider uppercase mt-1.5 mb-3">
+              <p className="text-[#645DF6] text-[11px] sm:text-xs font-semibold tracking-wider uppercase mt-1">
                 AWS → GCP Estimator
               </p>
-              <h2 className="text-lg font-semibold tracking-tight text-gray-700">
+              <h2 className="text-xl sm:text-2xl font-semibold tracking-tight text-gray-900 mt-7 sm:mt-8">
                 Sign in
               </h2>
             </div>
@@ -249,7 +249,7 @@ export function Login() {
 
         <div
           ref={glyphRef}
-          className="relative flex flex-col items-center mb-6"
+          className="relative flex flex-col items-center mb-8"
           style={{ '--drop-dist': `${dropDistance}px` } as React.CSSProperties}
         >
           <div className="login-drop-line" />
@@ -258,7 +258,7 @@ export function Login() {
             <img
               src={facetsFIcon}
               alt="Facets"
-              className="w-[320px] max-w-[85vw] h-auto relative z-10 transition-transform duration-300 drop-shadow-[0_12px_28px_rgba(0,0,0,0.5)]"
+              className="h-20 sm:h-22 w-auto relative z-10 transition-transform duration-300 drop-shadow-[0_8px_20px_rgba(0,0,0,0.45)]"
             />
           </div>
         </div>

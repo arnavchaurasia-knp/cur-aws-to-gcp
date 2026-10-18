@@ -109,35 +109,53 @@ select:focus {
   animation: float-orb 12s ease-in-out infinite;
   will-change: transform;
 }
-/* A small dot drops from above and lands on the glyph, in a loop — echoes
-   the reference Facets login page's falling-dot-into-glyph motif. */
+/* A glowing wick extends from the top ceiling of the page down to the glyph,
+   with a droplet falling down the wick to light the Facets logo. */
 .login-drop-line {
   position: absolute;
-  top: -70px;
+  top: calc(-1 * var(--drop-dist, 340px));
   left: 50%;
   transform: translateX(-50%);
-  width: 1px;
-  height: 70px;
-  background: linear-gradient(to bottom, transparent, rgba(0,194,187,0.7));
+  width: 1.5px;
+  height: var(--drop-dist, 340px);
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 194, 187, 0.25) 0%,
+    rgba(0, 194, 187, 0.5) 60%,
+    rgba(0, 194, 187, 0.95) 100%
+  );
+  box-shadow: 0 0 8px rgba(0, 194, 187, 0.45);
+}
+.login-drop-line::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #00C2BB;
+  box-shadow: 0 0 10px 2px rgba(0, 194, 187, 0.85);
 }
 .login-drop-dot {
   position: absolute;
-  top: -70px;
+  top: calc(-1 * var(--drop-dist, 340px));
   left: 50%;
-  width: 6px;
-  height: 6px;
-  margin-left: -3px;
+  width: 7px;
+  height: 7px;
+  margin-left: -3.5px;
   border-radius: 50%;
   background: #00C2BB;
-  box-shadow: 0 0 10px 2px rgba(0,194,187,0.8);
-  animation: drop-fall 3.2s cubic-bezier(0.55,0,0.85,0.35) infinite;
+  box-shadow: 0 0 14px 3px rgba(0, 194, 187, 0.95);
+  animation: drop-fall 3.2s cubic-bezier(0.55, 0, 0.85, 0.35) infinite;
 }
 @keyframes drop-fall {
-  0%   { transform: translateY(0);   opacity: 0; }
-  8%   { opacity: 1; }
-  55%  { transform: translateY(70px); opacity: 1; }
-  60%  { transform: translateY(70px); opacity: 0; }
-  100% { transform: translateY(70px); opacity: 0; }
+  0%   { transform: translateY(0); opacity: 0; }
+  6%   { opacity: 1; }
+  55%  { transform: translateY(var(--drop-dist, 340px)); opacity: 1; }
+  60%  { transform: translateY(var(--drop-dist, 340px)); opacity: 0; }
+  100% { transform: translateY(var(--drop-dist, 340px)); opacity: 0; }
 }
 .login-glyph-wrap {
   animation: glyph-pulse 3.2s ease-in-out infinite;

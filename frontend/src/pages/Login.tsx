@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import facetsLogo from '../assets/facets-logo-full.svg'
 import facetsFIcon from '../assets/facets-logo-f.svg'
 import { useTitle } from '../lib/useTitle'
@@ -15,6 +15,23 @@ export function Login() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  const glyphRef = useRef<HTMLDivElement>(null)
+  const [dropDistance, setDropDistance] = useState<number>(340)
+
+  useEffect(() => {
+    const measure = () => {
+      if (glyphRef.current) {
+        const rect = glyphRef.current.getBoundingClientRect()
+        if (rect.top > 0) {
+          setDropDistance(rect.top)
+        }
+      }
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -170,7 +187,11 @@ export function Login() {
         <div className="login-orb absolute bottom-1/4 right-1/4 w-80 h-80 rounded-full pointer-events-none"
              style={{ background: 'radial-gradient(circle, rgba(0,194,187,0.12) 0%, transparent 70%)', animationDelay: '5s' }} />
 
-        <div className="relative flex flex-col items-center mb-10">
+        <div
+          ref={glyphRef}
+          className="relative flex flex-col items-center mb-10"
+          style={{ '--drop-dist': `${dropDistance}px` } as React.CSSProperties}
+        >
           <div className="login-drop-line" />
           <div className="login-drop-dot" />
           <div className="login-glyph-wrap relative rounded-full">

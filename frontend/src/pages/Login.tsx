@@ -43,6 +43,10 @@ export function Login() {
     } else if (err) {
       setErrorMsg(`Authentication error: ${err}`)
     }
+    // Clean up error query param from address bar so it does not persist across refreshes
+    if (err) {
+      window.history.replaceState({}, document.title, window.location.pathname)
+    }
   }, [])
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
@@ -106,8 +110,17 @@ export function Login() {
             </div>
 
             {errorMsg && (
-              <div className="p-3.5 rounded-lg bg-amber-50 border border-amber-200/80 text-amber-900 text-xs leading-relaxed anim-fade-in">
-                {errorMsg}
+              <div className="p-3.5 rounded-lg bg-amber-50 border border-amber-200/80 text-amber-900 text-xs leading-relaxed anim-fade-in flex items-start justify-between gap-3">
+                <span>{errorMsg}</span>
+                <button
+                  type="button"
+                  onClick={() => setErrorMsg(null)}
+                  className="text-amber-700 hover:text-amber-950 font-bold px-1 transition-colors"
+                  aria-label="Dismiss error"
+                  title="Dismiss"
+                >
+                  ✕
+                </button>
               </div>
             )}
 
@@ -170,7 +183,10 @@ export function Login() {
             <div className="flex flex-col gap-3 anim-fade-in-up delay-250">
               <button
                 type="button"
-                onClick={() => { window.location.assign('/api/auth/login') }}
+                onClick={() => {
+                  setErrorMsg(null)
+                  window.location.assign('/api/auth/login')
+                }}
                 className="cursor-pointer w-full flex items-center justify-center gap-3 bg-white text-gray-800 px-5 py-3 rounded-lg font-medium text-sm
                   border border-gray-300 hover:bg-gray-50 hover:border-gray-400 hover:scale-[1.01] active:scale-[0.99]
                   transition-all duration-150 shadow-sm"

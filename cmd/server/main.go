@@ -30,12 +30,21 @@ import (
 )
 
 func main() {
-	godotenv.Load() // no-op if .env absent
+	_ = godotenv.Load()
+	_ = godotenv.Load(".env")
+	_ = godotenv.Load("../.env")
+	_ = godotenv.Load("../../.env")
 	logger.Init()
 
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
 		log.Fatalf("config error: %v", err)
+	}
+
+	if cfg.GoogleClientID != "" {
+		slog.Info("Google OAuth configured", "client_id_prefix", cfg.GoogleClientID[:min(12, len(cfg.GoogleClientID))]+"...")
+	} else {
+		slog.Warn("Google OAuth not configured (GOOGLE_CLIENT_ID empty in .env)")
 	}
 
 	if !cfg.DevAuthBypass {

@@ -220,8 +220,8 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		slog.Info("job done", "job_id", jobID, "prospect", job.Prospect, "aws_spend", spend, "attempts", job.Attempts)
 		w.syncRemote(jobID, jobDir)
 		go func() {
-			if err := notify.SendJobReady(w.notify.Email, job.Owner, job.Owner, job.Prospect, jobID); err != nil {
-				slog.Warn("SendJobReady failed", "job_id", jobID, "err", err)
+			if err := notify.SendJobReady(w.notify.Email, job.Owner, job.Owner, job.Prospect, jobID, spend); err != nil {
+				slog.Info("email notification status", "job_id", jobID, "detail", err.Error())
 			}
 		}()
 		go func() {

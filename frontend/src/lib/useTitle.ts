@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 
-const SUFFIX = ' · AWS → GCP Estimator'
+const SUFFIX = ' · Facets | AWS → GCP Cost Estimator'
 
 export function useTitle(prefix: string) {
   useEffect(() => {

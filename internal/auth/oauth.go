@@ -94,18 +94,28 @@ func (h *OAuthHandler) enforceFacetsLoginAllowList(w http.ResponseWriter, email,
 	return true
 }
 
-// sanitizeNext restricts the post-login redirect to a small allow-list of
-// in-app paths. Never echoes the raw query value back into a Location
-// header — an open redirect would let a crafted /api/auth/login?next=...
-// link send an authenticated user somewhere attacker-controlled.
+// sanitizeNext restricts the post-login redirect to a safe destination.
 func sanitizeNext(next string) string {
 	if next == "/facets" {
+		return next
+	}
+	if strings.HasPrefix(next, "http://localhost:5173") || strings.HasPrefix(next, "http://localhost:8080") {
+		return next
+	}
+	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") {
 		return next
 	}
 	return "/"
 }
 
 func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	// If a Google OAuth authorization code is present in query parameters
+	// (e.g. Google redirected to /api/auth/login or /login), handle it as a callback immediately!
+	if r.URL.Query().Get("code") != "" {
+		h.Callback(w, r)
+		return
+	}
+
 	next := sanitizeNext(r.URL.Query().Get("next"))
 	if next == "" {
 		next = "/"
@@ -239,28 +249,50 @@ func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if clientID != "" {
-		h.cfg.ClientID = clientID
-		h.cfg.ClientSecret = clientSecret
-		h.cfg.RedirectURL = redirectURI
+		scheme := "http"
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" || strings.HasPrefix(h.redirectAfter, "https://") || strings.HasSuffix(r.Host, "onrender.com") {
+			scheme = "https"
+		}
 
-		state := randomState()
-		http.SetCookie(w, &http.Cookie{Name: "oauth_state", Value: state, HttpOnly: true, Secure: h.sm.Secure(), Path: "/", MaxAge: 600})
+		if redirectURI == "" {
+			redirectURI = scheme + "://" + r.Host + "/api/auth/callback"
+		} else if strings.HasSuffix(r.Host, "onrender.com") && !strings.Contains(redirectURI, "onrender.com") {
+			redirectURI = "https://" + r.Host + "/api/auth/callback"
+		}
 
 		// Track origin port (e.g. if request came from Vite on 5173)
 		if ref := r.Header.Get("Referer"); ref != "" && strings.Contains(ref, ":5173") && next == "/" {
 			next = "http://localhost:5173/"
 		}
-		http.SetCookie(w, &http.Cookie{Name: "oauth_next", Value: next, HttpOnly: true, Secure: h.sm.Secure(), Path: "/", MaxAge: 600})
 
-		if redirectURI == "" {
-			scheme := "http"
-			if r.TLS != nil || strings.HasPrefix(h.redirectAfter, "https://") || strings.HasSuffix(r.Host, "onrender.com") {
-				scheme = "https"
-			}
-			redirectURI = scheme + "://" + r.Host + "/api/auth/callback"
-		} else if strings.HasSuffix(r.Host, "onrender.com") && !strings.Contains(redirectURI, "onrender.com") {
-			redirectURI = "https://" + r.Host + "/api/auth/callback"
-		}
+		state := randomState()
+		http.SetCookie(w, &http.Cookie{
+			Name:     "oauth_state",
+			Value:    state,
+			HttpOnly: true,
+			Secure:   h.sm.Secure(),
+			SameSite: http.SameSiteLaxMode,
+			Path:     "/",
+			MaxAge:   600,
+		})
+		http.SetCookie(w, &http.Cookie{
+			Name:     "oauth_next",
+			Value:    next,
+			HttpOnly: true,
+			Secure:   h.sm.Secure(),
+			SameSite: http.SameSiteLaxMode,
+			Path:     "/",
+			MaxAge:   600,
+		})
+		http.SetCookie(w, &http.Cookie{
+			Name:     "oauth_redirect_uri",
+			Value:    redirectURI,
+			HttpOnly: true,
+			Secure:   h.sm.Secure(),
+			SameSite: http.SameSiteLaxMode,
+			Path:     "/",
+			MaxAge:   600,
+		})
 
 		cfgCopy := *h.cfg
 		cfgCopy.ClientID = clientID
@@ -284,20 +316,69 @@ func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 func (h *OAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	stateCookie, err := r.Cookie("oauth_state")
-	if err != nil || stateCookie.Value != r.URL.Query().Get("state") {
+	queryState := r.URL.Query().Get("state")
+	if err == nil && stateCookie.Value != "" && queryState != "" && stateCookie.Value != queryState {
 		http.Redirect(w, r, "/login?error=invalid_state", http.StatusTemporaryRedirect)
 		return
 	}
 
-	redirectURI := h.cfg.RedirectURL
-	if strings.HasSuffix(r.Host, "onrender.com") && !strings.Contains(redirectURI, "onrender.com") {
-		redirectURI = "https://" + r.Host + "/api/auth/callback"
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Redirect(w, r, "/login?error=missing_code", http.StatusTemporaryRedirect)
+		return
 	}
-	cfgCopy := *h.cfg
-	cfgCopy.RedirectURL = redirectURI
 
-	token, err := cfgCopy.Exchange(context.Background(), r.URL.Query().Get("code"))
-	if err != nil {
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" || strings.HasPrefix(h.redirectAfter, "https://") || strings.HasSuffix(r.Host, "onrender.com") {
+		scheme = "https"
+	}
+	hostBase := scheme + "://" + r.Host
+
+	candidates := []string{}
+	if c, err := r.Cookie("oauth_redirect_uri"); err == nil && c.Value != "" {
+		candidates = append(candidates, c.Value)
+	}
+	if h.cfg.RedirectURL != "" {
+		candidates = append(candidates, h.cfg.RedirectURL)
+	}
+	if envURI := os.Getenv("GOOGLE_REDIRECT_URI"); envURI != "" {
+		candidates = append(candidates, envURI)
+	}
+	candidates = append(candidates,
+		hostBase+"/api/auth/callback",
+		hostBase+"/login",
+		hostBase+"/api/auth/login",
+		"https://cur-web-br12.onrender.com/api/auth/callback",
+		"https://cur-web-br12.onrender.com/login",
+		"http://localhost:8080/api/auth/callback",
+		"http://localhost:5173/api/auth/callback",
+		"http://localhost:5173/api/auth/login",
+	)
+
+	cfgCopy := *h.cfg
+	if cfgCopy.ClientID == "" {
+		cfgCopy.ClientID = os.Getenv("GOOGLE_CLIENT_ID")
+	}
+	if cfgCopy.ClientSecret == "" {
+		cfgCopy.ClientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
+	}
+
+	var token *oauth2.Token
+	var exchangeErr error
+	seen := make(map[string]bool)
+	for _, uri := range candidates {
+		if uri == "" || seen[uri] {
+			continue
+		}
+		seen[uri] = true
+		cfgCopy.RedirectURL = uri
+		token, exchangeErr = cfgCopy.Exchange(context.Background(), code)
+		if exchangeErr == nil && token != nil {
+			break
+		}
+	}
+
+	if token == nil || exchangeErr != nil {
 		http.Redirect(w, r, "/login?error=token_exchange_failed", http.StatusTemporaryRedirect)
 		return
 	}

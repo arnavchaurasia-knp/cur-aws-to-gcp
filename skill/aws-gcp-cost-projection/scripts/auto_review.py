@@ -114,7 +114,7 @@ def main():
                   AND (
                     ((g.gcp_ram / g.gcp_vcpu) < (c.instance_ram_gb / c.instance_vcpus) AND g.gcp_vcpu > 0)
                     OR
-                    (c.instance_type NOT LIKE 't%' AND (
+                    (COALESCE(c.instance_type, '') NOT LIKE 't%' AND (
                         cat.description ILIKE '%shared-core%'
                         OR cat.description ILIKE '%shared core%'
                         OR cat.resource_group ILIKE '%SharedCore%'

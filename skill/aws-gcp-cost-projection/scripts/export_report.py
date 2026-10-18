@@ -48,6 +48,7 @@ def _build_query(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=None):
     cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
     sku_name_col = "m.gcp_sku_id"
     comp_col = "m.component"
+    machine_type_col = "NULL"
     if conn is not None:
         try:
             m_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
@@ -55,6 +56,8 @@ def _build_query(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=None):
                 sku_name_col = "COALESCE(NULLIF(m.gcp_sku_name, ''), m.gcp_sku_id)"
             if "component" not in m_cols:
                 comp_col = "'default'"
+            if "gcp_machine_type" in m_cols:
+                machine_type_col = "m.gcp_machine_type"
         except Exception:
             pass
 
@@ -67,7 +70,7 @@ WITH per_component AS (
         c.instance_type,
         c.is_workload,
         p.gcp_service,
-        p.gcp_machine_type,
+        {machine_type_col} AS gcp_machine_type,
         p.gcp_region,
         m.strategy,
         m.mapping_confidence,
@@ -163,6 +166,7 @@ def _build_query_by_instance(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn
     cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
     sku_name_col = "m.gcp_sku_id"
     comp_col = "m.component"
+    machine_type_col = "NULL"
     if conn is not None:
         try:
             m_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
@@ -170,6 +174,8 @@ def _build_query_by_instance(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn
                 sku_name_col = "COALESCE(NULLIF(m.gcp_sku_name, ''), m.gcp_sku_id)"
             if "component" not in m_cols:
                 comp_col = "'default'"
+            if "gcp_machine_type" in m_cols:
+                machine_type_col = "m.gcp_machine_type"
         except Exception:
             pass
 
@@ -183,7 +189,7 @@ per_line_item AS (
     SELECT
         c.product                                              AS product,
         COALESCE(c.instance_type, '')                          AS instance_type,
-        COALESCE(p.gcp_machine_type, '')                       AS gcp_mapping,
+        COALESCE({machine_type_col}, '')                       AS gcp_mapping,
         COALESCE(p.gcp_region, c.gcp_region, '')                AS region,
         (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END) * {aws_fx_rate}
                                                                 AS aws_cost,
@@ -295,6 +301,7 @@ def _write_sheet(wb, title, headers, rows):
 def main():
     fmt = "xlsx"
     out_path = None
+    db_path = None
     by_instance = False
     by_discounts = False
     args = sys.argv[1:]
@@ -305,6 +312,9 @@ def main():
             i += 2
         elif args[i] == "--out" and i + 1 < len(args):
             out_path = args[i + 1]
+            i += 2
+        elif args[i] == "--db" and i + 1 < len(args):
+            db_path = args[i + 1]
             i += 2
         elif args[i] == "--by-instance":
             by_instance = True
@@ -317,7 +327,7 @@ def main():
 
     if not out_path:
         print(
-            "Usage: export_report.py --format [xlsx|csv] --out <path> [--by-instance] [--by-discounts]\n"
+            "Usage: export_report.py --format [xlsx|csv] --out <path> [--db <duckdb_path>] [--by-instance] [--by-discounts]\n"
             "  --by-instance    CSV: emit the per-instance-type rollup instead of raw line items.\n"
             "  --by-discounts   CSV: emit the discounts-by-service rollup instead of raw line items.\n"
             "                   XLSX: always included as an extra 'Discounts by Service' sheet.",
@@ -325,8 +335,22 @@ def main():
         )
         sys.exit(1)
 
-    conn = duckdb.connect(DB_PATH, read_only=True)
-    job_dir = JOB_DIR if os.path.exists(os.path.join(JOB_DIR, "projection-audit")) else os.path.dirname(os.path.dirname(os.path.abspath(DB_PATH)))
+    resolved_db_path = db_path
+    if not resolved_db_path or not os.path.exists(resolved_db_path):
+        candidates = [
+            os.path.join(JOB_DIR, "projection-audit", "projection.duckdb"),
+            os.path.join(JOB_DIR, "projection.duckdb"),
+            DB_PATH,
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                resolved_db_path = c
+                break
+        if not resolved_db_path:
+            resolved_db_path = DB_PATH
+
+    conn = duckdb.connect(resolved_db_path, read_only=True)
+    job_dir = JOB_DIR if os.path.exists(os.path.join(JOB_DIR, "projection-audit")) else os.path.dirname(os.path.dirname(os.path.abspath(resolved_db_path)))
     currency_info = load_currency_info(job_dir, conn)
     curr_code = currency_info.get("currency", "USD")
     fx_rate = float(currency_info.get("fx_rate", 1.0))

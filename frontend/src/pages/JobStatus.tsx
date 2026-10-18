@@ -40,16 +40,19 @@ function TotalsCard({ run, fallback }: Readonly<{ run: RunResult | null; fallbac
     )
   }
   const rows: Array<{ label: string; value: number; compare: boolean }> = [
-    { label: 'AWS Infra Spend (excl. Marketplace)', value: run.aws_total, compare: false },
+    { label: 'AWS Mapped Cost',            value: run.aws_total,   compare: false },
     { label: 'GCP On-Demand',              value: run.gcp_od,      compare: true },
     { label: 'GCP 1-Year CUD',             value: run.gcp_1yr_cud, compare: true },
     { label: 'GCP 3-Year CUD',             value: run.gcp_3yr_cud, compare: true },
   ]
   return (
     <div className="bg-white/[0.02] border border-white/10 rounded-lg p-5 anim-fade-in-up card-lift">
-      <h3 className="text-sm font-semibold text-[#00C2BB] uppercase tracking-wider mb-4">
-        Cost projection
-      </h3>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-semibold text-[#00C2BB] uppercase tracking-wider">
+          Cost projection
+        </h3>
+        <span className="text-xs text-gray-400">Section A workload baseline</span>
+      </div>
       <div className="divide-y divide-white/5">
         {rows.map((r, i) => {
           const pct = r.compare ? pctVsAws(r.value, run.aws_total) : null
@@ -72,6 +75,9 @@ function TotalsCard({ run, fallback }: Readonly<{ run: RunResult | null; fallbac
           )
         })}
       </div>
+      <p className="mt-3 text-xs text-gray-500 leading-relaxed border-t border-white/5 pt-2">
+        * Priced workload baseline matches Section A headline cards. Non-workload &amp; unpriced items carry 1:1 passthroughs in report Section B.
+      </p>
     </div>
   )
 }

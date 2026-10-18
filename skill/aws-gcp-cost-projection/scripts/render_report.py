@@ -692,7 +692,7 @@ def main():
     try:
         coverage_rows = conn.execute("""
             SELECT c.mechanic_group,
-                SUM(CASE WHEN m.strategy != 'passthrough' THEN c.aws_amortized_cost ELSE 0 END) AS mapped_spend,
+                SUM(CASE WHEN COALESCE(m.strategy, '') != 'passthrough' THEN c.aws_amortized_cost ELSE 0 END) AS mapped_spend,
                 SUM(c.aws_amortized_cost) AS total_spend
             FROM aws_li_catalog c
             LEFT JOIN aws_li_to_gcp_li m USING (aws_li_key)
@@ -1908,13 +1908,16 @@ def main():
     # ── AI summary markdown (shown in frontend JobStatus card) ────────────────
     summary_md_rel = None
     try:
-        baseline = aws_gross if aws_gross > 0 else aws_infra_baseline
-        od_pct  = (gcp_od  - baseline) / baseline * 100 if baseline else 0
-        c1_pct  = (gcp_1yr - baseline) / baseline * 100 if baseline else 0
-        c3_pct  = (gcp_3yr - baseline) / baseline * 100 if baseline else 0
+        baseline = sec_a_aws if sec_a_aws > 0 else (aws_gross if aws_gross > 0 else aws_infra_baseline)
+        od_val = sec_a_gcp_od if sec_a_aws > 0 else gcp_od
+        c1_val = sec_a_gcp_1yr if sec_a_aws > 0 else gcp_1yr
+        c3_val = sec_a_gcp_3yr if sec_a_aws > 0 else gcp_3yr
+        od_pct  = (od_val  - baseline) / baseline * 100 if baseline else 0
+        c1_pct  = (c1_val - baseline) / baseline * 100 if baseline else 0
+        c3_pct  = (c3_val - baseline) / baseline * 100 if baseline else 0
         arrow   = lambda p: ("▲" if p > 0 else "▼") + f" {abs(p):.1f}%"
         verdict = "GCP On-Demand is cost-neutral" if abs(od_pct) < 2 else \
-                  f"GCP On-Demand is {arrow(od_pct)} vs AWS List" + (" — GCP more expensive" if od_pct > 0 else " — GCP cheaper")
+                  f"GCP On-Demand is {arrow(od_pct)} vs AWS Mapped Baseline" + (" — GCP more expensive" if od_pct > 0 else " — GCP cheaper")
 
         top_saves = "\n".join(
             f"- **{r[0]}** → {r[1]}: save {curr_symbol}{r[4]:,.0f}/mo ({r[4]/r[2]*100:.0f}%)"
@@ -1965,19 +1968,21 @@ def main():
             ])
 
 
+        baseline_label = "AWS Mapped Cost (Section A)" if sec_a_aws > 0 else "AWS List Total"
         summary_lines.extend([
-            "| Pricing Tier | Monthly Estimate | vs AWS List |",
+            "| Pricing Tier | Monthly Estimate | vs AWS Mapped |",
             "|---|---|---|",
-            f"| AWS List Total | {curr_symbol}{aws_gross:,.0f} | — |",
-        ])
-        if display_discounts > 0.5:
-            summary_lines.append(f"| Customer Net AWS Bill | {curr_symbol}{aws_grand:,.0f} | (-{curr_symbol}{display_discounts:,.0f} discounts) |")
-        summary_lines.extend([
-            f"| GCP On-Demand (List) | {curr_symbol}{gcp_od:,.0f} | {arrow(od_pct)} |",
-            f"| GCP 1-Year CUD | {curr_symbol}{gcp_1yr:,.0f} | {arrow(c1_pct)} |",
-            f"| GCP 3-Year CUD | {curr_symbol}{gcp_3yr:,.0f} | {arrow(c3_pct)} |",
+            f"| {baseline_label} | {curr_symbol}{baseline:,.0f} | — |",
+            f"| GCP On-Demand (List) | {curr_symbol}{od_val:,.0f} | {arrow(od_pct)} |",
+            f"| GCP 1-Year CUD | {curr_symbol}{c1_val:,.0f} | {arrow(c1_pct)} |",
+            f"| GCP 3-Year CUD | {curr_symbol}{c3_val:,.0f} | {arrow(c3_pct)} |",
             "",
         ])
+        if sec_a_aws > 0 and sec_b_aws > 0:
+            summary_lines.extend([
+                f"> *Note: Section A covers mapped workloads priced directly to GCP. Carries {curr_symbol}{sec_b_aws:,.0f} 1:1 passthroughs (Section B) in detailed report.*",
+                "",
+            ])
         if discount_rows:
             disc_md = "\n".join(f"- **{r[0]}**: -{curr_symbol}{r[3]:,.0f}/mo ({r[1] or 'Discount'})" for r in discount_rows[:5])
             summary_lines.extend([
@@ -2021,17 +2026,19 @@ def main():
         if not conn.execute("SELECT 1 FROM run_results WHERE run_id=?", [run_id]).fetchone():
             mapped_rows  = conn.execute("SELECT COUNT(*) FROM aws_li_to_gcp_li").fetchone()[0] or 0
             passthroughs = conn.execute("SELECT COUNT(*) FROM aws_li_to_gcp_li WHERE strategy='passthrough'").fetchone()[0] or 0
+            final_aws_total = sec_a_aws if sec_a_aws > 0 else aws_infra_baseline
+            final_gcp_od = sec_a_gcp_od if sec_a_aws > 0 else gcp_od
+            final_gcp_1yr = sec_a_gcp_1yr if sec_a_aws > 0 else gcp_1yr
+            final_gcp_3yr = sec_a_gcp_3yr if sec_a_aws > 0 else gcp_3yr
             conn.execute(
                 "INSERT INTO run_results "
                 "(run_id,ts_utc,run_type,instruction,aws_total,gcp_od,gcp_1yr_cud,gcp_3yr_cud,"
                 " report_html,report_md,summary_md,mapped_rows,passthroughs,confidence) "
                 "VALUES (?,?,?,NULL,?,?,?,?,'projection-audit/report.html',NULL,?,?,?,NULL)",
-                # aws_total stores the infrastructure baseline (excl. marketplace) so
-                # the frontend TotalsCard % comparison reflects only what we map and price.
-                # gcp_od/1yr/3yr are workload-only — marketplace passes through 1:1
-                # and is not included in either side of the comparison.
+                # aws_total stores Section A workload baseline matching report headline card.
+                # gcp_od/1yr/3yr are Section A GCP pricing matching report headline cards.
                 [run_id, now.strftime("%Y-%m-%dT%H:%M:%SZ"), "initial",
-                 aws_infra_baseline, gcp_od, gcp_1yr, gcp_3yr, summary_md_rel, mapped_rows, passthroughs]
+                 final_aws_total, final_gcp_od, final_gcp_1yr, final_gcp_3yr, summary_md_rel, mapped_rows, passthroughs]
             )
             conn.commit()
             log.info(f"Inserted run_results row for {run_id}")

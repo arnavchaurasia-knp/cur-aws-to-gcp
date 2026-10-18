@@ -241,8 +241,8 @@ def fix_managed_db_storage_rows(conn, *_ignored):
                OR m.gcp_sku_name ILIKE '%Core%')
           AND c.pricing_unit NOT IN ('Hrs', 'hours', 'Hour', 'ACU-Hrs', 'ACU-hours', '')
           AND c.pricing_unit IS NOT NULL
-          AND c.usage_type NOT ILIKE '%ServerlessV2%'
-          AND c.usage_type NOT ILIKE '%:ACU%'
+          AND COALESCE(c.usage_type, '') NOT ILIKE '%ServerlessV2%'
+          AND COALESCE(c.usage_type, '') NOT ILIKE '%:ACU%'
           AND c.line_item_type NOT IN ('DiscountedUsage', 'SavingsPlanCoveredUsage')
           AND (c.product ILIKE '%Aurora%' OR c.product ILIKE '%RDS%'
                OR c.product ILIKE '%Relational%')
@@ -685,7 +685,7 @@ def main():
                 QUALIFY ROW_NUMBER() OVER (PARTITION BY r.gcp_sku_id ORDER BY r.gcp_service, r.region) = 1
             ) c ON m.gcp_sku_id = c.gcp_sku_id
             WHERE m.strategy IN ('map', 'break_down')
-              AND m.gcp_service != c.canonical_service
+              AND COALESCE(m.gcp_service, '') != c.canonical_service
         """).fetchone()[0]
         if norm_count:
             conn.execute("""
@@ -698,7 +698,7 @@ def main():
                 ) c
                 WHERE m.gcp_sku_id = c.gcp_sku_id
                   AND m.strategy IN ('map', 'break_down')
-                  AND m.gcp_service != c.canonical_service
+                  AND COALESCE(m.gcp_service, '') != c.canonical_service
             """)
             log.info(f"Normalized gcp_service for {norm_count} rows to match SKU catalog (NAME-1)")
 

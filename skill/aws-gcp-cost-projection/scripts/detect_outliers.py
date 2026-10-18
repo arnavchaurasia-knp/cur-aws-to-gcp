@@ -128,7 +128,7 @@ def main():
           ON   m.aws_li_key = p.aws_li_key AND m.component IS NOT DISTINCT FROM p.component
         WHERE  p.strategy NOT IN ('ignore','passthrough')
           AND  p.aws_amortized_cost > {_A1_FLOOR}
-          AND  p.product NOT ILIKE '%Data Transfer%'
+          AND  COALESCE(p.product, '') NOT ILIKE '%Data Transfer%'
           AND  (
             ( p.gcp_service IN ({_CUD_SERVICES_SQL})
               AND p.gcp_projected_cost > p.aws_amortized_cost * {_A1_RATIO_CMS}
@@ -191,7 +191,7 @@ def main():
         JOIN   gcp_sku_rates    r ON r.gcp_sku_id = m.gcp_sku_id
         WHERE  m.strategy IN ('map','break_down')
           AND  m.gcp_service IS NOT NULL AND r.gcp_service IS NOT NULL
-          AND  m.gcp_service != r.gcp_service
+          AND  COALESCE(m.gcp_service, '') != COALESCE(r.gcp_service, '')
           -- Only flag if it caused a real impact: projected cost is NULL despite being mapped.
           -- Name-only mismatches (e.g. "Cloud KMS" vs "Cloud Key Management Service (KMS)")
           -- are cosmetic — the rate lookup is keyed by SKU ID, not service name.
@@ -207,8 +207,8 @@ def main():
           AND  m.gcp_service IN ({_CUD_SERVICES_SQL})
           AND  m.component IN ('core','ram')
           AND  COALESCE(m.rate_source, '') NOT IN ('no_rate', 'no_catalog')
-          AND  m.gcp_sku_name NOT ILIKE '%preemptible%'
-          AND  m.gcp_sku_name NOT ILIKE '%spot%'
+          AND  COALESCE(m.gcp_sku_name, '') NOT ILIKE '%preemptible%'
+          AND  COALESCE(m.gcp_sku_name, '') NOT ILIKE '%spot%'
           AND  NOT EXISTS (SELECT 1 FROM gcp_sku_rates r
                            WHERE r.gcp_sku_id = m.gcp_sku_id AND r.pricing_type = 'Commit1Yr')
     """)

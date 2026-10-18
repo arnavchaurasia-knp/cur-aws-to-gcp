@@ -1179,7 +1179,7 @@ def main():
                   AND (c.operation IS NULL OR trim(c.operation) = '')
                   AND (c.pricing_unit IS NULL OR trim(c.pricing_unit) = '')
                   AND (c.instance_type IS NULL OR trim(c.instance_type) = '')
-                  AND m.strategy != 'passthrough'
+                  AND COALESCE(m.strategy, '') != 'passthrough'
             """).fetchall()
             if dl_rows:
                 con.executemany(
@@ -1517,7 +1517,7 @@ def main():
               AND (c.operation IS NULL OR trim(c.operation) = '')
               AND (c.pricing_unit IS NULL OR trim(c.pricing_unit) = '')
               AND (c.instance_type IS NULL OR trim(c.instance_type) = '')
-              AND m.strategy != 'passthrough'
+              AND COALESCE(m.strategy, '') != 'passthrough'
         """).fetchall()
     except Exception:
         pass

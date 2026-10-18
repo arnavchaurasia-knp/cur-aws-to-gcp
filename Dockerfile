@@ -50,7 +50,8 @@ RUN curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.1.3/duckdb_
 RUN pip install --no-cache-dir \
     duckdb \
     pydantic \
-    pdfplumber
+    pdfplumber \
+    openpyxl
 
 # Copy backend binary from Stage 2
 COPY --from=backend-builder /app/cur-web /app/cur-web

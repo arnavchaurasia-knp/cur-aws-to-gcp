@@ -34,8 +34,8 @@ def compare_runs(baseline_db, new_db):
         flips_query = """
         SELECT count(*) FROM baseline.aws_li_to_gcp_li b
         JOIN newrun.aws_li_to_gcp_li n ON b.aws_li_key = n.aws_li_key
-        WHERE b.gcp_sku_id != n.gcp_sku_id
-           OR b.strategy != n.strategy
+        WHERE COALESCE(b.gcp_sku_id, '') != COALESCE(n.gcp_sku_id, '')
+           OR COALESCE(b.strategy, '') != COALESCE(n.strategy, '')
         """
         flips = con.execute(flips_query).fetchone()[0]
         
@@ -52,7 +52,7 @@ def compare_runs(baseline_db, new_db):
             FROM baseline.aws_li_to_gcp_li b
             JOIN newrun.aws_li_to_gcp_li n ON b.aws_li_key = n.aws_li_key
             JOIN baseline.aws_li_catalog c ON b.aws_li_key = c.aws_li_key
-            WHERE b.gcp_sku_id != n.gcp_sku_id
+            WHERE COALESCE(b.gcp_sku_id, '') != COALESCE(n.gcp_sku_id, '')
             ORDER BY c.aws_amortized_cost DESC
             LIMIT 5
             """

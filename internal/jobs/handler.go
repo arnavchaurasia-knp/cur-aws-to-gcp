@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/facets/cur-web/internal/auth"
@@ -56,9 +58,16 @@ func (h *Handler) SetStorage(s storage.Client) {
 }
 
 // ensureJobDirRestored restores job artifacts from cloud storage (Cloudflare R2 / S3)
-// if the local directory is missing due to a container restart on ephemeral storage.
+// if the local directory or its duckdb file is missing due to a container restart on ephemeral storage.
 func (h *Handler) ensureJobDirRestored(ctx context.Context, id, jobDir string) {
+	dbPath := filepath.Join(jobDir, "projection-audit", "projection.duckdb")
+	needsRestore := false
 	if _, err := os.Stat(jobDir); os.IsNotExist(err) {
+		needsRestore = true
+	} else if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		needsRestore = true
+	}
+	if needsRestore {
 		if h.storage != nil && h.storage.IsConfigured() {
 			_ = os.MkdirAll(jobDir, 0755)
 			if _, err := h.storage.RestoreJobFromRemote(ctx, id, jobDir); err != nil {
@@ -459,8 +468,11 @@ func (h *Handler) downloadExport(w http.ResponseWriter, r *http.Request, jobDir,
 	defer os.Remove(tmpPath)
 
 	scriptPath := filepath.Join(skill.ResolveDir(), "scripts", "export_report.py")
-	cmd := exec.Command(pythonBin(), scriptPath, "--format", format, "--out", tmpPath)
+	dbPath := filepath.Join(jobDir, "projection-audit", "projection.duckdb")
+	cmd := exec.Command(pythonBin(), scriptPath, "--format", format, "--db", dbPath, "--out", tmpPath)
 	cmd.Dir = jobDir
+	scriptsDir := filepath.Join(skill.ResolveDir(), "scripts")
+	cmd.Env = append(os.Environ(), "PYTHONPATH="+scriptsDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		http.Error(w, `{"error":"export failed: `+jsonEscape(string(out))+`"}`, http.StatusInternalServerError)
 		return
@@ -528,6 +540,55 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
+var (
+	reCardAWSMapped = regexp.MustCompile(`<div class="card-label">\s*AWS Mapped Cost\s*</div>\s*<div class="card-value">\s*([^<]+)\s*</div>`)
+	reCardGCPOD     = regexp.MustCompile(`<div class="card-label">\s*GCP On-Demand\s*</div>\s*<div class="card-value">\s*([^<]+)\s*</div>`)
+	reCardGCP1Yr    = regexp.MustCompile(`<div class="card-label">\s*GCP 1-Year CUD\s*</div>\s*<div class="card-value">\s*([^<]+)\s*</div>`)
+	reCardGCP3Yr    = regexp.MustCompile(`<div class="card-label">\s*GCP 3-Year CUD\s*</div>\s*<div class="card-value">\s*([^<]+)\s*</div>`)
+)
+
+func parseCardCurrency(s string) (float64, bool) {
+	var b strings.Builder
+	for _, ch := range s {
+		if (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' {
+			b.WriteRune(ch)
+		}
+	}
+	v, err := strconv.ParseFloat(b.String(), 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+func reconcileRunFromReportHTML(reportPath string, r *RunResult) {
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		return
+	}
+	content := string(data)
+	if m := reCardAWSMapped.FindStringSubmatch(content); len(m) > 1 {
+		if v, ok := parseCardCurrency(m[1]); ok {
+			r.AWSTotal = &v
+		}
+	}
+	if m := reCardGCPOD.FindStringSubmatch(content); len(m) > 1 {
+		if v, ok := parseCardCurrency(m[1]); ok {
+			r.GCPOD = &v
+		}
+	}
+	if m := reCardGCP1Yr.FindStringSubmatch(content); len(m) > 1 {
+		if v, ok := parseCardCurrency(m[1]); ok {
+			r.GCP1yrCUD = &v
+		}
+	}
+	if m := reCardGCP3Yr.FindStringSubmatch(content); len(m) > 1 {
+		if v, ok := parseCardCurrency(m[1]); ok {
+			r.GCP3yrCUD = &v
+		}
+	}
+}
+
 // Runs returns the run_results history for a job, latest first. Returns
 // an empty array (not 404) when the job has no run_results yet — the job
 // itself still exists, there's just no run history (very fresh job or
@@ -560,6 +621,13 @@ func (h *Handler) Runs(w http.ResponseWriter, r *http.Request) {
 	}
 	if runs == nil {
 		runs = []RunResult{}
+	} else {
+		for i := range runs {
+			reportPath, _ := resolveReportPath(jobDir, runs[i].RunID)
+			if reportPath != "" {
+				reconcileRunFromReportHTML(reportPath, &runs[i])
+			}
+		}
 	}
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	json.NewEncoder(w).Encode(runs)

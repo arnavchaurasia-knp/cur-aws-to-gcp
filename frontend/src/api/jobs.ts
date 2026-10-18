@@ -29,11 +29,16 @@ export async function createJob(file: File, prospect: string): Promise<{ id: str
   if (!res.ok) {
     let msg = `Upload failed (HTTP ${res.status})`
     try {
-      const data = await res.json()
-      if (data?.error) msg = data.error
-    } catch {
       const text = await res.text()
-      if (text) msg = text
+      try {
+        const data = JSON.parse(text)
+        if (data?.error) msg = data.error
+        else if (text) msg = text
+      } catch {
+        if (text) msg = text
+      }
+    } catch {
+      // Ignore stream reading errors and keep default HTTP status message
     }
     throw new Error(msg)
   }

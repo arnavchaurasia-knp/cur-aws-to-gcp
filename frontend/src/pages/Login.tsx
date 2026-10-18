@@ -111,32 +111,8 @@ export function Login() {
               </div>
             )}
 
-            {/* Google OAuth Button — Primary Sign In */}
-            <div className="flex flex-col gap-3 anim-fade-in-up delay-175">
-              <button
-                type="button"
-                onClick={() => { window.location.assign('/api/auth/login') }}
-                className="cursor-pointer w-full flex items-center justify-center gap-3 bg-white text-gray-800 px-5 py-3 rounded-lg font-medium text-sm
-                  border border-gray-300 hover:bg-gray-50 hover:border-gray-400 hover:scale-[1.01] active:scale-[0.99]
-                  transition-all duration-150 shadow-sm"
-              >
-                <GoogleIcon />
-                Sign in with Google
-              </button>
-              <p className="text-center text-[11px] text-gray-500">
-                Recommended for fast, secure one-click sign-in.
-              </p>
-            </div>
-
-            {/* Divider */}
-            <div className="flex items-center gap-3 anim-fade-in-up delay-200">
-              <div className="flex-1 h-px bg-gray-200" />
-              <span className="text-xs text-gray-400 uppercase tracking-widest font-medium">or continue with password</span>
-              <div className="flex-1 h-px bg-gray-200" />
-            </div>
-
             {/* Email + Password login form */}
-            <form onSubmit={handleEmailSubmit} className="flex flex-col gap-4 anim-fade-in-up delay-250">
+            <form onSubmit={handleEmailSubmit} className="flex flex-col gap-4 anim-fade-in-up delay-175">
               <div>
                 <label htmlFor="email" className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-2">
                   Email
@@ -182,6 +158,30 @@ export function Login() {
                 )}
               </button>
             </form>
+
+            {/* Divider */}
+            <div className="flex items-center gap-3 anim-fade-in-up delay-200">
+              <div className="flex-1 h-px bg-gray-200" />
+              <span className="text-xs text-gray-400 uppercase tracking-widest font-medium">or continue with google</span>
+              <div className="flex-1 h-px bg-gray-200" />
+            </div>
+
+            {/* Google OAuth Button */}
+            <div className="flex flex-col gap-3 anim-fade-in-up delay-250">
+              <button
+                type="button"
+                onClick={() => { window.location.assign('/api/auth/login') }}
+                className="cursor-pointer w-full flex items-center justify-center gap-3 bg-white text-gray-800 px-5 py-3 rounded-lg font-medium text-sm
+                  border border-gray-300 hover:bg-gray-50 hover:border-gray-400 hover:scale-[1.01] active:scale-[0.99]
+                  transition-all duration-150 shadow-sm"
+              >
+                <GoogleIcon />
+                Sign in with Google
+              </button>
+              <p className="text-center text-[11px] text-gray-500">
+                Recommended for fast, secure one-click sign-in.
+              </p>
+            </div>
           </div>
         </div>
 

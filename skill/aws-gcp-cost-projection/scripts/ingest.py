@@ -192,6 +192,17 @@ DESCRIPTIVE_REGION_MAP = {
 }
 
 
+def _drop_raw(conn):
+    try:
+        conn.execute("DROP VIEW IF EXISTS aws_raw")
+    except Exception:
+        pass
+    try:
+        conn.execute("DROP TABLE IF EXISTS aws_raw")
+    except Exception:
+        pass
+
+
 def _detect_foreign_currency(cols, conn):
     """Detect bill currency and FX rate (H-6). Returns currency info dict."""
     cl = {c.lower(): c for c in cols}
@@ -221,7 +232,7 @@ def _detect_foreign_currency(cols, conn):
     codes = {c for c in col_vals if c not in ("USD", "US DOLLAR")}
     if len(codes) > 1:
         # Mixed foreign currencies — can't convert sensibly; refuse.
-        conn.execute("DROP TABLE IF EXISTS aws_raw")
+        _drop_raw(conn)
         _fail_direct(
             f"This bill mixes multiple non-USD currencies ({', '.join(sorted(codes))}). "
             "Please upload a single-currency bill.")
@@ -251,7 +262,7 @@ def _reject_non_aws(cols, conn):
     if ("net unit price" in _cols_blob or "amount used" in _cols_blob) and "metric" in _cols_blob:
         _azure_hit = True
     if _azure_hit:
-        conn.execute("DROP TABLE IF EXISTS aws_raw")
+        _drop_raw(conn)
         _fail_direct("This looks like an Azure billing export, not an AWS bill. "
                      "This tool projects AWS costs to GCP - please upload an AWS "
                      "Cost & Usage Report (CUR), Cost Explorer CSV, or estimated-bill PDF.")
@@ -270,7 +281,7 @@ def _reject_non_aws(cols, conn):
                             ("subscription id", "part number", "meter", "resource group",
                              "billing period", "cost center"))
         if "subscription id" in blob and azure_markers >= 2:
-            conn.execute("DROP TABLE IF EXISTS aws_raw")
+            _drop_raw(conn)
             _fail_direct("This looks like an Azure (or other non-AWS) billing export with a "
                          "key-value preamble, not an AWS bill. This tool projects AWS costs "
                          "to GCP - please upload an AWS Cost & Usage Report (CUR), Cost "
@@ -282,18 +293,18 @@ def _reject_non_aws(cols, conn):
                                       "inusemb", "datacenter")):
         col_sample = [c for c in cols if c.lower() in ("vm", "powerstate", "vcpu")]
         if len(col_sample) >= 2:
-            conn.execute("DROP TABLE IF EXISTS aws_raw")
+            _drop_raw(conn)
             _fail_direct("This looks like a VMware/vCenter RVTools export, not an AWS bill. "
                          "Please upload an AWS Cost & Usage Report.")
     # OCI billing
     if any(k in cols_lower for k in ("tenancyname", "subscriptionid", "sku/partnumber",
                                       "product/compartmentname")):
-        conn.execute("DROP TABLE IF EXISTS aws_raw")
+        _drop_raw(conn)
         _fail_direct("This looks like an Oracle Cloud (OCI) billing export, not an AWS bill.")
     # GCP billing
     if any(k in cols_lower for k in ("billing_account_id", "service.description",
                                       "sku.description", "usage.amount_in_pricing_units")):
-        conn.execute("DROP TABLE IF EXISTS aws_raw")
+        _drop_raw(conn)
         _fail_direct("This looks like a GCP billing export, not an AWS bill.")
 
 
@@ -443,11 +454,11 @@ def _load_excel(conn, path):
             # the loop falls through to openpyxl.
             _cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_raw')").fetchall()}
             if "ogc_fid" in _cols or "geom" in _cols or "geometry" in _cols or len(_cols) < 2:
-                conn.execute("DROP TABLE IF EXISTS aws_raw")
+                _drop_raw(conn)
                 continue
             return
         except Exception:
-            conn.execute("DROP TABLE IF EXISTS aws_raw")
+            _drop_raw(conn)
 
     # openpyxl fallback — handles files DuckDB's readers reject. Load rows DIRECTLY
     # into DuckDB (parameterized INSERT), NOT via a temp-CSV round-trip: writing a
@@ -474,7 +485,7 @@ def _load_excel(conn, path):
             names.append(nm)
         width = len(names)
         cols_ddl = ", ".join(f'"{n}" VARCHAR' for n in names)
-        conn.execute("DROP TABLE IF EXISTS aws_raw")
+        _drop_raw(conn)
         conn.execute(f"CREATE TABLE aws_raw ({cols_ddl})")
         placeholders = ",".join("?" for _ in names)
         batch, n = [], 0
@@ -493,7 +504,7 @@ def _load_excel(conn, path):
         log.info(f"Excel: loaded via openpyxl direct insert ({n} rows, {width} cols)")
         return
     except Exception as e:
-        conn.execute("DROP TABLE IF EXISTS aws_raw")
+        _drop_raw(conn)
         log.warning(f"Excel: openpyxl fallback failed: {e}")
 
     _fail("Could not read the Excel file. Re-export the bill as CSV or Parquet and upload that.")
@@ -808,18 +819,21 @@ def _load_pdf(conn, path):
 
 def _read_into_aws_raw(conn, path):
     """Load one data file into aws_raw, dispatching by extension. DuckDB's
-    read_csv_auto transparently handles .gz / .zst and delimiter detection."""
+    read_csv_auto transparently handles .gz / .zst and delimiter detection.
+    Creating aws_raw as a VIEW streams large CSVs on-demand and eliminates the
+    multi-gigabyte memory footprint that causes OOM kills on 512MB containers."""
     p = path.lower()
+    _drop_raw(conn)
     if p.endswith(".parquet"):
-        conn.execute(f"CREATE TABLE aws_raw AS SELECT * FROM read_parquet('{path}')")
+        conn.execute(f"CREATE VIEW aws_raw AS SELECT * FROM read_parquet('{path}')")
     elif p.endswith((".json", ".jsonl", ".ndjson")):
-        conn.execute(f"CREATE TABLE aws_raw AS SELECT * FROM read_json_auto('{path}')")
+        conn.execute(f"CREATE VIEW aws_raw AS SELECT * FROM read_json_auto('{path}')")
     elif p.endswith((".xlsx", ".xlsm", ".xls")):
         _load_excel(conn, path)
     elif p.endswith(".pdf"):
         _load_pdf(conn, path)
     else:  # .csv .tsv .txt and .gz/.zst variants of them
-        conn.execute(f"CREATE TABLE aws_raw AS SELECT * FROM read_csv_auto('{path}', ALL_VARCHAR=TRUE)")
+        conn.execute(f"CREATE VIEW aws_raw AS SELECT * FROM read_csv_auto('{path}', ALL_VARCHAR=TRUE)")
 
 
 def load_raw(conn, input_file):
@@ -859,6 +873,11 @@ def main():
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     
     conn = duckdb.connect(DB_PATH)
+    conn.execute("PRAGMA threads=1")
+    conn.execute("PRAGMA max_memory='280MB'")
+    temp_dir = os.path.join(JOB_DIR, "projection-audit", "duckdb_temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    conn.execute(f"PRAGMA temp_directory='{temp_dir.replace('\\', '/')}'")
     
     # 1. Inspect input
     # If an LLM-normalized fallback CSV exists (written by the Phase 1 retry
@@ -880,7 +899,7 @@ def main():
 
     # 2. Load aws_raw — format-aware loader (CSV/TSV, gzip/zstd, Parquet, JSON,
     #    Excel, PDF, and ZIP archives of any of those).
-    conn.execute("DROP TABLE IF EXISTS aws_raw")
+    _drop_raw(conn)
     load_raw(conn, input_file)
         
     cols = [c[1] for c in conn.execute("PRAGMA table_info(aws_raw)").fetchall()]
@@ -1739,6 +1758,9 @@ def main():
                 GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload, projection_note, billing_month
             """
             conn.execute(sql)
+
+    # 4. Free raw table/view and disk cache once loaded into aws_li_catalog
+    _drop_raw(conn)
 
     # 4b. Multi-currency (Directive 1): normalize aws_amortized_cost to USD internally,
     # and store native bill amounts in aws_amortized_cost_native with the currency code.

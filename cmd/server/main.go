@@ -166,6 +166,18 @@ func main() {
 	r.Get("/api/auth/callback", oauthH.Callback)
 	r.Get("/api/auth/logout", oauthH.Logout)
 	r.Post("/api/auth/logout", oauthH.Logout)
+	// When Google OAuth redirects to /login with ?code=..., handle it immediately via Callback
+	r.Get("/login", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("code") != "" {
+			oauthH.Callback(w, r)
+			return
+		}
+		webRoot := os.Getenv("WEB_ROOT")
+		if webRoot == "" {
+			webRoot = filepath.Join(".", "frontend", "dist")
+		}
+		http.ServeFile(w, r, filepath.Join(webRoot, "index.html"))
+	})
 
 	// Public (no-auth) read-only shared report lookup.
 	r.Get("/api/reports/{token}", jobHandler.GetSharedReport)

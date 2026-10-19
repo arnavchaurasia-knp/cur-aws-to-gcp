@@ -255,9 +255,15 @@ func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if redirectURI == "" {
-			redirectURI = scheme + "://" + r.Host + "/api/auth/callback"
+			if strings.HasSuffix(r.Host, "onrender.com") {
+				redirectURI = "https://" + r.Host + "/login"
+			} else if strings.Contains(r.Host, ":5173") {
+				redirectURI = "http://localhost:5173/api/auth/login"
+			} else {
+				redirectURI = scheme + "://" + r.Host + "/api/auth/callback"
+			}
 		} else if strings.HasSuffix(r.Host, "onrender.com") && !strings.Contains(redirectURI, "onrender.com") {
-			redirectURI = "https://" + r.Host + "/api/auth/callback"
+			redirectURI = "https://" + r.Host + "/login"
 		}
 
 		// Track origin port (e.g. if request came from Vite on 5173)

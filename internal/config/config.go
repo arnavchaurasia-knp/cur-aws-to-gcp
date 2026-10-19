@@ -78,6 +78,14 @@ func (c *Config) DBPath() string      { return c.DataDir + "/cur-web.db" }
 func (c *Config) StopAllPath() string { return c.DataDir + "/STOP_ALL" }
 
 func LoadFromEnv() (*Config, error) {
+	if os.Getenv("GOOGLE_REDIRECT_URI") == "" {
+		if renderURL := os.Getenv("RENDER_EXTERNAL_URL"); renderURL != "" {
+			_ = os.Setenv("GOOGLE_REDIRECT_URI", renderURL+"/login")
+		} else {
+			_ = os.Setenv("GOOGLE_REDIRECT_URI", "http://localhost:8080/api/auth/callback")
+		}
+	}
+
 	devBypass := os.Getenv("DEV_AUTH_BYPASS") == "true"
 	if devBypass {
 		if os.Getenv("SESSION_SECRET") == "" {

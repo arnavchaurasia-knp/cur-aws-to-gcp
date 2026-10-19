@@ -40,18 +40,18 @@ export function Login() {
     const code = params.get('code')
     const state = params.get('state')
     if (code) {
-      toast.loading('Completing Google authentication…')
+      toast.loading('Completing Google authentication…', { duration: 3500 })
       window.location.replace(`/api/auth/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state || '')}`)
       return
     }
 
     const err = params.get('error')
     if (err === 'google_oauth_not_configured') {
-      toast.error('Google OAuth is not configured on this server. Please sign in with email and password below.', { duration: 6000 })
+      toast.error('Google OAuth is not configured on this server. Please sign in with email and password below.', { duration: 3500 })
     } else if (err === 'forbidden') {
-      toast.error('Access denied: account domain is not permitted.', { duration: 5000 })
+      toast.error('Access denied: account domain is not permitted.', { duration: 3500 })
     } else if (err) {
-      toast.error(`Authentication error: ${err}`, { duration: 5000 })
+      toast.error(`Authentication error: ${err}`, { duration: 3500 })
     }
     // Clean up error query param from address bar so it does not persist across refreshes
     if (err) {
@@ -87,11 +87,11 @@ export function Login() {
         throw new Error(msg)
       }
 
-      toast.success('Signed in successfully!')
+      toast.success('Signed in successfully!', { duration: 3500 })
       // Hard redirect to reload session state in App
       window.location.replace('/')
     } catch (err: any) {
-      toast.error(err.message || 'Failed to sign in. Please try again.')
+      toast.error(err.message || 'Failed to sign in. Please try again.', { duration: 3500 })
       setLoading(false)
     }
   }

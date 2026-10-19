@@ -70,7 +70,7 @@ ENV PORT=8080
 ENV WEB_ROOT=/app/frontend/dist
 ENV DATA_DIR=/data
 ENV AGY_PATH=agy
-ENV DEV_AUTH_BYPASS=true
+ENV DEV_AUTH_BYPASS=false
 ENV SESSION_SECRET=cur-web-session-secret-key-at-least-32-bytes-long-12345
 ENV SKILL_DIR=/app/skill/aws-gcp-cost-projection
 

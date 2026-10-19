@@ -49,7 +49,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <Toaster position="top-center" richColors closeButton theme="dark" />
+      <Toaster position="top-center" richColors closeButton theme="dark" duration={3500} toastOptions={{ duration: 3500 }} visibleToasts={3} />
       <Routes>
         <Route path="/login" element={user ? <Navigate to="/" /> : <Login />} />
         <Route path="/" element={user ? <Upload user={user} /> : <Navigate to="/login" />} />

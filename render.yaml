@@ -15,11 +15,17 @@ services:
       - key: SKILL_DIR
         value: /app/skill/aws-gcp-cost-projection
       - key: DEV_AUTH_BYPASS
-        value: "true"
+        value: "false"
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        value: "https://cur-web-br12.onrender.com/login"
       - key: SESSION_SECRET
         value: "cur-web-session-secret-key-at-least-32-bytes-long-12345"
       - key: APP_BASE_URL
-        sync: false
+        value: "https://cur-web-br12.onrender.com"
       # 100% Free Persistent Database (Turso libSQL / SQLite Cloud - 9 GB free forever)
       # Create free at https://turso.tech/ -> libsql://[dbname]-[org].turso.io?authToken=[token]
       - key: DATABASE_URL

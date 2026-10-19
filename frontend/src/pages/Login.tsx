@@ -99,19 +99,19 @@ export function Login() {
   return (
     <div className="min-h-screen h-screen flex overflow-hidden">
       {/* left panel — clean, accessible, modern sign-in */}
-      <div className="w-full lg:w-[460px] shrink-0 bg-white text-gray-900 flex flex-col px-8 sm:px-12 py-7 relative z-10 h-screen overflow-hidden">
+      <div className="w-full lg:w-[480px] shrink-0 bg-white text-gray-900 flex flex-col px-6 sm:px-9 pt-4 sm:pt-5 pb-3 sm:pb-4 relative z-10 h-screen overflow-hidden">
         <a
           href="https://www.facets.cloud"
           target="_blank"
           rel="noopener noreferrer"
-          className="w-fit inline-block hover:opacity-85 transition-opacity anim-fade-in-up"
+          className="w-fit inline-block hover:opacity-85 transition-opacity anim-fade-in-up self-start"
           title="Visit facets.cloud"
         >
-          <img src={facetsLogo} alt="Facets" className="h-5 sm:h-6 w-fit" />
+          <img src={facetsLogo} alt="Facets" className="h-5 sm:h-6 w-auto" />
         </a>
 
-        <div className="flex-1 flex flex-col justify-center my-auto py-4">
-          <div className="max-w-md w-full flex flex-col gap-5">
+        <div className="flex-1 flex flex-col justify-center max-w-sm sm:max-w-md w-full mx-auto my-auto py-2">
+          <div className="w-full flex flex-col">
             <div className="anim-fade-in-up delay-100 text-center">
               <h1 className="text-2xl sm:text-[28px] font-semibold tracking-tight text-gray-900 font-['Plus_Jakarta_Sans',sans-serif]">
                 GCP TCO Analyzer
@@ -119,15 +119,15 @@ export function Login() {
               <p className="text-[#645DF6] text-[11px] sm:text-xs font-semibold tracking-wider uppercase mt-1">
                 AWS → GCP Estimator
               </p>
-              <h2 className="text-xl sm:text-2xl font-semibold tracking-tight text-gray-900 mt-7 sm:mt-8">
+              <h2 className="text-xl sm:text-[22px] font-semibold tracking-tight text-gray-900 mt-6 sm:mt-7">
                 Sign in
               </h2>
             </div>
 
             {/* Email + Password login form */}
-            <form onSubmit={handleEmailSubmit} className="flex flex-col gap-3.5 anim-fade-in-up delay-175">
+            <form onSubmit={handleEmailSubmit} className="flex flex-col gap-3 anim-fade-in-up delay-175 mt-5">
               <div>
-                <label htmlFor="email" className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="email" className="block text-[11px] sm:text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
                   Email
                 </label>
                 <input
@@ -142,7 +142,7 @@ export function Login() {
               </div>
 
               <div>
-                <label htmlFor="password" className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="password" className="block text-[11px] sm:text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
                   Password
                 </label>
                 <input
@@ -154,7 +154,7 @@ export function Login() {
                   onChange={e => setPassword(e.target.value)}
                   className="w-full px-3.5 py-2 text-sm bg-gray-50 border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#645DF6] focus:border-transparent transition-all"
                 />
-                <p className="text-[10.5px] text-gray-400 mt-1">
+                <p className="text-[10px] sm:text-[10.5px] text-gray-400 mt-1">
                   First time? Entering email &amp; password creates your account automatically.
                 </p>
               </div>
@@ -162,7 +162,7 @@ export function Login() {
               <button
                 type="submit"
                 disabled={loading || !email.trim() || !password}
-                className="cursor-pointer w-full flex items-center justify-center gap-2 bg-[#645DF6] hover:bg-[#5249e0] text-white px-5 py-2.5 rounded-lg font-medium text-sm shadow-sm transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed hover:shadow hover:scale-[1.01] active:scale-[0.99]"
+                className="cursor-pointer w-full flex items-center justify-center gap-2 bg-[#645DF6] hover:bg-[#5249e0] text-white px-5 py-2.5 rounded-lg font-medium text-sm shadow-sm transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed hover:shadow hover:scale-[1.01] active:scale-[0.99] mt-0.5"
               >
                 {loading ? (
                   <span className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -173,9 +173,9 @@ export function Login() {
             </form>
 
             {/* Divider */}
-            <div className="flex items-center gap-3 anim-fade-in-up delay-200">
+            <div className="flex items-center gap-3 anim-fade-in-up delay-200 my-4">
               <div className="flex-1 h-px bg-gray-200" />
-              <span className="text-[11px] text-gray-400 uppercase tracking-widest font-medium">or continue with google</span>
+              <span className="text-[10px] sm:text-[11px] text-gray-400 uppercase tracking-widest font-medium">or continue with google</span>
               <div className="flex-1 h-px bg-gray-200" />
             </div>
 

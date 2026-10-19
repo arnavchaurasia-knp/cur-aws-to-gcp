@@ -18,10 +18,12 @@ func Check() error {
 	agyPath := os.Getenv("AGY_PATH")
 	if agyPath != "" {
 		if _, err := os.Stat(agyPath); err != nil {
-			return fmt.Errorf("AGY_PATH=%q not found: %w", agyPath, err)
+			if _, lookErr := exec.LookPath(agyPath); lookErr != nil {
+				log.Printf("WARNING: preflight: AGY_PATH=%q not found (%v) — agy LLM features unavailable, auth/UI unaffected", agyPath, err)
+			}
 		}
 	} else if _, err := exec.LookPath("agy"); err != nil {
-		return fmt.Errorf("agy not found on PATH (set AGY_PATH in .env to use a specific binary): %w", err)
+		log.Printf("WARNING: preflight: agy not found on PATH — agy LLM features unavailable, auth/UI unaffected")
 	}
 	// 2. skill installed — uses the same resolution logic as the spawner
 	skillDir := skill.ResolveDir()

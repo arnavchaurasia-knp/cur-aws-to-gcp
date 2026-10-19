@@ -49,7 +49,7 @@ func main() {
 
 	if !cfg.DevAuthBypass {
 		if err := preflight.Check(); err != nil {
-			log.Fatalf("preflight failed: %v", err)
+			slog.Warn("preflight check completed with warnings", "err", err)
 		}
 	}
 

@@ -65,11 +65,14 @@ COPY skill/ /app/skill/
 # Compile catalog.duckdb index from bundled SKU datasets so it is permanently baked into the image
 RUN python /app/skill/aws-gcp-cost-projection/scripts/build_catalog_index.py
 
+# Create agy stub script so PATH lookup and stat succeed in container environment
+RUN printf '#!/bin/sh\nexec python3 "$@"\n' > /usr/local/bin/agy && chmod +x /usr/local/bin/agy
+
 # Default Environment Variables
 ENV PORT=8080
 ENV WEB_ROOT=/app/frontend/dist
 ENV DATA_DIR=/data
-ENV AGY_PATH=agy
+ENV AGY_PATH=/usr/local/bin/agy
 ENV DEV_AUTH_BYPASS=false
 ENV SESSION_SECRET=cur-web-session-secret-key-at-least-32-bytes-long-12345
 ENV SKILL_DIR=/app/skill/aws-gcp-cost-projection

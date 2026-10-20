@@ -1363,6 +1363,20 @@ def _build_targeted_retry_prompt(ph, v):
                 + " Only address the missing/violating rows; do not stop until the gate passes.")
 
 
+def _record_script_failure(fallback_msg):
+    fail_file = os.path.join(JOB_DIR, "failure.txt")
+    if os.path.exists(fail_file):
+        try:
+            with open(fail_file, "r", encoding="utf-8") as _f:
+                content = _f.read().strip()
+                if content and not content.startswith("script ") and not content.startswith("pre_script "):
+                    return  # Preserve script's own specific failure message!
+        except Exception:
+            pass
+    with open(fail_file, "w", encoding="utf-8") as _f:
+        _f.write(fallback_msg)
+
+
 def run_phase(ph):
     # Check for per-job cancel sentinel or global STOP_ALL at each phase boundary
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(JOB_DIR)))
@@ -1396,8 +1410,7 @@ def run_phase(ph):
                    + " during Phase " + str(ph["num"]) + " (" + ph["name"] + "). Check agy.log for details.")
             log("ERROR: " + msg)
             if ph["num"] in CRITICAL_PHASES:
-                with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
-                    _f.write(msg)
+                _record_script_failure(msg)
                 measure_metrics(phase_runs)
                 sys.exit(0)
             else:
@@ -1459,18 +1472,15 @@ def run_phase(ph):
                                + " during Phase " + str(ph["num"]) + " (" + ph["name"]
                                + ") — LLM fallback did not resolve it. Check agy.log for details.")
                         log("ERROR: " + msg)
-                        with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
-                            _f.write(msg)
+                        _record_script_failure(msg)
                         measure_metrics(phase_runs)
                         sys.exit(0)
                 else:
-                    with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
-                        _f.write(msg)
+                    _record_script_failure(msg)
                     measure_metrics(phase_runs)
                     sys.exit(0)
             else:
-                with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
-                    _f.write(msg)
+                _record_script_failure(msg)
                 measure_metrics(phase_runs)
                 sys.exit(0)
     else:

@@ -279,6 +279,15 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 
 	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
 	h.ensureJobDirRestored(r.Context(), id, jobDir)
+
+	// On ephemeral container hosts (e.g. Render free tier without persistent disk or S3),
+	// a redeploy clears local storage. If input.* is missing, do not spawn a doomed run.
+	inputMatches, _ := filepath.Glob(filepath.Join(jobDir, "input.*"))
+	if len(inputMatches) == 0 {
+		http.Error(w, `{"error":"Original input file is missing (server was restarted or redeployed). Please upload the bill again as a new report."}`, http.StatusBadRequest)
+		return
+	}
+
 	_ = os.MkdirAll(jobDir, 0755)
 	// Remove failure.txt so the watcher doesn't immediately re-fail on the same
 	// structural error. The orchestrator reads phase_checkpoint.json at startup

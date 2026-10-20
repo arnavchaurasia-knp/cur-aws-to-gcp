@@ -2152,5 +2152,12 @@ def main():
     log.info(f"Ingest complete. billing_format={fmt!r}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        log.error(f"INGEST UNCAUGHT EXCEPTION: {tb}")
+        _fail_direct(f"Ingestion failed with exception: {e}\n\nTraceback:\n{tb[-600:]}")
+
 

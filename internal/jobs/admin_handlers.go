@@ -352,8 +352,19 @@ func (h *Handler) AdminCatalogStatus(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) AdminCatalogRefresh(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
-	TriggerCatalogRefresh()
-	_ = h.db.LogAdminAction(sess.Email, "catalog_refresh", "", "")
+	started, reason := TriggerCatalogRefresh()
+	_ = h.db.LogAdminAction(sess.Email, "catalog_refresh", "", reason)
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	if !started {
+		// Report the refusal rather than claiming success. See
+		// TriggerCatalogRefresh for why a runtime refresh cannot persist here.
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "skipped",
+			"reason": reason,
+		})
+		return
+	}
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "refresh started"})
 }

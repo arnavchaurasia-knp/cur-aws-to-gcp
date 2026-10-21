@@ -23,6 +23,7 @@ import (
 	"github.com/facets/cur-web/internal/logger"
 	"github.com/facets/cur-web/internal/notify"
 	"github.com/facets/cur-web/internal/preflight"
+	"github.com/facets/cur-web/internal/skill"
 	"github.com/facets/cur-web/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -150,15 +151,14 @@ func main() {
 		}
 	}
 
+	catalogFetchedAt, catalogAgeDays := loadCatalogVintage(skill.ResolveDir())
+
 	r := chi.NewRouter()
 	r.Use(structuredRequestLogger)
 	r.Use(middleware.Recoverer)
 
 	// Health — unauthenticated, for load balancers and container probes.
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
+	r.Get("/health", healthHandler(catalogFetchedAt, catalogAgeDays))
 
 	// Auth (no session required)
 	r.Get("/api/auth/login", oauthH.Login)
@@ -323,4 +323,44 @@ func structuredRequestLogger(next http.Handler) http.Handler {
 			"remote_addr", r.RemoteAddr,
 		)
 	})
+}
+
+// healthHandler returns the /health handler, closed over the catalog vintage
+// read once at startup. Extracted from main() so a test can exercise the real
+// handler rather than re-implementing its response shape — a test that builds
+// its own handler passes even when this one is deleted.
+func healthHandler(catalogFetchedAt, catalogAgeDays any) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Always 200 with status ok: this is a liveness probe. A stale or
+		// unreadable catalog is reported in the body, never by failing the
+		// probe — Render would restart the container.
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":             "ok",
+			"catalog_fetched_at": catalogFetchedAt,
+			"catalog_age_days":   catalogAgeDays,
+		})
+	}
+}
+
+// loadCatalogVintage reads CATALOG_META.json once at server startup and returns
+// the fetched_at timestamp and age in days. Degrades to nil on missing/corrupt metadata.
+func loadCatalogVintage(skillDir string) (any, any) {
+	metaPath := filepath.Join(skillDir, "data", "CATALOG_META.json")
+	b, err := os.ReadFile(metaPath)
+	if err != nil {
+		return nil, nil
+	}
+	var meta struct {
+		FetchedAt string `json:"fetched_at"`
+	}
+	if err := json.Unmarshal(b, &meta); err != nil || meta.FetchedAt == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, meta.FetchedAt)
+	if err != nil {
+		return meta.FetchedAt, nil
+	}
+	days := int(time.Since(t).Hours() / 24)
+	return meta.FetchedAt, days
 }

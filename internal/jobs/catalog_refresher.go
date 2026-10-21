@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/facets/cur-web/internal/skill"
@@ -64,7 +65,18 @@ func catalogAge() int {
 	return int(time.Since(ts).Hours() / 24)
 }
 
+// isImageBaked returns true if the skill directory is located inside the container image layer (under /app).
+func isImageBaked(skillDir string) bool {
+	clean := filepath.ToSlash(filepath.Clean(skillDir))
+	return clean == "/app" || strings.HasPrefix(clean, "/app/")
+}
+
 func runCatalogRefreshIfStale() {
+	skillDir := skill.ResolveDir()
+	if isImageBaked(skillDir) {
+		slog.Info("GCP catalog is image-baked and refreshed at build time, skipping runtime refresh", "skill_dir", skillDir)
+		return
+	}
 	age := catalogAge()
 	if age < catalogStaleDays {
 		slog.Debug("catalog is fresh, skipping refresh", "age_days", age)
@@ -93,6 +105,10 @@ const catalogRefreshTimeout = 2 * time.Minute
 // ignoring catalogStaleDays. Used by the forced "refresh now" admin action.
 func runCatalogRefreshNow() {
 	skillDir := skill.ResolveDir()
+	if isImageBaked(skillDir) {
+		slog.Info("GCP catalog is image-baked and refreshed at build time, skipping runtime refresh", "skill_dir", skillDir)
+		return
+	}
 	script := filepath.Join(skillDir, "scripts", "catalog_manager.py")
 	if _, err := os.Stat(script); err != nil {
 		slog.Warn("catalog_manager.py not found, skipping refresh", "path", script)
@@ -142,6 +158,17 @@ func GetCatalogStatus() CatalogStatus {
 // TriggerCatalogRefresh runs a forced catalog refresh in the background
 // (ignoring the staleness threshold) and returns immediately. Used by the
 // admin "refresh now" action.
-func TriggerCatalogRefresh() {
+//
+// Returns (started, reason). When the skill directory is image-baked the
+// refresh cannot persist — it would write into a container layer discarded on
+// the next deploy — so nothing is started. The caller MUST surface that to the
+// admin: a button that reports "refresh started" while doing nothing is worse
+// than one that declines, because the operator stops looking.
+func TriggerCatalogRefresh() (bool, string) {
+	if skillDir := skill.ResolveDir(); isImageBaked(skillDir) {
+		return false, "catalog is baked into the container image and refreshed at build time; " +
+			"a runtime refresh would be discarded on the next deploy"
+	}
 	go runCatalogRefreshNow()
+	return true, ""
 }

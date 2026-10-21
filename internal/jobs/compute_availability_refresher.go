@@ -93,6 +93,18 @@ func runComputeAvailabilityRefreshIfStale() {
 // unconditionally, ignoring computeAvailabilityStaleDays. Exported for a
 // future admin "refresh now" action, mirroring TriggerCatalogRefresh.
 func runComputeAvailabilityRefreshNow() {
+	// Same constraint as the GCP catalog (see catalog_refresher.go): when the
+	// skill directory is baked into the container image, this script's output
+	// (data/compute_family_availability.json) is written into an image layer
+	// that is discarded on the next deploy. apply_static_mappings.py would keep
+	// reading the committed copy regardless, so the refresh burns CPU on a
+	// 512 MB container for a result nothing can ever observe.
+	if skillDir := skill.ResolveDir(); isImageBaked(skillDir) {
+		slog.Info("compute availability data is image-baked and refreshed at build time, "+
+			"skipping runtime refresh", "skill_dir", skillDir)
+		return
+	}
+
 	project := os.Getenv("GOOGLE_CLOUD_AVAILABILITY_PROJECT")
 	if project == "" {
 		slog.Debug("GOOGLE_CLOUD_AVAILABILITY_PROJECT not set, skipping compute availability refresh")

@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/facets/cur-web/internal/auth"
 	"github.com/facets/cur-web/internal/db"
@@ -31,6 +33,16 @@ const (
 	projectionAuditDir = "projection-audit"
 	projectionDuckDB   = "projection.duckdb"
 )
+
+// regenLocks serializes per-job report regeneration so only one runs at a time.
+var regenLocks struct {
+	mu sync.Mutex
+	m  map[string]bool
+}
+
+func init() {
+	regenLocks.m = make(map[string]bool)
+}
 
 type NotifyConfig struct {
 	Email    notify.EmailConfig
@@ -203,7 +215,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) runJob(jobID, jobDir, ext string, sess *auth.Session) {
 	h.db.UpdateJobRunning(jobID)
-	pid, err := h.spawner.Start(jobDir, ext, jobID)
+	pid, assumptionsVersion, err := h.spawner.Start(jobDir, ext, jobID)
 	if err != nil {
 		h.db.UpdateJobFailed(jobID, "spawn failed: "+err.Error())
 		go func() {
@@ -217,6 +229,9 @@ func (h *Handler) runJob(jobID, jobDir, ext string, sess *auth.Session) {
 			}
 		}()
 		return
+	}
+	if assumptionsVersion != "" {
+		_ = h.db.UpdateJobAssumptionsVersion(jobID, assumptionsVersion)
 	}
 	h.db.UpdateJobPID(jobID, pid)
 	h.watcher.Watch(jobID, pid)
@@ -307,12 +322,15 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pid, err := h.spawner.Start(jobDir, job.InputExt, newSession)
+	pid, assumptionsVersion, err := h.spawner.Start(jobDir, job.InputExt, newSession)
 	if err != nil {
 		h.db.UpdateJobFailed(id, "retry spawn failed: "+err.Error())
 		// Issue 2: err.Error() can contain quotes/newlines — don't embed in JSON string
 		http.Error(w, `{"error":"spawn failed"}`, http.StatusInternalServerError)
 		return
+	}
+	if assumptionsVersion != "" {
+		_ = h.db.UpdateJobAssumptionsVersion(id, assumptionsVersion)
 	}
 	if err := h.db.UpdateJobPID(id, pid); err != nil {
 		slog.Error("UpdateJobPID failed after Retry", "job_id", id, "pid", pid, "err", err)
@@ -323,6 +341,129 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]any{"id": id, "status": "running", "pid": pid})
+}
+
+// RegenerateReport re-runs render_report.py for a finished job using the
+// current report settings. The previous report is preserved.
+func (h *Handler) RegenerateReport(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	id := chi.URLParam(r, "id")
+	if !isValidJobID(id) {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	job, err := h.db.GetJob(id)
+	if err != nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.canAccess(sess, job) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	if job.Status != "done" {
+		http.Error(w, `{"error":"can only regenerate a completed job"}`, http.StatusConflict)
+		return
+	}
+
+	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
+	h.ensureJobDirRestored(r.Context(), id, jobDir)
+
+	// One at a time per job.
+	regenLocks.mu.Lock()
+	if regenLocks.m[id] {
+		regenLocks.mu.Unlock()
+		http.Error(w, `{"error":"report regeneration already in progress for this job"}`, http.StatusConflict)
+		return
+	}
+	regenLocks.m[id] = true
+	defer func() {
+		regenLocks.mu.Lock()
+		delete(regenLocks.m, id)
+		regenLocks.mu.Unlock()
+	}()
+
+	// Check that projection.duckdb exists.
+	dbPath := filepath.Join(jobDir, projectionAuditDir, projectionDuckDB)
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		http.Error(w, `{"error":"job has no projection data; cannot regenerate report"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Write report-settings.json from current DB values.
+	settings, err := h.db.GetReportSettings()
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	if settings == nil {
+		settings = []*db.ReportSetting{}
+	}
+	values := make(map[string]string, len(settings))
+	for _, s := range settings {
+		values[s.Key] = s.Value
+	}
+	version, err := h.db.ReportSettingsVersionHash()
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	values["__version__"] = version
+	snapshot := map[string]any{
+		"version":     version,
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		"values":       values,
+	}
+	snapshotJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		http.Error(w, `{"error":"failed to build settings snapshot"}`, http.StatusInternalServerError)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "report-settings.json"), append(snapshotJSON, '\n'), 0644); err != nil {
+		http.Error(w, `{"error":"failed to write settings snapshot"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Run only render_report.py, with CWD set to the job directory.
+	python := pythonBin()
+	scriptsDir := filepath.Join(skill.ResolveDir(), "scripts")
+	scriptPath := filepath.Join(scriptsDir, "render_report.py")
+	cmd := exec.Command(python, scriptPath)
+	cmd.Dir = jobDir
+	cmd.Env = append(os.Environ(),
+		"SKILL_DIR="+skill.ResolveDir(),
+		"PYTHONPATH="+scriptsDir,
+	)
+	logFilePath := filepath.Join(jobDir, "regenerate.log")
+	logFile, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		http.Error(w, `{"error":"could not open regenerate log"}`, http.StatusInternalServerError)
+		return
+	}
+	defer logFile.Close()
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	if err := cmd.Run(); err != nil {
+		slog.Error("regenerate report failed", "job_id", id, "err", err)
+		http.Error(w, `{"error":"report regeneration failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Record in audit log.
+	changedBy := ""
+	if sess != nil && sess.Email != "" {
+		changedBy = sess.Email
+	}
+	_ = h.db.LogAdminAction(changedBy, "regenerate_report", id, version)
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"id":      id,
+		"run_id":  version,
+		"status":  "regenerated",
+		"version": version,
+	})
 }
 
 func (h *Handler) Refine(w http.ResponseWriter, r *http.Request) {

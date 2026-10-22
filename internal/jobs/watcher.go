@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -216,8 +217,20 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		if err := w.db.UpdateJobDone(jobID, spend); err != nil {
 			log.Printf("watcher %s: UpdateJobDone: %v", jobID, err)
 		}
+		w.recordEquivalenceUsage(jobID, jobDir)
 		metrics.JobsDone.Add(1)
 		slog.Info("job done", "job_id", jobID, "prospect", job.Prospect, "aws_spend", spend, "attempts", job.Attempts)
+
+		// Persist run_diagnostics.json summary into the durable DB so it
+		// survives job-directory expiration (ephemeral storage redeploys).
+		diagPath := filepath.Join(jobDir, "projection-audit", "run_diagnostics.json")
+		if summary, err := os.ReadFile(diagPath); err == nil {
+			if err := w.db.SaveJobDiagnostics(jobID, "initial", summary); err != nil {
+				log.Printf("watcher %s: SaveJobDiagnostics: %v", jobID, err)
+			}
+		} else {
+			log.Printf("watcher %s: run_diagnostics.json not present, skipping diagnostics persist", jobID)
+		}
 		w.syncRemote(jobID, jobDir)
 		go func() {
 			if err := notify.SendJobReady(w.notify.Email, job.Owner, job.Owner, job.Prospect, jobID, spend); err != nil {
@@ -320,10 +333,13 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 
 	_ = os.Remove(filepath.Join(jobDir, "orchestrator.lock"))
 
-	pid, err := w.spawner.Start(jobDir, job.InputExt, "")
+	pid, assumptionsVersion, err := w.spawner.Start(jobDir, job.InputExt, "")
 	if err != nil {
 		w.db.UpdateJobFailed(jobID, "retry spawn failed: "+err.Error())
 		return
+	}
+	if assumptionsVersion != "" {
+		_ = w.db.UpdateJobAssumptionsVersion(jobID, assumptionsVersion)
 	}
 	w.db.UpdateJobPID(jobID, pid)
 	w.Watch(jobID, pid)
@@ -504,4 +520,50 @@ func WriteValidationVerdict(jobDir string, outcome ValidatorOutcome, summary str
 
 func writeValidationVerdict(jobDir string, outcome ValidatorOutcome, summary string) {
 	WriteValidationVerdict(jobDir, outcome, summary)
+}
+
+func (w *Watcher) recordEquivalenceUsage(jobID, jobDir string) {
+	usageFile := filepath.Join(jobDir, "projection-audit", "equivalence_usage.json")
+	if _, err := os.Stat(usageFile); os.IsNotExist(err) {
+		usageFile = filepath.Join(jobDir, "equivalence_usage.json")
+		if _, err := os.Stat(usageFile); os.IsNotExist(err) {
+			return
+		}
+	}
+
+	if w.db == nil {
+		diagMsg := fmt.Sprintf("DIAGNOSTIC: Durable database is unconfigured; cannot record equivalence usage for job %s\n", jobID)
+		slog.Warn("equivalence usage tracking skipped: durable database is unconfigured", "job_id", jobID)
+		auditDir := filepath.Join(jobDir, "projection-audit")
+		_ = os.MkdirAll(auditDir, 0755)
+		_ = os.WriteFile(filepath.Join(auditDir, "equivalence_diagnostic.txt"), []byte(diagMsg), 0644)
+		return
+	}
+
+	data, err := os.ReadFile(usageFile)
+	if err != nil {
+		slog.Warn("failed to read equivalence_usage.json", "job_id", jobID, "err", err)
+		return
+	}
+
+	var records []db.EquivalenceUsageRecord
+	if err := json.Unmarshal(data, &records); err != nil {
+		slog.Warn("failed to unmarshal equivalence_usage.json", "job_id", jobID, "err", err)
+		return
+	}
+
+	for i := range records {
+		if records[i].JobID == "" {
+			records[i].JobID = jobID
+		}
+		if records[i].RecordedAt == "" {
+			records[i].RecordedAt = time.Now().UTC().Format(time.RFC3339)
+		}
+	}
+
+	if err := w.db.RecordEquivalenceUsage(records); err != nil {
+		slog.Error("failed to record equivalence usage to db", "job_id", jobID, "err", err)
+	} else {
+		slog.Info("recorded equivalence usage to db", "job_id", jobID, "count", len(records))
+	}
 }

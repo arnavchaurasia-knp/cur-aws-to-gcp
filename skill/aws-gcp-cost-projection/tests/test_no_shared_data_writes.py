@@ -23,8 +23,9 @@ DATA_DIR = os.path.join(REPO_ROOT, "data")
 # Pinned allow-list of offline maintenance tools that legitimately write to data/.
 # Per-job scripts MUST NOT be added here.
 ALLOWED_MAINTENANCE_WRITERS = {
-    # Specifically pinned by WORKORDER_learned_cache_promotion.md:
+    # Specifically pinned by WORKORDER_learned_cache_promotion.md and WORKORDER_equivalence_crosswalk_review.md:
     "promote_learned_codes.py",
+    "promote_equivalence.py",
     "refresh_aws_product_codes.py",
     "refresh_ec2_specs.py",
     "build_catalog_index.py",

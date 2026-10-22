@@ -10,10 +10,62 @@ import html as _html
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from log_utils import get_logger, fatal
 from currency_utils import load_currency_info
+from config_loader import load_report_settings
 
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 log = get_logger("render_report")
+
+# ── Report customization settings ─────────────────────────────────────────────
+_RS = load_report_settings(JOB_DIR)
+
+
+def rs_bool(key: str, default: bool = True) -> bool:
+    """Parse a report setting as bool. Never raises."""
+    v = str(_RS.get(key, "")).strip().lower()
+    if v in ("true", "1", "yes"):
+        return True
+    if v in ("false", "0", "no"):
+        return False
+    return default
+
+
+def rs_num(key: str, default: float = 0.0) -> float:
+    """Parse a report setting as number. Never raises."""
+    try:
+        return float(_RS.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+# ── Column definitions for the detail table ───────────────────────────────────
+# Each entry: (setting_key_or_None, header_label, cell_renderer_lambda)
+# setting_key=None means the column is always on. The SAME list drives both
+# the <th> header and every <td> body cell so they can never drift out of sync.
+COLUMNS = [
+    (None,              "#",               lambda r: str(r[20] if len(r) > 20 else "")),
+    (None,              "AWS Service → GCP Service", lambda r: f'{r[4] or ""} → {r[2] or ""}'),
+    (None,              "AWS Instance",    lambda r: str(r[13] or "—")),
+    (None,              "GCP Mapping",     lambda r: str(r[14] or "—")),
+    (None,              "Region",          lambda r: str(r[9] or r[10] or "—")),
+    (None,              "AWS",             lambda r: fmt(r[5] or 0.0)),
+    (None,              "GCP OD",          lambda r: fmt(r[6] or 0.0)),
+    ("col_gcp_cud_1yr", "GCP 1yr CUD",     lambda r: fmt(r[7] or 0.0)),
+    ("col_gcp_cud_3yr", "GCP 3yr CUD",     lambda r: fmt(r[8] or 0.0)),
+    ("col_diff",        "Diff",            lambda r: f'+{fmt((r[5] or 0.0) - (r[6] or 0.0))}' if (r[5] or 0.0) > (r[6] or 0.0) else f'−{fmt(abs((r[5] or 0.0) - (r[6] or 0.0)))}' if abs((r[5] or 0.0) - (r[6] or 0.0)) > 0.005 else '$0.00'),
+    ("col_pct_of_aws",  "GCP as % of AWS", lambda r: (f'{(r[6] or 0.0) / r[5] * 100:.0f}%' if (r[5] or 0.0) else "—")),
+    ("col_line_items",  "Line items",      lambda r: "1"),
+    ("col_region",      "AWS Region",      lambda r: str(r[9] or "—")),
+]
+
+_ACTIVE_COLUMNS = [c for c in COLUMNS if c[0] is None or rs_bool(c[0])]
+_NUM_COLS = len(_ACTIVE_COLUMNS) + 1  # +1 for the always-shown Details column
+
+# Settings version hash: SHA-256 of sorted key=value pairs, first 12 hex chars.
+import hashlib as _hashlib
+_rs_version = _hashlib.sha256(
+    ";".join(f"{k}={v}" for k, v in sorted(_RS.items())).encode()
+).hexdigest()[:12]
 
 
 # ── service-type pill classifier ──────────────────────────────────────────────
@@ -919,6 +971,17 @@ def main():
     )
     _has_assumption = "is_assumption" in _m2g_cols
     _assumption_expr = "BOOL_OR(COALESCE(m.is_assumption, FALSE))" if _has_assumption else "FALSE"
+
+    _p_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('gcp_projection')").fetchall()}
+    _commitment_basis_expr = (
+        "COALESCE(ANY_VALUE(p.commitment_basis), 'on_demand')" if "commitment_basis" in _p_cols
+        else "'on_demand'"
+    )
+    _aws_cost_od_est_expr = (
+        f"COALESCE(ANY_VALUE(p.aws_cost_od_est), c.aws_amortized_cost) * {aws_fx_rate}" if "aws_cost_od_est" in _p_cols
+        else f"c.aws_amortized_cost * {aws_fx_rate}"
+    )
+
     rows = conn.execute(f"""
         SELECT
             c.product,
@@ -941,7 +1004,9 @@ def main():
             c.aws_li_key,
             SUM(CASE WHEN m.component NOT IN ('license', 'sql_license') THEN p.gcp_projected_cost ELSE 0.0 END) * {fx_rate} AS gcp_base_od,
             SUM(CASE WHEN m.component IN ('license', 'sql_license') THEN p.gcp_projected_cost ELSE 0.0 END) * {fx_rate} AS gcp_lic_od,
-            STRING_AGG(DISTINCT CASE WHEN m.component IN ('license', 'sql_license') THEN COALESCE(NULLIF(m.gcp_sku_name, ''), m.component) ELSE NULL END, ', ') AS lic_name
+            STRING_AGG(DISTINCT CASE WHEN m.component IN ('license', 'sql_license') THEN COALESCE(NULLIF(m.gcp_sku_name, ''), m.component) ELSE NULL END, ', ') AS lic_name,
+            {_commitment_basis_expr}                                           AS commitment_basis,
+            {_aws_cost_od_est_expr}                                            AS aws_cost_od_est
         FROM aws_li_catalog c
         LEFT JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
         LEFT JOIN gcp_projection    p ON c.aws_li_key = p.aws_li_key
@@ -949,6 +1014,26 @@ def main():
         GROUP BY c.aws_li_key, c.product, c.operation, c.aws_amortized_cost, c.aws_region, c.gcp_region, c.is_workload, c.pricing_model, c.instance_type
         ORDER BY c.aws_amortized_cost DESC
     """).fetchall()
+
+    # ── row filter (B5) ─────────────────────────────────────────────────────────
+    # Totals are computed from SQL over ALL rows (unchanged). Only the visible
+    # rows in the detail table are filtered. The disclosure line (Rule 2) tells
+    # the reader why visible rows don't sum to the headline totals.
+    _row_min_cost = rs_num("row_min_cost_usd", 0.0)
+    _row_filter_note = ""
+    if _row_min_cost > 0:
+        _rows_before = len(rows)
+        _all_rows_aws = sum(r[5] or 0.0 for r in rows)
+        rows = [r for r in rows if (r[5] or 0.0) >= _row_min_cost]
+        _rows_after = len(rows)
+        if _rows_after < _rows_before:
+            _hidden_count = _rows_before - _rows_after
+            _hidden_aws = _all_rows_aws - sum(r[5] or 0.0 for r in rows)
+            _row_filter_note = (
+                f"Showing {_rows_after} of {_rows_before} services. "
+                f"{_hidden_count} smaller row(s) totalling ${_hidden_aws:,.2f} "
+                f"are not listed; all totals above include them."
+            )
 
     # ── passthrough spend — logged only (see below), not a report card ───────
     passthrough_spend = (conn.execute("""
@@ -1131,7 +1216,7 @@ def main():
     sec_b_rows = []
 
     for r in rows:
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name = r
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est = r
         if (aws or 0.0) < 0:
             continue
 
@@ -1142,12 +1227,13 @@ def main():
         else:
             sec_b_rows.append(r)
 
-    def _render_row(r, idx, force_pt=False):
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name = r
+    def _render_row(r, idx, force_pt=False, active_columns=None):
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est = r
 
         ptype  = pill_type(gcp_svc, product)
         p_html = pill_html(ptype)
         aws    = aws or 0.0
+        aws_od_est = aws_cost_od_est if aws_cost_od_est is not None else aws
 
         is_ignore = (strategy == "ignore")
         is_pt = force_pt or (strategy == "passthrough") or (od is None and not is_ignore)
@@ -1167,7 +1253,7 @@ def main():
             cud1 = cud1 or 0.0
             cud3 = cud3 or 0.0
 
-        is_spot = (pricing_model or "").lower() == "spot"
+        is_spot = (pricing_model or "").lower() == "spot" or commitment_basis == "spot"
         spot_title = "Spot/Preemptible — CUDs not applicable; billed at Spot rate regardless of commitment"
         no_cud_title = "No Committed Use Discount rate available for this SKU — billed at On-Demand rate under a CUD commitment"
         marker = '<span class="cud-na-marker" title="{}">&dagger;</span>'
@@ -1203,11 +1289,14 @@ def main():
 
         has_license_modeled = (gcp_lic_od is not None and gcp_lic_od > 0.005 and bool(lic_name) and not is_pt and not is_ignore)
 
+        is_estimated_od = (commitment_basis != "on_demand" and abs(aws_od_est - aws) > 0.005)
+        cmp_aws = aws_od_est if is_estimated_od else aws
+
         if is_ignore:
             od_str   = fmt(0.0)
             cud1_str = fmt(0.0)
             cud3_str = fmt(0.0)
-            diff_td  = f'<td class="num green">+{fmt(aws)}</td>' if aws > 0.005 else '<td class="num">—</td>'
+            diff_td  = f'<td class="num green">+{fmt(cmp_aws)}</td>' if cmp_aws > 0.005 else '<td class="num">—</td>'
         elif is_pt:
             od_str = fmt(aws)
             cud1_str = fmt(aws)
@@ -1227,7 +1316,7 @@ def main():
                     od_str += "*"
             else:
                 od_str = f"{fmt(od)}*" if is_assump else fmt(od)
-            diff = aws - od
+            diff = cmp_aws - od
             if abs(diff) < 0.005:
                 diff_td = '<td class="num">—</td>'
             elif diff > 0:
@@ -1250,7 +1339,13 @@ def main():
             aws_cost_cell = fmt(aws)
         else:
             aws_instance_str = _html.escape(str(raw_instance))
-            aws_cost_cell = fmt(aws)
+            if is_estimated_od:
+                aws_cost_cell = (
+                    f"{fmt(aws_od_est)}* "
+                    f"<div style='font-size:10px;color:#5F6368'>(${fmt(aws)} billed)</div>"
+                )
+            else:
+                aws_cost_cell = fmt(aws)
 
         if is_ignore:
             top_line = gcp_sku_name or gcp_svc or "Free on GCP"
@@ -1275,24 +1370,78 @@ def main():
 
         row_class = ' class="row-passthrough"' if is_pt else (' class="row-free"' if is_ignore else "")
 
+        # Build cell HTML for each active column
+        def cell_svc():
+            return (f"<td style='white-space:nowrap'>"
+                    f"  {p_html}"
+                    f"  <span style='font-size:12px'>{_html.escape(str(product or ''))}</span>"
+                    f"  {strategy_badge}<br>"
+                    f"  <span style='font-size:11px;color:#1A73E8'>{_html.escape(str(gcp_svc or 'N/A'))}</span>"
+                    f"</td>")
+
+        def cell_instance():
+            return (f"<td style='font-size:11px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word'>{aws_instance_str}</td>")
+
+        def cell_mapping():
+            return (f"<td style='font-size:11px;color:#5F6368;min-width:220px;max-width:320px;white-space:normal;word-break:break-word'>{gcp_mapping_str}</td>")
+
+        def cell_region():
+            return f"<td style='font-size:11px;color:#5F6368;white-space:nowrap'>{region_str}</td>"
+
+        def cell_aws():
+            return f'<td class="num">{aws_cost_cell}</td>'
+
+        def cell_od():
+            return f'<td class="num">{od_str}</td>'
+
+        def cell_cud1():
+            return f'<td class="num extra-col"{cud1_td_extra}>{cud1_str}</td>'
+
+        def cell_cud3():
+            return f'<td class="num extra-col"{cud3_td_extra}>{cud3_str}</td>'
+
+        def cell_diff():
+            return diff_td
+
+        def cell_line_items():
+            return "<td class='num'>1</td>"
+
+        def cell_aws_region():
+            return f"<td style='font-size:11px;color:#5F6368;white-space:nowrap'>{region_str}</td>"
+
+        def cell_desc():
+            return f'<td class="extra-col">{desc_html}</td>'
+
+        cell_builders = {
+            "#": lambda: f"<td style='color:#80868B;font-size:11px'>{idx}</td>",
+            "AWS Service → GCP Service": cell_svc,
+            "AWS Instance": cell_instance,
+            "GCP Mapping": cell_mapping,
+            "Region": cell_region,
+            "AWS": cell_aws,
+            "GCP OD": cell_od,
+            "GCP 1yr CUD": cell_cud1,
+            "GCP 3yr CUD": cell_cud3,
+            "Diff": cell_diff,
+            "Line items": cell_line_items,
+            "AWS Region": cell_aws_region,
+        }
+
+        if active_columns is None:
+            active_columns = _ACTIVE_COLUMNS
+
+        cells = ""
+        for key, label, _ in active_columns:
+            builder = cell_builders.get(label)
+            if builder:
+                cells += builder()
+            else:
+                cells += "<td>—</td>"
+        cells += cell_desc()  # Details column always shown
+
         main_row_html = (
             f"<tr{row_class}>"
-            f"<td style='color:#80868B;font-size:11px'>{idx}</td>"
-            f"<td style='white-space:nowrap'>"
-            f"  {p_html}"
-            f"  <span style='font-size:12px'>{_html.escape(str(product or ''))}</span>"
-            f"  {strategy_badge}<br>"
-            f"  <span style='font-size:11px;color:#1A73E8'>{_html.escape(str(gcp_svc or 'N/A'))}</span>"
-            f"</td>"
-            f"<td style='font-size:11px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word'>{aws_instance_str}</td>"
-            f"<td style='font-size:11px;color:#5F6368;min-width:220px;max-width:320px;white-space:normal;word-break:break-word'>{gcp_mapping_str}</td>"
-            f"<td style='font-size:11px;color:#5F6368;white-space:nowrap'>{region_str}</td>"
-            f'<td class="num">{aws_cost_cell}</td>'
-            f'<td class="num">{od_str}</td>'
-            f'<td class="num extra-col"{cud1_td_extra}>{cud1_str}</td>'
-            f'<td class="num extra-col"{cud3_td_extra}>{cud3_str}</td>'
-            f"{diff_td}"
-            f'<td class="extra-col">{desc_html}</td>'
+            f"{cells}"
             f"</tr>\n"
         )
 
@@ -1335,15 +1484,16 @@ def main():
         od = r[6] if r[6] is not None else 0.0
         c1 = r[7] if r[7] is not None else od
         c3 = r[8] if r[8] is not None else od
-        is_spot = (r[12] or "").lower() == "spot"
+        is_spot = (r[12] or "").lower() == "spot" or (r[21] or "").lower() == "spot"
         if is_spot:
             c1 = od
             c3 = od
-        sec_a_aws += aws
+        aws_od_est = r[22] if r[22] is not None else aws
+        sec_a_aws += aws_od_est
         sec_a_gcp_od += od
         sec_a_gcp_1yr += c1
         sec_a_gcp_3yr += c3
-        sec_a_html += _render_row(r, idx, force_pt=False)
+        sec_a_html += _render_row(r, idx, force_pt=False, active_columns=_ACTIVE_COLUMNS)
         idx += 1
 
     diff_sec_a = sec_a_aws - sec_a_gcp_od
@@ -1377,7 +1527,7 @@ def main():
         sec_b_gcp_od += aws
         sec_b_gcp_1yr += aws
         sec_b_gcp_3yr += aws
-        sec_b_html += _render_row(r, idx, force_pt=True)
+        sec_b_html += _render_row(r, idx, force_pt=True, active_columns=_ACTIVE_COLUMNS)
         idx += 1
 
     subtotal_b_html = (
@@ -1416,10 +1566,10 @@ def main():
     )
 
     detail_rows_html = (
-        f'<tr class="section-header-row"><th colspan="11">SECTION A — MAPPED (REAL GCP EQUIVALENT)</th></tr>\n'
+        f'<tr class="section-header-row"><th colspan="{_NUM_COLS}">SECTION A — MAPPED (REAL GCP EQUIVALENT)</th></tr>\n'
         + sec_a_html
         + subtotal_a_html
-        + f'<tr class="section-header-row"><th colspan="11">SECTION B — PASSTHROUGH / NO DIRECT GCP EQUIVALENT (CARRIED 1:1)</th></tr>\n'
+        + f'<tr class="section-header-row"><th colspan="{_NUM_COLS}">SECTION B — PASSTHROUGH / NO DIRECT GCP EQUIVALENT (CARRIED 1:1)</th></tr>\n'
         + sec_b_html
         + subtotal_b_html
         + grand_total_row_html
@@ -1447,7 +1597,8 @@ def main():
     # to avoid dropping tiny sub-cent credits in the net total box.
     display_discounts = aws_discounts
 
-    if display_discounts > 0.5 and discount_rows:
+    discounts_block_html = ""
+    if rs_bool("section_discounts") and (display_discounts > 0.5 and discount_rows):
         disc_table_rows = ""
         for d_idx, (d_svc, d_types, d_count, d_amt) in enumerate(discount_rows, 1):
             disc_table_rows += (
@@ -1525,36 +1676,37 @@ def main():
 """
     # ── AR-5 Assumptions Section ──
     assumptions_block_html = ""
-    try:
-        if "is_assumption" in _m2g_cols:
-            assump_rows = conn.execute("""
-                SELECT DISTINCT
-                    COALESCE(NULLIF(m.assumption_note, ''), 'Pricing assumption applied') AS basis,
-                    c.product AS service,
-                    COUNT(*) AS row_cnt
-                FROM aws_li_to_gcp_li m
-                JOIN aws_li_catalog c USING (aws_li_key)
-                WHERE m.is_assumption = TRUE
-                GROUP BY basis, c.product
-                ORDER BY basis, c.product
-            """).fetchall()
-            if assump_rows:
-                from collections import defaultdict
-                grouped_assumptions = defaultdict(list)
-                for basis, svc, cnt in assump_rows:
-                    grouped_assumptions[basis].append(f"{svc} ({cnt} row{'s' if cnt != 1 else ''})")
+    if rs_bool("section_assumptions"):
+        try:
+            if "is_assumption" in _m2g_cols:
+                assump_rows = conn.execute("""
+                    SELECT DISTINCT
+                        COALESCE(NULLIF(m.assumption_note, ''), 'Pricing assumption applied') AS basis,
+                        c.product AS service,
+                        COUNT(*) AS row_cnt
+                    FROM aws_li_to_gcp_li m
+                    JOIN aws_li_catalog c USING (aws_li_key)
+                    WHERE m.is_assumption = TRUE
+                    GROUP BY basis, c.product
+                    ORDER BY basis, c.product
+                """).fetchall()
+                if assump_rows:
+                    from collections import defaultdict
+                    grouped_assumptions = defaultdict(list)
+                    for basis, svc, cnt in assump_rows:
+                        grouped_assumptions[basis].append(f"{svc} ({cnt} row{'s' if cnt != 1 else ''})")
 
-                assump_table_rows = []
-                for i, (basis, svcs) in enumerate(grouped_assumptions.items(), 1):
-                    assump_table_rows.append(f"""
-                    <tr>
-                      <td style="font-weight:600">*{i}</td>
-                      <td><b>{_html.escape(basis)}</b></td>
-                      <td>{_html.escape(', '.join(svcs))}</td>
-                    </tr>
-                    """)
-                assump_rows_html = "\n".join(assump_table_rows)
-                assumptions_block_html = f"""
+                    assump_table_rows = []
+                    for i, (basis, svcs) in enumerate(grouped_assumptions.items(), 1):
+                        assump_table_rows.append(f"""
+                        <tr>
+                          <td style="font-weight:600">*{i}</td>
+                          <td><b>{_html.escape(basis)}</b></td>
+                          <td>{_html.escape(', '.join(svcs))}</td>
+                        </tr>
+                        """)
+                    assump_rows_html = "\n".join(assump_table_rows)
+                    assumptions_block_html = f"""
 <div class="assumptions-section" style="margin-top:28px">
   <h3>* Pricing Assumptions</h3>
   <p class="section-meta">
@@ -1571,8 +1723,8 @@ def main():
   </table></div>
 </div>
 """
-    except Exception as e:
-        log.warning(f"Could not build assumptions section: {e}")
+        except Exception as e:
+            log.warning(f"Could not build assumptions section: {e}")
 
     # ── summary cards (M-3: compare Section A GCP against Section A AWS mapped baseline) ──
     def card(label, value, sub="", accent=False):
@@ -1618,6 +1770,21 @@ def main():
 
     wins_html  = wins_table(gcp_wins,  "GCP Savings", "#0D9D58")
     loses_html = wins_table(gcp_loses, "Extra Cost on GCP", "#D93025")
+
+    # Gated by the section_wins_losses report setting. The tables above are
+    # still computed either way — hiding a section must never change a number.
+    wins_losses_block = ""
+    if rs_bool("section_wins_losses"):
+        wins_losses_block = (
+            "<h2>Where GCP Wins &amp; Loses</h2>"
+            '<p class="section-meta">Top services where GCP is cheaper / more '
+            "expensive than current AWS spend (1-Year CUD vs AWS amortized, "
+            "workload rows only).</p>"
+            '<h3 style="color:#0D9D58">&#9660; GCP Savings Opportunities</h3>'
+            + wins_html
+            + '<h3 style="color:#D93025">&#9650; GCP Cost Increases</h3>'
+            + loses_html
+        )
 
     # Surface the already-computed under_proj_rows (GCP < 10% of AWS on mapped,
     # material-spend rows) instead of discarding them — a customer-facing flag
@@ -1741,7 +1908,7 @@ def main():
                 _gap_data = json.load(_gf)
             _gc = _gap_data.get("count", 0)
             _gt = _gap_data.get("total_cost", 0.0)
-            if _gc > 0 and _gt > 0:
+            if _gc > 0 and _gt > 0 and rs_bool("section_data_gaps"):
                 data_gap_html = (
                     f'<div style="background:#FEF3C7;border:1px solid #F59E0B;border-radius:8px;'
                     f'padding:16px;margin:20px 0;color:#92400E;">'
@@ -1754,7 +1921,7 @@ def main():
             log.warning(f"Could not read data_gaps.json: {_ge}")
 
     # Explicit banner for needs_reprice if any leftovers exist
-    if reprice_count > 0:
+    if rs_bool("section_data_gaps") and reprice_count > 0:
         data_gap_html += (
             f'<div style="background:#FFFBEB;border:1px solid #D97706;border-radius:8px;'
             f'padding:16px;margin:20px 0;color:#B45309;">'
@@ -1816,6 +1983,7 @@ def main():
 
 {currency_notice_html}
 {data_gap_html}
+{_row_filter_note}
 
 <div class="summary-grid">
 {cards_html}
@@ -1842,16 +2010,7 @@ def main():
 <p class="section-meta">Sorted by AWS spend descending. Diff = AWS − GCP On-Demand; <span class="green">green = GCP cheaper</span>, <span class="red">red = GCP more expensive</span>.</p>
 <div class="table-scroll"><table id="detail-table">
   <tr>
-    <th>#</th>
-    <th>AWS Service → GCP Service</th>
-    <th>AWS Instance</th>
-    <th>GCP Mapping</th>
-    <th>Region</th>
-    <th class="num">AWS</th>
-    <th class="num">GCP OD</th>
-    <th class="num extra-col">GCP 1yr CUD</th>
-    <th class="num extra-col">GCP 3yr CUD</th>
-    <th class="num">Diff</th>
+    {''.join(f'<th class="num">{label}</th>' for _, label, _ in _ACTIVE_COLUMNS)}
     <th class="extra-col">Details</th>
   </tr>
   {detail_rows_html}
@@ -1874,12 +2033,7 @@ def main():
   <li>AWS Marketplace and Support charges passed through at 1:1 cost (no GCP equivalent).</li>
 </ul>
 
-<h2>Where GCP Wins &amp; Loses</h2>
-<p class="section-meta">Top services where GCP is cheaper / more expensive than current AWS spend (1-Year CUD vs AWS amortized, workload rows only).</p>
-<h3 style="color:#0D9D58">&#9660; GCP Savings Opportunities</h3>
-{wins_html}
-<h3 style="color:#D93025">&#9650; GCP Cost Increases</h3>
-{loses_html}
+{wins_losses_block}
 {under_proj_html}
 
 <!-- ── Facets.cloud footer ── -->
@@ -1890,7 +2044,7 @@ def main():
   </a>
   <span class="fc-footer-note">
     Report generated {now.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC &nbsp;·&nbsp;
-    Prices are estimates — verify with GCP Pricing Calculator before committing.
+    settings v: {_rs_version} &nbsp;·&nbsp; Prices are estimates — verify with GCP Pricing Calculator before committing.
   </span>
 </footer>
 

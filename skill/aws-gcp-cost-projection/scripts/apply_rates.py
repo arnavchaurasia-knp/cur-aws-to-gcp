@@ -3,6 +3,7 @@ import duckdb
 import os
 import sys
 import json
+from datetime import datetime, timezone
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -12,13 +13,18 @@ from egress_rates import EGRESS_SKUS
 from synthetic_skus import SYNTHETIC_SKU_IDS
 from resolve_sku import resolve_intent_to_sku
 from apply_static_mappings import GCP_COMPUTE_ENGINE, CUD_PCT_FALLBACK as _CUD_PCT_FALLBACK
+from config_loader import load_data_config
 
 log = get_logger("apply_rates")
 
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
-DATA_DIR = os.path.join(os.environ.get("SKILL_DIR", ""), "data")
+SKILL_DIR = os.environ.get("SKILL_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(SKILL_DIR, "data")
 CATALOG_DB = os.path.join(DATA_DIR, "catalog.duckdb")
+
+_REVIEW_CONFIG = load_data_config("review-config")
+_CATALOG_MAX_BUILD_AGE_DAYS = _REVIEW_CONFIG.get("catalog_max_build_age_days", 14)
 
 
 def _load_tpu_rates():
@@ -403,6 +409,56 @@ def _write_rate_gaps(gaps):
         for svc, region, sku_id, count in gaps:
             f.write(f"| {svc} | {region} | {sku_id} | {count} |\n")
     log.info(f"Wrote rate-fill-gaps.md ({len(gaps)} gap(s))")
+
+
+def _record_catalog_vintage(conn):
+    """Write projection-audit/catalog_vintage.json and emit catalog_stale diagnostic if >14 days old."""
+    meta_path = os.path.join(DATA_DIR, "CATALOG_META.json")
+    fetched_at = None
+    age_days = None
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            fetched_at = meta.get("fetched_at")
+            if fetched_at:
+                ts = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+                age_days = int((datetime.now(timezone.utc) - ts).total_seconds() / 86400)
+        except Exception as e:
+            log.warning(f"Could not read CATALOG_META.json: {e}")
+
+    audit_dir = os.path.join(JOB_DIR, "projection-audit")
+    os.makedirs(audit_dir, exist_ok=True)
+    vintage_file = os.path.join(audit_dir, "catalog_vintage.json")
+    try:
+        with open(vintage_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "catalog_fetched_at": fetched_at,
+                "catalog_age_days": age_days,
+            }, f, indent=2)
+    except Exception as e:
+        log.warning(f"Could not write catalog_vintage.json: {e}")
+
+    if age_days is not None and age_days > _CATALOG_MAX_BUILD_AGE_DAYS:
+        catalog_usd = 0.0
+        try:
+            r = conn.execute("""
+                SELECT COALESCE(SUM(gcp_projected_cost), 0.0)
+                FROM gcp_projection
+                WHERE strategy IN ('map', 'break_down')
+            """).fetchone()
+            if r and r[0] is not None:
+                catalog_usd = float(r[0])
+        except Exception as e:
+            log.warning(f"Could not compute catalog-priced spend: {e}")
+
+        try:
+            from diagnostics import diag, WARN
+            diag(WARN, "catalog_stale", "apply_rates.py",
+                 f"priced against a GCP catalog fetched {fetched_at} ({age_days} days old)",
+                 usd=catalog_usd, phase=4)
+        except Exception as e:
+            log.warning(f"Could not emit catalog_stale diagnostic: {e}")
 
 
 def main():
@@ -928,10 +984,10 @@ def main():
 
         dominant_region = compute_dominant_region(conn)
 
-        # Sanity check: any mapped row whose SKU has SOME rate rows but none reachable
-        # for its specific region silently projects $0. Catch and route to outlier_triage.
-        # REGION-1: A row is reachable if it has a rate in its own region, global (including global-fallback),
-        # or the dominant region. Only rows with NO rate anywhere go to outlier_triage.
+        # Sanity check: two kinds of unpriced mapped rows:
+        # 1. Resolved gcp_sku_id with no rate reachable in region/global/dominant region (routed to outlier_triage)
+        # 2. Rows with strategy IN ('map', 'break_down') or passthrough with family_not_available_in_region
+        #    that have gcp_sku_id IS NULL (unpriced / no SKU).
         unreachable = conn.execute("""
             SELECT m.gcp_service, c.gcp_region, m.gcp_sku_id, COUNT(*) AS unreachable_rows
             FROM aws_li_to_gcp_li m
@@ -949,6 +1005,37 @@ def main():
               )
             GROUP BY m.gcp_service, c.gcp_region, m.gcp_sku_id
         """, [dominant_region]).fetchall()
+
+        # Check for unpriced rows with NULL gcp_sku_id
+        cols_m = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+        has_pt_reason = "passthrough_reason" in cols_m
+        pt_reason_clause = "OR m.passthrough_reason = 'family_not_available_in_region'" if has_pt_reason else ""
+        null_sku_unpriced = conn.execute(f"""
+            SELECT COUNT(*) AS rows_count, COALESCE(SUM(c.aws_amortized_cost), 0.0) AS total_usd
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog c USING (aws_li_key)
+            WHERE m.gcp_sku_id IS NULL
+              AND (
+                  m.strategy IN ('map', 'break_down')
+                  {pt_reason_clause}
+              )
+        """).fetchone()
+
+        null_sku_rows = int(null_sku_unpriced[0] or 0) if null_sku_unpriced else 0
+        null_sku_usd = float(null_sku_unpriced[1] or 0.0) if null_sku_unpriced else 0.0
+
+        if null_sku_rows > 0:
+            log.warning(
+                f"Sanity check: {null_sku_rows} row(s) (${null_sku_usd:,.2f}) have no GCP SKU resolved in region "
+                "(e.g. family not offered in region; carried at parity)"
+            )
+            try:
+                from diagnostics import diag, WARN
+                diag(WARN, "arm_region_unpriced", "apply_rates.py",
+                     f"{null_sku_rows} row(s) (${null_sku_usd:,.2f}) have no GCP SKU resolved in region",
+                     rows=null_sku_rows, usd=null_sku_usd, phase=4)
+            except Exception as e:
+                log.warning(f"Could not emit arm_region_unpriced diagnostic: {e}")
 
         if unreachable:
             _write_rate_gaps(unreachable)
@@ -979,7 +1066,7 @@ def main():
             """, [dominant_region])
             create_projection_view(conn, dominant_region)
             log.info(f"Sanity check: {len(unreachable)} unreachable SKU/region pair(s) moved to outlier_triage")
-        else:
+        elif null_sku_rows == 0:
             log.info("Sanity check: all mapped SKUs have reachable rates")
 
         # Safety net: any mapped row still lacking an OnDemand rate after fill
@@ -1121,6 +1208,9 @@ def main():
             SET mapping_confidence = LEAST(mapping_confidence, 0.4)
             WHERE rate_region_basis = 'cheapest_available'
         """)
+
+        _record_catalog_vintage(conn)
+
         conn.execute("COMMIT")
         log.info("Rate fill complete")
     except Exception:

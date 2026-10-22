@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -560,24 +561,30 @@ func RenderOrchestratorForTest(inputExt string) (string, error) {
 // StartOrchestrated writes run_all.py into jobDir and spawns it detached. The
 // orchestrator drives the six phases; the watcher polls the returned PID and
 // finalizes when the report appears (same contract as the old single-agy Start).
-func (s *Spawner) StartOrchestrated(jobDir, inputExt string) (int, error) {
+func (s *Spawner) StartOrchestrated(jobDir, inputExt string) (int, string, error) {
 	// Refuse to start if global STOP_ALL sentinel is set.
 	// STOP_ALL lives in DataDir; jobDir is DataDir/jobs/<id>, so go two levels up.
 	if IsStopAllActive(filepath.Dir(filepath.Dir(filepath.Clean(jobDir)))) {
-		return 0, fmt.Errorf("orchestration halted: STOP_ALL is active")
+		return 0, "", fmt.Errorf("orchestration halted: STOP_ALL is active")
 	}
 
 	cleanJobDir := filepath.Clean(jobDir)
 	if err := os.MkdirAll(cleanJobDir, 0755); err != nil {
-		return 0, fmt.Errorf("mkdir jobDir: %w", err)
+		return 0, "", fmt.Errorf("mkdir jobDir: %w", err)
 	}
 
 	script, err := renderOrchestrator(inputExt)
 	if err != nil {
-		return 0, fmt.Errorf("render orchestrator: %w", err)
+		return 0, "", fmt.Errorf("render orchestrator: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(cleanJobDir, "run_all.py"), []byte(script), 0644); err != nil {
-		return 0, fmt.Errorf("write run_all.py: %w", err)
+		return 0, "", fmt.Errorf("write run_all.py: %w", err)
+	}
+
+	// Write per-job assumption snapshot before the pipeline runs.
+	version, serr := s.WriteAssumptionsSnapshot(jobDir)
+	if serr != nil {
+		slog.Warn("assumptions snapshot skipped", "err", serr)
 	}
 
 	pyBin := pythonBin()
@@ -599,19 +606,19 @@ func (s *Spawner) StartOrchestrated(jobDir, inputExt string) (int, error) {
 
 	logFile, err := os.OpenFile(filepath.Join(filepath.Clean(jobDir), "agy.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return 0, fmt.Errorf("open log: %w", err)
+		return 0, "", fmt.Errorf("open log: %w", err)
 	}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
-		return 0, fmt.Errorf("start orchestrator: %w", err)
+		return 0, "", fmt.Errorf("start orchestrator: %w", err)
 	}
 	pid := cmd.Process.Pid
 	cmd.Process.Release()
 	logFile.Close() // child inherited the fd; close parent's copy to avoid leak
-	return pid, nil
+	return pid, version, nil
 }
 
 // geminiModel resolves the model alias with the same default as baseFlags.

@@ -6,12 +6,13 @@ import { RunHistory } from '../components/RunHistory'
 import { Summary } from '../components/Summary'
 import { ContactCard } from '../components/ContactCard'
 import { Reveal } from '../components/Reveal'
-import { getJob, getProgress, listJobs, downloadURL, refineJob, retryJob, cancelJob, deleteJob, getRuns, getSummary } from '../api/jobs'
+import { getJob, getProgress, listJobs, downloadURL, refineJob, retryJob, cancelJob, deleteJob, getRuns, getSummary, regenerateReport } from '../api/jobs'
 import type { Job, Progress, RunResult } from '../api/jobs'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { TOTAL_PHASES } from '../lib/phases'
 import { toast } from 'sonner'
+import { JobHealth } from '../components/JobHealth'
 
 function formatDollars(n: number): string {
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -278,6 +279,8 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
 
   const [cancelling, setCancelling] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
+  const [regenerating, setRegenerating] = useState(false)
+  const [regenerateError, setRegenerateError] = useState<string | null>(null)
 
   const submitDelete = async () => {
     if (!id || !job) return
@@ -305,6 +308,25 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
       setCancelError(e instanceof Error ? e.message : String(e))
     } finally {
       setCancelling(false)
+    }
+  }
+
+  const submitRegenerate = async () => {
+    if (!id) return
+    setRegenerating(true)
+    setRegenerateError(null)
+    try {
+      const result = await regenerateReport(id)
+      if (result) {
+        toast.success('Report regenerated')
+        setRuns(prev => [...prev, { ...result, run_id: result.run_id } as any])
+      } else {
+        setRegenerateError('Regenerate failed')
+      }
+    } catch (e: unknown) {
+      setRegenerateError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRegenerating(false)
     }
   }
 
@@ -445,6 +467,23 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                   </a>
                 </div>
               </div>
+
+              {user.is_admin && (
+                <>
+                  <div className="flex flex-col gap-2 anim-fade-in-up delay-175">
+                    <p className="text-xs uppercase tracking-wider text-gray-500">Admin actions</p>
+                    <button
+                      onClick={submitRegenerate}
+                      disabled={regenerating}
+                      className="w-full py-2.5 rounded-lg border border-[#645DF6]/30 text-[#645DF6] text-xs font-medium hover:bg-[#645DF6]/10 disabled:opacity-40 transition-colors"
+                    >
+                      {regenerating ? 'Regenerating…' : 'Regenerate Report'}
+                    </button>
+                    {regenerateError && <p className="text-xs text-orange-400">{regenerateError}</p>}
+                  </div>
+                  <JobHealth jobId={job.id} />
+                </>
+              )}
 
               <Reveal delay={60}>
                 <div>

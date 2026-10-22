@@ -13,7 +13,23 @@ import (
 	"github.com/facets/cur-web/internal/skill"
 )
 
-const catalogStaleDays = 7
+// catalogStaleDays reads catalog_refresh_after_days from data/review-config.json,
+// falling back to 7 if missing or unreadable.
+func catalogStaleDays() int {
+	skillDir := skill.ResolveDir()
+	configPath := filepath.Join(skillDir, "data", "review-config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return 7
+	}
+	var cfg struct {
+		CatalogRefreshAfterDays int `json:"catalog_refresh_after_days"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil || cfg.CatalogRefreshAfterDays <= 0 {
+		return 7
+	}
+	return cfg.CatalogRefreshAfterDays
+}
 
 // StartCatalogRefresher launches a background goroutine that keeps the GCP
 // SKU catalog fresh. It checks catalog age on startup and then every week;
@@ -78,7 +94,7 @@ func runCatalogRefreshIfStale() {
 		return
 	}
 	age := catalogAge()
-	if age < catalogStaleDays {
+	if age < catalogStaleDays() {
 		slog.Debug("catalog is fresh, skipping refresh", "age_days", age)
 		return
 	}
@@ -152,7 +168,7 @@ type CatalogStatus struct {
 // the CATALOG_META.json read.
 func GetCatalogStatus() CatalogStatus {
 	age := catalogAge()
-	return CatalogStatus{AgeDays: age, Stale: age >= catalogStaleDays}
+	return CatalogStatus{AgeDays: age, Stale: age >= catalogStaleDays()}
 }
 
 // TriggerCatalogRefresh runs a forced catalog refresh in the background

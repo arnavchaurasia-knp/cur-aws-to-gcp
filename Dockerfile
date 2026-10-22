@@ -62,6 +62,11 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 # Copy skills / projection scripts and data
 COPY skill/ /app/skill/
 
+# Gate build on GCP catalog freshness (default max age 14 days)
+ARG CATALOG_MAX_AGE_DAYS=14
+RUN python /app/skill/aws-gcp-cost-projection/scripts/check_catalog_age.py \
+      --assert-fresh --max-age-days ${CATALOG_MAX_AGE_DAYS}
+
 # Compile catalog.duckdb index from bundled SKU datasets so it is permanently baked into the image
 RUN python /app/skill/aws-gcp-cost-projection/scripts/build_catalog_index.py
 

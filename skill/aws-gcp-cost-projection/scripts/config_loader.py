@@ -35,3 +35,66 @@ def load_data_config(name: str) -> dict:
     except Exception as e:
         log.warning("config_loader: failed to load %s: %s — using empty defaults", path, e)
         return {}
+
+
+def load_assumptions(job_dir: str | None = None) -> dict:
+    """Assumption values for THIS job, from <job_dir>/assumptions.json.
+
+    Falls back to the committed defaults in data/assumption-defaults.json when
+    the snapshot is absent (local runs, older jobs). Never raises.
+    """
+    # Try job snapshot first
+    if job_dir:
+        snapshot_path = os.path.join(job_dir, "assumptions.json")
+        try:
+            with open(snapshot_path, encoding="utf-8") as f:
+                data = json.load(f)
+            values = data.get("values", {})
+            if isinstance(values, dict) and values:
+                return {str(k): float(v) for k, v in values.items()}
+        except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError, TypeError):
+            pass  # fall through to committed defaults
+
+    # Fall back to committed defaults
+    defaults_path = os.path.join(_DATA_DIR, "assumption-defaults.json")
+    try:
+        with open(defaults_path, encoding="utf-8") as f:
+            data = json.load(f)
+        values = data.get("values", {})
+        if isinstance(values, dict):
+            return {str(k): float(v) for k, v in values.items()}
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError, TypeError):
+        pass
+    return {}
+
+
+def load_report_settings(job_dir: str | None = None) -> dict:
+    """Report toggle values for THIS job, from <job_dir>/report-settings.json.
+
+    Falls back to the committed defaults in data/report-settings-defaults.json
+    when the snapshot is absent (local runs, older jobs). Never raises.
+    Returns dict[str, str].
+    """
+    # Try job snapshot first
+    if job_dir:
+        snapshot_path = os.path.join(job_dir, "report-settings.json")
+        try:
+            with open(snapshot_path, encoding="utf-8") as f:
+                data = json.load(f)
+            values = data.get("values", {})
+            if isinstance(values, dict) and values:
+                return {str(k): str(v) for k, v in values.items()}
+        except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError, TypeError):
+            pass  # fall through to committed defaults
+
+    # Fall back to committed defaults
+    defaults_path = os.path.join(_DATA_DIR, "report-settings-defaults.json")
+    try:
+        with open(defaults_path, encoding="utf-8") as f:
+            data = json.load(f)
+        values = data.get("values", {})
+        if isinstance(values, dict):
+            return {str(k): str(v) for k, v in values.items()}
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError, TypeError):
+        pass
+    return {}

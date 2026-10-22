@@ -23,7 +23,7 @@ import duckdb
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from egress_rates import EGRESS_SKUS, cdn_egress_rate, interzone_sku_for_region
-from config_loader import load_data_config as _cfg
+from config_loader import load_data_config as _cfg, load_assumptions
 try:
     from aws_normalizer import canonical_service
 except Exception:  # pragma: no cover
@@ -38,6 +38,7 @@ except ImportError:
 _inst_cfg = _cfg("instance-specs")
 _gcp_cfg  = _cfg("gcp-model-config")
 _svc_cfg  = _cfg("service-classification")
+_ASSUMPTIONS = load_assumptions()  # committed defaults; per-job overrides via load_assumptions(job_dir)
 
 
 def _safe_path(base: str, *parts: str) -> str:
@@ -141,6 +142,14 @@ INTENTIONAL_PASSTHROUGH_NOTE_ILIKE = _svc_cfg.get("intentional_passthrough_note_
     "%no direct GCP equivalent%",
 ])
 
+STATIC_MAPPER_ROW_COLS = [
+    "aws_li_key", "mechanic_group", "product", "usage_type", "unit",
+    "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type",
+    "total_usage", "instance_type", "instance_ram_gb", "deployment_option", "database_engine",
+    "pricing_model", "product_code", "instance_vcpus", "operating_system", "license_model", "line_item_type",
+    "billing_month",
+]
+
 
 def intentional_passthrough_exclude_clause(column):
     """SQL AND-clause excluding rows that are INTENTIONAL, permanent passthroughs.
@@ -185,6 +194,20 @@ class SKUMeta(str):
     @property
     def sku_id(self):
         return str.__str__(self) or None
+
+
+def months_covered(rows):
+    """How many distinct billing months this bill spans.
+
+    Returns (count, known). `known` is False when no row carries a usable
+    billing month -- ingest writes '' for bills with no date column, and ''
+    is a single shared value, not a month. Callers must not treat an unknown
+    month count as 1 real month without saying so.
+    """
+    months = {m for m in (r.get("billing_month") for r in rows) if m}
+    if not months:
+        return 1, False
+    return len(months), True
 
 # ---------------------------------------------------------------------------
 # Lookup tables
@@ -436,9 +459,6 @@ PER_REQUEST_MAP = [
     #    — but any CUR-format bill, where Lambda rows DO route through this
     #    deterministic per_request path, would have silently gotten zero SKU
     #    found from both of the old entries.
-    (r"Lambda.*GB.Second|Lambda-GB-Second",
-                               "Cloud Run Functions", "Cloud Run functions Memory", 1.0),
-    (r"Lambda",                "Cloud Run Functions", "Cloud Run Functions Invocations", 1.0),
     # "SimpleQueue"/"SimpleNotification" (no space) never matched the real AWS
     # product name ("Amazon Simple Queue Service", with a space) — confirmed
     # real: these two rules never fired for standard CUR/PDF product text,
@@ -606,6 +626,28 @@ RESOLVED_SKUS_FILE = os.path.join(DATA_DIR, "resolved_skus.json")
 with open(os.path.join(DATA_DIR, "ec2-instance-types.json")) as _f:
     _EC2_TYPES_FOR_VCPU = json.load(_f)
 _EC2_TYPES = _EC2_TYPES_FOR_VCPU
+
+# AWS dense-storage families ship spinning HDD, not NVMe flash. GCP has no
+# dense-HDD local-storage product at all, so this capacity must never be priced
+# against the "SSD backed Local Storage" SKU (~$0.08/GiB-mo, ~10x too high).
+_DENSE_HDD_FAMILIES = {"d2", "d3", "d3en", "h1"}
+
+
+def _local_storage_media(itype, type_entry):
+    """'hdd' | 'nvme' | None for an instance type.
+
+    Prefers the storage_media field written by refresh_ec2_specs.py; falls back
+    to the dense-HDD family list for catalogs generated before that field
+    existed. Returns None when there is no local storage at all.
+    """
+    media = (type_entry or {}).get("storage_media")
+    if media:
+        return media
+    fam = (itype or "").strip().lower().split(".")[0]
+    if fam in _DENSE_HDD_FAMILIES:
+        return "hdd"
+    return "nvme" if (type_entry or {}).get("storage_gb") else None
+
 
 _MAP_CONFIG_PATH = os.path.join(DATA_DIR, "family_map.json")
 with open(_MAP_CONFIG_PATH) as _f_map:
@@ -2468,11 +2510,12 @@ def map_flat_hourly(rows):
     # GCP bundles all of that Enterprise-tier functionality behind a SINGLE
     # account-level enrollment fee (real SKU, confirmed: "Cloud Armor Enterprise
     # Paygo: Enrollment", $200/mo flat). Pricing every AWS row at the full $200
-    # would multiply the same real-world charge N times for one bill — this flag
-    # ensures only the first such row on a bill carries the $200, and any others
-    # are zeroed with a note pointing at it, same dedup shape as passthrough_rank
-    # in projection_view.py for multi-component passthrough rows.
-    enterprise_enrollment_priced = False
+    # would multiply the same real-world charge N times for one bill — this set
+    # ensures each billing month carries the $200 once, and any subsequent rows
+    # within the same month are zeroed with a note pointing at it, mirroring
+    # map_shield.
+    enterprise_enrollment_priced_months = set()
+    _, months_known = months_covered(rows)
     for r in rows:
         # AWS WAF WebACL/Rule fixed fees — dedicated branch (not a plain
         # FLAT_HOURLY_MAP entry) because total_usage's real unit varies by
@@ -2526,8 +2569,23 @@ def map_flat_hourly(rows):
             gcp_region = r.get("gcp_region") or "global"
             already_in_months = bool(re.search(r"\bMonth\b", waf_blob, re.IGNORECASE))
             mult = 1.0 if already_in_months else (1.0 / 730.0)
-            if not enterprise_enrollment_priced:
+            billing_month = r.get("billing_month") or "default"
+            if billing_month not in enterprise_enrollment_priced_months:
                 sku_id = resolve_sku("Networking", GCP_CLOUD_ARMOR_ENTERPRISE_ENROLLMENT, gcp_region)
+                note = (
+                    "AWS WAF Bot Control/Fraud Control/Anti-DDoS managed-rule "
+                    "enablement fee -> Cloud Armor Enterprise Paygo enrollment "
+                    "($200/mo flat, real SKU). This is ONE account-level fee that "
+                    "covers all such Enterprise-tier features combined -- priced "
+                    "once here; any other Bot Control/Fraud Control/Anti-DDoS "
+                    "fixed-fee rows on this bill are zeroed to avoid counting the "
+                    "same $200/mo enrollment multiple times."
+                )
+                if not months_known:
+                    note += (
+                        " [month unknown: this bill carries no billing period, so a monthly fee is "
+                        "priced once; if the bill spans multiple months this is understated]"
+                    )
                 out.append({
                     "aws_li_key":       r["aws_li_key"],
                     "gcp_service":      "Networking",
@@ -2537,19 +2595,11 @@ def map_flat_hourly(rows):
                     "strategy":         "map" if sku_id else "passthrough",
                     "unit_multiplier":  mult,
                     "gcp_region":       gcp_region,
-                    "projection_note":  (
-                        "AWS WAF Bot Control/Fraud Control/Anti-DDoS managed-rule "
-                        "enablement fee -> Cloud Armor Enterprise Paygo enrollment "
-                        "($200/mo flat, real SKU). This is ONE account-level fee that "
-                        "covers all such Enterprise-tier features combined -- priced "
-                        "once here; any other Bot Control/Fraud Control/Anti-DDoS "
-                        "fixed-fee rows on this bill are zeroed to avoid counting the "
-                        "same $200/mo enrollment multiple times."
-                    ),
+                    "projection_note":  note,
                     "mapping_confidence": 0.65,
                 })
                 if sku_id:
-                    enterprise_enrollment_priced = True
+                    enterprise_enrollment_priced_months.add(billing_month)
             else:
                 out.append({
                     "aws_li_key":       r["aws_li_key"],
@@ -2560,9 +2610,8 @@ def map_flat_hourly(rows):
                     "unit_multiplier":  0.0,
                     "gcp_region":       gcp_region,
                     "projection_note":  (
-                        "Already covered by the $200/mo Cloud Armor Enterprise Paygo "
-                        "enrollment fee priced on another Bot Control/Fraud Control/"
-                        "Anti-DDoS row in this bill -- not a separate GCP charge."
+                        f"AWS WAF Bot Control/Fraud Control/Anti-DDoS enrollment fee already "
+                        f"priced for month {billing_month} -> $0 dedup"
                     ),
                     "mapping_confidence": 0.65,
                 })
@@ -2778,6 +2827,12 @@ def map_per_request(rows):
     for r in rows:
         product = (r.get("product") or "").lower()
         gcp_region = r.get("gcp_region")
+        ut_raw = (r.get("usage_type") or "").lower()
+
+        # AWS Lambda rows routed into per_request -> map_lambda
+        if "lambda" in product or "lambda" in ut_raw or canonical_service(r.get("product"), r.get("product_code")) == "lambda":
+            out.extend(map_lambda([r]))
+            continue
 
         # CloudFront Origin Shield — per-request fee for requests passing through the
         # intermediate caching tier between edge PoPs and the origin.
@@ -4236,13 +4291,11 @@ def map_commitment_discount(rows):
         line_type = (r.get("line_item_type") or "")
         ut = (r.get("usage_type") or "")
         cost = float(r.get("aws_amortized_cost") or 0.0)
-        cost_unblended = float(r.get("aws_cost") or 0.0)
         blob = f"{line_type} {ut} {product}".lower()
 
         is_commitment = (
             any(tok in blob for tok in _COMMITMENT_TOKENS)
             or cost < 0
-            or cost_unblended < 0
         )
         if not is_commitment:
             print(
@@ -4318,6 +4371,7 @@ GCP_CLOUD_ARMOR_ENTERPRISE_SUB_DESC = r"Monthly Fee for Cloud Armor Enterprise A
 def map_shield(rows):
     out = []
     enterprise_sub_priced_months = set()
+    _, months_known = months_covered(rows)
     for r in rows:
         gcp_region = r.get("gcp_region")
         ut = (r.get("usage_type") or "").lower()
@@ -4372,6 +4426,11 @@ def map_shield(rows):
                     "Subscription (real catalog SKU, $3,000/mo flat, global — exact list-price "
                     "parity, both require a 1-year commitment tier)"
                 ) + _no_rate_suffix(sku_id, gcp_region)
+                if not months_known:
+                    note += (
+                        " [month unknown: this bill carries no billing period, so a monthly fee is "
+                        "priced once; if the bill spans multiple months this is understated]"
+                    )
                 out.append({
                     "aws_li_key":         r["aws_li_key"],
                     "gcp_service":        "Cloud Armor Enterprise",
@@ -4629,7 +4688,7 @@ def map_marketplace_thirdparty(rows):
 # resolve reliably. sku_id is a synthetic id, not a real catalog SKU.
 GCP_LOOKER_STUDIO_PRO_SKU = "GCP-LOOKER-STUDIO-PRO-USER"
 GCP_LOOKER_STUDIO_PRO_NAME = "Looker Studio Pro (per user)"
-GCP_LOOKER_STUDIO_PRO_RATE = 9.0  # USD / user / month
+GCP_LOOKER_STUDIO_PRO_RATE = _ASSUMPTIONS.get("looker_studio_pro_seat_usd", 9.0)  # USD / user / month
 
 
 def map_quicksight(rows):
@@ -4928,11 +4987,9 @@ def map_managed_db(rows: list[dict]):
         # (family_mapper.py only handles instance-typed rows, not ACU billing).
         acu_blob = f"{ut} {r.get('operation') or ''}"
         unit_str = (r.get("unit") or "").lower()
-        pricing_unit_str = (r.get("pricing_unit") or "").lower()
         if (
             _ACU_RE.search(acu_blob)
             or unit_str in ("acu-hr", "acu-hrs", "acu-hours")
-            or pricing_unit_str in ("acu-hr", "acu-hrs", "acu-hours")
             or "serverless" in ut.lower()
         ):
             product_blob = f"{r.get('product') or ''} {r.get('operation') or ''}".lower()
@@ -4959,11 +5016,15 @@ def map_managed_db(rows: list[dict]):
                 # prices the I/O-Opt rows within ~3% of AWS list (ratio ~0.97).
                 # Fits GCP Cloud SQL N4 custom (supports up to 8 GB/vCPU; 2 vCPU : 16 GiB)
                 # (https://cloud.google.com/sql/docs/mysql/machine-series-overview).
+                acu_assumption = (
+                    f"1 ACU ≈ {_ACU_VCPU:g} vCPU + {_ACU_RAM_GIB:g} GiB "
+                    f"(1:{_ACU_RAM_GIB/_ACU_VCPU:g} vCPU:RAM memory-optimized shape, "
+                    f"Aurora R-class lineage on Cloud SQL N4)"
+                )
                 ram_desc = "Cloud SQL for PostgreSQL: Zonal - RAM"
                 core_sku = resolve_sku(GCP_CLOUD_SQL, core_desc, region)
                 ram_sku = resolve_sku(GCP_CLOUD_SQL, ram_desc, region)
-                base_note = "Aurora Serverless v2 ACU-hrs → Cloud SQL for PostgreSQL unbundled vCPU+RAM (1 ACU = 2 vCPU + 16 GiB [1:8 memory-optimized shape]; AWS docs / Cloud SQL docs)"
-                acu_assumption = "1 ACU ≈ 2 vCPU + 16 GiB (1:8 vCPU:RAM memory-optimized shape, Aurora R-class lineage on Cloud SQL N4)"
+                base_note = f"Aurora Serverless v2 ACU-hrs → Cloud SQL for PostgreSQL unbundled vCPU+RAM (1 ACU = {_ACU_VCPU:g} vCPU + {_ACU_RAM_GIB:g} GiB [1:{_ACU_RAM_GIB/_ACU_VCPU:g} memory-optimized shape]; AWS docs / Cloud SQL docs)"
                 out.append({
                     "aws_li_key":         r["aws_li_key"],
                     "gcp_service":        GCP_CLOUD_SQL,
@@ -4971,7 +5032,7 @@ def map_managed_db(rows: list[dict]):
                     "gcp_sku_name":       core_desc,
                     "component":          "core",
                     "strategy":           "map" if core_sku else "passthrough",
-                    "unit_multiplier":    2.0,
+                    "unit_multiplier":    _ACU_VCPU,
                     "gcp_region":         region,
                     "projection_note":    base_note,
                     "mapping_confidence": 0.65,
@@ -4985,7 +5046,7 @@ def map_managed_db(rows: list[dict]):
                     "gcp_sku_name":       ram_desc,
                     "component":          "ram",
                     "strategy":           "map" if ram_sku else "passthrough",
-                    "unit_multiplier":    16.0,
+                    "unit_multiplier":    _ACU_RAM_GIB,
                     "gcp_region":         region,
                     "projection_note":    base_note,
                     "mapping_confidence": 0.65,
@@ -5005,6 +5066,11 @@ def map_managed_db(rows: list[dict]):
                 # Cloud SQL Zonal guarantee. Matches the treatment the
                 # PostgreSQL branch above already gets; MySQL's bundled-size
                 # code path just never received the same fix.
+                acu_assumption = (
+                    f"1 ACU ≈ {_ACU_VCPU:g} vCPU + {_ACU_RAM_GIB:g} GiB "
+                    f"(1:{_ACU_RAM_GIB/_ACU_VCPU:g} vCPU:RAM memory-optimized shape, "
+                    f"Aurora R-class lineage on Cloud SQL N4)"
+                )
                 engine_note = ""
                 if "mariadb" in product_blob:
                     engine_note = " [engine substitution: Cloud SQL has no native MariaDB offering; priced as MySQL]"
@@ -5012,8 +5078,7 @@ def map_managed_db(rows: list[dict]):
                 ram_desc = "Cloud SQL for MySQL: Zonal - RAM"
                 core_sku = resolve_sku(GCP_CLOUD_SQL, core_desc, region)
                 ram_sku = resolve_sku(GCP_CLOUD_SQL, ram_desc, region)
-                base_note = "Aurora Serverless v2 ACU-hrs → Cloud SQL for MySQL unbundled vCPU+RAM (1 ACU = 2 vCPU + 16 GiB [1:8 memory-optimized shape]; AWS docs / Cloud SQL docs)" + engine_note
-                acu_assumption = "1 ACU ≈ 2 vCPU + 16 GiB (1:8 vCPU:RAM memory-optimized shape, Aurora R-class lineage on Cloud SQL N4)"
+                base_note = f"Aurora Serverless v2 ACU-hrs → Cloud SQL for MySQL unbundled vCPU+RAM (1 ACU = {_ACU_VCPU:g} vCPU + {_ACU_RAM_GIB:g} GiB [1:{_ACU_RAM_GIB/_ACU_VCPU:g} memory-optimized shape]; AWS docs / Cloud SQL docs)" + engine_note
                 out.append({
                     "aws_li_key":         r["aws_li_key"],
                     "gcp_service":        GCP_CLOUD_SQL,
@@ -5021,7 +5086,7 @@ def map_managed_db(rows: list[dict]):
                     "gcp_sku_name":       core_desc,
                     "component":          "core",
                     "strategy":           "map" if core_sku else "passthrough",
-                    "unit_multiplier":    2.0,
+                    "unit_multiplier":    _ACU_VCPU,
                     "gcp_region":         region,
                     "projection_note":    base_note,
                     "mapping_confidence": 0.65,
@@ -5035,7 +5100,7 @@ def map_managed_db(rows: list[dict]):
                     "gcp_sku_name":       ram_desc,
                     "component":          "ram",
                     "strategy":           "map" if ram_sku else "passthrough",
-                    "unit_multiplier":    16.0,
+                    "unit_multiplier":    _ACU_RAM_GIB,
                     "gcp_region":         region,
                     "projection_note":    base_note,
                     "mapping_confidence": 0.65,
@@ -6520,14 +6585,116 @@ GCP_DATAFLOW = "Cloud Dataflow"
 # "RAM Time" ($/GiB-hr) SKUs in every region including asia-south1 — no bundled
 # DPU-equivalent SKU exists on the GCP side, so a DPU-hour has to be split into
 # its vCPU and RAM components and priced against each rate independently.
-_GLUE_DPU_VCPU = 4.0
-_GLUE_DPU_RAM_GIB = 16.0
+_GLUE_DPU_VCPU    = _ASSUMPTIONS.get("glue_dpu_vcpu", 4.0)
+_GLUE_DPU_RAM_GIB = _ASSUMPTIONS.get("glue_dpu_ram_gib", 16.0)
+_ACU_VCPU         = _ASSUMPTIONS.get("aurora_acu_vcpu", 2.0)
+_ACU_RAM_GIB      = _ASSUMPTIONS.get("aurora_acu_ram_gib", 16.0)
+_LAMBDA_MB_PER_VCPU = _ASSUMPTIONS.get("lambda_mb_per_vcpu", 1769.0)
 # Batch vs Streaming pricing differs (~23% higher for Streaming on both vCPU
 # and RAM SKUs) but Glue's CUR usage_type/operation never distinguish Streaming
 # ETL jobs from standard batch ETL jobs — defaulting to Batch (Glue's dominant,
 # far more common job type) is a disclosed assumption, not a detected fact.
 _GLUE_VCPU_SKU_DESC = r"^vCPU Time Batch\b"
 _GLUE_RAM_SKU_DESC = r"^RAM Time (?!Streaming|Arm|FlexRS)"
+
+
+def map_lambda(rows):
+    """AWS Lambda GB-seconds & Requests -> Cloud Run Functions.
+
+    AWS Lambda bundles memory and CPU into a single metered unit: the GB-second
+    (allocating 1 vCPU per 1769 MB of memory). GCP Cloud Run functions bills memory
+    (GiB-s) and CPU (vCPU-s) on separate SKUs.
+    This mapper splits GB-second rows into both 'memory' and 'cpu' components.
+    Lambda invocations (Requests / Count) map to Cloud Run Functions Invocations.
+    """
+    out = []
+    # Anchored patterns strictly excluding Min-Instance and 1st Gen variants
+    mem_pattern = r"^(?!.*(?:Min.Instance|1st Gen)).*Cloud Run functions Memory \(Request-based billing\)"
+    cpu_pattern = r"^(?!.*(?:Min.Instance|1st Gen)).*Cloud Run functions CPU \(Request-based billing\)"
+    inv_pattern = r"^(?!.*(?:Min.Instance)).*Cloud Run Functions (?:(?:\(1st Gen\) )?Invocations)"
+
+    for r in rows:
+        gcp_region = r.get("gcp_region")
+        unit = (r.get("unit") or "").strip()
+        ut = (r.get("usage_type") or "").strip()
+        prod = (r.get("product") or "").strip()
+        blob = f"{prod} {ut} {unit}".lower()
+
+        is_gb_sec = (unit.lower() == "lambda-gb-second" or "gb-second" in ut.lower() or "gb-second" in blob)
+
+        if is_gb_sec:
+            # Resolve CPU and memory SKUs in the exact same region
+            mem_sku = _strict_resolve_sku("Cloud Run Functions", mem_pattern, gcp_region)
+            cpu_sku = _strict_resolve_sku("Cloud Run Functions", cpu_pattern, gcp_region)
+
+            cpu_mult = 1.0 / (_LAMBDA_MB_PER_VCPU / 1024.0)
+            mem_mult = 1.0
+
+            note = (
+                f"Lambda GB-seconds -> Cloud Run functions memory (GiB-s) + CPU (vCPU-s). "
+                f"AWS bundles CPU into the GB-second at 1 vCPU per {_LAMBDA_MB_PER_VCPU:.0f} MB; "
+                f"GCP bills them separately, so one AWS row becomes two GCP components."
+            )
+
+            components = [
+                ("memory", mem_sku, mem_mult, "Cloud Run functions Memory (Request-based billing)"),
+                ("cpu",    cpu_sku, cpu_mult, "Cloud Run functions CPU (Request-based billing)"),
+            ]
+            for comp, sku, mult, desc in components:
+                strategy = "map" if sku else "passthrough"
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud Run Functions",
+                    "gcp_sku_id":         sku if sku else None,
+                    "gcp_sku_name":       desc,
+                    "component":          comp,
+                    "strategy":           strategy,
+                    "unit_multiplier":    mult,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    note + _no_rate_suffix(sku, gcp_region),
+                    "mapping_confidence": 0.85,
+                    "break_down":         True,
+                }
+                if sku:
+                    entry["gcp_sku_unit"] = sku.unit
+                out.append(entry)
+
+        elif unit.lower() in ("requests", "count") or "request" in ut.lower() or "invocations" in ut.lower():
+            inv_sku = _strict_resolve_sku("Cloud Run Functions", inv_pattern, gcp_region)
+            strategy = "map" if inv_sku else "passthrough"
+            note = "Lambda invocations -> Cloud Run Functions Invocations"
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Run Functions",
+                "gcp_sku_id":         inv_sku if inv_sku else None,
+                "gcp_sku_name":       "Cloud Run Functions Invocations",
+                "component":          "requests",
+                "strategy":           strategy,
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    note + _no_rate_suffix(inv_sku, gcp_region),
+                "mapping_confidence": 0.85,
+            }
+            if inv_sku:
+                entry["gcp_sku_unit"] = inv_sku.unit
+            out.append(entry)
+
+        else:
+            # Other Lambda rows (e.g. ephemeral storage GB-Mo) pass through untouched
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Run Functions",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "requests",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    f"Lambda {ut or unit} -> Cloud Run Functions (passthrough at cost parity)",
+                "mapping_confidence": 0.50,
+            })
+
+    return out
 
 
 def map_glue(rows):
@@ -6851,7 +7018,8 @@ def map_msk(rows: list) -> list:
                 cpu_sku = ram_sku = None
                 x86_default = "E2" if is_arm_burstable else "N4D"
                 x86_tiers = ("burstable", "sustained") if is_arm_burstable else ("sustained",)
-                family_label = "no GCP rate found in region"
+                family_label = arm_default
+                passthrough_reason = "family_not_available_in_region"
                 x86_label, x86_core, x86_ram, _, _ = cheapest_in_scope(
                     x86_default, vcpu, ram_gib, region, archs=("x86",), tiers=x86_tiers)
                 x86_core_rate = _family_hourly_rate("Compute Engine", x86_core, region)
@@ -6911,11 +7079,11 @@ def map_msk(rows: list) -> list:
             ("ram",  ram_sku, float(ram_gib), ram_desc),
         ):
             strategy = "map" if sku else "passthrough"
-            out.append({
+            row_dict = {
                 "aws_li_key":         r["aws_li_key"],
                 "gcp_service":        "Compute Engine",
                 "gcp_sku_id":         sku if sku else None,
-                "gcp_sku_name":       desc,
+                "gcp_sku_name":       desc if sku else None,
                 "component":          comp,
                 "strategy":           strategy,
                 "unit_multiplier":    mult,
@@ -6925,7 +7093,10 @@ def map_msk(rows: list) -> list:
                                        f"{vcpu} vCPU / {ram_gib} GiB RAM; "
                                        f"component={comp}{cost_tag}"),
                 "mapping_confidence": 0.72,
-            })
+            }
+            if not sku and passthrough_reason:
+                row_dict["passthrough_reason"] = passthrough_reason
+            out.append(row_dict)
     return out
 
 
@@ -7370,7 +7541,8 @@ def map_compute_arm(rows: list[dict]) -> list[dict]:
                                      "confirm with customer whether x86 is viable]")
             else:
                 cpu_sku = ram_sku = None
-                gcp_family = "no GCP rate found in region"
+                gcp_family = fam_label
+                passthrough_reason = "family_not_available_in_region"
         else:
             # Was hardcoded to always try "C4A Arm Instance Core/Ram" directly,
             # with NO cheapest_in_scope() sweep and NO workload-tier awareness at
@@ -7409,19 +7581,9 @@ def map_compute_arm(rows: list[dict]) -> list[dict]:
                     cost_tag = (f" [cost-tier: {fam_label} cheaper here, same tier as C4A Arm]" if reason == "cheaper"
                                 else f" [cost-tier: C4A Arm unavailable in region — {fam_label} used instead, same tier]")
             else:
-                # BUG (found during a repo-wide audit after fixing the same
-                # class of issue in family_mapper.py's map_gce_row(), the
-                # Delhi/asia-south2 case): when no ARM general-purpose family
-                # (C4A Arm or N4A) had any rate in this region at all, this
-                # used to silently REPRICE the row as x86 N2D AMD — a real
-                # architecture-crossing violation identical to the one
-                # already fixed elsewhere, just in a different function. "No
-                # ARM family available here" is not a cost optimization to
-                # act on, it's a customer decision (different region, or
-                # accept the x86 rebuild) — passthrough + disclosure only,
-                # matching every other ARM/x86 boundary in this file.
                 cpu_sku = ram_sku = None
-                gcp_family = "no GCP rate found in region"
+                gcp_family = fam_label
+                passthrough_reason = "family_not_available_in_region"
                 x86_label, x86_core, x86_ram, _, _ = cheapest_in_scope(
                     "N4D", vcpu, ram_gib, region, archs=("x86",), tiers=("sustained",))
                 x86_core_rate = _family_hourly_rate(GCP_COMPUTE_ENGINE, x86_core, region)
@@ -7466,11 +7628,11 @@ def map_compute_arm(rows: list[dict]) -> list[dict]:
             ("ram",  ram_sku, float(ram_gib), ram_desc),
         ):
             strategy = "map" if sku else "passthrough"
-            out.append({
+            row_dict = {
                 "aws_li_key":         r["aws_li_key"],
                 "gcp_service":        GCP_COMPUTE_ENGINE,
                 "gcp_sku_id":         sku if sku else None,
-                "gcp_sku_name":       desc if sku else f"{gcp_family} {comp}",
+                "gcp_sku_name":       desc if sku else None,
                 "component":          comp,
                 "strategy":           strategy,
                 "unit_multiplier":    mult,
@@ -7479,7 +7641,10 @@ def map_compute_arm(rows: list[dict]) -> list[dict]:
                     f"{itype} → {gcp_family}; {vcpu} vCPU / {ram_gib:.1f} GiB RAM{cost_tag}"
                 ),
                 "mapping_confidence": 0.82,
-            })
+            }
+            if not sku:
+                row_dict["passthrough_reason"] = passthrough_reason
+            out.append(row_dict)
     return out
 
 
@@ -8126,7 +8291,28 @@ def map_gce_row(r, parsed):
         type_entry = _EC2_TYPES.get(clean_itype) or _EC2_TYPES.get(clean_itype.lower())
         real_local_ssd_gib = type_entry.get("storage_gb") if type_entry else None
 
-        if real_local_ssd_gib and real_local_ssd_gib > 0:
+        if _local_storage_media(clean_itype, type_entry) == "hdd":
+            ssd_entry = {
+                "aws_li_key": aws_key,
+                "gcp_service": "Compute Engine",
+                "gcp_sku_name": None,
+                "component": "storage",
+                "strategy": "ignore",
+                "unit_multiplier": 0.0,
+                "gcp_region": gcp_region,
+                "passthrough_reason": "no_gcp_equivalent",
+                "projection_note": (
+                    f"Dense-storage instance local disk ({real_local_ssd_gib:g} GiB spinning HDD) — "
+                    f"no GCP equivalent: GCP Local SSD is flash-only and has no dense-HDD tier, so this "
+                    f"capacity is NOT priced (pricing it at Local SSD rates over-projects ~10x). "
+                    f"CPU/RAM are projected normally; the disk capacity needs a manual decision "
+                    f"(Persistent Disk Standard or Cloud Storage) before this instance is migratable."
+                ),
+                "mapping_confidence": 0.50,
+                "is_workload": True,
+                "break_down": True,
+            }
+        elif real_local_ssd_gib and real_local_ssd_gib > 0:
             ssd_entry = {
                 "aws_li_key": aws_key,
                 "gcp_service": "Compute Engine",
@@ -8407,7 +8593,8 @@ def map_gpu_row(r, parsed):
     clean_itype = (itype or r.get("instance_type") or "").strip()
     type_entry = _EC2_TYPES.get(clean_itype) or _EC2_TYPES.get(clean_itype.lower())
     real_local_ssd_gib = type_entry.get("storage_gb") if type_entry else None
-    if real_local_ssd_gib and real_local_ssd_gib > 0:
+    if real_local_ssd_gib and real_local_ssd_gib > 0 and \
+            _local_storage_media(clean_itype, type_entry) != "hdd":
         _AVG_HOURS_PER_MONTH = 730.0
         ssd_desc = "SSD backed Local Storage"
         ssd_sku = _strict_resolve_sku("Compute Engine", ssd_desc, gcp_region)
@@ -8552,6 +8739,20 @@ def main():
         sys.exit(1)
 
     db_path = sys.argv[1]
+    # If a per-job assumptions.json exists, reload assumptions for this job
+    global _ASSUMPTIONS, _GLUE_DPU_VCPU, _GLUE_DPU_RAM_GIB, _ACU_VCPU, _ACU_RAM_GIB, GCP_LOOKER_STUDIO_PRO_RATE, _LAMBDA_MB_PER_VCPU
+    candidate_job_dir = os.path.dirname(os.path.dirname(os.path.abspath(db_path)))
+    if os.path.exists(os.path.join(candidate_job_dir, "assumptions.json")):
+        _ASSUMPTIONS = load_assumptions(candidate_job_dir)
+    elif os.path.exists(os.path.join(os.getcwd(), "assumptions.json")):
+        _ASSUMPTIONS = load_assumptions(os.getcwd())
+    _GLUE_DPU_VCPU    = _ASSUMPTIONS.get("glue_dpu_vcpu", 4.0)
+    _GLUE_DPU_RAM_GIB = _ASSUMPTIONS.get("glue_dpu_ram_gib", 16.0)
+    _ACU_VCPU         = _ASSUMPTIONS.get("aurora_acu_vcpu", 2.0)
+    _ACU_RAM_GIB      = _ASSUMPTIONS.get("aurora_acu_ram_gib", 16.0)
+    GCP_LOOKER_STUDIO_PRO_RATE = _ASSUMPTIONS.get("looker_studio_pro_seat_usd", 9.0)
+    _LAMBDA_MB_PER_VCPU = _ASSUMPTIONS.get("lambda_mb_per_vcpu", 1769.0)
+
     print(f"SKU cache: {RESOLVED_SKUS_FILE}")
     con = duckdb.connect(db_path)
 
@@ -8562,12 +8763,14 @@ def main():
     _vcpu_expr = "instance_vcpus" if "instance_vcpus" in catalog_cols else "NULL AS instance_vcpus"
     _os_expr = "operating_system" if "operating_system" in catalog_cols else "NULL AS operating_system"
     _lic_expr = "license_model" if "license_model" in catalog_cols else "NULL AS license_model"
+    _bm_expr = "billing_month" if "billing_month" in catalog_cols else "NULL AS billing_month"
 
     rows = con.execute(f"""
         SELECT aws_li_key, mechanic_group, product, usage_type, pricing_unit AS unit,
                aws_amortized_cost, aws_region AS region, gcp_region, operation, volume_type,
                total_usage, instance_type, instance_ram_gb, deployment_option, database_engine,
-               pricing_model, {_pc_expr}, {_vcpu_expr}, {_os_expr}, {_lic_expr}
+               pricing_model, {_pc_expr}, {_vcpu_expr}, {_os_expr}, {_lic_expr}, line_item_type,
+               {_bm_expr}
         FROM aws_li_catalog
         WHERE mechanic_group IN
               ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer',
@@ -8577,10 +8780,7 @@ def main():
     """).fetchall()
     con.close()
 
-    cols = ["aws_li_key", "mechanic_group", "product", "usage_type", "unit",
-            "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type",
-            "total_usage", "instance_type", "instance_ram_gb", "deployment_option", "database_engine",
-            "pricing_model", "product_code", "instance_vcpus", "operating_system", "license_model"]
+    cols = STATIC_MAPPER_ROW_COLS
     by_group: dict[str, list] = {g: [] for g in
                                  ("flat_hourly", "object_storage", "per_request",
                                   "block_storage", "data_transfer", "non_workload", "cloudwatch", "msk",
@@ -8672,6 +8872,16 @@ def main():
             mappings = result
 
         path = _safe_path(out_dir, f"{group}_mappings.json")
+        if not mappings and os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f_prev:
+                    existing_rows = json.load(f_prev)
+                if existing_rows:
+                    print(f"{group}: 0 rows mapped; keeping existing mappings file ({len(existing_rows)} rows from prior step)")
+                    continue
+            except Exception:
+                pass
+
         with open(path, "w", encoding="utf-8") as f:
             json.dump(mappings, f, indent=2)
         llm_note = f" (+{len(llm_rows)} → LLM)" if isinstance(result, tuple) and llm_rows else ""

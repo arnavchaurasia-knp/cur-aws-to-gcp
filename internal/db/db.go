@@ -1,7 +1,10 @@
 package db
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"fmt"
 	"strings"
 
 	_ "github.com/tursodatabase/libsql-client-go/libsql" // registers the libsql driver for Turso cloud SQLite
@@ -65,6 +68,77 @@ CREATE TABLE IF NOT EXISTS deleted_jobs (
     created_at DATETIME,
     deleted_at DATETIME DEFAULT (datetime('now')),
     deleted_by TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS assumptions (
+    key           TEXT PRIMARY KEY,
+    value         REAL NOT NULL,
+    default_value REAL NOT NULL,
+    min_value     REAL NOT NULL,
+    max_value     REAL NOT NULL,
+    unit          TEXT,
+    title         TEXT NOT NULL,
+    rationale     TEXT NOT NULL,
+    scope         TEXT NOT NULL DEFAULT 'global',
+    updated_by    TEXT,
+    updated_at    DATETIME DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS assumption_changes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    key         TEXT NOT NULL,
+    old_value   REAL NOT NULL,
+    new_value   REAL NOT NULL,
+    reason      TEXT,
+    changed_by  TEXT NOT NULL,
+    changed_at  DATETIME DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS equivalence_usage (
+    job_id       TEXT NOT NULL,
+    attribute    TEXT NOT NULL,
+    aws_value    TEXT NOT NULL,
+    gcp_value    TEXT NOT NULL,
+    scope        TEXT NOT NULL,
+    rows_used    INTEGER NOT NULL,
+    usd_exposed  REAL NOT NULL,
+    recorded_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS report_settings (
+    key           TEXT PRIMARY KEY,
+    value         TEXT NOT NULL,
+    value_type    TEXT NOT NULL,
+    default_value TEXT NOT NULL,
+    min_value     REAL,
+    max_value     REAL,
+    title         TEXT NOT NULL,
+    description   TEXT NOT NULL,
+    group_name    TEXT NOT NULL,
+    sort_order    INTEGER NOT NULL DEFAULT 0,
+    updated_by    TEXT,
+    updated_at    DATETIME DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS report_setting_changes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    key        TEXT NOT NULL,
+    old_value  TEXT NOT NULL,
+    new_value  TEXT NOT NULL,
+    changed_by TEXT NOT NULL,
+    changed_at DATETIME DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS job_diagnostics (
+    job_id       TEXT NOT NULL,
+    run_id       TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    error_count  INTEGER NOT NULL DEFAULT 0,
+    warn_count   INTEGER NOT NULL DEFAULT 0,
+    error_usd    REAL    NOT NULL DEFAULT 0,
+    workload_usd REAL    NOT NULL DEFAULT 0,
+    recorded_at  DATETIME DEFAULT (datetime('now')),
+    PRIMARY KEY (job_id, run_id)
 );`
 
 // Open opens a database connection. If remoteURL is provided and non-empty (e.g. Turso libsql://),
@@ -105,6 +179,7 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 		`ALTER TABLE jobs ADD COLUMN attempts INTEGER DEFAULT 1`,
 		`ALTER TABLE jobs ADD COLUMN cancelled_at DATETIME`,
 		`ALTER TABLE users ADD COLUMN password_hash TEXT`,
+		`ALTER TABLE jobs ADD COLUMN assumptions_version TEXT`,
 	} {
 		if _, err := conn.Exec(ddl); err != nil {
 			msg := err.Error()
@@ -113,9 +188,180 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 			}
 		}
 	}
+
+	// Seed assumptions table with today's values (INSERT OR IGNORE — never
+	// overwrite an admin's edit on restart).
+	if _, err := conn.Exec(`
+		INSERT OR IGNORE INTO assumptions (key, value, default_value, min_value, max_value, unit, title, rationale) VALUES
+			('glue_dpu_vcpu', 4.0, 4.0, 1.0, 32.0, 'vCPU', 'Glue DPU to vCPU', '1 AWS Glue standard DPU (G.1X worker) = 4 vCPU per AWS Glue worker-type spec'),
+			('glue_dpu_ram_gib', 16.0, 16.0, 1.0, 256.0, 'GiB', 'Glue DPU to RAM', '1 AWS Glue standard DPU (G.1X worker) = 16 GiB per AWS Glue worker-type spec'),
+			('looker_studio_pro_seat_usd', 9.0, 9.0, 0.0, 100.0, 'USD/user/month', 'Looker Studio Pro seat rate', '$9/user/mo is Looker Studio Pro published list price'),
+			('aurora_acu_vcpu', 2.0, 2.0, 0.1, 4.0, 'vCPU', 'Aurora ACU to vCPU', '1 Aurora Serverless v2 ACU ≈ 2 vCPU (empirical: 16 ACU ≈ 4 vCPU ≈ db.r5.xlarge)'),
+			('aurora_acu_ram_gib', 16.0, 16.0, 0.5, 64.0, 'GiB', 'Aurora ACU to RAM', '1 Aurora Serverless v2 ACU ≈ 16 GiB RAM (empirical: 16 ACU ≈ 32 GiB ≈ db.r5.xlarge)'),
+			('lambda_mb_per_vcpu', 1769.0, 1769.0, 512.0, 10240.0, 'MB', 'Lambda MB to vCPU ratio', 'AWS Lambda allocates 1 vCPU per 1,769 MB of memory'),
+			('aws_ri_1yr_discount_pct', 0.38, 0.38, 0.0, 0.90, 'fraction', 'AWS 1-Year RI Discount', 'Published typical AWS 1-year reserved instance discount rate (~38%)'),
+			('aws_ri_3yr_discount_pct', 0.52, 0.52, 0.0, 0.90, 'fraction', 'AWS 3-Year RI Discount', 'Published typical AWS 3-year reserved instance discount rate (~52%)'),
+			('aws_sp_discount_pct', 0.30, 0.30, 0.0, 0.90, 'fraction', 'AWS Savings Plans Discount', 'Published typical AWS Compute Savings Plans discount rate (~30%)'),
+			('aws_spot_discount_pct', 0.70, 0.70, 0.0, 0.95, 'fraction', 'AWS Spot Discount', 'Published typical AWS Spot instance discount rate (~70%)')
+			-- Cognito MAU estimation is LLM-guided with no deterministic call site; re-add this key when a Cognito mapper exists.
+	`); err != nil {
+		return nil, fmt.Errorf("seed assumptions: %w", err)
+	}
+
+	// Seed report_settings with starter toggles (INSERT OR IGNORE — never
+	// overwrite an admin's edit on restart).
+	if _, err := conn.Exec(`
+		INSERT OR IGNORE INTO report_settings (key, value, value_type, default_value, min_value, max_value, title, description, group_name, sort_order) VALUES
+			-- group 'columns' (bool)
+			('col_gcp_cud_1yr', 'true', 'bool', 'true', NULL, NULL, 'GCP 1-year CUD', 'Column showing GCP cost with a 1-year commitment', 'columns', 1),
+			('col_gcp_cud_3yr', 'true', 'bool', 'true', NULL, NULL, 'GCP 3-year CUD', 'Column showing GCP cost with a 3-year commitment', 'columns', 2),
+			('col_diff', 'true', 'bool', 'true', NULL, NULL, 'Difference', 'AWS cost minus GCP on-demand', 'columns', 3),
+			('col_pct_of_aws', 'true', 'bool', 'true', NULL, NULL, 'GCP as % of AWS', 'GCP on-demand as a percentage of AWS', 'columns', 4),
+			('col_line_items', 'false', 'bool', 'false', NULL, NULL, 'Line item count', 'How many bill lines rolled into this row', 'columns', 5),
+			('col_region', 'false', 'bool', 'false', NULL, NULL, 'Region', 'AWS region', 'columns', 6),
+			-- group 'sections' (bool)
+			('section_discounts', 'true', 'bool', 'true', NULL, NULL, 'Discounts and credits', 'AWS discounts applied to this bill', 'sections', 1),
+			('section_wins_losses', 'true', 'bool', 'true', NULL, NULL, 'Where GCP wins and loses', 'Per-service winners and losers', 'sections', 2),
+			('section_assumptions', 'false', 'bool', 'false', NULL, NULL, 'Assumptions used', 'The assumption values this run used', 'sections', 3),
+			('section_data_gaps', 'false', 'bool', 'false', NULL, NULL, 'Data gaps', 'Rows that could not be fully priced', 'sections', 4),
+			-- group 'rows' (number)
+			('row_min_cost_usd', '0', 'number', '0', 0.0, 1000000.0, 'Hide rows below this cost', 'Rows cheaper than this are not listed. Totals still include them.', 'rows', 1)
+	`); err != nil {
+		return nil, fmt.Errorf("seed report_settings: %w", err)
+	}
+
 	return &DB{conn: conn}, nil
 }
 
 func (d *DB) Close() error {
 	return d.conn.Close()
+}
+
+// Assumption represents a single pricing assumption row.
+type Assumption struct {
+	Key          string  `json:"key"`
+	Value        float64 `json:"value"`
+	DefaultValue float64 `json:"default_value"`
+	MinValue     float64 `json:"min_value"`
+	MaxValue     float64 `json:"max_value"`
+	Unit         string  `json:"unit"`
+	Title        string  `json:"title"`
+	Rationale    string  `json:"rationale"`
+	Scope        string  `json:"scope"`
+	UpdatedBy    string  `json:"updated_by,omitempty"`
+	UpdatedAt    string  `json:"updated_at,omitempty"`
+}
+
+// GetAssumptions returns all assumption rows.
+func (d *DB) GetAssumptions() ([]*Assumption, error) {
+	rows, err := d.conn.Query(`SELECT key, value, default_value, min_value, max_value, unit, title, rationale, scope, COALESCE(updated_by,''), COALESCE(updated_at,'') FROM assumptions ORDER BY key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var assumptions []*Assumption
+	for rows.Next() {
+		var a Assumption
+		if err := rows.Scan(&a.Key, &a.Value, &a.DefaultValue, &a.MinValue, &a.MaxValue, &a.Unit, &a.Title, &a.Rationale, &a.Scope, &a.UpdatedBy, &a.UpdatedAt); err != nil {
+			return nil, err
+		}
+		assumptions = append(assumptions, &a)
+	}
+	return assumptions, nil
+}
+
+// AssumptionChange represents a single row in the assumption_changes audit table.
+type AssumptionChange struct {
+	ID         int     `json:"id"`
+	Key        string  `json:"key"`
+	OldValue   float64 `json:"old_value"`
+	NewValue   float64 `json:"new_value"`
+	Reason     string  `json:"reason"`
+	ChangedBy  string  `json:"changed_by"`
+	ChangedAt  string  `json:"changed_at"`
+}
+
+// GetAssumptionHistory returns assumption changes, newest first.
+func (d *DB) GetAssumptionHistory() ([]*AssumptionChange, error) {
+	rows, err := d.conn.Query(`SELECT id, key, old_value, new_value, reason, changed_by, changed_at FROM assumption_changes ORDER BY changed_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var changes []*AssumptionChange
+	for rows.Next() {
+		var c AssumptionChange
+		if err := rows.Scan(&c.ID, &c.Key, &c.OldValue, &c.NewValue, &c.Reason, &c.ChangedBy, &c.ChangedAt); err != nil {
+			return nil, err
+		}
+		changes = append(changes, &c)
+	}
+	return changes, nil
+}
+
+// UpdateAssumption updates an assumption value within bounds, records the
+// change in assumption_changes, and returns the new version hash. All in one
+// transaction.
+func (d *DB) UpdateAssumption(key string, value float64, reason, changedBy string) (string, error) {
+	// Validate bounds
+	var minV, maxV float64
+	err := d.conn.QueryRow(`SELECT min_value, max_value FROM assumptions WHERE key = ?`, key).Scan(&minV, &maxV)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("assumption not found: %s", key)
+	}
+	if err != nil {
+		return "", err
+	}
+	if value < minV || value > maxV {
+		return "", fmt.Errorf("value %g out of range [%g, %g]", value, minV, maxV)
+	}
+
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	var oldValue float64
+	if err := tx.QueryRow(`SELECT value FROM assumptions WHERE key = ?`, key).Scan(&oldValue); err != nil {
+		return "", err
+	}
+
+	if _, err := tx.Exec(`UPDATE assumptions SET value = ?, updated_by = ?, updated_at = datetime('now') WHERE key = ?`, value, changedBy, key); err != nil {
+		return "", err
+	}
+	if _, err := tx.Exec(`INSERT INTO assumption_changes (key, old_value, new_value, reason, changed_by) VALUES (?, ?, ?, ?, ?)`, key, oldValue, value, reason, changedBy); err != nil {
+		return "", err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+
+	return d.assumptionsVersionHash()
+}
+
+// AssumptionsVersionHash returns the public version hash for the assumption set.
+func (d *DB) AssumptionsVersionHash() (string, error) {
+	return d.assumptionsVersionHash()
+}
+
+// assumptionsVersionHash returns SHA-256 of sorted key=value pairs, first 12 hex chars.
+func (d *DB) assumptionsVersionHash() (string, error) {
+	rows, err := d.conn.Query(`SELECT key, value FROM assumptions ORDER BY key`)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var parts []string
+	for rows.Next() {
+		var key string
+		var value float64
+		if err := rows.Scan(&key, &value); err != nil {
+			return "", err
+		}
+		parts = append(parts, fmt.Sprintf("%s=%g", key, value))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, ";")))
+	return hex.EncodeToString(sum[:])[:12], nil
 }

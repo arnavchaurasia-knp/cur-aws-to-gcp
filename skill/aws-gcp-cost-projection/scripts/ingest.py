@@ -109,7 +109,16 @@ def _sql_num(col_expr: str) -> str:
 
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
-DATA_DIR = os.path.join(os.environ.get("SKILL_DIR", ""), "data")
+# SKILL_DIR is set by the Go spawner (internal/jobs/spawner.go, skillEnv).
+# Fall back to the path derived from this file, exactly as apply_rates.py and
+# apply_static_mappings.py already do. Without the fallback an unset SKILL_DIR
+# made DATA_DIR the relative path "data", resolved against JOB_DIR — so the
+# instance-spec tables loaded as {} and EVERY instance came out with NULL
+# vcpus/ram_gb. Silently, with the bill still reconciling: the failure looked
+# like a pipeline that could not identify common instance types.
+SKILL_DIR = os.environ.get("SKILL_DIR") or os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(SKILL_DIR, "data")
 
 REGION_MAP = {
     "us-east-1": "us-east4",
@@ -438,11 +447,216 @@ Write the CSV now."""
         log.warning(f"LLM normalization call failed: {e}")
 
 
+def _detect_unit_price_outliers(conn, col_map, job_dir=None):
+    """Detect line items priced inconsistently with other lines on the same meter.
+
+    Runs against raw rows in aws_raw before dedup/aggregation collapses per-line prices.
+    Identifies intra-meter price discrepancies (e.g. 1000x typo in rate) without altering
+    any cost, usage, or catalog row. Reports via diagnostics.py (WARN) and data_gaps.json.
+    """
+    import statistics
+
+    def c(names):
+        for n in names:
+            clean_n = n.lower().replace("/", "_").replace(" ", "_")
+            if clean_n in col_map:
+                return f'"{col_map[clean_n]}"'
+        return "NULL"
+
+    # Identify candidate columns
+    meter_col = c([
+        'lineitem/usagetype', 'usagetype',
+        'meter',
+        'custom_usage_type', 'usage_type',
+        'usage_(with_units)',
+    ])
+    cost_col = c([
+        'lineitem/unblendedcost', 'unblendedcost',
+        'cost_($)', 'cost', 'amount_in_usd', 'cost_(usd)'
+    ])
+    usage_col = c([
+        'lineitem/usageamount', 'usageamount',
+        'consumed',
+        'usage_quantity', 'usage'
+    ])
+    src_row_col = c(['_src_row'])
+    res_col = c(['lineitem/resourceid', 'resourceid', 'resource'])
+    acct_col = c(['lineitem/usageaccountid', 'usageaccountid', 'account_id', 'account_reference'])
+
+    if meter_col == "NULL" or cost_col == "NULL" or usage_col == "NULL" or src_row_col == "NULL":
+        return
+
+    q = f"""
+        SELECT
+            {src_row_col} AS src_row,
+            {meter_col} AS meter,
+            {_sql_num(cost_col)} AS cost,
+            {_sql_num(usage_col)} AS usage,
+            {res_col} AS resource,
+            {acct_col} AS account_id
+        FROM aws_raw
+        WHERE {meter_col} IS NOT NULL AND TRIM(CAST({meter_col} AS VARCHAR)) != ''
+    """
+    try:
+        raw_rows = conn.execute(q).fetchall()
+    except Exception as e:
+        log.debug(f"Outlier detection query failed: {e}")
+        return
+
+    by_meter = {}
+    for r in raw_rows:
+        src_row = r[0]
+        m = str(r[1] or '').strip()
+        c_val = r[2]
+        u_val = r[3]
+        res = r[4]
+        acct = r[5]
+        if not m or c_val is None or u_val is None:
+            continue
+        try:
+            c_float = float(c_val)
+            u_float = float(u_val)
+        except (ValueError, TypeError):
+            continue
+
+        # Guard 1: positive-cost only
+        if u_float > 0 and c_float > 0:
+            price = c_float / u_float
+            by_meter.setdefault(m, []).append((src_row, c_float, u_float, price, res, acct))
+
+    flagged = []
+    for m, rows in by_meter.items():
+        # Guard 2: need >= 3 rows for a reference
+        if len(rows) < 3:
+            continue
+        prices = [x[3] for x in rows]
+        reference = statistics.median(prices)
+        # Guard 3: reference must be real
+        if reference <= 1e-9:
+            continue
+
+        for src_row, c_float, u_float, price, res, acct in rows:
+            factor = max(price / reference, reference / price)
+            # Guard 4 & 5: factor >= 100 and cost > $50
+            if factor >= 100 and c_float > 50:
+                flagged.append((src_row, m, res, acct, u_float, c_float, price, reference, factor, len(rows) - 1))
+
+    if not flagged:
+        return
+
+    # Sort largest cost first
+    flagged.sort(key=lambda x: -x[5])
+    top_r, top_m, top_res, top_acct, top_q, top_c, top_p, top_ref, top_f, top_peers = flagged[0]
+    file_line = int(top_r) + 1 if top_r is not None else 0
+
+    top = {
+        "file_line": file_line,
+        "meter": top_m,
+        "price": top_p,
+        "reference": top_ref,
+        "peers": top_peers,
+        "factor": top_f,
+        "cost": top_c,
+    }
+
+    n = len(flagged)
+    usd = sum(x[5] for x in flagged)
+
+    diag_lines = []
+    for r, m, res, acct, q, c, p, ref, f, peers in flagged[:20]:
+        line_item = {
+            "src_row": r,
+            "file_line": int(r) + 1 if r is not None else 0,
+            "meter": m,
+            "usage": q,
+            "cost": round(c, 2),
+            "unit_price": p,
+            "reference_price": ref,
+            "factor": round(f, 1),
+        }
+        if res is not None and str(res).strip() and str(res).strip().lower() != 'none':
+            line_item["resource"] = str(res)
+        if acct is not None and str(acct).strip() and str(acct).strip().lower() != 'none':
+            line_item["account_id"] = str(acct)
+        diag_lines.append(line_item)
+
+    diag(
+        WARN, "unit_price_outlier", "ingest.py",
+        f"{n} line item(s) priced inconsistently with other lines on the same "
+        f"meter. Largest: file line {top['file_line']}, meter "
+        f"{top['meter']}, unit price {top['price']:.6g} vs {top['reference']:.6g} "
+        f"on {top['peers']} other line(s) of that meter ({top['factor']:.0f}x), "
+        f"cost ${top['cost']:,.2f}. Figures are reported as billed and have not "
+        f"been adjusted.",
+        rows=n, usd=usd, job_dir=job_dir,
+        detail={"lines": diag_lines}
+    )
+
+    # Sync into data_gaps.json (read-modify-write)
+    target_job_dir = job_dir or JOB_DIR or os.getcwd()
+    candidate_paths = [
+        os.path.join(target_job_dir, "data_gaps.json"),
+        os.path.join(target_job_dir, "projection-audit", "data_gaps.json"),
+    ]
+    # If one of the files already exists, use that one; otherwise write to data_gaps.json in target_job_dir
+    target_paths = [p for p in candidate_paths if os.path.exists(p)]
+    if not target_paths:
+        target_paths = [candidate_paths[0]]
+
+    for gap_json_path in target_paths:
+        try:
+            os.makedirs(os.path.dirname(gap_json_path), exist_ok=True)
+            existing_data = {}
+            if os.path.exists(gap_json_path):
+                with open(gap_json_path, "r", encoding="utf-8") as _gf:
+                    try:
+                        existing_data = json.load(_gf)
+                    except Exception:
+                        existing_data = {}
+
+            if not isinstance(existing_data, dict):
+                existing_data = {"count": 0, "total_cost": 0.0, "items": []}
+
+            items = existing_data.get("items", [])
+            if not isinstance(items, list):
+                items = []
+
+            existing_locators = {
+                (it.get("file_line"), it.get("meter")) for it in items if isinstance(it, dict)
+            }
+
+            for line_info in diag_lines:
+                loc = (line_info.get("file_line"), line_info.get("meter"))
+                if loc not in existing_locators:
+                    items.append({
+                        "file_line": line_info.get("file_line"),
+                        "meter": line_info.get("meter"),
+                        "unit_price": line_info.get("unit_price"),
+                        "reference_price": line_info.get("reference_price"),
+                        "factor": line_info.get("factor"),
+                        "cost": line_info.get("cost"),
+                        "reason": f"priced {line_info.get('factor'):.0f}x the other lines of that meter; reported as billed",
+                    })
+                    existing_locators.add(loc)
+
+            existing_data["items"] = items
+            # Maintain active count / total_cost if items are the primary list
+            existing_data["count"] = len(items) + len(existing_data.get("rows", []))
+            item_cost = sum(float(it.get("cost") or it.get("aws_cost") or 0.0) for it in items if isinstance(it, dict))
+            row_cost = sum(float(r.get("cost") or 0.0) for r in existing_data.get("rows", []) if isinstance(r, dict) and r.get("resolution") != "ignore")
+            existing_data["total_cost"] = round(item_cost + row_cost, 2)
+
+            with open(gap_json_path, "w", encoding="utf-8") as _gf:
+                json.dump(existing_data, _gf, indent=2)
+        except Exception as _gwe:
+            log.debug(f"Could not update data_gaps.json with unit_price_outlier: {_gwe}")
+
+
 def _load_excel(conn, path):
     """Excel → aws_raw via DuckDB excel extension, spatial fallback, then openpyxl."""
     for setup, query in (
-        ("INSTALL excel; LOAD excel;", f"SELECT * FROM read_xlsx('{path}', all_varchar=true)"),
-        ("INSTALL spatial; LOAD spatial;", f"SELECT * FROM st_read('{path}')"),
+        ("INSTALL excel; LOAD excel;", f"SELECT row_number() OVER () AS _src_row, * FROM read_xlsx('{path}', all_varchar=true)"),
+        ("INSTALL spatial; LOAD spatial;", f"SELECT row_number() OVER () AS _src_row, * FROM st_read('{path}')"),
     ):
         try:
             conn.execute(setup)
@@ -474,7 +688,7 @@ def _load_excel(conn, path):
         if not header:
             raise ValueError("empty worksheet")
         # Clean + de-duplicate column names (DuckDB rejects blank/duplicate columns).
-        names, seen = [], {}
+        names, seen = ["_src_row"], {}
         for i, h in enumerate(header):
             nm = (str(h).strip() if h is not None else "") or f"col{i}"
             if nm in seen:
@@ -483,15 +697,15 @@ def _load_excel(conn, path):
             else:
                 seen[nm] = 0
             names.append(nm)
-        width = len(names)
-        cols_ddl = ", ".join(f'"{n}" VARCHAR' for n in names)
+        width = len(names) - 1
+        cols_ddl = '"_src_row" BIGINT, ' + ", ".join(f'"{n}" VARCHAR' for n in names[1:])
         _drop_raw(conn)
         conn.execute(f"CREATE TABLE aws_raw ({cols_ddl})")
         placeholders = ",".join("?" for _ in names)
         batch, n = [], 0
-        for row in row_iter:
+        for row_idx, row in enumerate(row_iter, start=1):
             vals = list(row) + [None] * width  # pad ragged rows
-            batch.append(["" if v is None else str(v) for v in vals[:width]])
+            batch.append([row_idx] + ["" if v is None else str(v) for v in vals[:width]])
             if len(batch) >= 5000:
                 conn.executemany(f"INSERT INTO aws_raw VALUES ({placeholders})", batch)
                 n += len(batch); batch = []
@@ -814,7 +1028,7 @@ def _load_pdf(conn, path):
         w.writerow(["Service", "Region", "Custom Usage Type", "Description", "Usage Quantity", "Cost ($)", "Billing Month"])
         w.writerows(items)
     log.info(f"PDF: extracted {len(items)} line items")
-    conn.execute(f"CREATE TABLE aws_raw AS SELECT * FROM read_csv_auto('{tmp_csv}', ALL_VARCHAR=TRUE, header=TRUE)")
+    conn.execute(f"CREATE TABLE aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_csv_auto('{tmp_csv}', ALL_VARCHAR=TRUE, header=TRUE)")
 
 
 def _read_into_aws_raw(conn, path):
@@ -825,15 +1039,15 @@ def _read_into_aws_raw(conn, path):
     p = path.lower()
     _drop_raw(conn)
     if p.endswith(".parquet"):
-        conn.execute(f"CREATE VIEW aws_raw AS SELECT * FROM read_parquet('{path}')")
+        conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_parquet('{path}')")
     elif p.endswith((".json", ".jsonl", ".ndjson")):
-        conn.execute(f"CREATE VIEW aws_raw AS SELECT * FROM read_json_auto('{path}')")
+        conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_json_auto('{path}')")
     elif p.endswith((".xlsx", ".xlsm", ".xls")):
         _load_excel(conn, path)
     elif p.endswith(".pdf"):
         _load_pdf(conn, path)
     else:  # .csv .tsv .txt and .gz/.zst variants of them
-        conn.execute(f"CREATE VIEW aws_raw AS SELECT * FROM read_csv_auto('{path}', ALL_VARCHAR=TRUE)")
+        conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_csv_auto('{path}', ALL_VARCHAR=TRUE)")
 
 
 def load_raw(conn, input_file):
@@ -961,6 +1175,9 @@ def main():
             if clean_n in col_map:
                 return f'"{col_map[clean_n]}"'
         return "NULL"
+
+    # Detect unit price outliers on raw rows before dedup collapses individual lines
+    _detect_unit_price_outliers(conn, col_map, JOB_DIR)
         
     # 3. Create schema tables
     # (Schema is defined in reference/schemas.md but we just create aws_li_catalog here)
@@ -1219,6 +1436,16 @@ def main():
                             ELSE 'Usage'
                         END                            AS line_item_type,
                         CASE
+                            WHEN TRY_CAST({cost_col_raw} AS DOUBLE) < 0 THEN FALSE
+                            WHEN (
+                                CASE
+                                    WHEN TRY_CAST({cost_col_raw} AS DOUBLE) < 0 THEN 'Credit'
+                                    WHEN {cat_col} ILIKE '%Savings Plans%'        THEN 'SavingsPlanRecurringFee'
+                                    WHEN {meter_col} ILIKE '%reserved%' OR {meter_col} ILIKE '%DiscountedUsage%'
+                                        THEN 'DiscountedUsage'
+                                    ELSE 'Usage'
+                                END
+                            ) NOT IN ('Usage','DiscountedUsage','SavingsPlanCoveredUsage') THEN FALSE
                             WHEN {_nonworkload_sql(cat_col, meter_col)} THEN FALSE
                             ELSE TRUE
                         END                            AS is_workload,
@@ -1706,11 +1933,32 @@ def main():
                               OR {c(['service'])} ILIKE '%reserved instances%' THEN 'Committed'
                             ELSE 'OnDemand'
                         END AS pricing_model,
-                        CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%'
+                        CASE
+                            WHEN {_sql_num(cost_col)} < 0
+                                 AND {c(['description'])} ILIKE '%covered by%Savings Plan%'
+                                 THEN 'SavingsPlanCoveredUsage'
+                            WHEN {_sql_num(cost_col)} < 0 THEN 'Credit'
+                            WHEN {c(['description'])} ILIKE '%reserved instance applied%'
                               OR {c(['description'])} ILIKE '%reserved instances%'
                               OR {c(['service'])} ILIKE '%reserved instances%'
-                             THEN 'DiscountedUsage' ELSE 'Usage' END AS line_item_type,
+                             THEN 'DiscountedUsage'
+                            ELSE 'Usage'
+                        END AS line_item_type,
                         CASE
+                            WHEN {_sql_num(cost_col)} < 0 THEN FALSE
+                            WHEN (
+                                CASE
+                                    WHEN {_sql_num(cost_col)} < 0
+                                         AND {c(['description'])} ILIKE '%covered by%Savings Plan%'
+                                         THEN 'SavingsPlanCoveredUsage'
+                                    WHEN {_sql_num(cost_col)} < 0 THEN 'Credit'
+                                    WHEN {c(['description'])} ILIKE '%reserved instance applied%'
+                                      OR {c(['description'])} ILIKE '%reserved instances%'
+                                      OR {c(['service'])} ILIKE '%reserved instances%'
+                                     THEN 'DiscountedUsage'
+                                    ELSE 'Usage'
+                                END
+                            ) NOT IN ('Usage','DiscountedUsage','SavingsPlanCoveredUsage') THEN FALSE
                             WHEN {_nonworkload_sql(c(['service']), c(['description']))} THEN FALSE
                             ELSE TRUE
                         END AS is_workload,
@@ -2130,6 +2378,14 @@ def main():
             f"(${low_mat_cost:.2f} = {pct:.2f}% of bill); credits/refunds retained "
             f"as a single reconciliation row"
         )
+        # Diag: materiality filter dropped rows
+        if low_mat_dropped > 0:
+            diag(WARN, "materiality_dropped", "ingest.py",
+                 f"{low_mat_dropped} low-materiality row(s) dropped by ingestion materiality filter",
+                 rows=low_mat_dropped, usd=low_mat_cost,
+                 detail={"rows_dropped": low_mat_dropped,
+                         "usd_dropped": low_mat_cost,
+                         "pct_of_workload": round(pct, 2)})
 
     # ── Faithfulness invariants (typed, universal) ──────────────────────────────
     # These are the extraction layer's output guarantees. A violation means the

@@ -140,3 +140,14 @@ export async function deleteJob(id: string): Promise<void> {
   }
 }
 
+export async function regenerateReport(id: string): Promise<{ id: string; run_id: string; status: string; version: string }> {
+  const res = await fetch(`/api/admin/jobs/${encodeURIComponent(id)}/regenerate-report`, {
+    method: 'POST',
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `regenerate failed (${res.status})`)
+  }
+  return res.json()
+}
+

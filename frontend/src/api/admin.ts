@@ -194,3 +194,193 @@ export async function listDeletedJobs(): Promise<DeletedJob[]> {
   return res.json()
 }
 
+export interface Assumption {
+  key: string
+  value: number
+  default_value: number
+  min_value: number
+  max_value: number
+  unit: string
+  title: string
+  rationale: string
+  scope: string
+  updated_by: string
+  updated_at: string
+}
+
+export interface AssumptionHistory {
+  id: number
+  key: string
+  old_value: number
+  new_value: number
+  reason: string
+  changed_by: string
+  changed_at: string
+}
+
+export interface AssumptionsResponse {
+  assumptions: Assumption[]
+  version: string
+}
+
+export async function getAssumptions(): Promise<AssumptionsResponse | null> {
+  const res = await fetch('/api/admin/assumptions')
+  if (!res.ok) return null
+  return res.json()
+}
+
+export interface PutAssumptionBody {
+  value: number
+  reason: string
+}
+
+export async function putAssumption(key: string, body: PutAssumptionBody): Promise<{ key: string; value: number; version: string } | null> {
+  const res = await fetch(`/api/admin/assumptions/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) return null
+  return res.json()
+}
+
+export async function getAssumptionHistory(): Promise<AssumptionHistory[]> {
+  const res = await fetch('/api/admin/assumptions/history')
+  if (!res.ok) return []
+  return res.json()
+}
+
+// ─── Report settings ───
+
+export interface ReportSetting {
+  key: string
+  value: string
+  value_type: string
+  default_value: string
+  min_value: number | null
+  max_value: number | null
+  title: string
+  description: string
+  group_name: string
+  sort_order: number
+  updated_by: string
+  updated_at: string
+}
+
+export interface ReportSettingChange {
+  id: number
+  key: string
+  old_value: string
+  new_value: string
+  changed_by: string
+  changed_at: string
+}
+
+export interface ReportSettingsResponse {
+  settings: ReportSetting[]
+  version: string
+}
+
+export async function getReportSettings(): Promise<ReportSettingsResponse | null> {
+  const res = await fetch('/api/admin/report-settings')
+  if (!res.ok) return null
+  return res.json()
+}
+
+export interface PutReportSettingBody {
+  value: string
+  reason: string
+}
+
+export async function putReportSetting(key: string, body: PutReportSettingBody): Promise<{ key: string; value: string; version: string } | null> {
+  const res = await fetch(`/api/admin/report-settings/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) return null
+  return res.json()
+}
+
+export async function getReportSettingHistory(): Promise<ReportSettingChange[]> {
+  const res = await fetch('/api/admin/report-settings/history')
+  if (!res.ok) return []
+  return res.json()
+}
+
+export async function resetReportSettings(): Promise<{ version: string } | null> {
+  const res = await fetch('/api/admin/report-settings/reset', { method: 'POST' })
+  if (!res.ok) return null
+  return res.json()
+}
+
+export interface RegenerateReportResponse {
+  id: string
+  run_id: string
+  status: string
+  version: string
+}
+
+export async function regenerateReport(id: string): Promise<RegenerateReportResponse | null> {
+  const res = await fetch(`/api/admin/jobs/${encodeURIComponent(id)}/regenerate-report`, {
+    method: 'POST',
+  })
+  if (!res.ok) return null
+  return res.json()
+}
+
+// ─── Job health diagnostics ───
+
+export interface JobDiagnosticByCode {
+  level: string
+  count: number
+  rows: number
+  usd: number
+  sources: string[]
+}
+
+export interface JobDiagnosticsSummary {
+  workload_usd: number
+  error_usd: number
+  error_pct_of_workload: number
+  error_count: number
+  warn_count: number
+  checks_not_evaluated: number
+  by_code: Record<string, JobDiagnosticByCode>
+}
+
+export interface JobDiagnosticsResponse {
+  available: boolean
+  summary?: JobDiagnosticsSummary
+  version?: string
+}
+
+export interface JobDiagnosticRecord {
+  ts: string
+  level: string
+  code: string
+  source: string
+  phase: string | null
+  message: string
+  rows: number
+  usd: number
+  detail: Record<string, any>
+}
+
+export interface JobDiagnosticRecordsResponse {
+  available: boolean
+  records: JobDiagnosticRecord[]
+}
+
+export async function getJobDiagnostics(id: string): Promise<JobDiagnosticsResponse | null> {
+  const res = await fetch(`/api/admin/jobs/${encodeURIComponent(id)}/diagnostics`)
+  if (!res.ok) return null
+  return res.json()
+}
+
+export async function getJobDiagnosticRecords(id: string): Promise<JobDiagnosticRecordsResponse | null> {
+  const res = await fetch(`/api/admin/jobs/${encodeURIComponent(id)}/diagnostics/records`)
+  if (!res.ok) return null
+  return res.json()
+}
+

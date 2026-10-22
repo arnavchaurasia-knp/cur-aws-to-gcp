@@ -9,7 +9,14 @@ validator autofix can query it, and re-created idempotently in Phase 5
 (detect_outliers.py). Both callers import create_projection_view() from here so
 the SQL never drifts between phases.
 """
+import os
 import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config_loader import load_assumptions
+
+_ASSUMPTIONS = load_assumptions()
 
 
 def compute_dominant_region(conn) -> str:
@@ -41,9 +48,78 @@ def compute_dominant_region(conn) -> str:
     return "us-central1"
 
 
+def classify_commitment_basis(pricing_model: str | None, usage_type: str | None = None, operation: str | None = None, line_item_type: str | None = None, product: str | None = None) -> str:
+    """Classify row into on_demand, spot, committed_1yr, or committed_3yr.
+    Commitment charges/fees (RIFee, SavingsPlanRecurringFee, hourly commitment) return on_demand.
+    """
+    lit = (line_item_type or "").lower().strip()
+    prod = (product or "").lower().strip()
+    pm = (pricing_model or "").lower().strip()
+    ut = (usage_type or "").lower().strip()
+    op = (operation or "").lower().strip()
+    text = f"{prod} {ut} {op}"
 
-def _build_projection_view_sql(dominant_region: str) -> str:
+    # C1: A commitment charge (fee) is not discounted usage — never apply a divisor
+    if (
+        lit in ("rifee", "savingsplanrecurringfee")
+        or "hourly commitment" in op
+        or "hourly commitment" in ut
+        or "recurring fee" in op
+        or "recurring fee" in ut
+        or "reserved instance fee" in op
+        or "reserved instance fee" in ut
+        or ("savings plan" in prod and "hourly commitment" in text)
+    ):
+        return "on_demand"
+
+    if pm == "spot" or "spot" in ut or "spot" in op:
+        return "spot"
+
+    is_committed = (
+        pm in ("committed", "reserved")
+        or lit == "discountedusage"
+        or "reserved" in ut
+        or "reserved" in op
+        or "savings plan" in ut
+        or "savingsplan" in ut
+        or "savings plan" in op
+        or "savingsplan" in op
+    )
+    if is_committed:
+        if re.search(r'\b(3-year|36\s*mo|36\s*month)\b|3\s+yr|3\s+year|3yr', text):
+            return "committed_3yr"
+        return "committed_1yr"
+
+    return "on_demand"
+
+
+def _build_projection_view_sql(dominant_region: str, assumptions: dict | None = None, catalog_cols: set[str] | None = None) -> str:
     dom = re.sub(r'[^a-zA-Z0-9-]', '', str(dominant_region)) or "us-central1"
+    assump = assumptions or _ASSUMPTIONS or {}
+    spot_disc = float(assump.get("aws_spot_discount_pct", 0.70))
+    ri1_disc = float(assump.get("aws_ri_1yr_discount_pct", 0.38))
+    ri3_disc = float(assump.get("aws_ri_3yr_discount_pct", 0.52))
+    sp_disc = float(assump.get("aws_sp_discount_pct", 0.30))
+
+    spot_div = (1.0 - spot_disc) if spot_disc < 1.0 else 1.0
+    if spot_div <= 0:
+        spot_div = 1.0
+    ri1_div = (1.0 - ri1_disc) if ri1_disc < 1.0 else 1.0
+    if ri1_div <= 0:
+        ri1_div = 1.0
+    ri3_div = (1.0 - ri3_disc) if ri3_disc < 1.0 else 1.0
+    if ri3_div <= 0:
+        ri3_div = 1.0
+    sp_div = (1.0 - sp_disc) if sp_disc < 1.0 else 1.0
+    if sp_div <= 0:
+        sp_div = 1.0
+
+    cols = {c.lower() for c in (catalog_cols or set())}
+    has_ut = "usage_type" in cols if cols else True
+    has_op = "operation" in cols if cols else True
+    ut_expr = "COALESCE(c.usage_type, '')" if has_ut else "''"
+    op_expr = "COALESCE(c.operation, '')" if has_op else "''"
+    text_expr = f"(LOWER({ut_expr} || ' ' || {op_expr}))"
     return f"""
 CREATE OR REPLACE VIEW gcp_projection AS
 -- passthrough double-count guard: a passthrough's AWS cost belongs to the LINE ITEM,
@@ -150,7 +226,102 @@ SELECT  c.aws_li_key, c.product, c.aws_region, c.gcp_region,
         m.strategy, m.gcp_service, m.gcp_sku_id, m.component,
         m.unit_multiplier, m.passthrough_reason, m.decided_by,
         m.rate_region_basis, m.rate_region_used, m.license_status, m.review_flags,
-        m.projection_note AS projection_note,
+        CASE
+          WHEN LOWER(COALESCE(c.line_item_type, '')) IN ('rifee', 'savingsplanrecurringfee')
+            OR {op_expr} ILIKE '%hourly commitment%'
+            OR {ut_expr} ILIKE '%hourly commitment%'
+            OR {op_expr} ILIKE '%recurring fee%'
+            OR {ut_expr} ILIKE '%recurring fee%'
+            OR {op_expr} ILIKE '%reserved instance fee%'
+            OR {ut_expr} ILIKE '%reserved instance fee%'
+            OR (LOWER(COALESCE(c.product, '')) ILIKE '%savings plan%' AND {text_expr} ILIKE '%hourly commitment%')
+            THEN 'on_demand'
+          WHEN LOWER(COALESCE(c.pricing_model, '')) = 'spot'
+            OR {ut_expr} ILIKE '%spot%'
+            OR {op_expr} ILIKE '%spot%'
+            THEN 'spot'
+          WHEN LOWER(COALESCE(c.pricing_model, '')) = 'committed'
+            OR LOWER(COALESCE(c.pricing_model, '')) = 'reserved'
+            OR LOWER(COALESCE(c.line_item_type, '')) = 'discountedusage'
+            OR {ut_expr} ILIKE '%reserved%'
+            OR {op_expr} ILIKE '%reserved%'
+            OR {ut_expr} ILIKE '%savings%plan%'
+            OR {op_expr} ILIKE '%savings%plan%'
+            THEN
+              CASE
+                WHEN REGEXP_MATCHES({text_expr}, '\\b(3-year|36\\s*mo|36\\s*month)\\b|3\\s+yr|3\\s+year|3yr')
+                  THEN 'committed_3yr'
+                ELSE 'committed_1yr'
+              END
+          ELSE 'on_demand'
+        END AS commitment_basis,
+        CASE
+          WHEN LOWER(COALESCE(c.line_item_type, '')) IN ('rifee', 'savingsplanrecurringfee')
+            OR {op_expr} ILIKE '%hourly commitment%'
+            OR {ut_expr} ILIKE '%hourly commitment%'
+            OR {op_expr} ILIKE '%recurring fee%'
+            OR {ut_expr} ILIKE '%recurring fee%'
+            OR {op_expr} ILIKE '%reserved instance fee%'
+            OR {ut_expr} ILIKE '%reserved instance fee%'
+            OR (LOWER(COALESCE(c.product, '')) ILIKE '%savings plan%' AND {text_expr} ILIKE '%hourly commitment%')
+            THEN c.aws_amortized_cost
+          WHEN LOWER(COALESCE(c.pricing_model, '')) = 'spot'
+            OR {ut_expr} ILIKE '%spot%'
+            OR {op_expr} ILIKE '%spot%'
+            THEN c.aws_amortized_cost / {spot_div}
+          WHEN LOWER(COALESCE(c.pricing_model, '')) = 'committed'
+            OR LOWER(COALESCE(c.pricing_model, '')) = 'reserved'
+            OR LOWER(COALESCE(c.line_item_type, '')) = 'discountedusage'
+            OR {ut_expr} ILIKE '%reserved%'
+            OR {op_expr} ILIKE '%reserved%'
+            OR {ut_expr} ILIKE '%savings%plan%'
+            OR {op_expr} ILIKE '%savings%plan%'
+            THEN
+              CASE
+                WHEN REGEXP_MATCHES({text_expr}, '\\b(3-year|36\\s*mo|36\\s*month)\\b|3\\s+yr|3\\s+year|3yr')
+                  THEN c.aws_amortized_cost / {ri3_div}
+                ELSE c.aws_amortized_cost / {ri1_div}
+              END
+          ELSE c.aws_amortized_cost
+        END AS aws_cost_od_est,
+        CASE
+          WHEN LOWER(COALESCE(c.line_item_type, '')) IN ('rifee', 'savingsplanrecurringfee')
+            OR {op_expr} ILIKE '%hourly commitment%'
+            OR {ut_expr} ILIKE '%hourly commitment%'
+            OR {op_expr} ILIKE '%recurring fee%'
+            OR {ut_expr} ILIKE '%recurring fee%'
+            OR {op_expr} ILIKE '%reserved instance fee%'
+            OR {ut_expr} ILIKE '%reserved instance fee%'
+            OR (LOWER(COALESCE(c.product, '')) ILIKE '%savings plan%' AND {text_expr} ILIKE '%hourly commitment%')
+            THEN m.projection_note
+          WHEN LOWER(COALESCE(c.pricing_model, '')) = 'spot'
+            OR {ut_expr} ILIKE '%spot%'
+            OR {op_expr} ILIKE '%spot%'
+            THEN CONCAT(
+                   NULLIF(m.projection_note || '; ', '; '),
+                   'AWS list price estimated from the billed Spot rate using an assumed ' || CAST(ROUND({spot_disc} * 100) AS INTEGER) || '% Spot discount.'
+                 )
+          WHEN LOWER(COALESCE(c.pricing_model, '')) = 'committed'
+            OR LOWER(COALESCE(c.pricing_model, '')) = 'reserved'
+            OR LOWER(COALESCE(c.line_item_type, '')) = 'discountedusage'
+            OR {ut_expr} ILIKE '%reserved%'
+            OR {op_expr} ILIKE '%reserved%'
+            OR {ut_expr} ILIKE '%savings%plan%'
+            OR {op_expr} ILIKE '%savings%plan%'
+            THEN
+              CASE
+                WHEN REGEXP_MATCHES({text_expr}, '\\b(3-year|36\\s*mo|36\\s*month)\\b|3\\s+yr|3\\s+year|3yr')
+                THEN CONCAT(
+                       NULLIF(m.projection_note || '; ', '; '),
+                       'AWS list price estimated from the billed reserved rate using an assumed ' || CAST(ROUND({ri3_disc} * 100) AS INTEGER) || '% 3-year RI discount.'
+                     )
+                ELSE CONCAT(
+                       NULLIF(m.projection_note || '; ', '; '),
+                       'AWS list price estimated from the billed reserved rate using an assumed ' || CAST(ROUND({ri1_disc} * 100) AS INTEGER) || '% 1-year RI discount (term not stated on the bill).'
+                     )
+              END
+          ELSE m.projection_note
+        END AS projection_note,
         CASE m.strategy
           WHEN 'ignore'         THEN 0
           WHEN 'outlier_triage' THEN NULL
@@ -192,7 +363,7 @@ LEFT JOIN passthrough_rank pr ON pr.row_id = m.rowid;
 _PROJECTION_VIEW_SQL = _build_projection_view_sql("us-central1")
 
 
-def create_projection_view(conn, dominant_region=None):
+def create_projection_view(conn, dominant_region=None, assumptions=None):
     """(Re)create the gcp_projection VIEW with dominant region fallback.
     Requires aws_li_catalog, aws_li_to_gcp_li, and gcp_sku_rates to exist. Idempotent.
     """
@@ -214,4 +385,10 @@ def create_projection_view(conn, dominant_region=None):
     except Exception:
         pass
 
-    conn.execute(_build_projection_view_sql(clean_reg))
+    cat_cols = set()
+    try:
+        cat_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+    except Exception:
+        pass
+
+    conn.execute(_build_projection_view_sql(clean_reg, assumptions, cat_cols))

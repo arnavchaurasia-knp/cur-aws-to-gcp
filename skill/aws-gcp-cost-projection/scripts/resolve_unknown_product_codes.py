@@ -40,6 +40,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aws_normalizer import canonical_service  # noqa: E402
@@ -78,22 +79,27 @@ def _load_cache() -> dict[str, str]:
         return {}
 
 
-def _save_cache(names: dict[str, str]) -> None:
+def _save_proposals(job_dir: str, proposals: list[dict]) -> str:
+    """Write newly-learned mappings to <job_dir>/projection-audit/learned_proposals.json.
+    Never mutates the shared data/learned-product-codes.json cache."""
+    audit_dir = os.path.join(job_dir, "projection-audit")
+    os.makedirs(audit_dir, exist_ok=True)
+    out_path = os.path.join(audit_dir, "learned_proposals.json")
     doc = {
         "_meta": {
-            "description": (
-                "Learned product-name -> AWS service code map, authored by "
-                "resolve_unknown_product_codes.py's tier-3 agy pass for no-code "
-                "bills (PDF/CSV/spreadsheet). Self-building: every accepted entry "
-                "is validated against data/aws-product-codes.json's closed set. "
-                "Safe to commit; grows across bills so the model is asked less over time."
-            ),
+            "job_id": os.path.basename(job_dir),
+            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source": "resolve_unknown_product_codes.py tier-3 agy pass",
+            "note": "Proposals only. Promote with scripts/promote_learned_codes.py.",
         },
-        "names": dict(sorted(names.items())),
+        "proposals": proposals,
     }
-    with open(_CACHE_PATH, "w", encoding="utf-8") as fh:
+    tmp_path = out_path + f".tmp.{os.getpid()}"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
+    os.replace(tmp_path, out_path)
+    return out_path
 
 
 # ---------------------------------------------------------------------------
@@ -246,16 +252,51 @@ def main() -> int:
 
     n_det = len(resolved)
 
-    # Tier 3 — batched agy over the residue, validated, cached.
+    # Tier 3 — batched agy over the residue, validated, proposed.
+    proposals: list[dict] = []
     if residue:
         llm_hits = resolve_residue_via_llm(residue, valid_codes)
         if llm_hits:
+            evidence: dict[str, tuple[int, float]] = {}
+            try:
+                ev_rows = con.execute(
+                    "SELECT product, COUNT(*), SUM(COALESCE(aws_amortized_cost, 0)) "
+                    "FROM aws_li_catalog "
+                    "WHERE (product_code IS NULL OR product_code = '') "
+                    "  AND product IS NOT NULL AND product <> '' "
+                    "GROUP BY product"
+                ).fetchall()
+                for prod, cnt, usd in ev_rows:
+                    evidence[prod] = (int(cnt or 0), round(float(usd or 0.0), 2))
+            except Exception:
+                pass
+
             for name in residue:
                 code = llm_hits.get(name.strip().lower())
                 if code:
                     resolved[name] = code
-                    cache[name.strip().lower()] = code
-            _save_cache(cache)
+                    cnt, usd = evidence.get(name, (1, 0.0))
+                    canon = codes.get(code) or canonical_service(name)
+                    proposals.append({
+                        "product_name": name,
+                        "service_code": code,
+                        "canonical": canon,
+                        "confidence": 0.9,
+                        "evidence_rows": cnt,
+                        "evidence_usd": usd,
+                    })
+
+            if proposals:
+                job_dir = os.environ.get("JOB_DIR")
+                if not job_dir:
+                    abs_db = os.path.abspath(db_path)
+                    parent = os.path.dirname(abs_db)
+                    if os.path.basename(parent) == "projection-audit":
+                        job_dir = os.path.dirname(parent)
+                    else:
+                        job_dir = parent
+                out_prop = _save_proposals(job_dir, proposals)
+                print(f"resolve_unknown_product_codes: wrote {len(proposals)} proposal(s) to {out_prop}")
 
     n_llm = len(resolved) - n_det
 

@@ -410,8 +410,299 @@ func (h *Handler) AdminAnalytics(w http.ResponseWriter, r *http.Request) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Shareable report links
+// Admin: pricing assumptions
 // ─────────────────────────────────────────────────────────────────────────
+
+// AdminGetAssumptions returns all assumption rows + current version hash.
+func (h *Handler) AdminGetAssumptions(w http.ResponseWriter, r *http.Request) {
+	assumptions, err := h.db.GetAssumptions()
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	if assumptions == nil {
+		assumptions = []*db.Assumption{}
+	}
+	version, err := h.db.AssumptionsVersionHash()
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"assumptions": assumptions,
+		"version":     version,
+	})
+}
+
+// AdminPutAssumption updates a single assumption value within bounds.
+func (h *Handler) AdminPutAssumption(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	key := chi.URLParam(r, "key")
+
+	var body struct {
+		Value  float64 `json:"value"`
+		Reason string  `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Reason == "" {
+		http.Error(w, `{"error":"value and non-empty reason are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	version, err := h.db.UpdateAssumption(key, body.Value, body.Reason, sess.Email)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "not found") {
+			http.Error(w, `{"error":"assumption not found"}`, http.StatusNotFound)
+			return
+		}
+		if strings.Contains(msg, "out of range") {
+			http.Error(w, `{"error":"` + msg + `"}`, http.StatusBadRequest)
+			return
+		}
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	_ = h.db.LogAdminAction(sess.Email, "update_assumption", key, body.Reason)
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"key":     key,
+		"value":   body.Value,
+		"version": version,
+	})
+}
+
+// AdminGetAssumptionHistory returns assumption changes, newest first.
+func (h *Handler) AdminGetAssumptionHistory(w http.ResponseWriter, r *http.Request) {
+	changes, err := h.db.GetAssumptionHistory()
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	if changes == nil {
+		changes = []*db.AssumptionChange{}
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(changes)
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Admin: report settings toggles
+// ─────────────────────────────────────────────────────────────────────────
+
+// AdminGetReportSettings returns all report settings + current version hash.
+func (h *Handler) AdminGetReportSettings(w http.ResponseWriter, r *http.Request) {
+	settings, err := h.db.GetReportSettings()
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	if settings == nil {
+		settings = []*db.ReportSetting{}
+	}
+	version, err := h.db.ReportSettingsVersionHash()
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"settings": settings,
+		"version":  version,
+	})
+}
+
+// AdminPutReportSetting updates a single report setting within bounds/type.
+func (h *Handler) AdminPutReportSetting(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	key := chi.URLParam(r, "key")
+
+	var body struct {
+		Value  string `json:"value"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Reason == "" {
+		http.Error(w, `{"error":"value and non-empty reason are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	changedBy := ""
+	if sess != nil && sess.Email != "" {
+		changedBy = sess.Email
+	}
+
+	version, err := h.db.UpdateReportSetting(key, body.Value, changedBy)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "not found") {
+			http.Error(w, `{"error":"report setting not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":"`+msg+`"}`, http.StatusBadRequest)
+		return
+	}
+	_ = h.db.LogAdminAction(sess.Email, "update_report_setting", key, body.Reason)
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"key":     key,
+		"value":   body.Value,
+		"version": version,
+	})
+}
+
+// AdminGetReportSettingHistory returns report setting changes, newest first.
+func (h *Handler) AdminGetReportSettingHistory(w http.ResponseWriter, r *http.Request) {
+	changes, err := h.db.GetReportSettingHistory()
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	if changes == nil {
+		changes = []*db.ReportSettingChange{}
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(changes)
+}
+
+// AdminResetReportSettings resets all report settings to their defaults.
+func (h *Handler) AdminResetReportSettings(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+
+	changedBy := ""
+	if sess != nil && sess.Email != "" {
+		changedBy = sess.Email
+	}
+
+	version, err := h.db.ResetReportSettings(changedBy)
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	_ = h.db.LogAdminAction(sess.Email, "reset_report_settings", "", "reset to defaults")
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"version": version,
+	})
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Admin: job health diagnostics
+// ─────────────────────────────────────────────────────────────────────────
+
+// AdminJobDiagnostics returns the persisted diagnostics summary for a job.
+// Falls back to reading run_diagnostics.json from the job directory if the DB
+// row is absent. Returns {"available": false} with HTTP 200 when neither exists.
+func (h *Handler) AdminJobDiagnostics(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !isValidJobID(id) {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	job, err := h.db.GetJob(id)
+	if err != nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.canAccess(auth.SessionFromCtx(r.Context()), job) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	// Try durable DB first.
+	row, err := h.db.GetJobDiagnostics(id, "initial")
+	if err == nil && row != nil && row.Summary != nil {
+		w.Header().Set(contentTypeHeader, contentTypeJSON)
+		json.NewEncoder(w).Encode(map[string]any{
+			"available": true,
+			"summary":   row.Summary,
+			"version":   row.RecordedAt,
+		})
+		return
+	}
+
+	// Fall back to job-directory file.
+	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
+	diagPath := filepath.Join(jobDir, "projection-audit", "run_diagnostics.json")
+	summary, err := os.ReadFile(diagPath)
+	if err != nil {
+		w.Header().Set(contentTypeHeader, contentTypeJSON)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"available": false,
+		})
+		return
+	}
+	var summaryObj map[string]any
+	if err := json.Unmarshal(summary, &summaryObj); err != nil {
+		w.Header().Set(contentTypeHeader, contentTypeJSON)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"available": false,
+		})
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"available": true,
+		"summary":   summaryObj,
+	})
+}
+
+// AdminJobDiagnosticRecords returns individual diagnostic records from
+// projection-audit/diagnostics.jsonl. Caps at 500 most recent records.
+func (h *Handler) AdminJobDiagnosticRecords(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !isValidJobID(id) {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	job, err := h.db.GetJob(id)
+	if err != nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.canAccess(auth.SessionFromCtx(r.Context()), job) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
+	diagPath := filepath.Join(jobDir, "projection-audit", "diagnostics.jsonl")
+	data, err := os.ReadFile(diagPath)
+	if err != nil {
+		w.Header().Set(contentTypeHeader, contentTypeJSON)
+		json.NewEncoder(w).Encode(map[string]any{
+			"available": false,
+			"records":   []any{},
+		})
+		return
+	}
+
+	var records []map[string]any
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue // skip malformed lines
+		}
+		records = append(records, rec)
+	}
+	// Cap at most recent 500.
+	if len(records) > 500 {
+		records = records[len(records)-500:]
+	}
+	if records == nil {
+		records = []map[string]any{}
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"available": true,
+		"records":   records,
+	})
+}
 
 // ShareJob creates a report_shares row for job {id} (owner/admin only) and
 // returns the public URL for it. Shares expire after 30 days.

@@ -45,6 +45,14 @@ func (d *DB) UpdateJobPID(id string, pid int) error {
 	return err
 }
 
+func (d *DB) UpdateJobAssumptionsVersion(id string, version string) error {
+	_, err := d.conn.Exec(
+		`UPDATE jobs SET assumptions_version=?, updated_at=datetime('now') WHERE id=?`,
+		version, id,
+	)
+	return err
+}
+
 func (d *DB) IncrementJobAttempts(id string) error {
 	_, err := d.conn.Exec(
 		`UPDATE jobs SET attempts = attempts + 1, updated_at=datetime('now') WHERE id=?`,

@@ -24,6 +24,11 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 import duckdb
+try:
+    from diagnostics import diag, WARN
+except (ImportError, ModuleNotFoundError):  # pragma: no cover
+    def diag(*a, **k): pass
+    WARN = "warn"
 
 
 def main():
@@ -54,6 +59,24 @@ def main():
           AND m.unit_multiplier < c.instance_vcpus
         ORDER BY (c.instance_vcpus - m.unit_multiplier) DESC
     """).fetchall()
+
+    # Diag: rows skipped because instance_vcpus is NULL
+    skipped_vcpu = con.execute("""
+        SELECT COUNT(*), COALESCE(SUM(c.aws_amortized_cost), 0)
+        FROM aws_li_to_gcp_li m
+        JOIN aws_li_catalog c USING (aws_li_key)
+        WHERE m.strategy IN ('break_down', 'map')
+          AND m.component  = 'core'
+          AND c.instance_vcpus IS NULL
+    """).fetchone()
+    if skipped_vcpu[0] > 0:
+        diag(WARN, "capacity_check_skipped", "reconcile_capacity.py",
+             f"{skipped_vcpu[0]} core row(s) skipped for capacity reconciliation "
+             f"(instance_vcpus is NULL)",
+             rows=skipped_vcpu[0], usd=float(skipped_vcpu[1] or 0.0),
+             detail={"reason": "instance_vcpus IS NULL",
+                     "component": "core",
+                     "strategies": ["break_down", "map"]})
 
     vcpu_gain = 0.0
     for key, gcp_v, aws_v, itype in under_vcpu:

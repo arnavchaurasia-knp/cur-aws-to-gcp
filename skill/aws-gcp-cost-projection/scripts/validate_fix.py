@@ -46,10 +46,11 @@ except Exception as e:  # pragma: no cover
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    from diagnostics import diag, ERROR
+    from diagnostics import diag, ERROR, WARN
 except ImportError:
     def diag(*a, **k): pass
     ERROR = "error"
+    WARN = "warn"
 from apply_static_mappings import (
     intentional_passthrough_exclude_clause,
     CUD_PCT_FALLBACK as _CUD_PCT_FALLBACK,
@@ -615,46 +616,89 @@ def _repair_null_sku_names(conn):
     return repaired
 
 
+def _has_usable_rate_clause(projection_alias="p", rate_col="gcp_projected_cost", mapper_alias="m"):
+    """Single shared predicate for 'has a usable rate' (T1 & Correction in WORKORDER_validator_autofix_loop.md).
+    A row cannot have a reachable rate without a SKU. A row has a usable rate if it has a resolved SKU
+    and its projected cost is non-null and non-zero.
+    """
+    return (
+        f"({mapper_alias}.gcp_sku_id IS NOT NULL "
+        f"AND {projection_alias}.{rate_col} IS NOT NULL "
+        f"AND {projection_alias}.{rate_col} <> 0)"
+    )
+
+
 def _repair_illegal_passthrough(conn):
     """
     A passthrough on a mappable service (RDS/EBS/ELB/S3/…) is USUALLY a
     mis-triage — GCP has an equivalent by definition, so passthrough there is
-    the LLM escaping a missing rate. Restore strategy='map' for any such row
-    that still carries a gcp_service + gcp_sku_name; apply_rates.py + the
-    global-fallback rate will then price it.
-    Root cause: G-1 / P-1 unresolvable mappable rows escaping to passthrough.
+    the LLM escaping a missing rate. Restore strategy='map' ONLY when a non-null,
+    non-zero rate is actually reachable for this row's SKU in its region (T1).
+    Rows without reachable rates remain passthrough with passthrough_reason='no_rate_in_region'.
     """
     like, params = _mappable_pattern_clause("LOWER(cat.product)")
     note_exclude = intentional_passthrough_exclude_clause("m.projection_note")
-    rows = conn.execute(f"""
-        SELECT m.aws_li_key, cat.product, m.gcp_service, m.gcp_sku_name
-        FROM aws_li_to_gcp_li m
-        JOIN aws_li_catalog cat USING (aws_li_key)
-        WHERE m.strategy = 'passthrough'
-          AND cat.is_workload = true
-          AND ({like})
-          AND {note_exclude}
-    """, params).fetchall()
+    usable_rate_expr = _has_usable_rate_clause("p", "gcp_projected_cost")
+
+    # Check if gcp_projection view exists
+    has_proj_view = True
+    try:
+        conn.execute("SELECT 1 FROM gcp_projection LIMIT 1")
+    except Exception:
+        has_proj_view = False
+
+    if has_proj_view:
+        rows = conn.execute(f"""
+            SELECT m.aws_li_key, m.component, cat.product, m.gcp_service, m.gcp_sku_name,
+                   CASE WHEN {usable_rate_expr} THEN 1 ELSE 0 END AS has_rate
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog cat USING (aws_li_key)
+            LEFT JOIN gcp_projection p
+              ON p.aws_li_key = m.aws_li_key AND p.component IS NOT DISTINCT FROM m.component
+            WHERE m.strategy = 'passthrough'
+              AND cat.is_workload = true
+              AND ({like})
+              AND {note_exclude}
+        """, params).fetchall()
+    else:
+        rows = conn.execute(f"""
+            SELECT m.aws_li_key, m.component, cat.product, m.gcp_service, m.gcp_sku_name,
+                   0 AS has_rate
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog cat USING (aws_li_key)
+            WHERE m.strategy = 'passthrough'
+              AND cat.is_workload = true
+              AND ({like})
+              AND {note_exclude}
+        """, params).fetchall()
 
     restored, unresolved = 0, 0
-    for aws_li_key, product, gcp_service, gcp_sku_name in rows:
-        if gcp_service and gcp_sku_name:
+    cols_m = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+    has_pt_reason = "passthrough_reason" in cols_m
+
+    for aws_li_key, component, product, gcp_service, gcp_sku_name, has_rate in rows:
+        if gcp_service and gcp_sku_name and has_rate:
             conn.execute(
                 "UPDATE aws_li_to_gcp_li SET strategy = 'map' "
-                "WHERE aws_li_key = ? AND strategy = 'passthrough'",
-                (aws_li_key,),
+                "WHERE aws_li_key = ? AND component IS NOT DISTINCT FROM ? AND strategy = 'passthrough'",
+                (aws_li_key, component),
             )
             print(f"  [repair] {aws_li_key[:12]}… passthrough→map ({product} / {gcp_sku_name})")
             restored += 1
         else:
-            print(f"  [warn] {aws_li_key[:12]}… passthrough on mappable {product!r} "
-                  f"but no gcp_service/gcp_sku_name to restore — needs a mapping")
+            if has_pt_reason:
+                conn.execute(
+                    "UPDATE aws_li_to_gcp_li SET passthrough_reason = 'no_rate_in_region' "
+                    "WHERE aws_li_key = ? AND component IS NOT DISTINCT FROM ? "
+                    "AND (passthrough_reason IS NULL OR passthrough_reason IN ('', 'unclassified', 'unresolved_sku'))",
+                    (aws_li_key, component),
+                )
             unresolved += 1
 
     if restored:
         print(f"  Restored {restored} illegal-passthrough row(s) to strategy='map'")
     if unresolved:
-        print(f"  {unresolved} mappable passthrough row(s) could not be auto-restored")
+        print(f"  {unresolved} mappable passthrough row(s) could not be auto-restored (no reachable rate)")
     return restored
 
 
@@ -743,7 +787,126 @@ def _downgrade_enterprise_plus(conn, services=None):
 
     if swapped:
         print(f"  Downgraded {swapped} Cloud SQL Enterprise Plus → Enterprise mapping(s)")
-    return swapped
+def check_capacity_reconciliation(con, jobdir=None):
+    """Capacity reconciliation gate (never-under-provision guarantee).
+    Evaluates verified rows ONLY (mapped core/ram components).
+    Unverified rows (e.g. passthrough or unresolved instance specs) are reported
+    separately with row count and AWS vCPU, and never contribute an assumed value
+    to the GCP total or fail the gate.
+    Rows with no instance capacity (instance_type IS NULL) are not_applicable.
+    Returns: (violations_list, summary_dict)
+    """
+    cap_recon = []
+    summary = {
+        "verified_aws_vcpu": 0.0,
+        "verified_gcp_vcpu": 0.0,
+        "verified_aws_ram": 0.0,
+        "verified_gcp_ram": 0.0,
+        "unverified_rows": 0,
+        "unverified_aws_vcpu": 0.0,
+        "na_rows": 0,
+        "status": "OK",
+    }
+    try:
+        cap_row = con.execute("""
+            WITH core_mapped AS (
+                SELECT c.aws_li_key, SUM(m.unit_multiplier * c.instance_count) AS vcpus
+                FROM aws_li_to_gcp_li m
+                JOIN aws_li_catalog c USING (aws_li_key)
+                WHERE m.component = 'core' AND m.strategy IN ('map','break_down')
+                GROUP BY c.aws_li_key
+            ),
+            ram_mapped AS (
+                SELECT c.aws_li_key, SUM(m.unit_multiplier * c.instance_count) AS ram_gb
+                FROM aws_li_to_gcp_li m
+                JOIN aws_li_catalog c USING (aws_li_key)
+                WHERE m.component = 'ram' AND m.strategy IN ('map','break_down')
+                GROUP BY c.aws_li_key
+            ),
+            row_states AS (
+                SELECT
+                    c.aws_li_key,
+                    CASE
+                        WHEN c.instance_type IS NULL THEN 'not_applicable'
+                        WHEN (cm.vcpus IS NOT NULL OR rm.ram_gb IS NOT NULL) THEN 'verified'
+                        ELSE 'unverified'
+                    END AS state,
+                    c.instance_vcpus * c.instance_count AS aws_vcpus,
+                    c.instance_ram_gb * c.instance_count AS aws_ram,
+                    cm.vcpus AS gcp_vcpus,
+                    rm.ram_gb AS gcp_ram
+                FROM aws_li_catalog c
+                LEFT JOIN core_mapped cm USING (aws_li_key)
+                LEFT JOIN ram_mapped rm USING (aws_li_key)
+                WHERE c.is_workload = TRUE
+            )
+            SELECT
+                SUM(CASE WHEN state = 'verified' THEN aws_vcpus ELSE 0 END) AS verified_aws_vcpu,
+                SUM(CASE WHEN state = 'verified' THEN gcp_vcpus ELSE 0 END) AS verified_gcp_vcpu,
+                SUM(CASE WHEN state = 'verified' THEN aws_ram ELSE 0 END) AS verified_aws_ram,
+                SUM(CASE WHEN state = 'verified' THEN gcp_ram ELSE 0 END) AS verified_gcp_ram,
+                COUNT(CASE WHEN state = 'unverified' THEN 1 END) AS unverified_rows,
+                COALESCE(SUM(CASE WHEN state = 'unverified' THEN aws_vcpus ELSE 0 END), 0) AS unverified_aws_vcpu,
+                COUNT(CASE WHEN state = 'not_applicable' THEN 1 END) AS na_rows
+            FROM row_states
+        """).fetchone()
+
+        v_aws_vcpu = cap_row[0] or 0.0
+        v_gcp_vcpu = cap_row[1] or 0.0
+        v_aws_ram  = cap_row[2] or 0.0
+        v_gcp_ram  = cap_row[3] or 0.0
+        unverified_rows = int(cap_row[4] or 0)
+        unverified_vcpu = cap_row[5] or 0.0
+        na_rows         = int(cap_row[6] or 0)
+
+        summary.update({
+            "verified_aws_vcpu": v_aws_vcpu,
+            "verified_gcp_vcpu": v_gcp_vcpu,
+            "verified_aws_ram": v_aws_ram,
+            "verified_gcp_ram": v_gcp_ram,
+            "unverified_rows": unverified_rows,
+            "unverified_aws_vcpu": unverified_vcpu,
+            "na_rows": na_rows,
+        })
+
+        # Fail on any deficit > 0.5 units on VERIFIED rows only
+        vcpu_deficit = v_aws_vcpu - v_gcp_vcpu
+        ram_deficit  = v_aws_ram - v_gcp_ram
+        if v_aws_vcpu > 0 and v_gcp_vcpu < v_aws_vcpu - 0.5:
+            cap_recon.append({
+                "metric": "vCPU",
+                "aws_capacity": round(v_aws_vcpu, 2),
+                "gcp_capacity": round(v_gcp_vcpu, 2),
+                "deficit":      round(vcpu_deficit, 2),
+                "error": f"GCP vCPU capacity ({round(v_gcp_vcpu,2)}) is below AWS "
+                         f"({round(v_aws_vcpu,2)}). GCP must meet or exceed AWS provisioned "
+                         f"capacity. Run reconcile_capacity.py or select a larger GCP shape.",
+            })
+        if v_aws_ram > 0 and v_gcp_ram < v_aws_ram - 0.5:
+            cap_recon.append({
+                "metric": "RAM (GB)",
+                "aws_capacity": round(v_aws_ram, 2),
+                "gcp_capacity": round(v_gcp_ram, 2),
+                "deficit":      round(ram_deficit, 2),
+                "error": f"GCP RAM ({round(v_gcp_ram,2)} GB) is below AWS "
+                         f"({round(v_aws_ram,2)} GB). GCP must meet or exceed AWS provisioned "
+                         f"capacity. Run reconcile_capacity.py or select a larger GCP shape.",
+            })
+
+        status_str = "FAIL" if cap_recon else "OK"
+        summary["status"] = status_str
+        print(f"Capacity check (verified rows only): AWS {v_aws_vcpu:,.1f} vCPU vs GCP {v_gcp_vcpu:,.1f} vCPU — {status_str}")
+        print(f"  unverified:     {unverified_rows:,} row(s), {unverified_vcpu:,.0f} AWS vCPU carried at assumed parity")
+        print(f"  not applicable: {na_rows:,} row(s) with no instance capacity")
+
+        if unverified_rows > 0:
+            diag(WARN, "capacity_check_unverified", "validate_fix.py",
+                 f"{unverified_rows} instance row(s) ({unverified_vcpu:,.0f} AWS vCPU) unverified in capacity check",
+                 rows=unverified_rows, job_dir=jobdir)
+    except Exception as _cap_exc:
+        cap_recon.append({"metric": "unknown", "error": f"capacity gate failed: {_cap_exc}"})
+        summary["status"] = "ERROR"
+    return cap_recon, summary
 
 
 def main():
@@ -1103,14 +1266,14 @@ def main():
             # sibling component (e.g. Local SSD with no catalog SKU) had a NULL
             # rate. Each component independently returns the full AWS cost under
             # 'passthrough', so this was inflating the row by (N siblings)x.
-            no_rate_rows = con.execute("""
+            no_rate_rows = con.execute(f"""
                 SELECT m.aws_li_key, m.component
                 FROM aws_li_to_gcp_li m
                 JOIN aws_li_catalog c USING (aws_li_key)
                 JOIN gcp_projection p
                   ON p.aws_li_key = m.aws_li_key AND p.component IS NOT DISTINCT FROM m.component
                 WHERE m.strategy IN ('map', 'break_down')
-                  AND (p.gcp_projected_cost IS NULL OR p.gcp_projected_cost = 0)
+                  AND NOT {_has_usable_rate_clause('p', 'gcp_projected_cost')}
                   AND c.aws_amortized_cost > 5
             """).fetchall()
             if no_rate_rows:
@@ -1242,6 +1405,23 @@ def main():
     """, params).fetchall()
     report["violations"]["passthrough_on_mappable_service"] = [
         {"product": r[0], "op": r[1][:70], "aws": r[2]} for r in bad_pt]
+
+    # Emit diagnostic for reasoned intentional passthroughs (unpriceable workload)
+    try:
+        unpriceable = con.execute(f"""
+            SELECT COUNT(*) AS row_cnt, COALESCE(SUM(c.aws_amortized_cost), 0.0) AS total_usd
+            FROM aws_li_to_gcp_li m JOIN aws_li_catalog c USING (aws_li_key)
+            WHERE m.strategy='passthrough' AND c.aws_amortized_cost > 1 AND ({like})
+              AND NOT ({note_exclude})
+        """, params).fetchone()
+        if unpriceable and unpriceable[0] > 0:
+            unpr_rows = int(unpriceable[0])
+            unpr_usd = float(unpriceable[1])
+            diag(WARN, "unpriceable_workload", "validate_fix.py",
+                 f"{unpr_rows} mappable row(s) (${unpr_usd:,.2f}) carried as reasoned passthrough (unpriceable in region)",
+                 rows=unpr_rows, usd=unpr_usd, phase=4, job_dir=jobdir)
+    except Exception as _unpr_e:
+        pass
 
     phantom, underproj = [], []
     if has_view:
@@ -1380,76 +1560,7 @@ def main():
                           "delta": delta, "tolerance": round(tol, 2)})
     report["violations"]["reconciliation"] = recon
 
-    # Capacity reconciliation gate — hard fail on any meaningful under-provision.
-    # Uses the same fallback logic as render_report.py: for rows with a core/ram
-    # component breakdown, use the GCP unit_multiplier; for map-strategy rows
-    # without a core breakdown, fall back to AWS instance_vcpus as the floor.
-    # Grace of 0.5 units absorbs floating-point accumulation across many rows.
-    cap_recon = []
-    try:
-        aws_cap = con.execute("""
-            SELECT SUM(instance_vcpus * instance_count),
-                   SUM(instance_ram_gb  * instance_count)
-            FROM aws_li_catalog
-            WHERE is_workload = TRUE AND instance_vcpus IS NOT NULL
-        """).fetchone()
-        aws_vcpu = aws_cap[0] or 0.0
-        aws_ram  = aws_cap[1] or 0.0
-
-        gcp_vcpu = con.execute("""
-            WITH core_mapped AS (
-                SELECT c.aws_li_key, SUM(m.unit_multiplier * c.instance_count) AS vcpus
-                FROM aws_li_to_gcp_li m
-                JOIN aws_li_catalog c USING (aws_li_key)
-                WHERE m.component = 'core' AND m.strategy IN ('map','break_down')
-                GROUP BY c.aws_li_key
-            )
-            SELECT SUM(COALESCE(cm.vcpus, c.instance_vcpus * c.instance_count))
-            FROM aws_li_catalog c
-            LEFT JOIN core_mapped cm USING (aws_li_key)
-            WHERE c.is_workload AND c.instance_vcpus IS NOT NULL
-        """).fetchone()[0] or 0.0
-
-        gcp_ram = con.execute("""
-            WITH ram_mapped AS (
-                SELECT c.aws_li_key, SUM(m.unit_multiplier * c.instance_count) AS ram_gb
-                FROM aws_li_to_gcp_li m
-                JOIN aws_li_catalog c USING (aws_li_key)
-                WHERE m.component = 'ram' AND m.strategy IN ('map','break_down')
-                GROUP BY c.aws_li_key
-            )
-            SELECT SUM(COALESCE(rm.ram_gb, c.instance_ram_gb * c.instance_count))
-            FROM aws_li_catalog c
-            LEFT JOIN ram_mapped rm USING (aws_li_key)
-            WHERE c.is_workload AND c.instance_ram_gb IS NOT NULL
-        """).fetchone()[0] or 0.0
-
-        # Fail on any deficit > 0.5 units (grace for floating-point accumulation).
-        # reconcile_capacity.py eliminates break_down deficits deterministically;
-        # any remaining deficit here indicates the LLM chose an under-provisioned shape.
-        if aws_vcpu > 0 and gcp_vcpu < aws_vcpu - 0.5:
-            cap_recon.append({
-                "metric": "vCPU",
-                "aws_capacity": round(aws_vcpu, 2),
-                "gcp_capacity": round(gcp_vcpu, 2),
-                "deficit":      round(aws_vcpu - gcp_vcpu, 2),
-                "error": f"GCP vCPU capacity ({round(gcp_vcpu,2)}) is below AWS "
-                         f"({round(aws_vcpu,2)}). GCP must meet or exceed AWS provisioned "
-                         f"capacity. Run reconcile_capacity.py or select a larger GCP shape.",
-            })
-        if aws_ram > 0 and gcp_ram < aws_ram - 0.5:
-            cap_recon.append({
-                "metric": "RAM (GB)",
-                "aws_capacity": round(aws_ram, 2),
-                "gcp_capacity": round(gcp_ram, 2),
-                "deficit":      round(aws_ram - gcp_ram, 2),
-                "error": f"GCP RAM ({round(gcp_ram,2)} GB) is below AWS "
-                         f"({round(aws_ram,2)} GB). GCP must meet or exceed AWS provisioned "
-                         f"capacity. Run reconcile_capacity.py or select a larger GCP shape.",
-            })
-    except Exception as _cap_exc:
-        cap_recon.append({"metric": "unknown", "error": f"capacity gate failed: {_cap_exc}"})
-    report["violations"]["capacity_reconciliation"] = cap_recon
+    report["violations"]["capacity_reconciliation"], _ = check_capacity_reconciliation(con, jobdir)
 
     # GATE: passthrough budget. If passthrough rows account for more than 5% of
     # total workload spend, the mapping phase has left too much unresolved.

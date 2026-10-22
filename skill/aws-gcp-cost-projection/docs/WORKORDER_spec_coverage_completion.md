@@ -439,162 +439,34 @@ report rather than continuing to patch.
 Each item names the layer it belongs to. **If your fix is in a different layer
 than the item says, you have misdiagnosed it — re-read §2.1.**
 
-### ITEM 1 — `savingsplans` and `discounts` are mis-bucketed, not mis-classified (harness)
+### COMPLETED — do not redo
 
-**Layer: the harness, not the specs.**
+| | what it was | outcome |
+|---|---|---|
+| ITEM 1 | `savingsplans` / `discounts` mis-bucketed | harness now reports them as `excluded` (31 rows, $9,057); specs untouched |
+| ITEM 2 | `ebs` / `aurora` as separate canonicals | folded in `data/aws-aliases.json`; neither has an AWS product code |
+| ITEM 3 | 26 rows with no `canonical_service` | 27 aliases added; NULL-canonical rows now zero |
+| ITEM 7 | kinesis `BilledBytes` / `Storage-ShardHour` | two charge types added, matching the legacy mechanics |
 
-`no_spec` shows `savingsplans` ($10,522) and `discounts` (−$1,457). These are
-commitment and credit rows that the **global pre-filter already handles** —
-`classify_via_specs()` runs `negative_cost`, `commitment_discount` and
-`non_workload` before per-service dispatch.
+A review of that work found three further defects, all fixed and each now
+covered by a test: an unreachable kinesis charge type, an `ebs_storage`
+fallback that could not match PDF rows, and an identity lint that did not scan
+`any_of` blocks. See §1.
 
-**Confirm it:**
-
-```bash
-cd skill/aws-gcp-cost-projection && python - <<'PY'
-import duckdb, glob, os, sys
-sys.path.insert(0, 'scripts')
-import spec_dispatch as sd
-ROOT = r'<CORPUS>'
-COLS = ["product","usage_type","operation","pricing_unit","line_item_type","pricing_model",
-        "aws_amortized_cost","canonical_service","is_workload"]
-for db in glob.glob(os.path.join(ROOT, "*", "projection-audit", "projection.duckdb")):
-    try:
-        c = duckdb.connect(db, read_only=True)
-        rs = c.execute("SELECT " + ",".join(COLS) + " FROM aws_li_catalog WHERE is_workload").fetchall()
-        c.close()
-    except Exception:
-        continue
-    for raw in rs:
-        r = dict(zip(COLS, raw)); r["unit"] = r.pop("pricing_unit")
-        r["canonical"] = r.pop("canonical_service"); r["_bill_has_discounted_usage"] = True
-        if r["canonical"] in ("savingsplans", "discounts"):
-            print(r["canonical"], "->", sd.classify_via_specs(r))
-PY
-```
-
-Expected output (verified on this corpus):
-
-```
-('savingsplans', 'commitment_discount')  18 rows
-('discounts', 'negative_cost')            1 row
-```
-
-**If every line prints `commitment_discount`, `negative_cost` or `non_workload`:**
-the rows are handled correctly and the harness is mis-labelling them. Fix
-`scripts/spec_parity.py`: before the `no_spec` branch, check whether
-`classify_via_specs(r)` returned one of those three and count the row in a new
-`excluded` bucket instead. **Change nothing in `data/service_specs.json`.**
-
-**If any line prints something else:** stop and report it — that is a real
-classification bug and out of this item's scope.
-
-### ITEM 2 — `ebs` and `aurora` resolve as separate services (Layer 1)
-
-**Layer: `data/aws-aliases.json`. Not a spec.**
-
-`ebs` ($4,790) and `aurora` ($52) appear as their own canonicals with no spec.
-
-**Decide it with this command, not by judgement:**
-
-```bash
-cd skill/aws-gcp-cost-projection && python -c "
-import json
-codes = json.load(open('data/aws-product-codes.json', encoding='utf-8'))['codes']
-for want in ('ebs', 'aurora'):
-    hits = [k for k, v in codes.items() if v == want]
-    print(want, '-> AWS product codes:', hits or 'NONE')
-"
-```
-
-Expected output (verified on this corpus):
-
-```
-ebs    -> AWS product codes: NONE
-aurora -> AWS product codes: NONE
-```
-
-So both fold. The command is still in this work order rather than the answer
-alone, because `data/aws-product-codes.json` is refreshed from AWS and the
-answer can change.
-
-- **`NONE` for a name** → AWS does not bill it as a separate service, so it must
-  not be a separate canonical. In `data/aws-aliases.json`, repoint its aliases:
-  `ebs` → `ec2`, `aurora` → `rds`. Re-run `aws_normalizer.py` over the corpus
-  (the loop in §0), then re-measure. EC2's `ebs_storage` and RDS's storage
-  charge types will pick the rows up.
-- **A code exists** → keep it separate and write it a minimal spec instead.
-
-**Do not** add a product-name rule inside `ec2`'s or `rds`'s spec. Identity is
-Layer 1.
-
-### ITEM 3 — 26 rows with no `canonical_service` (Layer 1)
-
-**Layer: `data/aws-aliases.json`. Not a spec.**
-
-**Find them:**
-
-```bash
-cd skill/aws-gcp-cost-projection && python -c "
-import duckdb, glob, os, collections
-ROOT = r'<CORPUS>'
-agg = collections.Counter()
-for db in glob.glob(os.path.join(ROOT, '*', 'projection-audit', 'projection.duckdb')):
-    try:
-        c = duckdb.connect(db, read_only=True)
-        for p, cost in c.execute('SELECT product, aws_amortized_cost FROM aws_li_catalog WHERE is_workload AND canonical_service IS NULL').fetchall():
-            agg[p or '(empty)'] += float(cost or 0)
-        c.close()
-    except Exception: pass
-for p, s in agg.most_common():
-    print(f'{s:12,.2f}  {p}')
-"
-```
-
-Expected output (verified on this corpus) — 12 names, all real AWS services
-except the last:
-
-```
-      243.24  IndexingOCU
-      242.97  SearchOCU
-      146.31  Amazon Detective
-       96.66  Amazon Amazon Quantum Ledger Database (QLDB)
-       72.19  Amazon Amazon Keyspaces (for Apache Cassandra)
-       53.99  AWS Batch
-       45.64  AWS Wavelength
-       42.80  Amazon Glacier TimedStorage-ByteHrs
-       41.12  AWS Local Zones
-       36.93  AWS Elastic Beanstalk
-        4.84  Amazon Lightsail Bundle:0.5GB
-       -7.88  N/A
-```
-
-Three of these need thought rather than a plain alias:
-
-- `IndexingOCU` / `SearchOCU` are **OpenSearch Serverless** compute units — the
-  product name carries no service name at all. They belong to `opensearch`.
-- `Amazon Amazon Quantum Ledger Database (QLDB)` and
-  `Amazon Amazon Keyspaces ...` have a **doubled prefix**, which is why the
-  normalizer's prefix strip failed. Alias the doubled form, and note the
-  doubling in your summary — it may be an ingest defect worth fixing at source.
-- `Amazon Glacier TimedStorage-ByteHrs` is an S3/Glacier row whose usage type
-  was concatenated into the product name. Alias it to `s3`.
-- `N/A` (−$7.88) is not a service. Leave it; report it.
-
-For each remaining product name, add an alias to `data/aws-aliases.json`
-mapping it to the right canonical. Then re-run `aws_normalizer.py` over the corpus and re-measure.
-
-**If the product name is empty or is not an AWS service name**, that is an
-ingest defect — record it in your summary and leave it. Do not invent an alias
-to make the number go away.
+---
 
 ### ITEM 4 — `AP-SOUTHEAST-1-Usage:NA` usage types (ingest)
 
-**Layer: `scripts/ingest.py`. Not a spec.**
+**Layer: `scripts/ingest.py`. Not a spec. $2,932 across three services.**
 
-`rds` ($2,517), `elb` ($215) and `msk` ($198) have `spec_gap` rows whose usage
-type is `AP-SOUTHEAST-1-Usage:NA` — the **full region name** where the short
-code (`APS1`) belongs, and `NA` where the charge type belongs.
+| service | spec_gap | sample usage_type |
+|---|---:|---|
+| `rds` | $2,519 | `AP-SOUTHEAST-1-Usage:NA` |
+| `elb` | $215 | `AP-SOUTHEAST-1-Usage:NA` |
+| `msk` | $198 | `AP-SOUTHEAST-1-Usage:NA` |
+
+The **full region name** sits where the short code (`APS1`) belongs, and `NA`
+where the charge type belongs. A PDF/XLSX extraction artifact.
 
 **Find the source rows:**
 
@@ -614,103 +486,81 @@ for db in glob.glob(os.path.join(ROOT, '*', 'projection-audit', 'projection.duck
 "
 ```
 
-Read the matching source bill. Two possible outcomes:
+Read the matching source bill. Two outcomes:
 
-- **The bill does carry a charge type** and ingest put the wrong text in
-  `usage_type` → fix the extraction in `scripts/ingest.py` so the short-code
-  form is produced. One fix at ingest covers all three services and every
-  service that would hit this later.
+- **The bill carries a charge type** and ingest put the wrong text in
+  `usage_type` → fix the extraction so the short-code form is produced. One fix
+  covers all three services and every service that would hit this later.
 - **The bill genuinely has no charge type** (`NA` is faithful) → the row cannot
   be classified. Leave it; `classify_mechanics.py` already reports this class
   via `data_gaps.json`. Record it in your summary.
 
 **Do not** add a regex to three spec files to absorb malformed text.
 
+---
+
 ### ITEM 5 — numeric and empty usage types (ingest, investigate only)
 
-**Layer: ingest. Investigate and report; do not fix blind.**
+**Layer: ingest. Investigate and report; do not fix blind. $720.**
 
-`ec2` ($640) and `dynamodb` ($80) have `spec_gap` rows whose usage type is empty
-or a bare number (`GLOBAL-Usage:671.49`, `GLOBAL-Usage:802.39`). A number where
-a charge type belongs is a parse error — `671.49` looks like a cost that landed
-in the wrong column.
+`ec2` ($640) and `dynamodb` ($80) have `spec_gap` rows whose usage type is
+empty or a bare number — `GLOBAL-Usage:671.49`, `GLOBAL-Usage:802.39`. A number
+where a charge type belongs is a parse error; `671.49` looks like a cost that
+landed in the wrong column.
 
-Use the same query as ITEM 4 with `usage_type LIKE 'GLOBAL-Usage:%'`, open the
-source bill, and report what you find. **Do not add a charge type that matches
-numeric usage types** — that would bake the parse error into the taxonomy.
+Use ITEM 4's query with `usage_type LIKE 'GLOBAL-Usage:%'`, open the source
+bill, and report what you find. **Do not add a charge type that matches numeric
+usage types** — that bakes the parse error into the taxonomy.
+
+---
 
 ### ITEM 6 — the 5 `differ` cases: ALREADY DECIDED, do not re-litigate
 
-All five spec-vs-legacy disagreements have been reviewed against real rows. The
-decisions are recorded in each charge type's `notes`:
+All five spec-vs-legacy disagreements were reviewed against real rows; the
+decisions are recorded in each charge type's `notes`.
 
 | canonical | legacy → spec | rows | spend | decision |
 |---|---|---:|---:|---|
-| `rds` | `misc` → `managed_db` | 16 | $3,050 | **Spec right.** `Multi-AZUsage:db.m7g.xl` + `CreateDBInstance:0014` is an instance-hour; legacy handed it to the LLM. |
-| `ec2` | `compute_breakdown` → `compute_burstable` | 7 | $1,545 | **Spec right.** PDF rows reading `On Demand Linux t3a.large Instance`; t-family must reach the burstable mapper (E2) or the generic mapper over-projects. |
-| `opensearch` | `opensearch` → `block_storage` | 2 | $182 | **Spec right.** `GB-month provisioned gp3 storage`, unit GB-Mo — a service rule must yield peripheral storage rather than swallow it. |
-| `vpc` | `flat_hourly` → `misc` | — | — | **Legacy was right; FIXED.** `vpc_public_ipv4` and `vpc_vpn_hours` added. |
-| `kms` | `per_request` → `misc` | — | — | **Legacy was right; FIXED.** `kms_requests` gained a PDF `operation_re` fallback. |
+| `rds` | `misc` → `managed_db` | 16 | $3,050 | **Spec right** — `Multi-AZUsage:db.m7g.xl` + `CreateDBInstance` is an instance-hour |
+| `ec2` | `compute_breakdown` → `compute_burstable` | 7 | $1,545 | **Spec right** — PDF rows reading `On Demand Linux t3a.large Instance` |
+| `opensearch` | `opensearch` → `block_storage` | 2 | $182 | **Spec right** — `GB-month provisioned gp3 storage` |
+| `vpc` | `flat_hourly` → `misc` | — | — | **Legacy was right; FIXED** |
+| `kms` | `per_request` → `misc` | — | — | **Legacy was right; FIXED** |
 
-**Your job for this item is only to verify `differ` stays at 25 rows / $4,778.**
-If it grows, your change broke something. If it shrinks without you intending
-it, say so — that is also a change that needs explaining.
+**Your only job here is to verify `differ` stays at 25 rows / $4,778.** If it
+grows, your change broke something. If it shrinks without you intending it, say
+so — that also needs explaining.
 
-### ITEM 7 — `kinesis` shard-hours and billed bytes (spec)
+---
 
-**Layer: `data/service_specs.json`. The only item that adds charge types.**
+### ITEM 8 — nine undeclared services (newly visible, $684 total)
 
-`USW2-BilledBytes` and `APS5-Storage-ShardHour` match no Kinesis charge type
-($142).
-
-**First, find out what the legacy chain does with them** — the new charge types
-must produce the same mechanic, or you have changed behaviour without deciding
-to:
-
-```bash
-cd skill/aws-gcp-cost-projection && python -c "
-import sys; sys.path.insert(0, 'scripts')
-import classify_mechanics as cm
-def row(ut, unit):
-    return {'product':'Amazon Kinesis','usage_type':ut,'operation':'','unit':unit,
-            'line_item_type':'Usage','pricing_model':'OnDemand','aws_amortized_cost':10.0,
-            'canonical':'kinesis','product_code':'AmazonKinesis','_bill_has_discounted_usage':True,
-            'instance_type':None,'instance_vcpus':None,'instance_ram_gb':None,'instance_count':None,
-            'billing_format':None}
-print('BilledBytes       ->', cm.classify(row('USW2-BilledBytes','GB')))
-print('Storage-ShardHour ->', cm.classify(row('APS5-Storage-ShardHour','Hrs')))
-"
-```
-
-Expected output (verified on this corpus):
+Resolving identity in ITEM 3 turned "unknown canonical" into "named service
+with no spec". Each is one or two rows:
 
 ```
-BilledBytes       -> misc
-Storage-ShardHour -> block_storage
+detective $146   qldb $97   keyspaces $72   batch $54   neptune $48
+wavelength $46   timestream $42   localzones $41   elasticbeanstalk $37
 ```
 
-Note `BilledBytes -> misc`: the new charge type must also route to `misc` to
-hold parity. That looks unsatisfying, and it is — Kinesis data volume arguably
-belongs with Pub/Sub message delivery — but **changing the mechanic is an
-accuracy decision, not a coverage one, and is out of scope here.** Classify the
-row, keep the mechanic, and note the open question.
+**Recommendation: do nothing yet, and say so.** $684 across nine services is
+below the value of nine hand-written specs, and `no_spec` falls through to the
+legacy classifier, which handles them. Revisit when one appears materially on a
+real bill.
 
-Then add two charge types to `kinesis`, **before** its catch-all, using the
-template in §3.3 and the mechanics the command printed. Key them on
-`usage_type_re` (`BilledBytes`, `ShardHour`) and give each a `fallback_match` on
-`operation_re` for PDF bills (§2.7).
+If you disagree, argue it from the numbers rather than from tidiness.
 
-### ITEM 8 — do NOT nest `s3` and `rds`
+---
 
-An earlier draft of this work order asked for this. **It was wrong and has been
-removed.** Both services are flat lists of unrelated charge types (storage,
-requests, transfer) with **zero measured ambiguity** between them. §2.3 says not
-to nest that shape: there is no general/specific relationship and therefore no
-invariant for the partition test to enforce. Nesting them would add structure
-and reduce readability for no benefit.
+### ITEM 9 — do NOT nest `s3` and `rds`
 
-Nest a service only when ambiguity appears, or when you add a specific variant
-of an existing general charge type.
+An earlier draft asked for this. **It was wrong and has been removed.** Both are
+flat lists of unrelated charge types with **zero measured ambiguity**. §2.3 says
+not to nest that shape: no general/specific relationship means no invariant for
+the partition test to enforce.
+
+Nest only when ambiguity appears, or when adding a specific variant of an
+existing general charge type.
 
 ---
 
@@ -718,7 +568,7 @@ of an existing general charge type.
 
 - Do **not** add `product_re` inside a service's own spec. A test fails, and it
   re-introduces the free-text coupling Layer 1 exists to remove.
-- Do **not** fix an identity problem (ITEMs 2, 3) inside a charge_type.
+- Do **not** fix an identity problem (a wrong or missing `canonical_service`) inside a charge_type. Identity is `data/aws-aliases.json`.
 - Do **not** fix an extraction problem (ITEMs 4, 5) inside a charge_type.
 - Do **not** place a default (`"match": {}`) anywhere but last in its list.
 - Do **not** put a negative predicate in `exclude_when` (§2.5 trap).
@@ -746,7 +596,7 @@ python scripts/spec_parity.py "<CORPUS>"
 | `agree` % spend | 96.6% | must not fall |
 | `differ` rows | 25 | must not grow |
 | `spec_gap` **per service** | rds $2,519 · ec2 $640 · elb $215 · msk $198 · dynamodb $80 · lambda $27 | **no service may rise** |
-| `no_spec` spend | $684 | must fall |
+| `no_spec` spend | $684 | **must not rise** — ITEM 8 deliberately leaves these nine services undeclared |
 | genuine ambiguity | NONE | must stay NONE |
 
 **`spec_gap` is checked per service, not as a total.** An aggregate check hides
@@ -806,22 +656,30 @@ correct. An unexplained move is a regression, not a fix.
 
 ## 8. Done criteria
 
-- [ ] ITEM 1: `savingsplans`/`discounts` confirmed pre-filtered; harness reports
-      them as `excluded`; specs untouched.
-- [ ] ITEM 2: `ebs`/`aurora` resolved in `data/aws-aliases.json` (or given their
-      own spec if AWS publishes a code), decided by the product-code command.
-- [ ] ITEM 3: zero rows with NULL `canonical_service`, or each remainder
-      reported as an ingest defect.
 - [ ] ITEM 4: `-Usage:NA` either fixed at ingest or reported as a faithful data
-      gap.
-- [ ] ITEM 5: numeric/empty usage types traced to source and reported. No
-      charge type added for them.
-- [ ] ITEM 7: kinesis `BilledBytes` + `ShardHour` classified, with the same
-      mechanic the legacy chain produces.
-- [ ] ITEM 8: `s3`/`rds` left flat.
-- [ ] `agree` ≥ 96.6%, `differ` ≤ 25 rows, `no_spec` reduced, **no service's
-      `spec_gap` risen**, ambiguity NONE.
+      gap. `rds`/`elb`/`msk` spec_gap falls.
+- [ ] ITEM 5: numeric/empty usage types traced to source and reported. **No
+      charge type added for them.**
+- [ ] ITEM 6: `differ` still 25 rows / $4,778.
+- [ ] ITEM 8: the nine undeclared services left alone, with that stated as a
+      decision rather than an omission.
+- [ ] ITEM 9: `s3`/`rds` left flat.
+- [ ] `agree` ≥ 96.6%, `differ` ≤ 25 rows, **no service's `spec_gap` risen**,
+      ambiguity NONE.
 - [ ] Semantic spec diff shows only the services you intended, `removed` empty.
 - [ ] Full suite passes with no new failures.
 - [ ] Summary lists every moved row with its reason, plus anything you noticed
       but did not fix.
+
+---
+
+## 9. Scope note
+
+**ITEMs 4 and 5 are ingest work, not spec work.** Neither should change
+`data/service_specs.json`. If you find yourself editing a spec file to make a
+malformed usage type match, stop — that is the symptom being treated in the
+wrong layer (§2.1).
+
+Both are also small: $3,652 combined, on a corpus where `agree` is already
+96.6%. The value is in fixing the **extraction defect**, which affects every
+future bill of those formats, not in recovering these particular dollars.

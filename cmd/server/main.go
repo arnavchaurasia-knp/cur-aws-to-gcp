@@ -85,6 +85,7 @@ func main() {
 	}
 
 	spawner := jobs.NewSpawner(jobs.SpawnerConfig{AGYPath: cfg.AGYPath, AGYModel: cfg.AGYModel})
+	spawner.SetDB(database)
 	notifyCfg := jobs.NotifyConfig{
 		Email: notify.EmailConfig{
 			APIKey:  cfg.ResendAPIKey,
@@ -206,6 +207,7 @@ func main() {
 			r.Post("/api/admin/jobs/{id}/cancel", jobHandler.AdminCancelJob)
 			r.Post("/api/admin/jobs/cancel-all", jobHandler.CancelAll)
 			r.Post("/api/admin/jobs/resume-all", jobHandler.ResumeAll)
+			r.Post("/api/admin/jobs/{id}/regenerate-report", jobHandler.RegenerateReport)
 			r.Get("/api/admin/system/state", jobHandler.SystemState)
 			r.Delete("/api/admin/jobs/{id}", jobHandler.AdminDeleteJob)
 			r.Get("/api/admin/deleted-jobs", jobHandler.AdminListDeletedJobs)
@@ -215,6 +217,15 @@ func main() {
 			r.Post("/api/admin/catalog/refresh", jobHandler.AdminCatalogRefresh)
 			r.Get("/api/admin/audit", jobHandler.AdminAuditLog)
 			r.Get("/api/admin/analytics", jobHandler.AdminAnalytics)
+			r.Get("/api/admin/assumptions", jobHandler.AdminGetAssumptions)
+			r.Put("/api/admin/assumptions/{key}", jobHandler.AdminPutAssumption)
+			r.Get("/api/admin/assumptions/history", jobHandler.AdminGetAssumptionHistory)
+			r.Get("/api/admin/report-settings", jobHandler.AdminGetReportSettings)
+			r.Put("/api/admin/report-settings/{key}", jobHandler.AdminPutReportSetting)
+			r.Get("/api/admin/report-settings/history", jobHandler.AdminGetReportSettingHistory)
+			r.Post("/api/admin/report-settings/reset", jobHandler.AdminResetReportSettings)
+			r.Get("/api/admin/jobs/{id}/diagnostics", jobHandler.AdminJobDiagnostics)
+			r.Get("/api/admin/jobs/{id}/diagnostics/records", jobHandler.AdminJobDiagnosticRecords)
 		})
 		// @facets.cloud-only internal panel: recent job logs + a manually
 		// selected multi-job portfolio summary. Each handler re-checks

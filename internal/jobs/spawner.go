@@ -1,11 +1,15 @@
 package jobs
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
+
 	"github.com/facets/cur-web/internal/config"
+	"github.com/facets/cur-web/internal/db"
 	"github.com/facets/cur-web/internal/skill"
 )
 
@@ -23,9 +27,49 @@ type SpawnResult struct {
 	Err      error
 }
 
-type Spawner struct{ cfg SpawnerConfig }
+type Spawner struct {
+	cfg SpawnerConfig
+	db  *db.DB // set via SetDB; used to write per-job assumption snapshots
+}
 
 func NewSpawner(cfg SpawnerConfig) *Spawner { return &Spawner{cfg: cfg} }
+
+// SetDB injects the database handle so the spawner can write per-job
+// assumption snapshots. Called from main.go after both DB and Spawner exist.
+func (s *Spawner) SetDB(d *db.DB) { s.db = d }
+
+// WriteAssumptionsSnapshot reads current assumptions from the DB, computes the
+// version hash, writes <jobDir>/assumptions.json, and returns the version.
+func (s *Spawner) WriteAssumptionsSnapshot(jobDir string) (string, error) {
+	if s.db == nil {
+		return "", nil // no DB configured; snapshot skipped
+	}
+	assumptions, err := s.db.GetAssumptions()
+	if err != nil {
+		return "", err
+	}
+	values := make(map[string]float64, len(assumptions))
+	for _, a := range assumptions {
+		values[a.Key] = a.Value
+	}
+	version, err := s.db.AssumptionsVersionHash()
+	if err != nil {
+		return "", err
+	}
+	snapshot := map[string]any{
+		"version":     version,
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		"values":       values,
+	}
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "assumptions.json"), append(data, '\n'), 0644); err != nil {
+		return "", err
+	}
+	return version, nil
+}
 
 func (s *Spawner) Run(jobDir, inputExt string) SpawnResult {
 	return s.RunWithSession(jobDir, inputExt, "")
@@ -76,7 +120,8 @@ func (s *Spawner) RunWithSession(jobDir, inputExt, _ string) SpawnResult {
 // per-phase prompts and a deterministic DuckDB gate between each. See
 // orchestrate.go. The watcher polls the returned PID (the orchestrator) and
 // finalizes when the report appears — same contract as before.
-func (s *Spawner) Start(jobDir, inputExt, _ string) (int, error) {
+// Returns (pid, assumptionsVersion, error).
+func (s *Spawner) Start(jobDir, inputExt, _ string) (int, string, error) {
 	return s.StartOrchestrated(jobDir, inputExt)
 }
 

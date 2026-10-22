@@ -109,44 +109,7 @@ def _load_catalog(service_id):
         return json.load(f)
 
 
-def _save_catalog(service_id, skus):
-    """B1: Write a gzipped JSON file atomically (temp + os.replace) so a crash or
-    concurrent reader never sees a half-written file."""
-    import tempfile
-    final = os.path.join(DATA_DIR, "skus", f"{service_id}.json.gz")
-    d = os.path.dirname(final)
-    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
-    os.close(fd)
-    try:
-        with gzip.open(tmp, "wt", encoding="utf-8") as f:
-            json.dump(skus, f)
-        os.replace(tmp, final)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
-
-def _fetch_service_skus(service_id, token_info):
-    """B2: Fetch all SKUs for a service. Returns (skus, complete: bool).
-    complete is False if ANY page errored — never promote a partial pull."""
-    skus = []
-    page_token = ""
-    while True:
-        url = f"https://cloudbilling.googleapis.com/v1/services/{service_id}/skus?pageSize=5000"
-        if page_token:
-            url += f"&pageToken={urllib.parse.quote(page_token)}"
-        try:
-            data = _gcp_get(url, token_info)
-        except Exception as e:
-            print(f"  [catalog] API fetch failed: {e}")
-            return skus, False
-        skus.extend(data.get("skus", []))
-        page_token = data.get("nextPageToken", "")
-        if not page_token:
-            return skus, True
 
 
 def _has_coverage(gcp_service, sku_name, gcp_region):

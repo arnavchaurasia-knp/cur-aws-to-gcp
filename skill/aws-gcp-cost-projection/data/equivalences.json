@@ -1,0 +1,107 @@
+{
+  "_meta": {
+    "format": "crosswalk",
+    "degrees": [
+      "equal",
+      "equivalent",
+      "wider",
+      "narrower",
+      "inexact",
+      "unmatched",
+      "disjoint"
+    ]
+  },
+  "storage_class": [
+    {
+      "aws": "standard",
+      "gcp": "standard",
+      "degree": "equal",
+      "scope": [
+        "storage_time"
+      ],
+      "comment": "Same access profile, no minimum duration on either side.",
+      "decided_by": "human",
+      "decided_on": "2026-03-11"
+    },
+    {
+      "aws": "standard_ia",
+      "gcp": "nearline",
+      "degree": "equivalent",
+      "scope": [
+        "storage_time"
+      ],
+      "comment": "Both feature 30-day minimum storage duration and immediate millisecond access for infrequently accessed data.",
+      "decided_by": "human",
+      "decided_on": "2026-03-11"
+    },
+    {
+      "aws": "onezone_ia",
+      "gcp": "nearline",
+      "degree": "wider",
+      "scope": [
+        "storage_time"
+      ],
+      "comment": "GCP Nearline provides multi-AZ or multi-region redundancy, covering more resilience than AWS single-AZ One Zone-IA.",
+      "decided_by": "human",
+      "decided_on": "2026-03-11"
+    },
+    {
+      "aws": "glacier_instant",
+      "gcp": "coldline",
+      "degree": "inexact",
+      "scope": [
+        "storage_time"
+      ],
+      "comment": "Coldline's 90-day minimum matches Glacier Instant Retrieval's 90-day minimum; both provide millisecond latency, but retrieval rate structures differ.",
+      "confidence_cap": 0.8,
+      "decided_by": "human",
+      "decided_on": "2026-03-11"
+    },
+    {
+      "aws": "glacier_flexible",
+      "gcp": "coldline",
+      "degree": "inexact",
+      "scope": [
+        "storage_time"
+      ],
+      "comment": "Coldline's 90-day minimum matches Glacier Flexible's 90-day minimum; Archive's 365-day minimum does not. Retrieval pricing differs and is NOT covered by this claim.",
+      "confidence_cap": 0.75,
+      "decided_by": "human",
+      "decided_on": "2026-03-11"
+    },
+    {
+      "aws": "glacier_flexible",
+      "gcp": "standard",
+      "degree": "disjoint",
+      "scope": [
+        "storage_time"
+      ],
+      "comment": "Explicitly not equivalent. Asserting this prevents the 120x over-projection seen historically.",
+      "decided_by": "human",
+      "decided_on": "2026-03-11"
+    },
+    {
+      "aws": "glacier_deep_archive",
+      "gcp": "archive",
+      "degree": "inexact",
+      "scope": [
+        "storage_time"
+      ],
+      "comment": "Archive's 365-day minimum matches Glacier Deep Archive's 180-day profile most closely. Retrieval latency profile differs (minutes vs hours).",
+      "confidence_cap": 0.85,
+      "decided_by": "human",
+      "decided_on": "2026-03-11"
+    },
+    {
+      "aws": "intelligent_tiering",
+      "gcp": "standard",
+      "degree": "wider",
+      "scope": [
+        "storage_time"
+      ],
+      "comment": "GCP Autoclass automatically transitions objects without an additional monitoring charge; standard is the baseline tier.",
+      "decided_by": "human",
+      "decided_on": "2026-03-11"
+    }
+  ]
+}

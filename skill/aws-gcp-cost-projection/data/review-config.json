@@ -8,6 +8,10 @@
   "max_unit_multiplier_vcpu": 512,
   "max_unit_multiplier_ram_gb": 8192,
 
+  "_comment_catalog": "GCP SKU catalog staleness thresholds. Consolidated source of truth.",
+  "catalog_refresh_after_days": 7,
+  "catalog_max_build_age_days": 14,
+
   "_comment_outliers": "All thresholds used by detect_outliers.py AND outlier_gate.py. Change here; no Python edits needed.",
 
   "_comment_backcheck": "Back-check bounds used by Phase 2 agents (see phases/02-mapping/_shared.md).",

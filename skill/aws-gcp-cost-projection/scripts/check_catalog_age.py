@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 check_catalog_age.py — Auto-refresh GCP SKU catalog if it is more than 1 year old.
 
@@ -20,19 +20,64 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from datetime import datetime, timezone
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config_loader import load_data_config
+
 SKILL_DIR = os.environ.get("SKILL_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPTS_DIR = os.path.join(SKILL_DIR, "scripts")
 META_PATH   = os.path.join(SKILL_DIR, "data", "CATALOG_META.json")
 
-REFRESH_DAYS = 7
+_REVIEW_CONFIG = load_data_config("review-config")
+REFRESH_DAYS = _REVIEW_CONFIG.get("catalog_refresh_after_days", 7)
+DEFAULT_MAX_BUILD_AGE_DAYS = _REVIEW_CONFIG.get("catalog_max_build_age_days", 14)
 
 
-def _days_since(iso: str) -> float:
+def _days_since(iso: str) -> int:
     ts = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-    return (datetime.now(timezone.utc) - ts).days
+    return int((datetime.now(timezone.utc) - ts).total_seconds() / 86400)
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Check or assert freshness of GCP SKU catalog")
+    parser.add_argument("--assert-fresh", action="store_true", help="Assert catalog freshness and exit non-zero if stale or missing")
+    parser.add_argument("--max-age-days", type=int, default=DEFAULT_MAX_BUILD_AGE_DAYS, help=f"Max allowed age in days when --assert-fresh is used (default {DEFAULT_MAX_BUILD_AGE_DAYS})")
+    parser.add_argument("db_path", nargs="?", default=None, help="Optional DB path")
+    args = parser.parse_args()
+
+    if args.assert_fresh:
+        if not os.path.exists(META_PATH):
+            print(f"ERROR: CATALOG_META.json not found at {META_PATH}.\nUnknown age is not fresh.\nRun: bash scripts/refresh-catalog.sh and commit the updated data.", file=sys.stderr)
+            sys.exit(1)
+        try:
+            with open(META_PATH, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        except Exception as e:
+            print(f"ERROR: CATALOG_META.json at {META_PATH} is unparseable: {e}\nUnknown age is not fresh.\nRun: bash scripts/refresh-catalog.sh and commit the updated data.", file=sys.stderr)
+            sys.exit(1)
+
+        fetched_at = meta.get("fetched_at", "")
+        if not fetched_at:
+            print(f"ERROR: CATALOG_META.json has no 'fetched_at' field.\nUnknown age is not fresh.\nRun: bash scripts/refresh-catalog.sh and commit the updated data.", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            age_days = _days_since(fetched_at)
+        except Exception as e:
+            print(f"ERROR: Invalid 'fetched_at' date '{fetched_at}': {e}\nRun: bash scripts/refresh-catalog.sh and commit the updated data.", file=sys.stderr)
+            sys.exit(1)
+
+        if age_days > args.max_age_days:
+            print(
+                f"ERROR: GCP SKU catalog is STALE (fetched_at={fetched_at}, {age_days} days old, max allowed is {args.max_age_days} days).\n"
+                f"To fix: run 'bash scripts/refresh-catalog.sh' and commit the updated data/skus/ and data/CATALOG_META.json.",
+                file=sys.stderr
+            )
+            sys.exit(1)
+
+        print(f"GCP SKU catalog is fresh (fetched_at={fetched_at}, {age_days} days old, max={args.max_age_days})")
+        sys.exit(0)
+
     # Determine GCP region from env (set by orchestrate.go) or default
     gcp_region = os.environ.get("GCP_REGION", "us-central1")
 

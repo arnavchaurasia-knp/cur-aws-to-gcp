@@ -138,7 +138,7 @@ func TestSpawner_StopAllBlocksStart(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "STOP_ALL"), []byte("halt"), 0644))
 	require.True(t, jobs.IsStopAllActive(dataDir))
 
-	_, err := s.Start(jobDir, ".csv", "")
+	_, _, err := s.Start(jobDir, ".csv", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "STOP_ALL")
 }

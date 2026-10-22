@@ -272,7 +272,7 @@
       "gcp_service": "Cloud Run Functions",
       "mode": "keep",
       "confidence": 85,
-      "reason": "FaaS -> Cloud Run Functions (per invocation + GB-second memory). Priced deterministically against real Cloud Run Functions rates where the bill format permits; otherwise resolved case-by-case with GCP billing catalog constraints."
+      "reason": "FaaS -> Cloud Run Functions (per invocation + GB-second memory & CPU components derived from the memory:vCPU ratio). Priced deterministically against real Cloud Run Functions rates where the bill format permits; otherwise resolved case-by-case with GCP billing catalog constraints."
     },
     {
       "match": "elasticache",

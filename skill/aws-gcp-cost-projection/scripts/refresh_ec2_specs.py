@@ -96,6 +96,18 @@ def _parse_storage(storage: str) -> float | None:
     return None
 
 
+def _parse_storage_media(storage: str) -> str | None:
+    """'24 x 14000 HDD' -> 'hdd'; '2 x 1900 NVMe SSD' -> 'nvme'."""
+    s = (storage or "").lower()
+    if not s or "ebs only" in s:
+        return None
+    if "hdd" in s:
+        return "hdd"
+    if "nvme" in s or "ssd" in s:
+        return "nvme"
+    return None
+
+
 def _stream_products(fh):
     """Yield each product dict from the price-list JSON's "products" map."""
     import ijson
@@ -145,6 +157,7 @@ def build(region: str = "us-east-1", offline: str | None = None) -> dict:
                                 vcpus = int(float(vcpu))
                                 if itype not in specs:
                                     st_gb = _parse_storage(attrs.get("storage", ""))
+                                    st_media = _parse_storage_media(attrs.get("storage", ""))
                                     spec_entry = {
                                         "vcpus": vcpus,
                                         "ram_gb": ram,
@@ -153,6 +166,8 @@ def build(region: str = "us-east-1", offline: str | None = None) -> dict:
                                     }
                                     if st_gb:
                                         spec_entry["storage_gb"] = st_gb
+                                    if st_media:
+                                        spec_entry["storage_media"] = st_media
                                     specs[itype] = spec_entry
                             except ValueError:
                                 pass

@@ -22,6 +22,11 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import duckdb
+try:
+    from diagnostics import diag, WARN
+except (ImportError, ModuleNotFoundError):  # pragma: no cover
+    def diag(*a, **k): pass
+    WARN = "warn"
 
 
 def _safe_path(base: str, *parts: str) -> str:
@@ -82,6 +87,14 @@ def process_database(db_path: str) -> tuple[int, int]:
     with open(out_path_comm, "w", encoding="utf-8") as f:
         json.dump(commitment_mappings, f, indent=2)
     print(f"Wrote {len(commitment_mappings)} commitment_discount ignore rows → {out_path_comm}")
+
+    # Diag: catalog has commitment_discount rows but mappings file is empty
+    commitment_cost = sum(float(r[3] or 0.0) for r in commitment_rows)
+    if len(commitment_rows) > 0 and len(commitment_mappings) == 0:
+        diag(WARN, "commitment_rows_unclaimed", "apply_commitment_ignores.py",
+             f"{len(commitment_rows)} commitment_discount row(s) (${commitment_cost:,.2f}) have no mapping",
+             rows=len(commitment_rows), usd=commitment_cost,
+             detail={"mechanic_group": "commitment_discount", "catalog_rows": len(commitment_rows), "mapped_rows": 0})
 
     negative_mappings = []
     for r in negative_rows:

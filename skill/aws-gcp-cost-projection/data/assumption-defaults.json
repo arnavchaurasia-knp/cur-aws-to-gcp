@@ -1,0 +1,18 @@
+{
+  "_meta": {
+    "description": "Committed default values for pricing assumptions. Used as fallback when no per-job assumptions.json snapshot exists (local runs, older jobs). Values match the code's original hardcoded constants so projections are byte-identical before and after this work order.",
+    "maintained_by": "LLM agent — update here when an assumption's default changes; the admin UI can override per-job via assumptions.json"
+  },
+  "values": {
+    "glue_dpu_vcpu": 4.0,
+    "glue_dpu_ram_gib": 16.0,
+    "looker_studio_pro_seat_usd": 9.0,
+    "aurora_acu_vcpu": 2.0,
+    "aurora_acu_ram_gib": 16.0,
+    "lambda_mb_per_vcpu": 1769.0,
+    "aws_ri_1yr_discount_pct": 0.38,
+    "aws_ri_3yr_discount_pct": 0.52,
+    "aws_sp_discount_pct": 0.30,
+    "aws_spot_discount_pct": 0.70
+  }
+}

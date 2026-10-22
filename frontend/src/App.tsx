@@ -5,6 +5,8 @@ import { JobStatus } from './pages/JobStatus'
 import { AdminJobs } from './pages/AdminJobs'
 import { AdminUsers } from './pages/AdminUsers'
 import { AdminCatalog } from './pages/AdminCatalog'
+import { AdminAssumptions } from './pages/AdminAssumptions'
+import { AdminReportSettings } from './pages/AdminReportSettings'
 import { AdminAudit } from './pages/AdminAudit'
 import { AdminAnalytics } from './pages/AdminAnalytics'
 import { SharedReport } from './pages/SharedReport'
@@ -57,6 +59,8 @@ export default function App() {
         <Route path="/admin" element={user && isFacetsUser ? <AdminJobs user={user} /> : <Navigate to="/" />} />
         <Route path="/admin/users" element={user && isFacetsUser ? <AdminUsers user={user} /> : <Navigate to="/" />} />
         <Route path="/admin/catalog" element={user && isFacetsUser ? <AdminCatalog user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin/assumptions" element={user && isFacetsUser ? <AdminAssumptions user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin/report-settings" element={user && isFacetsUser ? <AdminReportSettings user={user} /> : <Navigate to="/" />} />
         <Route path="/admin/audit" element={user && isFacetsUser ? <AdminAudit user={user} /> : <Navigate to="/" />} />
         <Route path="/admin/analytics" element={user && isFacetsUser ? <AdminAnalytics user={user} /> : <Navigate to="/" />} />
         <Route path="/reports/:token" element={<SharedReport />} />

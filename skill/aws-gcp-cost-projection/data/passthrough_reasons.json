@@ -25,6 +25,16 @@
       "label": "Policy: review",
       "description": "data/service_map.json declares mode='review' for this service."
     },
+    "family_not_available_in_region": {
+      "kind": "intentional",
+      "label": "Family not available in region",
+      "description": "GCP does not offer this instance family in this region, but does offer it elsewhere."
+    },
+    "no_rate_in_region": {
+      "kind": "intentional",
+      "label": "No rate in region",
+      "description": "A GCP SKU was identified, but no rate is reachable in this region or global fallback."
+    },
     "unresolved_sku": {
       "kind": "defect",
       "label": "No SKU resolved",

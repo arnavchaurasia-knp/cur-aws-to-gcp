@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "description": "Committed default values for report customization toggles. Used as fallback when no per-job report-settings.json snapshot exists (local runs, older jobs). Values match the seeded defaults so reports are byte-identical before and after this work order.",
+    "maintained_by": "LLM agent \u00e2\u20ac\u201d update here when a default toggle changes; the admin UI can override per-job via report-settings.json"
+  },
+  "values": {
+    "col_gcp_cud_1yr": "true",
+    "col_gcp_cud_3yr": "true",
+    "col_diff": "true",
+    "col_line_items": "false",
+    "col_region": "false",
+    "section_discounts": "true",
+    "section_wins_losses": "true",
+    "section_assumptions": "false",
+    "section_data_gaps": "false",
+    "row_min_cost_usd": "0",
+    "col_pct_of_aws": "true"
+  }
+}

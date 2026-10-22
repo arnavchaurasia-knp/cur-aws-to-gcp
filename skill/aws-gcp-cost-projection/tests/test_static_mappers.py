@@ -52,8 +52,8 @@ from apply_static_mappings import (
     map_guardduty, map_redshift, map_athena, map_kinesis,
     map_efs, map_fsx, map_xray, map_emr, map_compute_windows, map_compute_arm,
     map_compute_burstable, map_flat_hourly,
-    map_rds_extended_support,
-    _emr_vcpus,
+    map_rds_extended_support, map_shield, months_covered,
+    _emr_vcpus, map_lambda, map_commitment_discount, main as apply_static_mappings_main,
 )
 
 
@@ -1001,3 +1001,380 @@ def test_composer_no_live_signal_falls_back_to_phantom_table(monkeypatch):
     monkeypatch.setattr(_asm, "_live_composer_region_available", lambda region: None)
     assert _asm._family_phantom_unavailable(
         "Cloud Composer", "x", "asia-south2") is True
+
+
+# ---------------------------------------------------------------------------
+# Monthly fee dedup & billing month coverage
+# ---------------------------------------------------------------------------
+
+def test_waf_enrollment_priced_once_per_month():
+    rows = [
+        row(product="AWS WAF", usage_type="AMR-BotControl", operation="Bot Control managed rule group",
+            billing_month="2026-01", aws_amortized_cost=10.0),
+        row(product="AWS WAF", usage_type="AMR-BotControl", operation="Bot Control managed rule group",
+            billing_month="2026-02", aws_amortized_cost=10.0),
+        row(product="AWS WAF", usage_type="AMR-BotControl", operation="Bot Control managed rule group",
+            billing_month="2026-03", aws_amortized_cost=10.0),
+    ]
+    out = _with_sku(map_flat_hourly, rows)
+    assert len(out) == 3
+    priced = [r for r in out if r["strategy"] == "map"]
+    assert len(priced) == 3
+    for p in priced:
+        assert p["gcp_sku_name"] == _asm.GCP_CLOUD_ARMOR_ENTERPRISE_ENROLLMENT
+
+
+def test_waf_enrollment_deduped_within_a_month():
+    rows = [
+        row(product="AWS WAF", usage_type="AMR-BotControl", operation="Bot Control managed rule group",
+            billing_month="2026-01", aws_amortized_cost=10.0),
+        row(product="AWS WAF", usage_type="AMR-FraudControl", operation="Fraud Control managed rule group",
+            billing_month="2026-01", aws_amortized_cost=10.0),
+        row(product="AWS WAF", usage_type="AMR-AntiDDoS", operation="Anti-DDoS managed rule group",
+            billing_month="2026-01", aws_amortized_cost=10.0),
+    ]
+    out = _with_sku(map_flat_hourly, rows)
+    assert len(out) == 3
+    priced = [r for r in out if r["strategy"] == "map"]
+    zeroed = [r for r in out if r["strategy"] == "ignore"]
+    assert len(priced) == 1
+    assert len(zeroed) == 2
+    assert priced[0]["gcp_sku_name"] == _asm.GCP_CLOUD_ARMOR_ENTERPRISE_ENROLLMENT
+    for z in zeroed:
+        assert "already priced for month 2026-01" in z["projection_note"]
+
+
+def test_shield_priced_once_per_month():
+    # 1. Multi-month: 3 distinct months -> 3 priced rows
+    rows_multi = [
+        row(product="AWS Shield", usage_type="Monthly-Fee", operation="Advanced subscription",
+            billing_month="2026-01", aws_amortized_cost=3000.0),
+        row(product="AWS Shield", usage_type="Monthly-Fee", operation="Advanced subscription",
+            billing_month="2026-02", aws_amortized_cost=3000.0),
+        row(product="AWS Shield", usage_type="Monthly-Fee", operation="Advanced subscription",
+            billing_month="2026-03", aws_amortized_cost=3000.0),
+    ]
+    out_multi = _with_sku(map_shield, rows_multi)
+    assert len(out_multi) == 3
+    assert all(r["strategy"] == "map" for r in out_multi)
+
+    # 2. Same month: 2 rows in 2026-01 -> 1 priced, 1 zeroed
+    rows_same = [
+        row(product="AWS Shield", usage_type="Monthly-Fee", operation="Advanced subscription",
+            billing_month="2026-01", aws_amortized_cost=3000.0),
+        row(product="AWS Shield", usage_type="Monthly-Fee", operation="Advanced subscription",
+            billing_month="2026-01", aws_amortized_cost=3000.0),
+    ]
+    out_same = _with_sku(map_shield, rows_same)
+    assert len(out_same) == 2
+    priced = [r for r in out_same if r["strategy"] == "map"]
+    zeroed = [r for r in out_same if r["strategy"] == "ignore"]
+    assert len(priced) == 1
+    assert len(zeroed) == 1
+    assert "already priced for month 2026-01" in zeroed[0]["projection_note"]
+
+
+def test_blank_month_fee_carries_unknown_note():
+    # WAF enrollment with blank month
+    waf_rows = [
+        row(product="AWS WAF", usage_type="AMR-BotControl", operation="Bot Control managed rule group",
+            billing_month="", aws_amortized_cost=10.0),
+    ]
+    waf_out = _with_sku(map_flat_hourly, waf_rows)
+    assert len(waf_out) == 1
+    assert waf_out[0]["strategy"] == "map"
+    assert "month unknown" in waf_out[0]["projection_note"]
+
+    # Shield subscription with blank month
+    shield_rows = [
+        row(product="AWS Shield", usage_type="Monthly-Fee", operation="Advanced subscription",
+            billing_month="", aws_amortized_cost=3000.0),
+    ]
+    shield_out = _with_sku(map_shield, shield_rows)
+    assert len(shield_out) == 1
+    assert shield_out[0]["strategy"] == "map"
+    assert "month unknown" in shield_out[0]["projection_note"]
+
+
+def test_months_covered_distinguishes_unknown():
+    assert months_covered([]) == (1, False)
+    assert months_covered([{"billing_month": ""}]) == (1, False)
+    assert months_covered([{"billing_month": ""}, {"billing_month": ""}]) == (1, False)
+    assert months_covered([{"billing_month": "2026-01"}]) == (1, True)
+    assert months_covered([{"billing_month": "2026-01"}, {"billing_month": "2026-02"}]) == (2, True)
+    assert months_covered([{"billing_month": "2026-01"}, {"billing_month": "2026-01"}]) == (1, True)
+
+
+# ---------------------------------------------------------------------------
+# Lambda -> Cloud Run Functions
+# ---------------------------------------------------------------------------
+
+def test_lambda_gb_seconds_emits_memory_and_cpu():
+    """One GB-second row yields two components: memory and cpu."""
+    rows = [row(product="AWS Lambda", usage_type="APS3-Lambda-GB-Second-ARM",
+                operation="", unit="Lambda-GB-Second", gcp_region="asia-south2")]
+    out = map_lambda(rows)
+    assert len(out) == 2
+    comps = {r["component"]: r for r in out}
+    assert "memory" in comps
+    assert "cpu" in comps
+    assert comps["memory"]["gcp_service"] == "Cloud Run Functions"
+    assert comps["cpu"]["gcp_service"] == "Cloud Run Functions"
+    assert comps["memory"]["unit_multiplier"] == 1.0
+    assert comps["memory"]["break_down"] is True
+    assert comps["cpu"]["break_down"] is True
+
+
+def test_lambda_cpu_multiplier_from_assumption():
+    """CPU multiplier equals 1 / (lambda_mb_per_vcpu / 1024); changing assumption changes it."""
+    import apply_static_mappings
+    rows = [row(product="AWS Lambda", usage_type="Lambda-GB-Second",
+                operation="", unit="Lambda-GB-Second", gcp_region="us-central1")]
+
+    # Default 1769.0 MB
+    with patch.object(apply_static_mappings, "_LAMBDA_MB_PER_VCPU", 1769.0):
+        out = map_lambda(rows)
+        cpu = next(r for r in out if r["component"] == "cpu")
+        expected_default = 1.0 / (1769.0 / 1024.0)
+        assert abs(cpu["unit_multiplier"] - expected_default) < 1e-6
+
+    # Custom assumption: 2048.0 MB -> 1 vCPU per 2048 MB = 0.5 multiplier
+    with patch.object(apply_static_mappings, "_LAMBDA_MB_PER_VCPU", 2048.0):
+        out = map_lambda(rows)
+        cpu = next(r for r in out if r["component"] == "cpu")
+        expected_custom = 1.0 / (2048.0 / 1024.0)  # 0.5
+        assert abs(cpu["unit_multiplier"] - expected_custom) < 1e-6
+
+
+def test_lambda_skus_exclude_min_instance_and_1st_gen():
+    """Resolved SKU descriptions must contain neither Min-Instance nor 1st Gen."""
+    rows = [row(product="AWS Lambda", usage_type="APS3-Lambda-GB-Second",
+                operation="", unit="Lambda-GB-Second", gcp_region="asia-south2")]
+    out = map_lambda(rows)
+    assert len(out) == 2
+    for r in out:
+        assert r["strategy"] == "map"
+        sku_name = r.get("gcp_sku_name") or ""
+        assert "min-instance" not in sku_name.lower()
+        assert "min instance" not in sku_name.lower()
+        assert "1st gen" not in sku_name.lower()
+
+
+def test_lambda_cpu_and_memory_same_region():
+    """Both components resolve in the exact same gcp_region."""
+    region = "europe-west1"
+    rows = [row(product="AWS Lambda", usage_type="EUW1-Lambda-GB-Second",
+                operation="", unit="Lambda-GB-Second", gcp_region=region)]
+    out = map_lambda(rows)
+    assert len(out) == 2
+    assert all(r["gcp_region"] == region for r in out)
+    assert all(r["strategy"] == "map" for r in out)
+
+
+def test_lambda_requests_not_priced_as_compute():
+    """A requests/invocation row does not produce memory or cpu components."""
+    rows = [row(product="AWS Lambda", usage_type="APS3-Requests",
+                operation="", unit="Requests", gcp_region="asia-south2")]
+    out = map_lambda(rows)
+    assert len(out) == 1
+    assert out[0]["component"] == "requests"
+    assert out[0]["gcp_service"] == "Cloud Run Functions"
+    assert out[0]["strategy"] == "map"
+    assert "invocations" in (out[0].get("gcp_sku_name") or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Commitment discounts & query alignment
+# ---------------------------------------------------------------------------
+
+def test_commitment_guard_sees_line_item_type(tmp_path):
+    """A row dict built by the real query path has a non-empty line_item_type,
+    and map_commitment_discount accepts a SavingsPlanRecurringFee row."""
+    import duckdb
+    db_file = str(tmp_path / "test.duckdb")
+    con = duckdb.connect(db_file)
+    con.execute("""
+        CREATE TABLE aws_li_catalog (
+            aws_li_key VARCHAR PRIMARY KEY,
+            mechanic_group VARCHAR,
+            product VARCHAR,
+            usage_type VARCHAR,
+            pricing_unit VARCHAR,
+            aws_amortized_cost DOUBLE,
+            aws_region VARCHAR,
+            gcp_region VARCHAR,
+            operation VARCHAR,
+            volume_type VARCHAR,
+            total_usage DOUBLE,
+            instance_type VARCHAR,
+            instance_ram_gb DOUBLE,
+            deployment_option VARCHAR,
+            database_engine VARCHAR,
+            pricing_model VARCHAR,
+            product_code VARCHAR,
+            instance_vcpus DOUBLE,
+            operating_system VARCHAR,
+            license_model VARCHAR,
+            line_item_type VARCHAR
+        );
+        INSERT INTO aws_li_catalog VALUES (
+            'sp_key_1', 'commitment_discount', 'Savings Plans for AWS Compute usage',
+            'aps3-ec2sp:m6a.1yrnoupfront', 'Hrs', 100.0, 'ap-south-1', 'asia-south1',
+            '', '', 1.0, '', 0.0, '', '', 'Committed', 'AWSSavingsPlan', 0.0,
+            '', '', 'SavingsPlanRecurringFee'
+        );
+    """)
+
+    catalog_cols = {c[1].lower() for c in con.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+    _pc_expr = "product_code" if "product_code" in catalog_cols else "NULL AS product_code"
+    _vcpu_expr = "instance_vcpus" if "instance_vcpus" in catalog_cols else "NULL AS instance_vcpus"
+    _os_expr = "operating_system" if "operating_system" in catalog_cols else "NULL AS operating_system"
+    _lic_expr = "license_model" if "license_model" in catalog_cols else "NULL AS license_model"
+
+    rows = con.execute(f"""
+        SELECT aws_li_key, mechanic_group, product, usage_type, pricing_unit AS unit,
+               aws_amortized_cost, aws_region AS region, gcp_region, operation, volume_type,
+               total_usage, instance_type, instance_ram_gb, deployment_option, database_engine,
+               pricing_model, {_pc_expr}, {_vcpu_expr}, {_os_expr}, {_lic_expr}, line_item_type
+        FROM aws_li_catalog
+    """).fetchall()
+    con.close()
+
+    cols = ["aws_li_key", "mechanic_group", "product", "usage_type", "unit",
+            "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type",
+            "total_usage", "instance_type", "instance_ram_gb", "deployment_option", "database_engine",
+            "pricing_model", "product_code", "instance_vcpus", "operating_system", "license_model", "line_item_type"]
+
+    assert len(cols) == len(rows[0])
+    row_dict = dict(zip(cols, rows[0]))
+    assert row_dict["line_item_type"] == "SavingsPlanRecurringFee"
+
+    mapped, llm = map_commitment_discount([row_dict])
+    assert len(mapped) == 1
+    assert len(llm) == 0
+    assert mapped[0]["strategy"] == "ignore"
+
+
+def test_mapper_row_dict_fields_aligned(tmp_path):
+    """Positional-zip alignment guard: ensure region holds region and instance_type holds instance_type."""
+    import duckdb
+    db_file = str(tmp_path / "test_align.duckdb")
+    con = duckdb.connect(db_file)
+    con.execute("""
+        CREATE TABLE aws_li_catalog (
+            aws_li_key VARCHAR PRIMARY KEY,
+            mechanic_group VARCHAR,
+            product VARCHAR,
+            usage_type VARCHAR,
+            pricing_unit VARCHAR,
+            aws_amortized_cost DOUBLE,
+            aws_region VARCHAR,
+            gcp_region VARCHAR,
+            operation VARCHAR,
+            volume_type VARCHAR,
+            total_usage DOUBLE,
+            instance_type VARCHAR,
+            instance_ram_gb DOUBLE,
+            deployment_option VARCHAR,
+            database_engine VARCHAR,
+            pricing_model VARCHAR,
+            product_code VARCHAR,
+            instance_vcpus DOUBLE,
+            operating_system VARCHAR,
+            license_model VARCHAR,
+            line_item_type VARCHAR
+        );
+        INSERT INTO aws_li_catalog VALUES (
+            'align_key_1', 'compute_breakdown', 'Amazon Elastic Compute Cloud',
+            'BoxUsage:m5.xlarge', 'Hrs', 50.0, 'ap-south-1', 'asia-south1',
+            'RunInstances', '', 100.0, 'm5.xlarge', 16.0, '', '', 'OnDemand',
+            'AmazonEC2', 4.0, 'Linux', 'No License required', 'Usage'
+        );
+    """)
+
+    catalog_cols = {c[1].lower() for c in con.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+    _pc_expr = "product_code" if "product_code" in catalog_cols else "NULL AS product_code"
+    _vcpu_expr = "instance_vcpus" if "instance_vcpus" in catalog_cols else "NULL AS instance_vcpus"
+    _os_expr = "operating_system" if "operating_system" in catalog_cols else "NULL AS operating_system"
+    _lic_expr = "license_model" if "license_model" in catalog_cols else "NULL AS license_model"
+
+    rows = con.execute(f"""
+        SELECT aws_li_key, mechanic_group, product, usage_type, pricing_unit AS unit,
+               aws_amortized_cost, aws_region AS region, gcp_region, operation, volume_type,
+               total_usage, instance_type, instance_ram_gb, deployment_option, database_engine,
+               pricing_model, {_pc_expr}, {_vcpu_expr}, {_os_expr}, {_lic_expr}, line_item_type
+        FROM aws_li_catalog
+    """).fetchall()
+    con.close()
+
+    cols = ["aws_li_key", "mechanic_group", "product", "usage_type", "unit",
+            "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type",
+            "total_usage", "instance_type", "instance_ram_gb", "deployment_option", "database_engine",
+            "pricing_model", "product_code", "instance_vcpus", "operating_system", "license_model", "line_item_type"]
+
+    row_dict = dict(zip(cols, rows[0]))
+    assert row_dict["aws_li_key"] == "align_key_1"
+    assert row_dict["mechanic_group"] == "compute_breakdown"
+    assert row_dict["region"] == "ap-south-1"
+    assert row_dict["gcp_region"] == "asia-south1"
+    assert row_dict["operation"] == "RunInstances"
+    assert row_dict["instance_type"] == "m5.xlarge"
+    assert row_dict["instance_vcpus"] == 4.0
+    assert row_dict["operating_system"] == "Linux"
+    assert row_dict["license_model"] == "No License required"
+    assert row_dict["line_item_type"] == "Usage"
+
+
+def test_empty_mapper_result_does_not_clobber(tmp_path, monkeypatch):
+    """An existing non-empty commitment_discount_mappings.json survives a mapper run that yields no rows."""
+    import duckdb
+    import json
+    audit_dir = tmp_path / "projection-audit"
+    mappings_dir = audit_dir / "mappings"
+    mappings_dir.mkdir(parents=True)
+    db_file = str(audit_dir / "projection.duckdb")
+
+    # Write existing non-empty commitment_discount_mappings.json (e.g. from apply_commitment_ignores.py)
+    existing_file = mappings_dir / "commitment_discount_mappings.json"
+    prior_content = [{"aws_li_key": "k1", "strategy": "ignore", "gcp_service": "N/A"}]
+    existing_file.write_text(json.dumps(prior_content, indent=2), encoding="utf-8")
+
+    # Create empty duckdb database with empty aws_li_catalog table
+    con = duckdb.connect(db_file)
+    con.execute("""
+        CREATE TABLE aws_li_catalog (
+            aws_li_key VARCHAR PRIMARY KEY,
+            mechanic_group VARCHAR,
+            product VARCHAR,
+            usage_type VARCHAR,
+            pricing_unit VARCHAR,
+            aws_amortized_cost DOUBLE,
+            aws_region VARCHAR,
+            gcp_region VARCHAR,
+            operation VARCHAR,
+            volume_type VARCHAR,
+            total_usage DOUBLE,
+            instance_type VARCHAR,
+            instance_ram_gb DOUBLE,
+            deployment_option VARCHAR,
+            database_engine VARCHAR,
+            pricing_model VARCHAR,
+            product_code VARCHAR,
+            instance_vcpus DOUBLE,
+            operating_system VARCHAR,
+            license_model VARCHAR,
+            line_item_type VARCHAR
+        );
+    """)
+    con.close()
+
+    monkeypatch.setattr("sys.argv", ["apply_static_mappings.py", db_file])
+    apply_static_mappings_main()
+
+    # Verify that existing_file still contains prior_content and was NOT overwritten by []
+    assert existing_file.exists()
+    surviving_content = json.loads(existing_file.read_text(encoding="utf-8"))
+    assert surviving_content == prior_content
+
+
+

@@ -25,6 +25,7 @@ from apply_static_mappings import (
     map_compute_breakdown,
     resolve_sku,
     family_arch,
+    _local_storage_media,
     _emit,
 )
 import apply_rates
@@ -340,6 +341,111 @@ def test_p11_family_mapper_gpu_local_ssd():
     assert len(storage_entries) == 1
     expected_mult = 125.0 / 730.0
     assert pytest.approx(storage_entries[0]["unit_multiplier"], rel=1e-3) == expected_mult
+
+
+def test_dense_hdd_storage_not_priced_as_local_ssd():
+    r_d3en = {
+        "aws_li_key": "k_d3en",
+        "instance_type": "d3en.8xlarge",
+        "instance_vcpus": 32,
+        "instance_ram_gb": 128.0,
+        "gcp_region": "us-central1",
+    }
+    parsed = fm.parse_instance("d3en.8xlarge")
+    res = fm.map_gce_row(r_d3en, parsed)
+    storage_entries = [e for e in res if e["component"] == "storage"]
+    assert len(storage_entries) == 1
+    st = storage_entries[0]
+    assert st["strategy"] == "ignore"
+    assert st["unit_multiplier"] == 0.0
+    assert "no GCP equivalent" in st["projection_note"]
+    assert st["unit_multiplier"] != (224000.0 / 730.0)
+
+
+def test_dense_hdd_cpu_and_ram_still_mapped():
+    r_d3en = {
+        "aws_li_key": "k_d3en",
+        "instance_type": "d3en.8xlarge",
+        "instance_vcpus": 32,
+        "instance_ram_gb": 128.0,
+        "gcp_region": "us-central1",
+    }
+    parsed = fm.parse_instance("d3en.8xlarge")
+    res = fm.map_gce_row(r_d3en, parsed)
+    core_entries = [e for e in res if e["component"] == "core"]
+    ram_entries = [e for e in res if e["component"] == "ram"]
+    assert len(core_entries) == 1
+    assert len(ram_entries) == 1
+    assert core_entries[0]["strategy"] == "map"
+    assert core_entries[0]["unit_multiplier"] == 32.0
+    assert ram_entries[0]["strategy"] == "map"
+    assert ram_entries[0]["unit_multiplier"] == 128.0
+
+
+def test_d2_and_h1_also_treated_as_hdd():
+    for itype in ("d2.8xlarge", "h1.16xlarge"):
+        r = {
+            "aws_li_key": f"k_{itype}",
+            "instance_type": itype,
+            "instance_vcpus": 32,
+            "instance_ram_gb": 128.0,
+            "gcp_region": "us-central1",
+        }
+        parsed = fm.parse_instance(itype)
+        res = fm.map_gce_row(r, parsed)
+        storage_entries = [e for e in res if e["component"] == "storage"]
+        assert len(storage_entries) == 1
+        assert storage_entries[0]["strategy"] == "ignore"
+        assert storage_entries[0]["unit_multiplier"] == 0.0
+
+
+def test_nvme_families_unchanged():
+    # i3en.24xlarge keeps 60000 / 730 and strategy map
+    r_i3en = {
+        "aws_li_key": "k_i3en",
+        "instance_type": "i3en.24xlarge",
+        "instance_vcpus": 96,
+        "instance_ram_gb": 768.0,
+        "gcp_region": "us-central1",
+    }
+    res_i3en = fm.map_gce_row(r_i3en, fm.parse_instance("i3en.24xlarge"))
+    st_i3en = [e for e in res_i3en if e["component"] == "storage"][0]
+    assert st_i3en["strategy"] == "map"
+    assert pytest.approx(st_i3en["unit_multiplier"], rel=1e-3) == (60000.0 / 730.0)
+
+    # im4gn.4xlarge keeps storage component mapped
+    r_im4gn = {
+        "aws_li_key": "k_im4gn",
+        "instance_type": "im4gn.4xlarge",
+        "instance_vcpus": 16,
+        "instance_ram_gb": 64.0,
+        "gcp_region": "us-central1",
+    }
+    res_im4gn = fm.map_gce_row(r_im4gn, fm.parse_instance("im4gn.4xlarge"))
+    st_im4gn = [e for e in res_im4gn if e["component"] == "storage"][0]
+    assert st_im4gn["strategy"] == "map"
+    assert st_im4gn["unit_multiplier"] > 0
+
+    # m5d.large keeps storage component mapped
+    r_m5d = {
+        "aws_li_key": "k_m5d",
+        "instance_type": "m5d.large",
+        "instance_vcpus": 2,
+        "instance_ram_gb": 8.0,
+        "gcp_region": "us-central1",
+    }
+    res_m5d = fm.map_gce_row(r_m5d, fm.parse_instance("m5d.large"))
+    st_m5d = [e for e in res_m5d if e["component"] == "storage"][0]
+    assert st_m5d["strategy"] == "map"
+    assert st_m5d["unit_multiplier"] > 0
+
+
+def test_local_storage_media_helper():
+    assert _local_storage_media("d3en.8xlarge", {"storage_gb": 224000.0}) == "hdd"
+    assert _local_storage_media("i3en.24xlarge", {"storage_gb": 60000.0}) == "nvme"
+    assert _local_storage_media("d3en.8xlarge", {"storage_media": "nvme", "storage_gb": 224000.0}) == "nvme"
+    assert _local_storage_media("t3.nano", {}) is None
+
 
 
 # ---------------------------------------------------------------------------

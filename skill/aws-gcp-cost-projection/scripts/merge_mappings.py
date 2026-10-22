@@ -36,6 +36,11 @@ from resolve_sku import (
 )
 import passthrough_reasons as _pr
 import row_state as _rs
+try:
+    from diagnostics import diag, WARN
+except (ImportError, ModuleNotFoundError):  # pragma: no cover
+    def diag(*a, **k): pass
+    WARN = "warn"
 
 # Columns that appear in a mapping record.
 # Order matches the INSERT statement.
@@ -250,6 +255,24 @@ def main() -> None:
                 valid_li_keys = {r[0] for r in con.execute("SELECT aws_li_key FROM aws_li_catalog").fetchall() if r[0]}
     except Exception as e:
         print(f"WARNING: could not query aws_li_catalog for key validation: {e}", file=sys.stderr)
+
+    # Diag: catalog rows exist for a group but no mapping file (or empty mapping)
+    catalog_rows_per_group: dict[str, int] = defaultdict(int)
+    for k, mg in li_mechanic_groups.items():
+        catalog_rows_per_group[mg] += 1
+    mapping_rows_per_group: dict[str, int] = defaultdict(int)
+    for r in raw_rows:
+        mg = r.get("mechanic_group")
+        if mg:
+            mapping_rows_per_group[mg] += 1
+    for group in sorted(set(catalog_rows_per_group.keys()) | set(missing)):
+        cat_count = catalog_rows_per_group.get(group, 0)
+        map_count = mapping_rows_per_group.get(group, 0)
+        if cat_count > 0 and map_count == 0:
+            diag(WARN, "empty_group_mappings", "merge_mappings.py",
+                 f"Group '{group}' has {cat_count} catalog row(s) but no mapping file/rows",
+                 rows=cat_count, usd=0.0,
+                 detail={"mechanic_group": group, "catalog_rows": cat_count, "mapping_rows": map_count})
 
     # Validate rows (M-2)
     clean_rows: list[dict] = []

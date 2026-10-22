@@ -34,6 +34,11 @@ try:
     from aws_normalizer import canonical_service
 except (ImportError, ModuleNotFoundError):  # pragma: no cover
     canonical_service = lambda *_a: None
+try:
+    from diagnostics import diag, WARN
+except (ImportError, ModuleNotFoundError):  # pragma: no cover
+    def diag(*a, **k): pass
+    WARN = "warn"
 
 _svc_cfg = _cfg("service-classification")
 
@@ -1671,6 +1676,7 @@ def main():
     print(f"\n{'mechanic_group':<25} {'rows':>8}  {'% rows':>8}  {'spend_usd':>14}  {'% spend':>8}")
     print("-" * 70)
     misc_spend = 0.0
+    misc_rows_count = 0
     misc_rows: list[dict] = []
     for group, row_count, group_spend in stats:
         pct_rows = 100.0 * row_count / total_rows if total_rows else 0.0
@@ -1678,9 +1684,17 @@ def main():
         print(f"{group:<25} {row_count:>8}  {pct_rows:>7.1f}%  {group_spend:>14,.2f}  {pct_spend:>7.1f}%")
         if group == "misc":
             misc_spend = group_spend
+            misc_rows_count = row_count
 
     print("-" * 70)
     print(f"{'TOTAL':<25} {total_rows:>8}  {'100.0%':>8}  {total_spend:>14,.2f}  {'100.0%':>8}")
+
+    # Diag: misc-spend rows with no deterministic mapping
+    if misc_rows_count > 0:
+        diag(WARN, "unmapped_misc_spend", "classify_mechanics.py",
+             f"{misc_rows_count} row(s) landed in misc with no deterministic mapping",
+             rows=misc_rows_count, usd=misc_spend,
+             detail={"mechanic_group": "misc", "pct_of_spend": round(100.0 * misc_spend / total_spend, 2) if total_spend else 0.0})
 
     # --- Data-gap report: known service, but the bill lacks charge-type detail ---
     # These rows are NOT a classification failure — the source bill rolled them up

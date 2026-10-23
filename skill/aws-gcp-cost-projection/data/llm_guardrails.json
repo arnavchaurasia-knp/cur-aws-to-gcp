@@ -9,7 +9,6 @@
     "When you cannot derive a fair GCP price, set strategy='passthrough' at the AWS cost — EXACTLY ONE row, break_down=false. Never split a passthrough into core/ram/components (N components = N x cost).",
     "passthrough is never silent: in projection_note state the row is carried at AWS cost and is NOT a real GCP estimate.",
     "Every mapped row's projection_note must cite the mechanism or assumption used.",
-    "Set mapping_confidence honestly. If the row's guidance gives confidence_max, do not exceed it.",
     "Do not use web search. Do not query projection.duckdb directly. SKU lookups go through scripts/find-sku.sh only.",
     "Never map an accelerator / GPU / specialized-silicon row (Inferentia, Trainium, p/g/vt families) to a general-purpose CPU VM — that hides the architecture change. Passthrough + manual review instead.",
     "Never invent instance counts, replication factors, disk sizes, node counts, or any quantity not present in the row or its extracted footprint."

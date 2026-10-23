@@ -224,6 +224,7 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 			('section_wins_losses', 'true', 'bool', 'true', NULL, NULL, 'Where GCP wins and loses', 'Per-service winners and losers', 'sections', 2),
 			('section_assumptions', 'false', 'bool', 'false', NULL, NULL, 'Assumptions used', 'The assumption values this run used', 'sections', 3),
 			('section_data_gaps', 'false', 'bool', 'false', NULL, NULL, 'Data gaps', 'Rows that could not be fully priced', 'sections', 4),
+			('section_coverage', 'true', 'bool', 'true', NULL, NULL, 'Coverage statement', 'Customer-facing line stating what share of workload spend was priced against a specific GCP SKU', 'sections', 5),
 			-- group 'rows' (number)
 			('row_min_cost_usd', '0', 'number', '0', 0.0, 1000000.0, 'Hide rows below this cost', 'Rows cheaper than this are not listed. Totals still include them.', 'rows', 1)
 	`); err != nil {
@@ -235,6 +236,11 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 
 func (d *DB) Close() error {
 	return d.conn.Close()
+}
+
+// ExecForTest executes arbitrary SQL (test helper only).
+func (d *DB) ExecForTest(query string, args ...interface{}) (sql.Result, error) {
+	return d.conn.Exec(query, args...)
 }
 
 // Assumption represents a single pricing assumption row.

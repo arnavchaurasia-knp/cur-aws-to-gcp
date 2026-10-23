@@ -10,7 +10,7 @@ import html as _html
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from log_utils import get_logger, fatal
 from currency_utils import load_currency_info
-from config_loader import load_report_settings
+from config_loader import load_report_settings, load_data_config
 
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
@@ -18,6 +18,11 @@ log = get_logger("render_report")
 
 # ── Report customization settings ─────────────────────────────────────────────
 _RS = load_report_settings(JOB_DIR)
+
+try:
+    _PT_REASONS = load_data_config("passthrough_reasons.json").get("reasons", {})
+except Exception:
+    _PT_REASONS = {}
 
 
 def rs_bool(key: str, default: bool = True) -> bool:
@@ -1773,6 +1778,81 @@ def main():
 
     # Gated by the section_wins_losses report setting. The tables above are
     # still computed either way — hiding a section must never change a number.
+    # Customer-facing coverage statement, gated by the section_coverage report
+    # setting. Deliberately neutral: it says how much workload spend was priced
+    # against a specific GCP SKU and why the rest is carried at AWS cost.
+    # Only INTENTIONAL passthrough reasons are named. Defect reasons
+    # (unresolved_sku, llm_dropped, ...) are our problem, not the reader's --
+    # they belong in the admin Job Health panel and never in a customer report.
+    coverage_block = ""
+    if rs_bool("section_coverage", True):
+        try:
+            _cov = conn.execute("""
+                WITH per_key AS (
+                    SELECT c.aws_li_key,
+                           ANY_VALUE(c.aws_amortized_cost) AS aws,
+                           MAX(CASE WHEN m.strategy IN ('map','break_down') THEN 1 ELSE 0 END) AS has_map,
+                           MAX(CASE WHEN m.strategy = 'passthrough' THEN 1 ELSE 0 END) AS has_pt
+                    FROM aws_li_catalog c
+                    LEFT JOIN aws_li_to_gcp_li m USING (aws_li_key)
+                    WHERE c.is_workload
+                    GROUP BY c.aws_li_key)
+                SELECT COALESCE(SUM(aws), 0),
+                       COALESCE(SUM(CASE WHEN has_map = 1 THEN aws END), 0),
+                       COALESCE(SUM(CASE WHEN has_map = 0 AND has_pt = 1 THEN aws END), 0)
+                FROM per_key
+            """).fetchone()
+            _tot, _mapped, _pt = (float(x or 0.0) for x in _cov)
+            if _tot > 0:
+                _pct = _mapped / _tot * 100.0
+                _reasons = conn.execute("""
+                    WITH per_key AS (
+                        SELECT c.aws_li_key,
+                               ANY_VALUE(c.aws_amortized_cost) AS aws,
+                               ANY_VALUE(m.passthrough_reason) AS reason,
+                               MAX(CASE WHEN m.strategy IN ('map','break_down') THEN 1 ELSE 0 END) AS has_map
+                        FROM aws_li_catalog c
+                        LEFT JOIN aws_li_to_gcp_li m USING (aws_li_key)
+                        WHERE c.is_workload AND m.strategy = 'passthrough'
+                        GROUP BY c.aws_li_key)
+                    SELECT reason, SUM(aws) FROM per_key
+                    WHERE has_map = 0 AND reason IS NOT NULL
+                    GROUP BY reason ORDER BY 2 DESC
+                """).fetchall()
+                _named = []
+                for _r, _usd in _reasons:
+                    _meta = _PT_REASONS.get(_r) or {}
+                    if _meta.get("kind") == "intentional" and _meta.get("label"):
+                        _named.append(_meta["label"].lower())
+                _why = ""
+                if _named:
+                    _uniq = list(dict.fromkeys(_named))[:3]
+                    _why = " Reasons given: " + ", ".join(_uniq) + "."
+                # Three buckets that always sum to the workload total: priced
+                # against a SKU, carried at AWS cost, and anything else. The
+                # third is stated rather than left as a silent remainder --
+                # a reader must be able to add the sentence up.
+                _other = _tot - _mapped - _pt
+                _parts = [
+                    f"{_pct:.0f}% of your AWS workload spend "
+                    f"({fmt(_mapped * aws_fx_rate)} of {fmt(_tot * aws_fx_rate)}) "
+                    "was priced against a specific GCP SKU."
+                ]
+                if _pt > 0.005:
+                    _parts.append(
+                        f"{fmt(_pt * aws_fx_rate)} is carried at its AWS cost because no "
+                        "equivalent GCP charge could be priced directly." + _why)
+                if _other > 0.005:
+                    _parts.append(
+                        f"The remaining {fmt(_other * aws_fx_rate)} is included in the "
+                        "totals above at its AWS cost.")
+                coverage_block = (
+                    '<h2>Coverage</h2>'
+                    '<p class="section-meta">' + " ".join(_parts) + '</p>'
+                )
+        except Exception as _ce:
+            log.warning(f"coverage section skipped: {_ce}")
+
     wins_losses_block = ""
     if rs_bool("section_wins_losses"):
         wins_losses_block = (
@@ -2034,6 +2114,7 @@ def main():
 </ul>
 
 {wins_losses_block}
+{coverage_block}
 {under_proj_html}
 
 <!-- ── Facets.cloud footer ── -->
@@ -2153,7 +2234,7 @@ def main():
             top_costs,
             "",
             f"### Mapping coverage",
-            f"- **{total_li:,}** AWS line items · **{avg_conf*100:.0f}%** average mapping confidence",
+            f"- **{total_li:,}** AWS line items",
             f"- Passthroughs (no GCP equivalent): {passthrough_note}",
             f"- Primary GCP region: {gcp_region_display}",
         ])

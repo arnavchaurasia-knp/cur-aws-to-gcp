@@ -143,3 +143,91 @@ func TestHealthHandler(t *testing.T) {
 		}
 	})
 }
+
+func TestSecurityHeadersCSP(t *testing.T) {
+	dummy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := securityHeaders(dummy)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	handler.ServeHTTP(rec, req)
+
+	csp := rec.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Fatal("Content-Security-Policy header is missing")
+	}
+
+	wantStyleOrigin := "https://fonts.googleapis.com"
+	if !containsDirectiveToken(csp, "style-src", wantStyleOrigin) {
+		t.Errorf("CSP style-src does not contain %s; got CSP: %s", wantStyleOrigin, csp)
+	}
+
+	wantFontOrigin := "https://fonts.gstatic.com"
+	if !containsDirectiveToken(csp, "font-src", wantFontOrigin) {
+		t.Errorf("CSP font-src does not contain %s; got CSP: %s", wantFontOrigin, csp)
+	}
+}
+
+func containsDirectiveToken(csp, directive, token string) bool {
+	for _, part := range splitSemicolons(csp) {
+		trimmed := trimSpace(part)
+		if len(trimmed) >= len(directive) && trimmed[:len(directive)] == directive {
+			for _, word := range splitSpaces(trimmed[len(directive):]) {
+				if word == token {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func splitSemicolons(s string) []string {
+	var parts []string
+	curr := ""
+	for i := 0; i < len(s); i++ {
+		if s[i] == ';' {
+			parts = append(parts, curr)
+			curr = ""
+		} else {
+			curr += string(s[i])
+		}
+	}
+	if curr != "" {
+		parts = append(parts, curr)
+	}
+	return parts
+}
+
+func splitSpaces(s string) []string {
+	var words []string
+	curr := ""
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r' {
+			if curr != "" {
+				words = append(words, curr)
+				curr = ""
+			}
+		} else {
+			curr += string(s[i])
+		}
+	}
+	if curr != "" {
+		words = append(words, curr)
+	}
+	return words
+}
+
+func trimSpace(s string) string {
+	start := 0
+	for start < len(s) && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
+		start++
+	}
+	end := len(s)
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
+		end--
+	}
+	return s[start:end]
+}

@@ -137,7 +137,7 @@
       "sql_type": "DOUBLE",
       "kind": "native",
       "writable_by": ["mapper", "llm", "pipeline"],
-      "description": "Estimated mapping confidence from 0.0 to 1.0."
+      "description": "DEPRECATED: Uncalibrated confidence score, retained for database backward-compatibility."
     },
     "is_workload": {
       "sql_type": "BOOLEAN",

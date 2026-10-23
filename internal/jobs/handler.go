@@ -4,6 +4,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -137,11 +138,20 @@ func (h *Handler) canAccess(sess *auth.Session, job *db.Job) bool {
 	return job.Owner == sess.Email || sess.IsAdmin(h.adminEmails)
 }
 
+const maxUploadBytes = 64 << 20 // 64 MiB — raise only with a measured reason.
+// The largest bill in the corpus is ~9 MB; this leaves real headroom.
+
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
-	// Limit in-memory buffer to 10 MB; anything larger streams to temporary files
-	// on disk so uploads never exceed the 512MB RAM limit on free-tier containers.
+	// Hard cap on request body size: anything larger is rejected with 413
+	// instead of spilling to disk and potentially filling the container's disk.
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) || strings.Contains(err.Error(), "too large") {
+			http.Error(w, `{"error":"upload too large: maximum `+strconv.FormatInt(maxUploadBytes, 10)+` bytes"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
 		slog.Error("ParseMultipartForm failed", "err", err)
 		http.Error(w, `{"error":"failed to parse upload: `+err.Error()+`"}`, http.StatusBadRequest)
 		return
@@ -410,7 +420,7 @@ func (h *Handler) RegenerateReport(w http.ResponseWriter, r *http.Request) {
 	}
 	values["__version__"] = version
 	snapshot := map[string]any{
-		"version":     version,
+		"version":      version,
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
 		"values":       values,
 	}

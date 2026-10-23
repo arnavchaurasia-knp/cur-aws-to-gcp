@@ -155,8 +155,7 @@ SELECT
     ROUND(gcp_1yr_cost, 2)                               AS "GCP 1yr CUD{cur_sym}",
     ROUND(gcp_3yr_cost, 2)                               AS "GCP 3yr CUD{cur_sym}",
     section                                              AS "Section",
-    COALESCE(strategy, '')                               AS "Strategy",
-    ROUND(COALESCE(mapping_confidence, 0), 2)            AS "Confidence"
+    COALESCE(strategy, '')                               AS "Strategy"
 FROM per_item
 ORDER BY raw_aws_cost DESC
 """

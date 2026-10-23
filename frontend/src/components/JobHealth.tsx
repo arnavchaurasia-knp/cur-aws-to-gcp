@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   getJobDiagnostics,
   getJobDiagnosticRecords,
   type JobDiagnosticsResponse,
   type JobDiagnosticRecord,
-  type JobDiagnosticByCode,
 } from '../api/admin'
 import { formatDollars } from '../lib/formatDollars'
 
@@ -114,50 +113,61 @@ export function JobHealth({ jobId }: Readonly<{ jobId: string }>) {
           </thead>
           <tbody>
             {sortedCodes.map(([code, info]) => (
-              <tr key={code} className="border-b border-white/5 hover:bg-white/5">
-                <td className="py-2 font-mono text-xs">{code}</td>
-                <td className="py-2 text-xs">
-                  <span
-                    className={`px-1.5 py-0.5 rounded ${
-                      info.level === 'error'
-                        ? 'bg-red-400/20 text-red-400'
-                        : 'bg-orange-400/20 text-orange-400'
-                    }`}
-                  >
-                    {info.level}
-                  </span>
-                </td>
-                <td className="py-2 text-xs text-right">{info.count}</td>
-                <td className="py-2 text-xs text-right">{info.rows}</td>
-                <td className="py-2 text-xs text-right tabular-nums text-[#00C2BB]">
-                  ${info.usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </td>
-                <td className="py-2 text-xs font-mono">
-                  {Array.isArray(info.sources) ? info.sources.join(', ') : info.sources}
-                </td>
-                <td className="py-2 text-right">
-                  <button
-                    onClick={() => setExpandedCode(expandedCode === code ? null : code)}
-                    className="px-2 py-1 rounded text-xs text-[#645DF6] hover:text-[#7d77f8] hover:bg-white/5 transition-colors"
-                  >
-                    {expandedCode === code ? 'Hide' : 'Show'}
-                  </button>
-                </td>
-              </tr>
-              {expandedCode === code && (
-                <tr>
-                  <td colSpan={7} className="p-3 bg-white/5">
-                    <div className="flex flex-col gap-2">
-                      {Object.entries(info.detail || {}).map(([k, v]) => (
-                        <div key={k} className="text-xs text-gray-300">
-                          <span className="font-semibold text-gray-400">{k}:</span>{' '}
-                          {typeof v === 'object' ? JSON.stringify(v) : String(v)}
-                        </div>
-                      ))}
-                    </div>
+              <React.Fragment key={code}>
+                <tr className="border-b border-white/5 hover:bg-white/5">
+                  <td className="py-2 font-mono text-xs">{code}</td>
+                  <td className="py-2 text-xs">
+                    <span
+                      className={`px-1.5 py-0.5 rounded ${
+                        info.level === 'error'
+                          ? 'bg-red-400/20 text-red-400'
+                          : 'bg-orange-400/20 text-orange-400'
+                      }`}
+                    >
+                      {info.level}
+                    </span>
+                  </td>
+                  <td className="py-2 text-xs text-right">{info.count}</td>
+                  <td className="py-2 text-xs text-right">{info.rows}</td>
+                  <td className="py-2 text-xs text-right tabular-nums text-[#00C2BB]">
+                    ${info.usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="py-2 text-xs font-mono">
+                    {Array.isArray(info.sources) ? info.sources.join(', ') : info.sources}
+                  </td>
+                  <td className="py-2 text-right">
+                    <button
+                      onClick={() => setExpandedCode(expandedCode === code ? null : code)}
+                      className="px-2 py-1 rounded text-xs text-[#645DF6] hover:text-[#7d77f8] hover:bg-white/5 transition-colors"
+                    >
+                      {expandedCode === code ? 'Hide' : 'Show'}
+                    </button>
                   </td>
                 </tr>
-              )}
+                {expandedCode === code && (
+                  <tr>
+                    <td colSpan={7} className="p-3 bg-white/5">
+                      <div className="flex flex-col gap-2">
+                        {records.filter(r => r.code === code).length > 0 ? (
+                          records.filter(r => r.code === code).map((r, i) => (
+                            <div key={i} className="text-xs text-gray-300 border-b border-white/5 pb-2 last:border-b-0">
+                              <div className="font-semibold text-gray-200">{r.message}</div>
+                              {r.detail && Object.entries(r.detail).map(([k, v]) => (
+                                <div key={k} className="text-gray-400 pl-2">
+                                  <span className="text-gray-500">{k}:</span>{' '}
+                                  {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                                </div>
+                              ))}
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-xs text-gray-400">No individual diagnostic records found for {code}.</div>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
             ))}
           </tbody>
         </table>

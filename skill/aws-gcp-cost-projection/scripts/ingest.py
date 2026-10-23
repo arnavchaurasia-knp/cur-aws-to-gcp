@@ -76,6 +76,108 @@ def _is_workload_py(line_item_type, *text_fields):
         return False          # authoritative enum says non-consumption
     return True
 
+def classify_charge(*, line_item_type_raw=None, product="", usage_type="",
+                    operation="", cost=0.0, category=None):
+    """Return (charge_category, line_item_type, is_workload).
+
+    charge_category follows FOCUS: 'Usage' | 'Purchase' | 'Credit' | 'Tax'.
+    One definition, used by every ingest branch.
+    When a raw line_item_type is given (authoritative from CUR), trust it.
+    """
+    cost_val = float(cost or 0.0)
+    cat_str = str(category or "")
+    prod_str = str(product or "")
+    ut_str = str(usage_type or "")
+    op_str = str(operation or "")
+    blob = f"{prod_str} {ut_str} {op_str} {cat_str}".lower()
+
+    if line_item_type_raw and str(line_item_type_raw).strip():
+        lit = str(line_item_type_raw).strip()
+    else:
+        if cost_val < 0:
+            if "covered by" in blob and "savings plan" in blob:
+                lit = "SavingsPlanCoveredUsage"
+            else:
+                lit = "Credit"
+        elif "savings plan" in blob and any(w in blob for w in ("recurring", "hourly commitment", "commitment", "upfront")):
+            lit = "SavingsPlanRecurringFee"
+        elif "savings plans" in cat_str.lower() or "savings plan" in cat_str.lower():
+            lit = "SavingsPlanRecurringFee"
+        elif "reserved instance fee" in blob or "rifee" in blob:
+            lit = "RIFee"
+        elif "reserved instance applied" in blob or "reserved instances" in blob or "reserved instance" in blob or "discountedusage" in blob:
+            lit = "DiscountedUsage"
+        elif prod_str.strip().lower() == "tax" or ut_str.strip().lower() == "tax" or op_str.strip().lower() == "tax":
+            lit = "Tax"
+        else:
+            lit = "Usage"
+
+    if lit in ("SavingsPlanRecurringFee", "RIFee", "Fee", "Purchase"):
+        charge_category = "Purchase"
+    elif cost_val < 0 or lit in ("Credit", "Refund"):
+        charge_category = "Credit"
+    elif lit == "SavingsPlanCoveredUsage" and cost_val < 0:
+        charge_category = "Credit"
+    elif lit == "Tax" or "tax" in blob:
+        charge_category = "Tax"
+    else:
+        charge_category = "Usage"
+
+    is_workload = (charge_category == "Usage"
+                   and lit in _WL_TYPES
+                   and _is_workload_py(lit, prod_str, ut_str, op_str, cat_str))
+    return (charge_category, lit, is_workload)
+
+
+def _sql_classify_charge(cost_expr, product_expr, usage_type_expr, op_expr="''", category_expr="''", raw_lit_expr=None):
+    """Build single-source-of-truth SQL CASE expressions for (line_item_type, is_workload).
+
+    Generates the exact SQL counterpart of classify_charge() to guarantee no divergence
+    between Python and SQL branches.
+    """
+    if raw_lit_expr and raw_lit_expr != "NULL":
+        lit_case = f"COALESCE(NULLIF({raw_lit_expr}, ''), 'Usage')"
+    else:
+        lit_case = f"""(
+            CASE
+                WHEN {cost_expr} < 0 AND ({op_expr} ILIKE '%covered by%savings plan%' OR {usage_type_expr} ILIKE '%covered by%savings plan%' OR {product_expr} ILIKE '%covered by%savings plan%' OR {category_expr} ILIKE '%covered by%savings plan%')
+                    THEN 'SavingsPlanCoveredUsage'
+                WHEN {cost_expr} < 0
+                    THEN 'Credit'
+                WHEN ({category_expr} ILIKE '%savings plan%' OR {product_expr} ILIKE '%savings plan%' OR {usage_type_expr} ILIKE '%savings plan%' OR {op_expr} ILIKE '%savings plan%')
+                     AND ({category_expr} ILIKE '%recurring%' OR {category_expr} ILIKE '%hourly commitment%' OR {category_expr} ILIKE '%upfront%'
+                          OR {product_expr} ILIKE '%recurring%' OR {product_expr} ILIKE '%hourly commitment%' OR {product_expr} ILIKE '%upfront%'
+                          OR {usage_type_expr} ILIKE '%recurring%' OR {usage_type_expr} ILIKE '%hourly commitment%' OR {usage_type_expr} ILIKE '%upfront%'
+                          OR {op_expr} ILIKE '%recurring%' OR {op_expr} ILIKE '%hourly commitment%' OR {op_expr} ILIKE '%upfront%')
+                    THEN 'SavingsPlanRecurringFee'
+                WHEN {category_expr} ILIKE '%savings plans%' OR {category_expr} ILIKE '%savings plan%'
+                     OR {product_expr} ILIKE '%savings plans%' OR {product_expr} ILIKE '%savings plan%'
+                    THEN 'SavingsPlanRecurringFee'
+                WHEN {usage_type_expr} ILIKE '%rifee%' OR {op_expr} ILIKE '%rifee%'
+                     OR {usage_type_expr} ILIKE '%reserved instance fee%' OR {op_expr} ILIKE '%reserved instance fee%'
+                    THEN 'RIFee'
+                WHEN {usage_type_expr} ILIKE '%reserved instance applied%' OR {usage_type_expr} ILIKE '%reserved instances%' OR {usage_type_expr} ILIKE '%reserved instance%' OR {usage_type_expr} ILIKE '%discountedusage%'
+                     OR {op_expr} ILIKE '%reserved instance applied%' OR {op_expr} ILIKE '%reserved instances%' OR {op_expr} ILIKE '%reserved instance%' OR {op_expr} ILIKE '%discountedusage%'
+                     OR {product_expr} ILIKE '%reserved instance applied%' OR {product_expr} ILIKE '%reserved instances%' OR {product_expr} ILIKE '%reserved instance%' OR {product_expr} ILIKE '%discountedusage%'
+                    THEN 'DiscountedUsage'
+                WHEN {product_expr} = 'Tax' OR {usage_type_expr} = 'Tax' OR {op_expr} = 'Tax'
+                    THEN 'Tax'
+                ELSE 'Usage'
+            END
+        )"""
+
+    non_wl = _nonworkload_sql(product_expr, usage_type_expr, op_expr, category_expr)
+    is_wl_case = f"""(
+        CASE
+            WHEN {cost_expr} < 0 THEN FALSE
+            WHEN {lit_case} NOT IN ('Usage', 'DiscountedUsage', 'SavingsPlanCoveredUsage') THEN FALSE
+            WHEN {non_wl} THEN FALSE
+            ELSE TRUE
+        END
+    )"""
+    return lit_case, is_wl_case
+
+
 def _nonworkload_sql(*col_exprs):
     """Build a SQL boolean that is TRUE when the row is NON-workload, from the
     pattern list — so the spreadsheet/flat-CSV SQL CASEs stay in sync with the JSON.
@@ -342,7 +444,7 @@ def _fail(msg):
     sys.exit(1)
 
 
-def check_faithfulness(cat_rows, cat_total, reference_total):
+def check_faithfulness(cat_rows, cat_total, reference_total, rows_before_materiality=None):
     """Faithfulness invariants for the extraction layer (universal, all formats).
 
     Returns an error string if the catalog is not a faithful representation of the
@@ -357,6 +459,13 @@ def check_faithfulness(cat_rows, cat_total, reference_total):
     """
     import math
     if cat_rows == 0:
+        # Distinguish "nothing parsed" from "everything parsed and was then
+        # removed". The old message blamed the file layout in both cases, so a
+        # free-tier-only account was told its bill was malformed.
+        if rows_before_materiality:
+            return ("Bill parsed successfully but every line item was $0, so nothing remains to "
+                    "project. This usually means a free-tier-only account or a period with no "
+                    "chargeable usage.")
         return ("Empty bill: no line items were extracted into the catalog. The input "
                 "parsed but produced zero priceable rows (all rows were tax/blank, or "
                 "the layout was not recognized). Check the input file.")
@@ -1240,12 +1349,15 @@ def main():
         # A row is projectable workload iff it is real usage AND not a marketplace/
         # support third-party line. SavingsPlanCoveredUsage is now workload — under
         # gross basis it is real usage at list price (previously excluded as $0 net).
-        _lit = c(['lineitem/lineitemtype', 'lineitemtype'])
+        _raw_lit = c(['lineitem/lineitemtype', 'lineitemtype'])
         _pc = c(['lineitem/productcode', 'productcode'])
-        _marketplace = _nonworkload_sql(_pc, _lit)
-        _workload_expr = (
-            f"({_lit} IN ('Usage','DiscountedUsage','SavingsPlanCoveredUsage') "
-            f"AND NOT {_marketplace})"
+        _cur_lit, _workload_expr = _sql_classify_charge(
+            _sql_num(cost_col),
+            _pc,
+            c(['lineitem/usagetype', 'usagetype']),
+            c(['lineitem/operation', 'operation']),
+            category_expr="''",
+            raw_lit_expr=_raw_lit,
         )
     else:
         cost_col = c(['cost_($)', 'cost'])
@@ -1373,7 +1485,7 @@ def main():
         if gross_col != cost_col:
             gap = conn.execute(
                 f"SELECT COALESCE(SUM({_sql_num(gross_col)} - {_sql_num(cost_col)}), 0) "
-                f"FROM aws_raw WHERE {_lit} != 'Tax' AND {_workload_expr}"
+                f"FROM aws_raw WHERE {_raw_lit} != 'Tax' AND {_workload_expr}"
             ).fetchone()[0] or 0.0
             if abs(gap) > 0.005:
                 import hashlib as _hl
@@ -1407,6 +1519,14 @@ def main():
             loc_col  = c(['location'])
             date_col = c(['billingperiodstartdate', 'bill_billing_period_start_date', 'date', 'month', 'period', 'billing_period', 'start_date', 'usage_start_date', 'billing_month'])
 
+            _sheet_lit, _sheet_is_wl = _sql_classify_charge(
+                f"TRY_CAST({cost_col_raw} AS DOUBLE)",
+                cat_col,
+                meter_col,
+                op_expr=f"COALESCE({sub_col if sub_col != 'NULL' else "''"}, '')",
+                category_expr=cat_col,
+            )
+
             sql = f"""
                 INSERT INTO aws_li_catalog (
                     aws_li_key, product, usage_type, operation, aws_region, gcp_region,
@@ -1428,27 +1548,8 @@ def main():
                             WHEN {meter_col} ILIKE '%reserved%' THEN 'Committed'
                             ELSE 'OnDemand'
                         END                            AS pricing_model,
-                        CASE
-                            WHEN TRY_CAST({cost_col_raw} AS DOUBLE) < 0 THEN 'Credit'
-                            WHEN {cat_col} ILIKE '%Savings Plans%'        THEN 'SavingsPlanRecurringFee'
-                            WHEN {meter_col} ILIKE '%reserved%' OR {meter_col} ILIKE '%DiscountedUsage%'
-                                THEN 'DiscountedUsage'
-                            ELSE 'Usage'
-                        END                            AS line_item_type,
-                        CASE
-                            WHEN TRY_CAST({cost_col_raw} AS DOUBLE) < 0 THEN FALSE
-                            WHEN (
-                                CASE
-                                    WHEN TRY_CAST({cost_col_raw} AS DOUBLE) < 0 THEN 'Credit'
-                                    WHEN {cat_col} ILIKE '%Savings Plans%'        THEN 'SavingsPlanRecurringFee'
-                                    WHEN {meter_col} ILIKE '%reserved%' OR {meter_col} ILIKE '%DiscountedUsage%'
-                                        THEN 'DiscountedUsage'
-                                    ELSE 'Usage'
-                                END
-                            ) NOT IN ('Usage','DiscountedUsage','SavingsPlanCoveredUsage') THEN FALSE
-                            WHEN {_nonworkload_sql(cat_col, meter_col)} THEN FALSE
-                            ELSE TRUE
-                        END                            AS is_workload,
+                        {_sheet_lit}                   AS line_item_type,
+                        {_sheet_is_wl}                 AS is_workload,
                         COALESCE(TRY_CAST({consumed_col if consumed_col != 'NULL' else '0'} AS DOUBLE), 0) AS total_usage,
                         COALESCE(TRY_CAST({cost_col_raw} AS DOUBLE), 0) AS row_cost,
                         -- Infer pricing unit from meter name.
@@ -1703,8 +1804,6 @@ def main():
                     pricing_model = "Spot"
                 elif is_reserved:
                     pricing_model = "Committed"
-
-                line_item_type = "DiscountedUsage" if is_reserved else "Usage"
                 
                 product = ""
                 usage_type = ""
@@ -1876,7 +1975,12 @@ def main():
                     product = desc.strip() or "Unknown service"
                     usage_type = "UnrecognizedService"
 
-                is_workload = _is_workload_py(None, desc, product)
+                _ch_cat, line_item_type, is_workload = classify_charge(
+                    product=product,
+                    usage_type=usage_type,
+                    operation=desc,
+                    cost=row_cost,
+                )
                     
                 projection_note = None
                 if usage_type == "UnrecognizedService":
@@ -1912,6 +2016,14 @@ def main():
                     ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (aws_li_key, prod, ut, op, aws_reg, pm, lit, is_wl, val["total_usage"], val["row_cost"], proj_note, p_unit, b_month))
         else:
+            _inv_lit, _inv_is_wl = _sql_classify_charge(
+                _sql_num(cost_col),
+                c(['service']),
+                c(['custom_usage_type']),
+                op_expr=c(['description']),
+                category_expr="''",
+            )
+
             # CTE pre-computes all CASE expressions from raw columns so the outer
             # GROUP BY only sees already-derived aliases — avoids DuckDB strict-mode
             # "column must appear in GROUP BY" errors on unaggregated column refs.
@@ -1933,35 +2045,8 @@ def main():
                               OR {c(['service'])} ILIKE '%reserved instances%' THEN 'Committed'
                             ELSE 'OnDemand'
                         END AS pricing_model,
-                        CASE
-                            WHEN {_sql_num(cost_col)} < 0
-                                 AND {c(['description'])} ILIKE '%covered by%Savings Plan%'
-                                 THEN 'SavingsPlanCoveredUsage'
-                            WHEN {_sql_num(cost_col)} < 0 THEN 'Credit'
-                            WHEN {c(['description'])} ILIKE '%reserved instance applied%'
-                              OR {c(['description'])} ILIKE '%reserved instances%'
-                              OR {c(['service'])} ILIKE '%reserved instances%'
-                             THEN 'DiscountedUsage'
-                            ELSE 'Usage'
-                        END AS line_item_type,
-                        CASE
-                            WHEN {_sql_num(cost_col)} < 0 THEN FALSE
-                            WHEN (
-                                CASE
-                                    WHEN {_sql_num(cost_col)} < 0
-                                         AND {c(['description'])} ILIKE '%covered by%Savings Plan%'
-                                         THEN 'SavingsPlanCoveredUsage'
-                                    WHEN {_sql_num(cost_col)} < 0 THEN 'Credit'
-                                    WHEN {c(['description'])} ILIKE '%reserved instance applied%'
-                                      OR {c(['description'])} ILIKE '%reserved instances%'
-                                      OR {c(['service'])} ILIKE '%reserved instances%'
-                                     THEN 'DiscountedUsage'
-                                    ELSE 'Usage'
-                                END
-                            ) NOT IN ('Usage','DiscountedUsage','SavingsPlanCoveredUsage') THEN FALSE
-                            WHEN {_nonworkload_sql(c(['service']), c(['description']))} THEN FALSE
-                            ELSE TRUE
-                        END AS is_workload,
+                        {_inv_lit}   AS line_item_type,
+                        {_inv_is_wl} AS is_workload,
                         {_sql_num(c(['usage_quantity']))} AS row_usage,
                         {_sql_num(cost_col)}              AS row_cost,
                         CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%'
@@ -2193,8 +2278,11 @@ def main():
             m = re.search(r'([a-z0-9]+\.[a-z0-9]+\.search)', itext, re.IGNORECASE)
             if m: itype = m.group(1).lower()
         elif "Managed Streaming for Apache Kafka" in product or "MSK" in product:
-            m = re.search(r'(kafka\.[a-z0-9]+\.[a-z0-9]+)', itext, re.IGNORECASE)
-            if m: itype = m.group(1).lower()
+            if "storage" in ut.lower() or "runvolume" in op.lower():
+                pass  # Storage meter, not an instance type (WORKORDER_small_corrections Item 2a)
+            else:
+                m = re.search(r'(kafka\.[a-z0-9]+\.[a-z0-9]+)', itext, re.IGNORECASE)
+                if m: itype = m.group(1).lower()
         elif "Elastic Compute Cloud" in product or "EC2" in product:
             # Match the instance-type SHAPE (family+gen+size, e.g. "t2.xlarge",
             # "c7gd.4xlarge") anywhere in the operation string, rather than
@@ -2211,7 +2299,7 @@ def main():
             if m:
                 itype = m.group(1).lower()
             else:
-                m = re.search(r'\b([a-z][0-9][a-z0-9]*\.[a-z0-9]+)\b', itext, re.IGNORECASE)
+                m = re.search(r'\b([a-z][a-z0-9\-]*\.[a-z0-9]+)\b', itext, re.IGNORECASE)
                 if m: itype = m.group(1).lower()
                 
         if not itype: continue
@@ -2227,7 +2315,24 @@ def main():
             base_itype = base_itype[len("kafka.") :]
 
         table = rds_table if base_itype.startswith(("db.", "cache.")) else ec2_table
-        spec = table.get(base_itype) or ec2_table.get(base_itype)
+        spec = table.get(base_itype)
+        if not spec:
+            # Retry with expanded abbreviated size (e.g. db.m7g.xl -> db.m7g.xlarge, m7g.xl -> m7g.xlarge)
+            expanded_base = re.sub(r'(\d*)xl$', r'\g<1>xlarge', base_itype)
+            if expanded_base != base_itype:
+                spec = table.get(expanded_base)
+
+        if not spec:
+            # EC2 fallback: strip db./cache. prefix if present (Item 2c)
+            ec2_lookup_name = base_itype
+            if ec2_lookup_name.startswith(("db.", "cache.")):
+                ec2_lookup_name = re.sub(r'^(db\.|cache\.)', '', ec2_lookup_name)
+            spec = ec2_table.get(ec2_lookup_name)
+            if not spec:
+                expanded_ec2 = re.sub(r'(\d*)xl$', r'\g<1>xlarge', ec2_lookup_name)
+                if expanded_ec2 != ec2_lookup_name:
+                    spec = ec2_table.get(expanded_ec2)
+
         if not spec:
             # Fall back to legacy static spec lookup (decorated or base name)
             spec = LEGACY_SPECS.get(itype) or LEGACY_SPECS.get(base_itype)
@@ -2397,7 +2502,10 @@ def main():
         "SELECT COUNT(*), COALESCE(SUM(aws_amortized_cost), 0.0) FROM aws_li_catalog"
     ).fetchone()
 
-    err = check_faithfulness(cat_rows, cat_total, _bill_reference_total)
+    # total_rows_pre is counted AFTER the zero-cost delete, so an all-zero bill
+    # reads 0 there; add zero_dropped back to get "rows that actually parsed".
+    err = check_faithfulness(cat_rows, cat_total, _bill_reference_total,
+                             rows_before_materiality=(total_rows_pre or 0) + (zero_dropped or 0))
     if err:
         _fail_direct(err)
 

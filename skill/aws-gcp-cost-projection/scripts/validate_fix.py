@@ -57,6 +57,8 @@ from apply_static_mappings import (
     _s3_route_usage_type,
     GCS_STANDARD,
 )
+from ingest import check_faithfulness
+
 
 S3_CLASS_DEFAULT_SKU = GCS_STANDARD
 
@@ -289,23 +291,134 @@ BILL_TOTAL_RES = [
 ]
 
 
+# A total row in a tabular export: a label cell matching /total/ and a numeric
+# cell on the same row, e.g. "Total ($),Global,Total ($),,0.00,19358.76".
+_TOTAL_LABEL_RE = re.compile(r"^\s*(?:grand\s+)?total\b", re.I)
+
+
+def _num_or_none(cell):
+    """Parse a possibly-messy numeric cell. Returns float or None."""
+    s = str(cell or "").strip()
+    if not s:
+        return None
+    neg = s.startswith("(") and s.endswith(")")      # accounting negative
+    s = re.sub(r"[^0-9.\-]", "", s.strip("()"))
+    if not s or s in ("-", "."):
+        return None
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+def _total_from_tabular(path):
+    """Find a bill total stated as a ROW in a CSV/XLSX export.
+
+    PDF invoices state the total in prose ("Total pre-tax USD 1,234.56"), which
+    BILL_TOTAL_RES handles. Spreadsheet exports state it as a row, with no USD
+    token anywhere — so the prose patterns can never match them. This reads the
+    row form.
+
+    Returns float or None. Conflicting candidates return None rather than a
+    guess: a wrong total would fail every bill, which is worse than not
+    checking.
+    """
+    rows = []
+    try:
+        if path.lower().endswith((".xlsx", ".xlsm")):
+            try:
+                import openpyxl
+            except ImportError:
+                return None
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            for ws in wb.worksheets:
+                for r in ws.iter_rows(values_only=True):
+                    rows.append(list(r))
+            wb.close()
+        else:
+            import csv as _csv
+            with open(path, encoding="utf-8", errors="ignore", newline="") as fh:
+                rows = list(_csv.reader(fh))
+    except Exception:
+        return None
+
+    if not rows:
+        return None
+
+    # Locate the cost column from the header. A total row aligns with it, and
+    # the other numeric cells on that row are NOT costs — in a real export the
+    # neighbouring cell is the total usage quantity:
+    #   header:    Service, Region, ..., Usage Quantity, Cost ($)
+    #   total row: Total ($),  ,  ,  ,     56,28,331.98,  19,358.78
+    # Taking the largest number here would pick 5,628,331.98 (a quantity) and
+    # fail reconciliation on every such bill.
+    cost_idx = None
+    header = [str(c or "").strip().lower() for c in rows[0]]
+    for i, name in enumerate(header):
+        if re.search(r"\bcost\b|\bamount\b|unblended", name):
+            cost_idx = i
+            break
+
+    candidates = []
+    for row in rows[1:]:
+        cells = [c for c in row if str(c or "").strip() != ""]
+        if not cells:
+            continue
+        if not _TOTAL_LABEL_RE.match(str(cells[0])):
+            continue
+        if cost_idx is not None and cost_idx < len(row):
+            v = _num_or_none(row[cost_idx])
+            if v is not None:
+                candidates.append(v)
+                continue
+        # No identifiable cost column: only accept an unambiguous single number.
+        nums = [v for v in (_num_or_none(c) for c in row) if v is not None]
+        uniq = {round(v, 2) for v in nums}
+        if len(uniq) == 1:
+            candidates.append(nums[0])
+
+    if not candidates:
+        return None
+    # Prefer the last matching row (a grand total sits below any subtotals),
+    # but refuse to choose between candidates that materially disagree.
+    best = candidates[-1]
+    tol = max(1.0, 0.005 * abs(best))
+    if any(abs(c - best) > tol for c in candidates):
+        return None
+    return best
+
+
 def extract_bill_total(jobdir):
-    """Best-effort read of the bill's stated grand total. Returns float or None."""
-    for name in ("input.txt", "input.csv"):
-        path = os.path.join(jobdir, name)
-        if not os.path.exists(path):
-            continue
-        try:
-            text = open(path, encoding="utf-8", errors="ignore").read()
-        except Exception:
-            continue
-        for rx in BILL_TOTAL_RES:
-            m = rx.search(text)
-            if m:
-                try:
-                    return float(m.group(1).replace(",", ""))
-                except ValueError:
-                    pass
+    """Best-effort read of the bill's stated grand total. Returns float or None.
+
+    Reads whatever input file is present, not a fixed pair of filenames: the
+    corpus is a mix of .csv, .pdf and .xlsx, and the previous two-name lookup
+    never opened 9 of 15 of them. Prose totals (PDF invoices) use
+    BILL_TOTAL_RES; tabular totals (CSV/XLSX) use _total_from_tabular.
+    """
+    for path in sorted(glob.glob(os.path.join(jobdir, "input.*"))):
+        ext = os.path.splitext(path)[1].lower()
+
+        if ext in (".csv", ".txt", ".tsv", ".xlsx", ".xlsm"):
+            v = _total_from_tabular(path)
+            if v is not None:
+                return v
+
+        # Prose form. Binary formats are skipped here; a PDF's text is
+        # extracted during ingest, not re-extracted by the validator.
+        if ext in (".csv", ".txt", ".tsv"):
+            try:
+                text = open(path, encoding="utf-8", errors="ignore").read()
+            except Exception:
+                continue
+            for rx in BILL_TOTAL_RES:
+                m = rx.search(text)
+                if m:
+                    try:
+                        return float(m.group(1).replace(",", ""))
+                    except ValueError:
+                        pass
     return None
 
 def find_regional_sku(con, bad_sku, target_region):
@@ -907,6 +1020,218 @@ def check_capacity_reconciliation(con, jobdir=None):
         cap_recon.append({"metric": "unknown", "error": f"capacity gate failed: {_cap_exc}"})
         summary["status"] = "ERROR"
     return cap_recon, summary
+
+
+def check_llm_slice_invariants(con, jobdir=None):
+    """Validate invariants over the LLM-produced mapping slice.
+
+    Invariants checked:
+      1. gcp_service is non-null and in the allowed set derived from service_map.json
+         (rules matching canonical_service or product). If no rule exists for the service,
+         the check is skipped and the skip is counted.
+      2. strategy is non-null and one of ('map', 'break_down', 'passthrough', 'ignore').
+      3. If strategy == 'passthrough', passthrough_reason is set (non-empty).
+      4. If strategy == 'map', gcp_sku_id is set (non-empty).
+      5. Plausibility band: 0.1 <= gcp_projected_cost / aws_amortized_cost <= 10.0
+         where both aws_amortized_cost > 5.0 and gcp_projected_cost > 5.0.
+
+    Returns:
+      (violations_list, summary_dict)
+    """
+    skill_dir = os.environ.get("SKILL_DIR", "")
+    if not skill_dir:
+        skill_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # 1. Load service_map rules and build allowed target set per canonical service / product match
+    rules = []
+    map_path = os.path.join(skill_dir, "data", "service_map.json")
+    if os.path.exists(map_path):
+        try:
+            with open(map_path, "r", encoding="utf-8") as f:
+                rules = json.load(f).get("rules", [])
+        except Exception:
+            rules = []
+
+    try:
+        from aws_normalizer import canonical_service
+    except Exception:
+        canonical_service = lambda *_a: None
+
+    allowed_by_cs = {}
+    rule_patterns = []
+    cs_rule_cache = {}
+
+    for r in rules:
+        if not isinstance(r, dict) or "match" not in r:
+            continue
+        tgt = r.get("gcp_service")
+        if not tgt:
+            continue
+        m_raw = r["match"]
+        m_lower = m_raw.lower()
+        rule_patterns.append((m_lower, tgt))
+
+        cs = canonical_service(m_raw)
+        if cs:
+            allowed_by_cs.setdefault(cs, set()).add(tgt)
+        norm_m = m_lower
+        for pre in ("amazon", "aws"):
+            if norm_m.startswith(pre):
+                norm_m = norm_m[len(pre):].strip()
+                break
+        if norm_m:
+            allowed_by_cs.setdefault(norm_m, set()).add(tgt)
+
+    def get_allowed_targets(prod, canon_svc):
+        targets = set()
+        if canon_svc and canon_svc in allowed_by_cs:
+            targets.update(allowed_by_cs[canon_svc])
+        p_lower = (prod or "").lower()
+        p_norm = p_lower
+        for pre in ("amazon", "aws"):
+            if p_norm.startswith(pre):
+                p_norm = p_norm[len(pre):].strip()
+                break
+        if p_norm and p_norm in allowed_by_cs:
+            targets.update(allowed_by_cs[p_norm])
+        for pat, tgt in rule_patterns:
+            if pat in p_lower:
+                targets.add(tgt)
+        return targets
+
+    # Check available tables and columns
+    cols_m = {c[1].lower() for c in con.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+    has_decided_by = "decided_by" in cols_m
+    has_pt_reason = "passthrough_reason" in cols_m
+    tables = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
+    has_proj = "gcp_projection" in tables
+
+    if not has_decided_by:
+        return [], {"rows": 0, "usd": 0.0, "skipped_no_rule": 0}
+
+    proj_join = "LEFT JOIN gcp_projection p ON m.aws_li_key = p.aws_li_key" if has_proj else ""
+    proj_cost_expr = "p.gcp_projected_cost" if has_proj else "NULL"
+    pt_reason_expr = "m.passthrough_reason" if has_pt_reason else "NULL"
+
+    # Identify LLM rows: decided_by contains 'llm' or matches an LLM group file
+    llm_query = f"""
+        SELECT m.aws_li_key,
+               c.product,
+               c.canonical_service,
+               m.gcp_service,
+               m.strategy,
+               {pt_reason_expr} AS passthrough_reason,
+               m.gcp_sku_id,
+               c.aws_amortized_cost,
+               {proj_cost_expr} AS gcp_projected_cost,
+               m.decided_by
+        FROM aws_li_to_gcp_li m
+        JOIN aws_li_catalog c ON m.aws_li_key = c.aws_li_key
+        {proj_join}
+        WHERE m.decided_by IS NOT NULL
+          AND (
+              LOWER(m.decided_by) LIKE '%llm%'
+              OR LOWER(m.decided_by) LIKE '%misc%'
+              OR LOWER(m.decided_by) LIKE '%compute_breakdown%'
+              OR LOWER(m.decided_by) LIKE '%managed_db%'
+          )
+    """
+    rows = []
+    try:
+        rows = con.execute(llm_query).fetchall()
+    except Exception:
+        rows = []
+
+    # Calculate summary
+    total_rows = len(rows)
+    # Deduplicate aws amortized cost by aws_li_key for accurate spend reporting
+    seen_spend_keys = set()
+    total_spend = 0.0
+    for r in rows:
+        k, aws_cost = r[0], r[7]
+        if k not in seen_spend_keys:
+            seen_spend_keys.add(k)
+            total_spend += (aws_cost or 0.0)
+
+    violations = []
+    skipped_no_rule = 0
+    KNOWN_STRATEGIES = {"map", "break_down", "passthrough", "ignore"}
+
+    for r in rows:
+        (aws_key, prod, cs, gcp_svc, strat, pt_reason,
+         sku_id, aws_cost, gcp_cost, dec_by) = r
+
+        # Invariant 1: allowed targets derived from service_map
+        allowed = get_allowed_targets(prod, cs)
+        if not allowed:
+            skipped_no_rule += 1
+        else:
+            if not gcp_svc or gcp_svc.strip() not in allowed:
+                violations.append({
+                    "invariant": "allowed_target_service",
+                    "aws_li_key": aws_key,
+                    "product": prod,
+                    "got_gcp_service": gcp_svc,
+                    "allowed_targets": sorted(allowed),
+                    "error": f"LLM-mapped gcp_service '{gcp_svc}' is outside allowed set {sorted(allowed)} for '{prod}'",
+                })
+
+        # Invariant 2: strategy must be non-null and known
+        if not strat or strat.strip().lower() not in KNOWN_STRATEGIES:
+            violations.append({
+                "invariant": "valid_strategy",
+                "aws_li_key": aws_key,
+                "strategy": strat,
+                "error": f"LLM-mapped strategy '{strat}' is null or not in {sorted(KNOWN_STRATEGIES)}",
+            })
+
+        # Invariant 3: if passthrough, passthrough_reason must be set
+        if strat == "passthrough":
+            if not pt_reason or not str(pt_reason).strip():
+                violations.append({
+                    "invariant": "passthrough_reason_set",
+                    "aws_li_key": aws_key,
+                    "product": prod,
+                    "error": "LLM-mapped passthrough row has no passthrough_reason",
+                })
+
+        # Invariant 4: if map, gcp_sku_id must be non-null
+        if strat == "map":
+            if not sku_id or not str(sku_id).strip():
+                violations.append({
+                    "invariant": "map_has_sku_id",
+                    "aws_li_key": aws_key,
+                    "product": prod,
+                    "error": "LLM-mapped strategy='map' row has null/empty gcp_sku_id",
+                })
+
+        # Invariant 5: plausibility band (0.1 <= ratio <= 10.0 where both > $5)
+        if aws_cost is not None and gcp_cost is not None:
+            if aws_cost > 5.0 and gcp_cost > 5.0:
+                ratio = gcp_cost / aws_cost
+                if ratio < 0.1 or ratio > 10.0:
+                    violations.append({
+                        "invariant": "cost_ratio_plausibility_band",
+                        "aws_li_key": aws_key,
+                        "product": prod,
+                        "aws_cost": round(aws_cost, 2),
+                        "gcp_cost": round(gcp_cost, 2),
+                        "ratio": round(ratio, 2),
+                        "error": f"LLM projected cost ratio {ratio:.2f}x is outside plausible band [0.1, 10.0] (AWS: ${aws_cost:.2f}, GCP: ${gcp_cost:.2f})",
+                    })
+
+    summary = {
+        "rows": total_rows,
+        "usd": round(total_spend, 2),
+        "skipped_no_rule": skipped_no_rule,
+    }
+
+    if violations and jobdir:
+        diag(WARN, "llm_slice_invariant_violations", "validate_fix.py",
+             f"{len(violations)} LLM invariant violation(s) found in {total_rows} row(s)",
+             rows=len(violations), job_dir=jobdir)
+
+    return violations, summary
 
 
 def main():
@@ -1546,7 +1871,17 @@ def main():
         "SELECT ROUND(COALESCE(SUM(aws_amortized_cost),0),2) FROM aws_li_catalog WHERE is_workload").fetchone()[0] or 0.0
     bill_total = extract_bill_total(jobdir)
     if bill_total is None:
-        print("[WARN] bill_total not found in input — reconciliation skipped")
+        _inputs = [os.path.basename(p) for p in glob.glob(os.path.join(jobdir, "input.*"))]
+        _seen = ", ".join(_inputs) if _inputs else "no input file found"
+        print(f"[WARN] bill total could not be read from {_seen} — "
+              f"the catalog-vs-bill reconciliation gate DID NOT RUN for this job")
+        # A skipped safety check must not read like routine output. This gate
+        # never ran on any corpus bill and nobody noticed, because the old
+        # message looked like ordinary noise.
+        diag(WARN, "reconciliation_skipped", "validate_fix.py",
+             f"Bill total could not be read from {_seen} — the catalog-vs-bill "
+             f"reconciliation gate did not run for this job.",
+             phase=4, job_dir=jobdir)
         report["autofixes"]["bill_total_unavailable"] = (
             "Bill total could not be extracted from input — reconciliation gate skipped. "
             "Verify GCP total manually."
@@ -1637,9 +1972,15 @@ def main():
         for r in detail_less_mapped
     ]
 
+    # GATE (LLM Invariants): check 5 invariants over LLM-produced mappings
+    llm_violations, llm_summary = check_llm_slice_invariants(con, jobdir)
+    report["violations"]["llm_slice_invariants"] = llm_violations
+    report["llm_slice"] = llm_summary
+
     # Inject CRITICAL view-missing violation at the end so it always appears
     if view_missing_violation is not None:
         report["violations"]["projection_view_missing"] = [view_missing_violation]
+
 
     # ---------- deterministic totals + verdict ----------------------------
     gcp_od = gcp_1yr = gcp_3yr = None

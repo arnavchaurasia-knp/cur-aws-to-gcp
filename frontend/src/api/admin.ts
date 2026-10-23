@@ -123,7 +123,12 @@ export async function triggerCatalogRefresh(): Promise<void> {
   const res = await fetch('/api/admin/catalog/refresh', { method: 'POST' })
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(text || `refresh failed (${res.status})`)
+    try {
+      const data = JSON.parse(text)
+      throw new Error(data.reason || `refresh failed (${res.status})`)
+    } catch {
+      throw new Error(text || `refresh failed (${res.status})`)
+    }
   }
 }
 
@@ -380,6 +385,29 @@ export async function getJobDiagnostics(id: string): Promise<JobDiagnosticsRespo
 
 export async function getJobDiagnosticRecords(id: string): Promise<JobDiagnosticRecordsResponse | null> {
   const res = await fetch(`/api/admin/jobs/${encodeURIComponent(id)}/diagnostics/records`)
+  if (!res.ok) return null
+  return res.json()
+}
+
+// ─── Notification health ───
+
+export interface NotifyChannelStatus {
+  configured: boolean
+}
+
+export interface NotifyStatus {
+  email: NotifyChannelStatus
+  slack: NotifyChannelStatus
+}
+
+export async function getNotifyStatus(): Promise<NotifyStatus | null> {
+  const res = await fetch('/api/admin/notify/status')
+  if (!res.ok) return null
+  return res.json()
+}
+
+export async function notifyTest(): Promise<{ status: string } | null> {
+  const res = await fetch('/api/admin/notify/test', { method: 'POST' })
   if (!res.ok) return null
   return res.json()
 }

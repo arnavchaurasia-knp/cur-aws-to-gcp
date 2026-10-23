@@ -14,6 +14,7 @@
     "section_assumptions": "false",
     "section_data_gaps": "false",
     "row_min_cost_usd": "0",
-    "col_pct_of_aws": "true"
+    "col_pct_of_aws": "true",
+    "section_coverage": "true"
   }
 }

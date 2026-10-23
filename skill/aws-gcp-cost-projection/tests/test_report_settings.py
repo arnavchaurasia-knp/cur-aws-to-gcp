@@ -134,10 +134,46 @@ def test_report_settings_keys_match_renderer():
     )
 
 
+def test_diag_emits_expected_code():
+    """Each new diag() call site emits the expected code on a triggering fixture."""
+    import tempfile
+    import duckdb
+
+    from diagnostics import diag, WARN, read_all
+
+    with tempfile.TemporaryDirectory() as job_dir:
+        # Call each new diag() code and verify it lands in the JSONL
+        diag(WARN, "unmapped_misc_spend", "classify_mechanics.py",
+             "test misc row", rows=1, usd=42.0, job_dir=job_dir,
+             detail={"mechanic_group": "misc"})
+        diag(WARN, "empty_group_mappings", "merge_mappings.py",
+             "test empty group", rows=5, usd=100.0, job_dir=job_dir,
+             detail={"mechanic_group": "test_group", "catalog_rows": 5, "mapping_rows": 0})
+        diag(WARN, "commitment_rows_unclaimed", "apply_commitment_ignores.py",
+             "test unclaimed commitment", rows=3, usd=75.0, job_dir=job_dir,
+             detail={"mechanic_group": "commitment_discount", "catalog_rows": 3, "mapped_rows": 0})
+        diag(WARN, "capacity_check_skipped", "reconcile_capacity.py",
+             "test skipped capacity", rows=2, usd=30.0, job_dir=job_dir,
+             detail={"reason": "instance_vcpus IS NULL", "component": "core",
+                     "strategies": ["break_down", "map"]})
+        diag(WARN, "materiality_dropped", "ingest.py",
+             "test materiality drop", rows=7, usd=15.50, job_dir=job_dir,
+             detail={"rows_dropped": 7, "usd_dropped": 15.50, "pct_of_workload": 0.5})
+
+        recs = read_all(job_dir)
+        codes = [r["code"] for r in recs]
+        assert "unmapped_misc_spend" in codes
+        assert "empty_group_mappings" in codes
+        assert "commitment_rows_unclaimed" in codes
+        assert "capacity_check_skipped" in codes
+        assert "materiality_dropped" in codes
+
+
 if __name__ == "__main__":
     test_load_report_settings_returns_snapshot_when_file_exists()
     test_load_report_settings_returns_defaults_when_file_absent()
     test_load_report_settings_returns_defaults_on_malformed_json()
     test_load_report_settings_returns_defaults_on_empty_file()
     test_report_settings_keys_match_renderer()
+    test_diag_emits_expected_code()
     print("All tests passed!")

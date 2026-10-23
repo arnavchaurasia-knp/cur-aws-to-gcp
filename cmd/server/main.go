@@ -62,6 +62,13 @@ func main() {
 	}
 	defer database.Close()
 
+	// Log the effective allowed-domains list so it is visible in deploy logs.
+	if len(cfg.AllowedDomains) == 0 {
+		slog.Warn("ALLOWED_DOMAINS unset — default allow-list is " + strings.Join(config.DefaultAllowedDomains, ","))
+	} else {
+		slog.Info("allowed domains", "domains", strings.Join(cfg.AllowedDomains, ","))
+	}
+
 	// Best-effort one-shot backfill: walks existing job dirs and ensures
 	// each projection.duckdb has a run_results table with >=1 row. Lets
 	// pre-this-release jobs return non-empty history from GET /runs.
@@ -157,13 +164,23 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(structuredRequestLogger)
 	r.Use(middleware.Recoverer)
+	r.Use(securityHeaders)
 
 	// Health — unauthenticated, for load balancers and container probes.
 	r.Get("/health", healthHandler(catalogFetchedAt, catalogAgeDays))
 
+	// Version — public, no secrets. Reports the build version (git SHA injected
+	// at build time via -ldflags) and the GCP catalog vintage.
+	r.Get("/version", versionHandler(catalogFetchedAt, catalogAgeDays))
+
+	// Rate limiting for sensitive endpoints
+	loginLimiter := jobs.NewRateLimitMiddleware(10.0/60.0, 10)   // 10/min/IP
+	uploadLimiter := jobs.NewRateLimitMiddleware(5.0/3600.0, 5)   // 5/hour/session
+	shareLimiter := jobs.NewRateLimitMiddleware(60.0/60.0, 60)    // 60/min/IP
+
 	// Auth (no session required)
-	r.Get("/api/auth/login", oauthH.Login)
-	r.Post("/api/auth/login", oauthH.Login)
+	r.Get("/api/auth/login", loginLimiter(http.HandlerFunc(oauthH.Login)))
+	r.Post("/api/auth/login", loginLimiter(http.HandlerFunc(oauthH.Login)))
 	r.Get("/api/auth/callback", oauthH.Callback)
 	r.Get("/api/auth/logout", oauthH.Logout)
 	r.Post("/api/auth/logout", oauthH.Logout)
@@ -180,16 +197,18 @@ func main() {
 		http.ServeFile(w, r, filepath.Join(webRoot, "index.html"))
 	})
 
-	// Public (no-auth) read-only shared report lookup.
-	r.Get("/api/reports/{token}", jobHandler.GetSharedReport)
+	// Public (no-auth) read-only shared report lookup — rate limited.
+	r.Get("/api/reports/{token}", shareLimiter(jobHandler.GetSharedReport))
 
 	// Authenticated routes
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(sm, cfg.DevAuthBypass))
+		// Resolve role per-request from the users table so role changes
+		// (admin demotion/promotion) take effect on the next request without
+		// requiring re-login (WORKORDER §1.1).
+		r.Use(auth.Middleware(sm, database.GetUserRole, cfg.DevAuthBypass))
 		r.Get("/api/auth/me", oauthH.Me)
-		r.Post("/api/jobs", jobHandler.Create)
+		r.Post("/api/jobs", uploadLimiter(jobHandler.Create))
 		r.Get("/api/jobs", jobHandler.List)
-		r.Get("/api/jobs/{id}", jobHandler.GetByID)
 		r.Get("/api/jobs/{id}/progress", jobHandler.Progress)
 		r.Post("/api/jobs/{id}/cancel", jobHandler.Cancel)
 		r.Post("/api/jobs/{id}/retry", jobHandler.Retry)
@@ -224,8 +243,13 @@ func main() {
 			r.Put("/api/admin/report-settings/{key}", jobHandler.AdminPutReportSetting)
 			r.Get("/api/admin/report-settings/history", jobHandler.AdminGetReportSettingHistory)
 			r.Post("/api/admin/report-settings/reset", jobHandler.AdminResetReportSettings)
+			r.Get("/api/admin/shares", jobHandler.AdminListReportShares)
+			r.Delete("/api/admin/shares/{token}", jobHandler.AdminDeleteReportShare)
 			r.Get("/api/admin/jobs/{id}/diagnostics", jobHandler.AdminJobDiagnostics)
 			r.Get("/api/admin/jobs/{id}/diagnostics/records", jobHandler.AdminJobDiagnosticRecords)
+			r.Get("/api/admin/jobs/{id}/compare", jobHandler.AdminCompareRuns)
+			r.Get("/api/admin/notify/status", jobHandler.AdminNotifyStatus)
+			r.Post("/api/admin/notify/test", jobHandler.AdminNotifyTest)
 		})
 		// @facets.cloud-only internal panel: recent job logs + a manually
 		// selected multi-job portfolio summary. Each handler re-checks
@@ -374,4 +398,57 @@ func loadCatalogVintage(skillDir string) (any, any) {
 	}
 	days := int(time.Since(t).Hours() / 24)
 	return meta.FetchedAt, days
+}
+
+// versionHandler returns version/build info. The git SHA is injected at build
+// time via -ldflags (see Makefile). Degrades gracefully when not set.
+func versionHandler(catalogFetchedAt, catalogAgeDays any) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"build_sha":           buildSHA,
+			"build_time":          buildTime,
+			"catalog_fetched_at":  catalogFetchedAt,
+			"catalog_age_days":    catalogAgeDays,
+		})
+	}
+}
+
+// buildSHA and buildTime are injected at build time via -ldflags. Degrade to
+// "dev" / "unknown" when not set (local development).
+var (
+	buildSHA   = "dev"
+	buildTime  = "unknown"
+)
+
+// securityHeaders adds security headers to every response. Applied globally via
+// middleware so it covers API responses, the HTML report, and the React SPA equally.
+//
+// CSP: the generated HTML report uses inline styles (report CSS is inlined),
+// so style-src allows 'unsafe-inline'. The report contains no inline
+// <script> tags — all JS is served as static assets — so script-src can stay
+// 'self'.
+//
+// The policy also covers the SPA (index.html). The SPA loads Google Fonts
+// (Plus Jakarta Sans and Inter) from external origins, so style-src allows
+// https://fonts.googleapis.com (the stylesheet) and font-src allows
+// https://fonts.gstatic.com (the webfont files).
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		// HSTS only when served over HTTPS — setting it on plain HTTP would
+		// break local development and could lock users out if the site is
+		// later served over plain HTTP.
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'self'; "+
+				"img-src 'self' data:; "+
+				"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
+				"font-src 'self' https://fonts.gstatic.com;")
+		next.ServeHTTP(w, r)
+	})
 }

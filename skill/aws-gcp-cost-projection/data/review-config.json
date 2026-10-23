@@ -103,5 +103,6 @@
   "outlier_i_cost_floor_usd": 1,
 
   "outlier_g_core_delta_tolerance": 0.5,
-  "outlier_g_ram_delta_tolerance": 1.0
+  "outlier_g_ram_delta_tolerance": 1.0,
+  "section_coverage": true
 }

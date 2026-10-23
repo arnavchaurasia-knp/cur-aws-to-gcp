@@ -19,7 +19,7 @@ func TestReportSettingsSeedInsertsMissingRows(t *testing.T) {
 	d := newReportSettingsTestDB(t)
 	settings, err := d.GetReportSettings()
 	require.NoError(t, err)
-	require.Len(t, settings, 11)
+	require.Len(t, settings, 12)
 
 	byKey := make(map[string]*db.ReportSetting)
 	for _, s := range settings {

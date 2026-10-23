@@ -19,6 +19,7 @@ type Job struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 	CancelledAt *time.Time `json:"cancelled_at,omitempty"`
+	AssumptionsVersion string    `json:"assumptions_version,omitempty"`
 }
 
 func (d *DB) CreateJob(id, owner, prospect, inputExt, sessionID string) error {

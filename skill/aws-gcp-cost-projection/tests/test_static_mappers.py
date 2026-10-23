@@ -1148,16 +1148,30 @@ def test_lambda_cpu_multiplier_from_assumption():
 
 def test_lambda_skus_exclude_min_instance_and_1st_gen():
     """Resolved SKU descriptions must contain neither Min-Instance nor 1st Gen."""
+    catalog_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "catalog.duckdb")
+    if not os.path.exists(catalog_path):
+        pytest.skip(f"catalog.duckdb not found at {catalog_path}")
+
     rows = [row(product="AWS Lambda", usage_type="APS3-Lambda-GB-Second",
                 operation="", unit="Lambda-GB-Second", gcp_region="asia-south2")]
     out = map_lambda(rows)
     assert len(out) == 2
-    for r in out:
-        assert r["strategy"] == "map"
-        sku_name = r.get("gcp_sku_name") or ""
-        assert "min-instance" not in sku_name.lower()
-        assert "min instance" not in sku_name.lower()
-        assert "1st gen" not in sku_name.lower()
+
+    import duckdb
+    con = duckdb.connect(catalog_path, read_only=True)
+    try:
+        for r in out:
+            assert r["strategy"] == "map"
+            sku_id = r.get("gcp_sku_id")
+            assert sku_id, f"Missing gcp_sku_id on {r}"
+            desc_row = con.execute("SELECT description FROM skus WHERE sku_id = ?", [sku_id]).fetchone()
+            assert desc_row is not None, f"SKU {sku_id} not found in catalog"
+            desc = desc_row[0] or ""
+            assert "min-instance" not in desc.lower()
+            assert "min instance" not in desc.lower()
+            assert "1st gen" not in desc.lower()
+    finally:
+        con.close()
 
 
 def test_lambda_cpu_and_memory_same_region():

@@ -6,7 +6,7 @@ import { RunHistory } from '../components/RunHistory'
 import { Summary } from '../components/Summary'
 import { ContactCard } from '../components/ContactCard'
 import { Reveal } from '../components/Reveal'
-import { getJob, getProgress, listJobs, downloadURL, refineJob, retryJob, cancelJob, deleteJob, getRuns, getSummary, regenerateReport } from '../api/jobs'
+import { getJob, getProgress, listJobs, downloadURL, refineJob, retryJob, cancelJob, deleteJob, getRuns, getSummary, regenerateReport, compareRuns } from '../api/jobs'
 import type { Job, Progress, RunResult } from '../api/jobs'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
@@ -281,6 +281,9 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
   const [cancelError, setCancelError] = useState<string | null>(null)
   const [regenerating, setRegenerating] = useState(false)
   const [regenerateError, setRegenerateError] = useState<string | null>(null)
+  const [comparing, setComparing] = useState(false)
+  const [compareError, setCompareError] = useState<string | null>(null)
+  const [comparison, setComparison] = useState<any>(null)
 
   const submitDelete = async () => {
     if (!id || !job) return
@@ -327,6 +330,28 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
       setRegenerateError(e instanceof Error ? e.message : String(e))
     } finally {
       setRegenerating(false)
+    }
+  }
+
+  const submitCompare = async () => {
+    if (!id || runs.length < 2) return
+    setComparing(true)
+    setCompareError(null)
+    setComparison(null)
+    try {
+      const runIds = runs.map(r => r.run_id)
+      const from = runIds[runIds.length - 2]
+      const to = runIds[runIds.length - 1]
+      const result = await compareRuns(id, from, to)
+      if (result) {
+        setComparison(result)
+      } else {
+        setCompareError('Comparison failed')
+      }
+    } catch (e: unknown) {
+      setCompareError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setComparing(false)
     }
   }
 
@@ -480,6 +505,97 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                       {regenerating ? 'Regenerating…' : 'Regenerate Report'}
                     </button>
                     {regenerateError && <p className="text-xs text-orange-400">{regenerateError}</p>}
+                    <button
+                      onClick={submitCompare}
+                      disabled={comparing || runs.length < 2}
+                      className="w-full py-2.5 rounded-lg border border-[#00C2BB]/30 text-[#00C2BB] text-xs font-medium hover:bg-[#00C2BB]/10 disabled:opacity-40 transition-colors"
+                    >
+                      {comparing ? 'Comparing…' : 'Compare Runs'}
+                    </button>
+                    {compareError && <p className="text-xs text-orange-400">{compareError}</p>}
+                    {comparison && (
+                      <div className="mt-3 bg-white/[0.02] border border-white/10 rounded-lg p-4 text-sm">
+                        <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                          Run Comparison
+                        </h4>
+                        <table className="w-full text-left text-xs">
+                          <thead>
+                            <tr className="border-b border-white/10">
+                              <th className="pb-2 text-gray-400">Metric</th>
+                              <th className="pb-2 text-right text-gray-400">
+                                Run A ({comparison.run_a.run_id.slice(-8)})
+                              </th>
+                              <th className="pb-2 text-right text-gray-400">
+                                Run B ({comparison.run_b.run_id.slice(-8)})
+                              </th>
+                              <th className="pb-2 text-right text-gray-400">Delta</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr className="border-b border-white/5">
+                              <td className="py-2 text-gray-400">AWS Cost</td>
+                              <td className="py-2 text-right font-mono">
+                                ${comparison.run_a.aws_total?.toFixed(2) ?? '—'}
+                              </td>
+                              <td className="py-2 text-right font-mono">
+                                ${comparison.run_b.aws_total?.toFixed(2) ?? '—'}
+                              </td>
+                              <td className="py-2 text-right font-mono">
+                                {comparison.aws_delta >= 0 ? '+' : ''}{comparison.aws_delta?.toFixed(2)}
+                              </td>
+                            </tr>
+                            <tr className="border-b border-white/5">
+                              <td className="py-2 text-gray-400">GCP On-Demand</td>
+                              <td className="py-2 text-right font-mono">
+                                ${comparison.run_a.gcp_od?.toFixed(2) ?? '—'}
+                              </td>
+                              <td className="py-2 text-right font-mono">
+                                ${comparison.run_b.gcp_od?.toFixed(2) ?? '—'}
+                              </td>
+                              <td className="py-2 text-right font-mono">
+                                {comparison.gcp_od_delta >= 0 ? '+' : ''}${comparison.gcp_od_delta?.toFixed(2)}
+                              </td>
+                            </tr>
+                            <tr className="border-b border-white/5">
+                              <td className="py-2 text-gray-400">GCP 1-Yr CUD</td>
+                              <td className="py-2 text-right font-mono">
+                                ${comparison.run_a.gcp_1yr_cud?.toFixed(2) ?? '—'}
+                              </td>
+                              <td className="py-2 text-right font-mono">
+                                ${comparison.run_b.gcp_1yr_cud?.toFixed(2) ?? '—'}
+                              </td>
+                              <td className="py-2 text-right font-mono">
+                                {comparison.gcp_1yr_cud_delta >= 0 ? '+' : ''}{comparison.gcp_1yr_cud_delta?.toFixed(2)}
+                              </td>
+                            </tr>
+                            <tr>
+                              <td className="py-2 text-gray-400">GCP 3-Yr CUD</td>
+                              <td className="py-2 text-right font-mono">
+                                ${comparison.run_a.gcp_3yr_cud?.toFixed(2) ?? '—'}
+                              </td>
+                              <td className="py-2 text-right font-mono">
+                                ${comparison.run_b.gcp_3yr_cud?.toFixed(2) ?? '—'}
+                              </td>
+                              <td className="py-2 text-right font-mono">
+                                {comparison.gcp_3yr_cud_delta >= 0 ? '+' : ''}${comparison.gcp_3yr_cud_delta?.toFixed(2)}
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                        {comparison.assumptions_version_a && (
+                          <p className="text-xs text-gray-400 mt-3">
+                            Assumptions version:{' '}
+                            {comparison.assumptions_version_a}{' → '}{comparison.assumptions_version_b}
+                          </p>
+                        )}
+                        {comparison.catalog_vintage_a && (
+                          <p className="text-xs text-gray-400">
+                            Catalog:{' '}
+                            {comparison.catalog_vintage_a}{' → '}{comparison.catalog_vintage_b}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <JobHealth jobId={job.id} />
                 </>

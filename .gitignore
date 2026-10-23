@@ -33,6 +33,11 @@ input.gz
 input.zip
 input.pdf
 
+# One-off agent edit scripts and run markers left in the repo root
+/patch_db.py
+/progress.json
+/scratch/
+
 # AI session notes / scratch docs (not source — never shipped)
 chatgpt.md
 ChatGPT.md

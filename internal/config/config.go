@@ -23,7 +23,7 @@ const (
 
 // DefaultAllowedDomains is the login allow-list used when $ALLOWED_DOMAINS is
 // unset. A var (not const) because Go has no const slices.
-var DefaultAllowedDomains = []string{"google.com", "facets.cloud"}
+var DefaultAllowedDomains = []string{"facets.cloud"}
 
 // AGYPrintTimeout renders AGYTimeoutMinutes in agy's duration form ("45m").
 func AGYPrintTimeout() string { return strconv.Itoa(AGYTimeoutMinutes) + "m" }
@@ -192,6 +192,12 @@ func LoadFromEnv() (*Config, error) {
 	}
 	if s3Region == "" {
 		s3Region = "auto"
+	}
+
+	// Validate ALLOWED_DOMAINS: wildcard "*" requires explicit opt-in.
+	allowedDomainsEnv := os.Getenv("ALLOWED_DOMAINS")
+	if allowedDomainsEnv == "*" && os.Getenv("ALLOW_ANY_DOMAIN") != "true" {
+		return nil, errors.New("ALLOWED_DOMAINS=* requires explicit ALLOW_ANY_DOMAIN=true — refusing to allow all Google accounts")
 	}
 
 	return &Config{

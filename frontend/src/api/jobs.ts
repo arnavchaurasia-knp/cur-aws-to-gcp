@@ -151,3 +151,26 @@ export async function regenerateReport(id: string): Promise<{ id: string; run_id
   return res.json()
 }
 
+// ─── Run comparison ───
+
+export interface RunComparison {
+  run_a: RunResult
+  run_b: RunResult
+  aws_delta: number
+  gcp_od_delta: number
+  gcp_1yr_cud_delta: number
+  gcp_3yr_cud_delta: number
+  assumptions_version_a?: string
+  assumptions_version_b?: string
+  report_settings_version_a?: string
+  report_settings_version_b?: string
+  catalog_vintage_a?: string
+  catalog_vintage_b?: string
+}
+
+export async function compareRuns(id: string, from: string, to: string): Promise<RunComparison | null> {
+  const res = await fetch(`/api/jobs/${encodeURIComponent(id)}/compare?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+  if (!res.ok) return null
+  return res.json()
+}
+

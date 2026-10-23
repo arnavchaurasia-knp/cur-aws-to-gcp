@@ -146,6 +146,8 @@ def validate_row(
         "assumption_note": (
             str(r.get("assumption_note") or r.get("assumption") or "").strip() or None
         ),
+        "_source_file": r.get("_source_file"),
+        "decided_by": r.get("decided_by"),
     }
 
     clean_row = _normalize_incoming_row(clean_row)
@@ -200,6 +202,9 @@ def load_mappings(mappings_dir: str) -> tuple[list[dict], list[str]]:
             if not isinstance(rows, list):
                 print(f"WARNING: {fname} is not a JSON array — skipping", file=sys.stderr)
                 continue
+            for r in rows:
+                if isinstance(r, dict) and "_source_file" not in r:
+                    r["_source_file"] = fname
             all_rows.extend(rows)
         except Exception as e:
             print(f"WARNING: could not read {fname}: {e}", file=sys.stderr)

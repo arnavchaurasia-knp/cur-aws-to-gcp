@@ -12,8 +12,30 @@ import re
 import urllib.request
 from typing import Dict, Optional, Tuple
 
+from datetime import datetime, timezone
+
+try:
+    from diagnostics import diag, WARN
+except (ImportError, ModuleNotFoundError):
+    def diag(*a, **k): pass
+    WARN = "warn"
+
 _DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 _FX_FILE = os.path.join(_DATA_DIR, "fx_rates.json")
+_FX_MAX_AGE_DAYS = 7  # FX rates drift much faster than catalogs; flag as stale after 7 days
+
+
+def get_fx_file_age_days(updated_str: Optional[str]) -> Optional[int]:
+    """Calculate age in days of an updated date string (YYYY-MM-DD)."""
+    if not updated_str:
+        return None
+    try:
+        dt = datetime.strptime(updated_str.strip(), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        age = int((datetime.now(timezone.utc) - dt).total_seconds() / 86400)
+        return max(0, age)
+    except Exception:
+        return None
+
 
 # Currency symbols map
 _DEFAULT_SYMBOLS = {
@@ -56,12 +78,13 @@ def load_fallback_fx() -> Dict:
             pass
     return {
         "base": "USD",
-        "rates": {"USD": 1.0, "EUR": 0.92, "GBP": 0.79, "JPY": 155.0, "CNY": 7.25, "CAD": 1.36, "AUD": 1.52, "INR": 83.5},
+        "updated": "2026-10-23",
+        "rates": {"USD": 1.0, "EUR": 0.8915, "GBP": 0.7467, "JPY": 156.92, "CNY": 6.6882, "CAD": 1.4014, "AUD": 1.4253, "INR": 94.9013},
         "symbols": _DEFAULT_SYMBOLS,
     }
 
 
-def fetch_live_fx_rates(timeout_sec: float = 1.5) -> Optional[Dict[str, float]]:
+def fetch_live_fx_rates(timeout_sec: float = 5.0) -> Optional[Dict[str, float]]:
     """Attempt a live fetch for USD exchange rates. Fails gracefully if offline."""
     url = "https://open.er-api.com/v6/latest/USD"
     try:
@@ -73,6 +96,7 @@ def fetch_live_fx_rates(timeout_sec: float = 1.5) -> Optional[Dict[str, float]]:
     except Exception:
         pass
     return None
+
 
 
 def detect_currency_and_rate(
@@ -192,6 +216,8 @@ def detect_currency_and_rate(
                     pass
 
     # 4. If no stated rate, look up rate for non-USD currency
+    updated_date = None
+    age_days = None
     if detected_curr == "USD":
         fx_rate = 1.0
         label = "USD"
@@ -203,17 +229,37 @@ def detect_currency_and_rate(
             label = f"1 USD = {fx_rate:.4f} {detected_curr} (stated on bill)"
         else:
             # Try live fetch
-            live_rates = fetch_live_fx_rates()
+            live_rates = None
+            try:
+                live_rates = fetch_live_fx_rates()
+            except Exception:
+                live_rates = None
+
             if live_rates and detected_curr in live_rates:
                 fx_rate = float(live_rates[detected_curr])
                 rate_source = "live"
-                label = f"1 USD = {fx_rate:.4f} {detected_curr} (live rate)"
+                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                label = f"Converted at 1 USD = {fx_rate:.4f} {detected_curr} (live rate, {today_str})."
+
             else:
                 # Fallback table
                 if detected_curr in rates_map:
                     fx_rate = float(rates_map[detected_curr])
                     rate_source = "fallback_table"
-                    label = f"1 USD = {fx_rate:.4f} {detected_curr} (reference rate)"
+                    updated_date = fallback_data.get("updated")
+                    age_days = get_fx_file_age_days(updated_date)
+                    age_str = f", {age_days} days old" if age_days is not None else ""
+                    date_str = f" dated {updated_date}" if updated_date else ""
+                    label = f"Converted at 1 USD = {fx_rate:.4f} {detected_curr} (committed rate{age_str} — live lookup unavailable)."
+
+                    # T2: Emit fx_rate_fallback diagnostic when fallback is used
+                    try:
+                        diag(WARN, "fx_rate_fallback", "currency_utils.py",
+                             f"Live FX lookup failed; using committed rate for {detected_curr} "
+                             f"({fx_rate}) dated {updated_date} ({age_days} days old). All {detected_curr} "
+                             f"figures scale with this rate.")
+                    except Exception:
+                        pass
                 else:
                     raise ValueError(
                         f"Non-USD currency {detected_curr} detected with no stated rate and no available FX source. "
@@ -238,6 +284,8 @@ def detect_currency_and_rate(
         "fx_rate": fx_rate,
         "source": rate_source,
         "label": label,
+        "updated": updated_date,
+        "age_days": age_days,
         "aws_cost_currency": aws_cost_currency,
         "aws_fx_rate": aws_fx_rate,
     }
@@ -261,10 +309,20 @@ def save_currency_info(job_dir: str, currency_info: Dict, conn=None):
                     source TEXT,
                     label TEXT,
                     aws_cost_currency TEXT,
-                    aws_fx_rate DOUBLE
+                    aws_fx_rate DOUBLE,
+                    updated TEXT,
+                    age_days INTEGER
                 );
-                DELETE FROM bill_currency;
-                INSERT INTO bill_currency VALUES (?, ?, ?, ?, ?, ?, ?);
+            """)
+            cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('bill_currency')").fetchall()}
+            if "updated" not in cols:
+                conn.execute("ALTER TABLE bill_currency ADD COLUMN updated TEXT")
+            if "age_days" not in cols:
+                conn.execute("ALTER TABLE bill_currency ADD COLUMN age_days INTEGER")
+
+            conn.execute("DELETE FROM bill_currency;")
+            conn.execute("""
+                INSERT INTO bill_currency VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
             """, [
                 currency_info.get("currency", "USD"),
                 currency_info.get("symbol", "$"),
@@ -273,6 +331,8 @@ def save_currency_info(job_dir: str, currency_info: Dict, conn=None):
                 currency_info.get("label", "USD"),
                 currency_info.get("aws_cost_currency", currency_info.get("currency", "USD")),
                 currency_info.get("aws_fx_rate", 1.0),
+                currency_info.get("updated"),
+                currency_info.get("age_days"),
             ])
         except Exception:
             pass
@@ -295,7 +355,24 @@ def load_currency_info(job_dir: str, conn=None) -> Dict:
     if conn is not None:
         try:
             cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('bill_currency')").fetchall()}
-            if "aws_fx_rate" in cols:
+            has_vintage = "updated" in cols and "age_days" in cols
+            has_aws_fx = "aws_fx_rate" in cols
+            
+            if has_vintage and has_aws_fx:
+                row = conn.execute("SELECT currency, symbol, fx_rate, source, label, aws_cost_currency, aws_fx_rate, updated, age_days FROM bill_currency LIMIT 1").fetchone()
+                if row:
+                    return {
+                        "currency": row[0],
+                        "symbol": row[1],
+                        "fx_rate": float(row[2]),
+                        "source": row[3],
+                        "label": row[4],
+                        "aws_cost_currency": row[5],
+                        "aws_fx_rate": float(row[6]),
+                        "updated": row[7],
+                        "age_days": row[8],
+                    }
+            elif has_aws_fx:
                 row = conn.execute("SELECT currency, symbol, fx_rate, source, label, aws_cost_currency, aws_fx_rate FROM bill_currency LIMIT 1").fetchone()
                 if row:
                     return {
@@ -331,3 +408,4 @@ def load_currency_info(job_dir: str, conn=None) -> Dict:
         "aws_cost_currency": "USD",
         "aws_fx_rate": 1.0,
     }
+

@@ -146,9 +146,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			},
 			// Post-merge deterministic passes (zero LLM tokens):
 			//   1. merge_mappings.py  — bulk-INSERT all group files into aws_li_to_gcp_li
-			//   2. calibrate_confidence.py — apply service-specific confidence ceilings
-			//      (OpenSearch 70%, MSK 70%, RDS 72%, Windows 75%) and add architecture notes
-			//   3. reconcile_capacity.py — upsize any break_down rows where GCP vCPU/RAM
+			//   2. reconcile_capacity.py — upsize any break_down rows where GCP vCPU/RAM
 			//      < AWS spec to enforce the never-underprovision guarantee
 			PostLLMScripts: []string{
 				"?scripts/merge_mappings.py $DB projection-audit/mappings",
@@ -159,7 +157,12 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				// Generic backstop: reroute any OTHER non-object-storage service the
 				// LLM dropped onto Cloud Storage to passthrough + manual-review flag.
 				"?scripts/fix_storage_misroute.py $DB",
-				"?scripts/calibrate_confidence.py $DB",
+				// Modelling disclosures for services whose GCP target or topology
+				// a CUR cannot reveal (OpenSearch, MSK, RDS/Aurora, ElastiCache).
+				// These notes previously rode along with calibrate_confidence.py and
+				// were lost when the confidence subsystem was removed; they are not
+				// about confidence and belong in the pipeline on their own.
+				"?scripts/apply_architecture_notes.py $DB",
 				"?scripts/reconcile_capacity.py $DB",
 				"?scripts/verify_golden_mappings.py $DB",
 			},

@@ -98,3 +98,55 @@ func TestListNonTerminalJobs_ExcludesCancelled(t *testing.T) {
 	assert.False(t, ids["j-done"])
 	assert.False(t, ids["j-failed"])
 }
+
+func TestSaveAndGetJobDiagnostics_RoundTrip(t *testing.T) {
+	d := newTestDB(t)
+	summaryJSON := `{"workload_usd":10738.09,"error_usd":0.0,"error_pct_of_workload":0.0,"error_count":0,"warn_count":3,"checks_not_evaluated":0,"by_code":{"unit_price_outlier":{"level":"warn","count":1,"rows":1,"usd":6409.41,"sources":["inget.py"]}}}`
+
+	require.NoError(t, d.SaveJobDiagnostics("job-1", "run-1", []byte(summaryJSON)))
+
+	row, err := d.GetJobDiagnostics("job-1", "run-1")
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	assert.Equal(t, "job-1", row.JobID)
+	assert.Equal(t, "run-1", row.RunID)
+	assert.Equal(t, 0, row.ErrorCount)
+	assert.Equal(t, 3, row.WarnCount)
+	assert.InDelta(t, 0.0, row.ErrorUsd, 0.01)
+	assert.InDelta(t, 10738.09, row.WorkloadUsd, 0.01)
+	require.NotNil(t, row.Summary)
+	assert.Equal(t, 3, row.Summary.WarnCount)
+	assert.Equal(t, "warn", row.Summary.ByCode["unit_price_outlier"].Level)
+	assert.Equal(t, 1, row.Summary.ByCode["unit_price_outlier"].Count)
+	assert.Equal(t, 6409.41, row.Summary.ByCode["unit_price_outlier"].Usd)
+}
+
+func TestSaveJobDiagnostics_ReplaceNotDuplicate(t *testing.T) {
+	d := newTestDB(t)
+	summary1 := `{"workload_usd":100.0,"error_count":0,"warn_count":1,"by_code":{"unit_price_outlier":{"level":"warn","count":1,"rows":1,"usd":50.0,"sources":["ingest.py"]}}}`
+	summary2 := `{"workload_usd":200.0,"error_count":1,"warn_count":0,"by_code":{"capacity_check_skipped":{"level":"warn","count":1,"rows":2,"usd":75.0,"sources":["reconcile_capacity.py"]}}}`
+
+	require.NoError(t, d.SaveJobDiagnostics("job-1", "run-1", []byte(summary1)))
+	require.NoError(t, d.SaveJobDiagnostics("job-1", "run-1", []byte(summary2)))
+
+	row, err := d.GetJobDiagnostics("job-1", "run-1")
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	assert.Equal(t, 1, row.ErrorCount)
+	assert.Equal(t, 0, row.WarnCount)
+	assert.InDelta(t, 200.0, row.WorkloadUsd, 0.01)
+	require.NotNil(t, row.Summary)
+	assert.Equal(t, 1, row.Summary.ErrorCount)
+	assert.Equal(t, 0, row.Summary.WarnCount)
+	_, hasCapacityCheck := row.Summary.ByCode["capacity_check_skipped"]
+	assert.True(t, hasCapacityCheck)
+	_, hasUnitPrice := row.Summary.ByCode["unit_price_outlier"]
+	assert.False(t, hasUnitPrice)
+}
+
+func TestGetJobDiagnostics_NotFound(t *testing.T) {
+	d := newTestDB(t)
+	row, err := d.GetJobDiagnostics("nonexistent", "run-1")
+	require.NoError(t, err)
+	assert.Nil(t, row)
+}

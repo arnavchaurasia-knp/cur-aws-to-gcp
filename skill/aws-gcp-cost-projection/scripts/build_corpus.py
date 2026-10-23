@@ -41,7 +41,13 @@ Usage
 
     # coverage only, no rebuild
     python scripts/build_corpus.py --from-jobs <corpus-dir> --report-only
+
+    # run full pipeline including agy on a named subset of bills (PERIODIC ONLY):
+    python scripts/build_corpus.py --from-jobs <corpus-dir> --with-llm bill1 bill2
+    # NOTE: --with-llm invokes `agy` which incurs external LLM API costs and is
+    # NOT reproducible run-to-run. Default builds remain strictly LLM-free.
 """
+
 
 import argparse
 import glob
@@ -77,7 +83,7 @@ CHAIN = [
     ("merge_mappings.py", ["$DB", "$MAPPINGS"]),
     ("service_classifier.py", ["$DB"]),
     ("fix_storage_misroute.py", ["$DB"]),
-    ("calibrate_confidence.py", ["$DB"]),
+    ("apply_architecture_notes.py", ["$DB"]),
     ("reconcile_capacity.py", ["$DB"]),
     ("verify_golden_mappings.py", ["$DB"]),
     # Phase 4 - Rate-card fill
@@ -100,7 +106,7 @@ SOFT = {
     "merge_mappings.py",
     "service_classifier.py",
     "fix_storage_misroute.py",
-    "calibrate_confidence.py",
+    "apply_architecture_notes.py",
     "reconcile_capacity.py",
     "verify_golden_mappings.py",
     "ensure_catalog_coverage.py",
@@ -111,8 +117,8 @@ SOFT = {
 }
 
 
-def run_chain(job_dir, skip_ingest=False, verbose=False):
-    """Run the deterministic pipeline in job_dir. Returns list of failed steps."""
+def run_chain(job_dir, skip_ingest=False, verbose=False, with_llm=False):
+    """Run the pipeline in job_dir. Returns list of failed steps."""
     db = os.path.join(job_dir, "projection-audit", "projection.duckdb")
     mappings = os.path.join(job_dir, "projection-audit", "mappings")
     failed = []
@@ -120,6 +126,44 @@ def run_chain(job_dir, skip_ingest=False, verbose=False):
     for script, args in CHAIN:
         if skip_ingest and script == "ingest.py":
             continue
+
+        # If with_llm is requested, spawn agy before merge_mappings.py
+        if with_llm and script == "merge_mappings.py":
+            manifest_path = os.path.join(job_dir, "projection-audit", "phase2_manifest.json")
+            if os.path.exists(manifest_path):
+                try:
+                    with open(manifest_path, "r", encoding="utf-8") as mf:
+                        manifest_data = json.load(mf)
+                    llm_needed = [
+                        g for g, meta in manifest_data.items()
+                        if not g.startswith("_") and isinstance(meta, dict) and meta.get("needs_llm", True)
+                    ]
+                except Exception:
+                    llm_needed = []
+
+                if llm_needed:
+                    print(f"    [--with-llm] Invoking agy for LLM groups: {', '.join(llm_needed)}")
+                    # Prompt mirroring internal/jobs/orchestrate.go Phase 2
+                    agy_prompt = (
+                        f"Phase 2 — LLM mapping only. Strict protocol, no deviations.\n"
+                        f"WORKING DIRECTORY: {job_dir}\n"
+                        f"Read projection-audit/phase2_manifest.json.\n"
+                        f"Map the LLM groups: {llm_needed} using scripts/find-sku.sh and write "
+                        f"projection-audit/mappings/<group>_mappings.json."
+                    )
+                    agy_cmd = ["agy", "-p", agy_prompt]
+                    try:
+                        agy_proc = subprocess.run(
+                            agy_cmd, cwd=job_dir, capture_output=True, text=True,
+                            errors="replace", timeout=600
+                        )
+                        if agy_proc.returncode != 0:
+                            print(f"    [--with-llm] agy returned non-zero ({agy_proc.returncode})")
+                        elif verbose:
+                            print("    [--with-llm] agy completed successfully")
+                    except Exception as agy_err:
+                        print(f"    [--with-llm] agy invocation failed or not found: {agy_err}")
+
         path = os.path.join(SCRIPTS, script)
         if not os.path.exists(path):
             continue
@@ -148,7 +192,28 @@ def run_chain(job_dir, skip_ingest=False, verbose=False):
                 print(f"    soft fail {script}")
         elif verbose:
             print(f"    ok {script}")
+
+    # If with_llm was run, inspect and report the LLM slice and invariant violations
+    if with_llm:
+        val_report_path = os.path.join(job_dir, "validation_report.json")
+        if os.path.exists(val_report_path):
+            try:
+                with open(val_report_path, "r", encoding="utf-8") as vf:
+                    val_rep = json.load(vf)
+                slice_info = val_rep.get("llm_slice", {})
+                llm_viols = val_rep.get("violations", {}).get("llm_slice_invariants", [])
+                print(f"    [--with-llm results] LLM slice: {slice_info.get('rows', 0)} rows, "
+                      f"${slice_info.get('usd', 0.0):,.2f} USD "
+                      f"(skipped no rule: {slice_info.get('skipped_no_rule', 0)}) | "
+                      f"Violations: {len(llm_viols)}")
+                if llm_viols:
+                    for v in llm_viols[:5]:
+                        print(f"      * [{v.get('invariant')}] {v.get('error')}")
+            except Exception as _e:
+                print(f"    [--with-llm] Could not read validation report: {_e}")
+
     return failed
+
 
 
 def coverage_report(corpus_dir):
@@ -270,8 +335,23 @@ def main():
     ap.add_argument("--out", help="output corpus directory (required with --bills)")
     ap.add_argument("--report-only", action="store_true",
                     help="print coverage without rebuilding")
+    ap.add_argument("--with-llm", nargs="*", default=None,
+                    help="run full pipeline including agy on a named subset of bills (or all if empty)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+
+    # Determine subset of bills for --with-llm
+    llm_subset = None
+    if args.with_llm is not None:
+        # None means not passed; [] or [b1, b2] means passed
+        llm_subset = set(args.with_llm) if args.with_llm else set()
+
+    def should_use_llm(name):
+        if llm_subset is None:
+            return False
+        if not llm_subset:
+            return True
+        return name in llm_subset or any(target in name for target in llm_subset)
 
     if args.bills:
         if not args.out:
@@ -292,7 +372,8 @@ def main():
             # The source bill directory is the user's own; only ever read it.
             shutil.copy2(bill, os.path.join(job, "input" + ext))
             print(f"[{i}/{len(bills)}] {name}")
-            failed = run_chain(job, verbose=args.verbose)
+            use_llm = should_use_llm(name)
+            failed = run_chain(job, verbose=args.verbose, with_llm=use_llm)
             if failed:
                 print(f"    soft failures: {', '.join(failed)}")
         corpus_dir = corpus
@@ -303,10 +384,13 @@ def main():
                           if os.path.isdir(d))
             print(f"Re-running deterministic chain over {len(jobs)} job dir(s)\n")
             for i, job in enumerate(jobs, 1):
-                print(f"[{i}/{len(jobs)}] {os.path.basename(job)}")
-                failed = run_chain(job, skip_ingest=True, verbose=args.verbose)
+                name = os.path.basename(job)
+                print(f"[{i}/{len(jobs)}] {name}")
+                use_llm = should_use_llm(name)
+                failed = run_chain(job, skip_ingest=True, verbose=args.verbose, with_llm=use_llm)
                 if failed:
                     print(f"    soft failures: {', '.join(failed)}")
+
 
     print()
     coverage_report(corpus_dir)

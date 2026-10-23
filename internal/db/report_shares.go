@@ -50,6 +50,54 @@ func (d *DB) GetReportShare(token string) (*ReportShare, error) {
 	return &s, nil
 }
 
+// ListReportShares returns all share rows, newest first.
+func (d *DB) ListReportShares() ([]*ReportShare, error) {
+	rows, err := d.conn.Query(
+		`SELECT token, job_id, created_by, created_at, expires_at FROM report_shares ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var shares []*ReportShare
+	for rows.Next() {
+		var s ReportShare
+		var createdBy sql.NullString
+		var createdAtStr string
+		var expiresAtStr sql.NullString
+		if err := rows.Scan(&s.Token, &s.JobID, &createdBy, &createdAtStr, &expiresAtStr); err != nil {
+			return nil, err
+		}
+		s.CreatedBy = createdBy.String
+		if t, err := parseSQLiteTime(createdAtStr); err == nil {
+			s.CreatedAt = t
+		}
+		if expiresAtStr.Valid && expiresAtStr.String != "" {
+			if t, err := parseSQLiteTime(expiresAtStr.String); err == nil {
+				s.ExpiresAt = &t
+			}
+		}
+		shares = append(shares, &s)
+	}
+	return shares, nil
+}
+
+// DeleteReportShare deletes the share row for token. Returns sql.ErrNoRows if
+// no such token exists.
+func (d *DB) DeleteReportShare(token string) error {
+	res, err := d.conn.Exec(
+		`DELETE FROM report_shares WHERE token = ?`, token,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func parseSQLiteTime(s string) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
 		return t, nil

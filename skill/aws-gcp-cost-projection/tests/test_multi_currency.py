@@ -14,12 +14,13 @@ from currency_utils import (
 def test_currency_detection_and_stated_rate(monkeypatch):
     import currency_utils
     monkeypatch.setattr(currency_utils, "fetch_live_fx_rates", lambda: None)
+    fallback = load_fallback_fx()["rates"]
 
     # 1. Detection via column values using fallback table
     info = detect_currency_and_rate(column_values=["EUR"])
     assert info["currency"] == "EUR"
     assert info["symbol"] == "€"
-    assert info["fx_rate"] == 0.92
+    assert info["fx_rate"] == fallback["EUR"]
     assert info["source"] == "fallback_table"
 
     # 2. Detection via text with stated rate: 1 USD = 0.95 EUR
@@ -34,7 +35,8 @@ def test_currency_detection_and_stated_rate(monkeypatch):
     info_gbp = detect_currency_and_rate(raw_text="Total due: £500.00")
     assert info_gbp["currency"] == "GBP"
     assert info_gbp["symbol"] == "£"
-    assert info_gbp["fx_rate"] == 0.79
+    assert info_gbp["fx_rate"] == fallback["GBP"]
+
 
 
 def test_render_report_eur_bill(tmp_path, monkeypatch):
@@ -277,16 +279,18 @@ def test_rv_d3_inverted_quotes_and_symbol_disambiguation(monkeypatch):
     assert abs(info_inv2["fx_rate"] - (1.0 / 1.08)) < 1e-4
 
     # Yen disambiguation: CNY when Chinese context present
+    fallback = load_fallback_fx()["rates"]
     info_cny = detect_currency_and_rate(raw_text="Total ¥50000. Invoice for China Beijing region.")
     assert info_cny["currency"] == "CNY"
     assert info_cny["symbol"] == "¥"
-    assert info_cny["fx_rate"] == 7.25
+    assert info_cny["fx_rate"] == fallback["CNY"]
 
     # Yen disambiguation: JPY by default
     info_jpy = detect_currency_and_rate(raw_text="Total ¥50000. Tokyo datacenter hosting.")
     assert info_jpy["currency"] == "JPY"
     assert info_jpy["symbol"] == "¥"
-    assert info_jpy["fx_rate"] == 155.0
+    assert info_jpy["fx_rate"] == fallback["JPY"]
+
 
     # Stray symbol protection: A USD bill mentioning € in a text note should stay USD
     info_stray = detect_currency_and_rate(raw_text="Invoice Total: $12,500.00 USD. Competitor was €15,000.")

@@ -16,7 +16,7 @@ _INGEST = os.path.join(_SKILL, "scripts", "ingest.py")
 
 sys.path.insert(0, os.path.join(_SKILL, "scripts"))
 import json
-from ingest import _is_workload_py, _nonworkload_sql, _WL_TYPES, _NONWL_PATTERNS
+from ingest import _is_workload_py, _nonworkload_sql, _WL_TYPES, _NONWL_PATTERNS, classify_charge
 from diagnostics import read_all as read_diagnostics
 
 
@@ -509,4 +509,101 @@ def test_sp_recurring_fee_workload_matches_cur(tmp_path_factory):
 
     # Verify identical is_workload
     assert rows_cur[0][3] == rows_sheet[0][3]
+
+
+def test_cross_format_unified_classification(tmp_path_factory):
+    """
+    Test T3 of WORKORDER_ingest_classification_unification:
+    The same 5 economic row patterns expressed across all three input shapes:
+      1. Raw CUR
+      2. Spreadsheet (Category, Subcategory, Meter, Consumed, Cost, Unit Price, Currency, Account ID, Location, Resource)
+      3. Invoice Export (Service, Custom Usage Type, Description, Cost ($))
+    must classify identically into (line_item_type, is_workload):
+      1. SP hourly commitment -> Purchase / SavingsPlanRecurringFee / is_workload=False
+      2. SP-covered usage credit -> Credit / SavingsPlanCoveredUsage or Credit / is_workload=False
+      3. RI-applied usage -> DiscountedUsage / is_workload=True
+      4. On-demand usage -> Usage / is_workload=True
+      5. Tax line -> Tax / is_workload=False
+    """
+    # 1. Direct unit test of classify_charge() across all 5 economic patterns
+    # Pattern 1: SP hourly commitment -> Purchase / SavingsPlanRecurringFee / is_workload=False
+    cat, lit, wl = classify_charge(product="Savings Plans for Compute usage", operation="3yr No Upfront : CSP : $5.0 Hourly commitment", cost=100.0)
+    assert cat == "Purchase" and lit == "SavingsPlanRecurringFee" and wl is False
+
+    # Pattern 2: SP-covered usage credit -> Credit / SavingsPlanCoveredUsage or Credit / is_workload=False
+    cat, lit, wl = classify_charge(product="Amazon Elastic Compute Cloud", operation="EC2 covered by Savings Plan credit", cost=-10.0)
+    assert cat == "Credit" and wl is False
+
+    # Pattern 3: RI-applied usage -> DiscountedUsage / is_workload=True
+    cat, lit, wl = classify_charge(product="Amazon Elastic Compute Cloud", operation="Reserved Instance applied m5.xlarge instance-hour", cost=20.0)
+    assert lit == "DiscountedUsage" and wl is True
+
+    # Pattern 4: On-demand usage -> Usage / is_workload=True
+    cat, lit, wl = classify_charge(product="Amazon Elastic Compute Cloud", usage_type="USE2-BoxUsage:t3.medium", operation="RunInstances:0002", cost=30.0)
+    assert cat == "Usage" and lit == "Usage" and wl is True
+
+    # Pattern 5: Tax line -> Tax / is_workload=False
+    cat, lit, wl = classify_charge(product="Tax", operation="Estimated Tax", cost=5.0)
+    assert cat == "Tax" and lit == "Tax" and wl is False
+
+    # 2. Ingest test across all 3 formats for the 4 catalog-retained rows:
+    # 2a. Raw CUR
+    p_cur = tmp_path_factory.mktemp("cur_unified")
+    cur_csv = (
+        "identity/LineItemId,lineItem/LineItemType,lineItem/ProductCode,lineItem/UsageType,lineItem/Operation,lineItem/UsageAmount,lineItem/UnblendedCost,pricing/publicOnDemandCost\n"
+        "li_sp,SavingsPlanRecurringFee,AWSSavingsPlan,aps3-ec2sp:m6a.1yrnoupfront,,1.0,100.0,100.0\n"
+        "li_sp_credit,SavingsPlanCoveredUsage,AmazonEC2,USE2-BoxUsage:t3.medium,RunInstances,1.0,-10.0,0.0\n"
+        "li_ri,DiscountedUsage,AmazonEC2,USE2-BoxUsage:t3.medium,RunInstances,730.0,20.0,20.0\n"
+        "li_od,Usage,AmazonEC2,USE2-BoxUsage:t3.medium,RunInstances,730.0,30.0,30.0\n"
+    )
+    rows_cur = _run_ingest(p_cur, "input.csv", cur_csv)
+    assert len(rows_cur) == 4
+
+    # 2b. Spreadsheet
+    p_sheet = tmp_path_factory.mktemp("sheet_unified")
+    sheet_csv = (
+        "Category,Subcategory,Meter,Consumed,Cost,Unit Price,Currency,Account ID,Location,Resource\n"
+        "Savings Plans for Compute usage,,3yr No Upfront : CSP : $5.0 Hourly commitment,1,100.0,100.0,USD,123456789012,ap-south-1,\n"
+        "Amazon Elastic Compute Cloud,,EC2 covered by Savings Plan credit,1,-10.0,10.0,USD,123456789012,us-east-2,\n"
+        "Amazon Elastic Compute Cloud,,$0.10 per Reserved Instance applied m5.xlarge instance-hour,730,20.0,20.0,USD,123456789012,us-east-2,\n"
+        "Amazon Elastic Compute Cloud,,USE2-BoxUsage:t3.medium,730,30.0,30.0,USD,123456789012,us-east-2,\n"
+    )
+    rows_sheet = _run_ingest(p_sheet, "input.csv", sheet_csv)
+    assert len(rows_sheet) == 4
+
+    # 2c. Invoice Export
+    p_inv = tmp_path_factory.mktemp("inv_unified")
+    inv_csv = (
+        "Service,Custom Usage Type,Description,Cost ($)\n"
+        "Savings Plans for Compute usage,3yr No Upfront : CSP : $5.0 Hourly commitment,Savings Plans for Compute usage $5.0 Hourly commitment,100.00\n"
+        "Amazon Elastic Compute Cloud,USE2-BoxUsage:t3.medium,EC2 covered by Savings Plan credit,-10.00\n"
+        "Amazon Elastic Compute Cloud,USE2-BoxUsage:t3.medium,Reserved Instance applied m5.xlarge instance-hour,20.00\n"
+        "Amazon Elastic Compute Cloud,USE2-BoxUsage:t3.medium,RunInstances:0002,30.00\n"
+    )
+    rows_inv = _run_ingest(p_inv, "input.csv", inv_csv)
+    assert len(rows_inv) == 4
+
+    # Map rows by index/pattern:
+    # 0: SP commitment -> is_workload=False
+    # 1: SP covered credit -> is_workload=False
+    # 2: RI applied usage -> is_workload=True
+    # 3: OD usage -> is_workload=True
+    expected_workload = [False, False, True, True]
+
+    for idx, exp_wl in enumerate(expected_workload):
+        cur_row = rows_cur[idx]
+        sheet_row = rows_sheet[idx]
+        inv_row = rows_inv[idx]
+
+        assert cur_row[3] is exp_wl, f"CUR row {idx} is_workload expected {exp_wl}, got {cur_row}"
+        assert sheet_row[3] is exp_wl, f"Sheet row {idx} is_workload expected {exp_wl}, got {sheet_row}"
+        assert inv_row[3] is exp_wl, f"Invoice row {idx} is_workload expected {exp_wl}, got {inv_row}"
+
+    # Verify SP commitment specifically classified as non-workload across all 3
+    assert rows_cur[0][2] == "SavingsPlanRecurringFee"
+    assert rows_cur[0][3] is False
+    assert rows_sheet[0][2] == "SavingsPlanRecurringFee"
+    assert rows_sheet[0][3] is False
+    assert rows_inv[0][2] == "SavingsPlanRecurringFee"
+    assert rows_inv[0][3] is False
 

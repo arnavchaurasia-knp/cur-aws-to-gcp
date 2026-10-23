@@ -231,3 +231,43 @@ func trimSpace(s string) string {
 	}
 	return s[start:end]
 }
+
+// TestSecurityHeadersHSTSBehindProxy pins the production case, not the local
+// one. Render terminates TLS at its edge and forwards plain HTTP, so r.TLS is
+// nil on every live request; gating HSTS on r.TLS alone meant the header was
+// never actually sent on the deployed site, while every local check passed.
+func TestSecurityHeadersHSTSBehindProxy(t *testing.T) {
+	dummy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := securityHeaders(dummy)
+
+	cases := []struct {
+		name         string
+		forwardedPro string
+		wantHSTS     bool
+	}{
+		{"plain http, no proxy header", "", false},
+		{"behind TLS-terminating proxy", "https", true},
+		{"proxy reports plain http", "http", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tc.forwardedPro != "" {
+				req.Header.Set("X-Forwarded-Proto", tc.forwardedPro)
+			}
+			handler.ServeHTTP(rec, req)
+
+			got := rec.Header().Get("Strict-Transport-Security")
+			if tc.wantHSTS && got == "" {
+				t.Errorf("expected HSTS to be set, but it was absent")
+			}
+			if !tc.wantHSTS && got != "" {
+				t.Errorf("expected no HSTS over plain HTTP, got %q", got)
+			}
+		})
+	}
+}

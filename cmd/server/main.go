@@ -174,9 +174,9 @@ func main() {
 	r.Get("/version", versionHandler(catalogFetchedAt, catalogAgeDays))
 
 	// Rate limiting for sensitive endpoints
-	loginLimiter := jobs.NewRateLimitMiddleware(10.0/60.0, 10)   // 10/min/IP
-	uploadLimiter := jobs.NewRateLimitMiddleware(5.0/3600.0, 5)   // 5/hour/session
-	shareLimiter := jobs.NewRateLimitMiddleware(60.0/60.0, 60)    // 60/min/IP
+	loginLimiter := jobs.NewRateLimitMiddleware(10.0/60.0, 10)  // 10/min/IP
+	uploadLimiter := jobs.NewRateLimitMiddleware(5.0/3600.0, 5) // 5/hour/session
+	shareLimiter := jobs.NewRateLimitMiddleware(60.0/60.0, 60)  // 60/min/IP
 
 	// Auth (no session required)
 	r.Get("/api/auth/login", loginLimiter(http.HandlerFunc(oauthH.Login)))
@@ -406,10 +406,10 @@ func versionHandler(catalogFetchedAt, catalogAgeDays any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"build_sha":           buildSHA,
-			"build_time":          buildTime,
-			"catalog_fetched_at":  catalogFetchedAt,
-			"catalog_age_days":    catalogAgeDays,
+			"build_sha":          buildSHA,
+			"build_time":         buildTime,
+			"catalog_fetched_at": catalogFetchedAt,
+			"catalog_age_days":   catalogAgeDays,
 		})
 	}
 }
@@ -417,8 +417,8 @@ func versionHandler(catalogFetchedAt, catalogAgeDays any) http.HandlerFunc {
 // buildSHA and buildTime are injected at build time via -ldflags. Degrade to
 // "dev" / "unknown" when not set (local development).
 var (
-	buildSHA   = "dev"
-	buildTime  = "unknown"
+	buildSHA  = "dev"
+	buildTime = "unknown"
 )
 
 // securityHeaders adds security headers to every response. Applied globally via
@@ -438,10 +438,17 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		// HSTS only when served over HTTPS — setting it on plain HTTP would
-		// break local development and could lock users out if the site is
-		// later served over plain HTTP.
-		if r.TLS != nil {
+		// HSTS only when the request actually reached us over HTTPS — setting
+		// it on plain HTTP would break local development and could lock users
+		// out if the site is later served over plain HTTP.
+		//
+		// r.TLS alone is not that test in production: Render (like any reverse
+		// proxy) terminates TLS at the edge and forwards plain HTTP, so r.TLS
+		// is nil on every live request and HSTS was never actually sent on the
+		// deployed site. Trust X-Forwarded-Proto for the same reason, and in
+		// the same shape, as internal/auth/oauth.go does when deciding whether
+		// to mark the session cookie Secure.
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		w.Header().Set("Content-Security-Policy",

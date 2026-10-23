@@ -1263,14 +1263,36 @@ def _family_phantom_unavailable(gcp_service, desc_pattern, gcp_region):
 # qualifier) correctly resolved the plain SKU ($0.13/GiBy-mo) — the compared
 # rate and the resolved SKU ID silently belonged to two different products.
 _NOISE_QUALIFIERS = ["autoclass", "early delete", "dual-region", "multi-region", "regional",
-                     "asynchronous replication protection", "confidential mode"]
+                     "asynchronous replication protection", "confidential mode",
+                     # Cloud SQL / AlloyDB edition and support tiers. These are
+                     # separately-priced variants of the same vCPU/RAM unit, so a
+                     # pattern that doesn't name one must not resolve to it: the
+                     # 2026-10-23 catalog refresh added "Enterprise Plus C4" SKUs
+                     # and a generic "Cloud SQL.*Regional.*vCPU" began matching
+                     # SQL Server Enterprise Plus instead of the plain PostgreSQL
+                     # SKU it had resolved to for months. Note "c4"/"c4a" are
+                     # deliberately NOT listed — those substrings appear in
+                     # Compute Engine machine-family descriptions.
+                     "enterprise plus", "performance optimized", "extended support"]
+
+
+# Legacy Cloud SQL "N vCPU + MGB RAM" SKUs price a WHOLE INSTANCE hour, not a
+# vCPU-hour or a GiB-hour. They nevertheless substring-match a per-unit pattern
+# like "Zonal.*vCPU" or "Zonal.*RAM", and resolving one for a per-unit quantity
+# multiplies the bill by the bundle's size (a 16-vCPU bundle rate applied to a
+# per-vCPU quantity over-projects ~16x). Only a pattern that asks for a bundle
+# — one containing a literal "+" — may resolve to one.
+_BUNDLED_INSTANCE_RE = re.compile(r"\d+\s*vCPU\s*\+", re.IGNORECASE)
 
 
 def _is_noise_variant(desc_pattern, sku_desc):
     """True if sku_desc carries a _NOISE_QUALIFIERS term the caller's own
-    desc_pattern didn't ask for (so it's a different, not-requested variant)."""
+    desc_pattern didn't ask for (so it's a different, not-requested variant),
+    or is a bundled whole-instance SKU the pattern didn't ask for."""
     desc_lower = sku_desc.lower()
     pattern_lower = desc_pattern.lower()
+    if _BUNDLED_INSTANCE_RE.search(sku_desc) and "+" not in desc_pattern:
+        return True
     return any(q in desc_lower and q not in pattern_lower for q in _NOISE_QUALIFIERS)
 
 

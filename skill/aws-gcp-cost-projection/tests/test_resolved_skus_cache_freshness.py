@@ -48,10 +48,17 @@ def _cache_entries():
         cache = json.load(f)
     entries = []
     for key, v in cache.items():
+        # A desc_pattern may itself be a regex alternation containing "|"
+        # (e.g. "E2 Instance Core|N2D AMD Instance Core"), so the key can have
+        # more than three parts. Splitting positionally skipped exactly those
+        # entries — leaving the most complex patterns, the ones most likely to
+        # drift, as the only ones never checked. Service is first, region last,
+        # and everything between them is the pattern.
         parts = key.split("|")
-        if len(parts) != 3:
+        if len(parts) < 3:
             continue
-        service, desc_pattern, region = parts
+        service, region = parts[0], parts[-1]
+        desc_pattern = "|".join(parts[1:-1])
         cached_id = v.get("sku_id") if isinstance(v, dict) else v
         if cached_id:
             entries.append((key, service, desc_pattern, region, cached_id))

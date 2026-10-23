@@ -114,12 +114,6 @@
     "businessEntityName": "businessEntities/GCP"
   },
   {
-    "name": "services/31B7-A308-38F7",
-    "serviceId": "31B7-A308-38F7",
-    "displayName": "Anthos Policy Controller",
-    "businessEntityName": "businessEntities/GCP"
-  },
-  {
     "name": "services/363B-8851-170D",
     "serviceId": "363B-8851-170D",
     "displayName": "Dataproc",
@@ -363,12 +357,6 @@
     "name": "services/879F-1832-8749",
     "serviceId": "879F-1832-8749",
     "displayName": "Stackdriver",
-    "businessEntityName": "businessEntities/GCP"
-  },
-  {
-    "name": "services/89B9-6A5A-B358",
-    "serviceId": "89B9-6A5A-B358",
-    "displayName": "Data Catalog",
     "businessEntityName": "businessEntities/GCP"
   },
   {

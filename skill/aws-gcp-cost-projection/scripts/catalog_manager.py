@@ -205,20 +205,32 @@ def integrity_check_file(path, baseline_count=None):
     issues, priced = [], 0
     required = ("skuId", "description", "serviceRegions", "pricingInfo")
     missing_fields = 0
+    # A SKU can lack a rate for two very different reasons: the dump is broken,
+    # or the Cloud Billing API says this SKU has no default price (e.g.
+    # Firebase's single subscription-plan SKU). The API states the second case
+    # in pricingInfo.summary, so count those separately -- otherwise a service
+    # that is legitimately unpriced looks identical to a failed fetch.
+    unpriced_by_design = 0
     for s in skus:
         if not all(k in s and s[k] not in (None, "", []) for k in required):
             missing_fields += 1
             continue
-        expr = (s.get("pricingInfo") or [{}])[0].get("pricingExpression", {})
+        info = (s.get("pricingInfo") or [{}])[0]
+        expr = info.get("pricingExpression", {})
         if expr.get("tieredRates"):
             priced += 1
+        elif "not being priced by default" in (info.get("summary") or "").lower():
+            unpriced_by_design += 1
     count = len(skus)
 
     status = "OK"
     if missing_fields > count * 0.5:
         status = "DEGRADED"
         issues.append(f"{missing_fields}/{count} SKUs missing required fields")
-    if priced == 0:
+    # Only a dump with unexplained missing rates is broken. If every SKU that
+    # has no rate is one the API explicitly marks as unpriced, the service is
+    # legitimately subscription-billed and the dump is fine.
+    if priced == 0 and unpriced_by_design < count:
         status = "DEGRADED"
         issues.append("no SKU carries a usable unitPrice")
     if baseline_count and count < baseline_count * COUNT_FLOOR_FRACTION:
@@ -229,7 +241,9 @@ def integrity_check_file(path, baseline_count=None):
     et = _max_effective_time(skus)
     if et:
         age_days = (datetime.now(timezone.utc) - et).days
-    return {"status": status, "count": count, "priced": priced, "issues": issues, "age_days": age_days}
+    return {"status": status, "count": count, "priced": priced,
+            "unpriced_by_design": unpriced_by_design,
+            "issues": issues, "age_days": age_days}
 
 
 def _load_meta(p):

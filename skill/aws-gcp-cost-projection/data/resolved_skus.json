@@ -351,10 +351,10 @@
   "Cloud SQL|Cloud SQL for PostgreSQL: Zonal - vCPU|asia-southeast1": "7CCB-32BC-7C57",
   "Cloud SQL|Cloud SQL for PostgreSQL: Zonal - vCPU|us-east4": "99EA-F8FA-6640",
   "Cloud SQL|Cloud SQL for Postgres: Zonal - Enterprise Plus Performance Optimized C4A vCPU|asia-southeast1": "3B94-D60C-9FA8",
-  "Cloud SQL|Cloud SQL.*Regional.*RAM|us-east4": "0DA8-5D33-46FB",
+  "Cloud SQL|Cloud SQL.*Regional.*RAM|us-east4": "1501-9589-4062",
   "Cloud SQL|Cloud SQL.*Regional.*vCPU|us-east4": "0154-7BAE-89A4",
-  "Cloud SQL|Cloud SQL.*Zonal.*RAM|us-east4": "0496-00FF-6973",
-  "Cloud SQL|Cloud SQL.*Zonal.*vCPU|us-east4": "0001-0118-796B",
+  "Cloud SQL|Cloud SQL.*Zonal.*RAM|us-east4": "0D7A-665F-71DE",
+  "Cloud SQL|Cloud SQL.*Zonal.*vCPU|us-east4": "3608-47CD-223B",
   "Cloud SQL|Cloud SQL: Regional - SSD storage|asia-south1": {
     "catalog_version": "2026-07-27T06:50:51Z",
     "resource_group": null,
@@ -379,7 +379,7 @@
   },
   "Cloud SQL|Extended support vCPU v13|us-east4": {
     "resource_group": "SQLGen2InstancesCPU",
-    "sku_id": "0001-0118-796B",
+    "sku_id": "31D9-BCED-52C3",
     "unit": "h"
   },
   "Cloud SQL|PostgreSQL:\\ Zonal\\ \\-\\ Extended\\ support\\ vCPU\\ v13|us-east4": {

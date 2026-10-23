@@ -26,7 +26,12 @@ curl -sf "https://cloudbilling.googleapis.com/v1/services?pageSize=5000" \
   -H "Authorization: Bearer $TOKEN" -o /tmp/refresh-all-services.json
 
 # Filter to first-party allow-list
-jq --slurpfile names <(jq -R . "$ALLOW_LIST" | jq -s .) \
+# Materialise the allow-list as a real file rather than passing it through a
+# process substitution: --slurpfile is read by the jq binary itself, and a
+# native (non-MSYS) jq.exe on Windows cannot open the /proc/<pid>/fd path that
+# <(...) hands it. A temp file behaves identically on every platform.
+jq -R . "$ALLOW_LIST" | jq -s . > /tmp/refresh-allowlist.json
+jq --slurpfile names /tmp/refresh-allowlist.json \
    '[.services[] | select(.displayName as $d | $names[0] | index($d))]' \
    /tmp/refresh-all-services.json > "$SERVICES_OUT"
 SVC_COUNT=$(jq 'length' "$SERVICES_OUT")

@@ -22,8 +22,13 @@ services:
         sync: false
       - key: GOOGLE_REDIRECT_URI
         value: "https://cur-web-br12.onrender.com/login"
+      # Session cookie AES key. NEVER give this a literal value here:
+      # render.yaml is committed to a public repo, so a value: would publish
+      # the key and let anyone forge a session for any user. Set it in the
+      # Render dashboard to a base64-encoded 32-byte random value
+      # (openssl rand -base64 32).
       - key: SESSION_SECRET
-        value: "cur-web-session-secret-key-at-least-32-bytes-long-12345"
+        sync: false
       - key: APP_BASE_URL
         value: "https://cur-web-br12.onrender.com"
       # 100% Free Persistent Database (Turso libSQL / SQLite Cloud - 9 GB free forever)

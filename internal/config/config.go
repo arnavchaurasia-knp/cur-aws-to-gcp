@@ -143,9 +143,19 @@ func LoadFromEnv() (*Config, error) {
 			slog.Warn("Slack notifications disabled (SLACK_WEBHOOK_URL unset)")
 		}
 	}
-	// ALLOWED_DOMAINS=* allows any Google account to sign in — requires explicit opt-in.
-	allowedDomainsEnv := os.Getenv("ALLOWED_DOMAINS")
-	if allowedDomainsEnv == "*" {
+	// A wildcard allow-list lets any Google account sign in, so it requires
+	// explicit opt-in. Decide this on the EFFECTIVE list, not the raw string:
+	// testing os.Getenv(...) == "*" only catches someone typing the wildcard,
+	// and misses every other route to the same state.
+	effectiveDomains := parseAllowedDomains(os.Getenv("ALLOWED_DOMAINS"))
+	wildcardDomains := false
+	for _, d := range effectiveDomains {
+		if d == "*" {
+			wildcardDomains = true
+			break
+		}
+	}
+	if wildcardDomains {
 		if os.Getenv("ALLOW_ANY_DOMAIN") != "true" {
 			return nil, errors.New("ALLOWED_DOMAINS=* requires explicit ALLOW_ANY_DOMAIN=true — refusing to allow all Google accounts")
 		}
@@ -250,8 +260,15 @@ func LoadFromEnv() (*Config, error) {
 }
 
 func parseAllowedDomains(raw string) []string {
-	if raw == "" {
-		return []string{"*"}
+	// An unset variable means "nobody configured this", which must fall back to
+	// the restrictive default — NOT to "*". Returning the wildcard here made an
+	// unset ALLOWED_DOMAINS indistinguishable from an explicit, deliberate
+	// wildcard, and auth skips the domain check entirely when "*" is present
+	// (internal/auth/oauth.go:439). Production ran this way: the variable was
+	// never set, so any Google account could sign in, and the ALLOW_ANY_DOMAIN
+	// opt-in below never fired because it only ever saw an empty raw string.
+	if strings.TrimSpace(raw) == "" {
+		return append([]string(nil), DefaultAllowedDomains...)
 	}
 	parts := strings.Split(raw, ",")
 	out := make([]string, 0, len(parts))

@@ -66,11 +66,11 @@ func main() {
 	defer database.Close()
 
 	// Log the effective allowed-domains list so it is visible in deploy logs.
-	if len(cfg.AllowedDomains) == 0 {
-		slog.Warn("ALLOWED_DOMAINS unset — default allow-list is " + strings.Join(config.DefaultAllowedDomains, ","))
-	} else {
-		slog.Info("allowed domains", "domains", strings.Join(cfg.AllowedDomains, ","))
-	}
+	// parseAllowedDomains always returns at least one entry, so the previous
+	// len()==0 branch here could never run and the "unset" case was reported as
+	// an ordinary INFO line reading `domains=*`.
+	slog.Info("allowed domains", "domains", strings.Join(cfg.AllowedDomains, ","),
+		"configured", os.Getenv("ALLOWED_DOMAINS") != "")
 
 	// Best-effort one-shot backfill: walks existing job dirs and ensures
 	// each projection.duckdb has a run_results table with >=1 row. Lets

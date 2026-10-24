@@ -14,6 +14,9 @@ export interface ListJobsParams {
   status?: string
   from?: string // yyyy-mm-dd
   to?: string   // yyyy-mm-dd
+  q?: string
+  sort?: string
+  dir?: 'asc' | 'desc'
 }
 
 export async function listAllJobsPaged(params: ListJobsParams = {}): Promise<PagedJobs> {
@@ -23,6 +26,9 @@ export async function listAllJobsPaged(params: ListJobsParams = {}): Promise<Pag
   if (params.status) qs.set('status', params.status)
   if (params.from) qs.set('from', params.from)
   if (params.to) qs.set('to', params.to)
+  if (params.q) qs.set('q', params.q)
+  if (params.sort) qs.set('sort', params.sort)
+  if (params.dir) qs.set('dir', params.dir)
   return getJSON<PagedJobs>(`/api/admin/jobs?${qs.toString()}`)
 }
 
@@ -131,10 +137,23 @@ export interface AuditEntry {
   created_at: string
 }
 
-export async function listAuditLog(params: { limit?: number; offset?: number } = {}): Promise<AuditEntry[]> {
+export interface ListAuditLogParams {
+  limit?: number
+  offset?: number
+  actor?: string
+  action?: string
+  from?: string
+  to?: string
+}
+
+export async function listAuditLog(params: ListAuditLogParams = {}): Promise<AuditEntry[]> {
   const qs = new URLSearchParams()
   if (params.limit != null) qs.set('limit', String(params.limit))
   if (params.offset != null) qs.set('offset', String(params.offset))
+  if (params.actor) qs.set('actor', params.actor)
+  if (params.action) qs.set('action', params.action)
+  if (params.from) qs.set('from', params.from)
+  if (params.to) qs.set('to', params.to)
   return getJSON<AuditEntry[]>(`/api/admin/audit?${qs.toString()}`)
 }
 
@@ -195,6 +214,7 @@ export interface DeletedJob {
   status: string
   input_ext?: string
   aws_spend: number | null
+  gcp_od?: number | null
   error: string
   session_id: string
   created_at: string
@@ -202,8 +222,11 @@ export interface DeletedJob {
   deleted_by: string
 }
 
-export async function listDeletedJobs(): Promise<DeletedJob[]> {
-  return getJSON<DeletedJob[]>('/api/admin/deleted-jobs')
+export async function listDeletedJobs(q?: string): Promise<DeletedJob[]> {
+  const qs = new URLSearchParams()
+  if (q) qs.set('q', q)
+  const queryStr = qs.toString() ? `?${qs.toString()}` : ''
+  return getJSON<DeletedJob[]>(`/api/admin/deleted-jobs${queryStr}`)
 }
 
 export interface Assumption {

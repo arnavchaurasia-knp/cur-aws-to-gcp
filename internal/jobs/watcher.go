@@ -214,12 +214,16 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		default:
 			slog.Info("validator clean", "job_id", jobID)
 		}
-		if err := w.db.UpdateJobDone(jobID, spend); err != nil {
-			log.Printf("watcher %s: UpdateJobDone: %v", jobID, err)
+		var gcpOD *float64
+		if runs, err := QueryRunResults(dbPath); err == nil && len(runs) > 0 {
+			gcpOD = runs[0].GCPOD
+		}
+		if err := w.db.UpdateJobDoneWithGCPOD(jobID, spend, gcpOD); err != nil {
+			log.Printf("watcher %s: UpdateJobDoneWithGCPOD: %v", jobID, err)
 		}
 		w.recordEquivalenceUsage(jobID, jobDir)
 		metrics.JobsDone.Add(1)
-		slog.Info("job done", "job_id", jobID, "prospect", job.Prospect, "aws_spend", spend, "attempts", job.Attempts)
+		slog.Info("job done", "job_id", jobID, "prospect", job.Prospect, "aws_spend", spend, "gcp_od", gcpOD, "attempts", job.Attempts)
 
 		// Persist run_diagnostics.json summary into the durable DB so it
 		// survives job-directory expiration (ephemeral storage redeploys).

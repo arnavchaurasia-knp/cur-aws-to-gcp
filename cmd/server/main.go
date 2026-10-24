@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -41,6 +42,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("config error: %v", err)
 	}
+
+	buildSHA, buildTime = resolveBuildInfo(buildSHA, buildTime, os.Getenv)
 
 	if cfg.GoogleClientID != "" {
 		slog.Info("Google OAuth configured", "client_id_prefix", cfg.GoogleClientID[:min(12, len(cfg.GoogleClientID))]+"...")
@@ -146,11 +149,16 @@ func main() {
 			pidDead := !jobs.PidAlive(j.AgentPID)
 			if pidDead && len(reportGlob) > 0 {
 				log.Printf("orphan job %s: pid %d dead, report exists — marking done", j.ID, j.AgentPID)
-				spend, err := jobs.QueryAWSSpend(filepath.Join(jobDir, "projection-audit", "projection.duckdb"))
+				dbPath := filepath.Join(jobDir, "projection-audit", "projection.duckdb")
+				spend, err := jobs.QueryAWSSpend(dbPath)
 				if err != nil {
 					log.Printf("orphan job %s: QueryAWSSpend: %v", j.ID, err)
 				}
-				_ = database.UpdateJobDone(j.ID, spend)
+				var gcpOD *float64
+				if runs, err := jobs.QueryRunResults(dbPath); err == nil && len(runs) > 0 {
+					gcpOD = runs[0].GCPOD
+				}
+				_ = database.UpdateJobDoneWithGCPOD(j.ID, spend, gcpOD)
 				continue
 			}
 			log.Printf("attaching watcher to orphan job %s (status=%s, pid=%d, attempts=%d)",
@@ -433,6 +441,44 @@ var (
 // (Plus Jakarta Sans and Inter) from external origins, so style-src allows
 // https://fonts.googleapis.com (the stylesheet) and font-src allows
 // https://fonts.gstatic.com (the webfont files).
+// resolveBuildInfo settles what /version reports for this binary.
+//
+// The values normally arrive from -ldflags at image build time. Two things can
+// go wrong, and both must end as "unknown" rather than as something that looks
+// real:
+//
+//   - The build arg is never substituted, so the literal "${RENDER_GIT_COMMIT}"
+//     is baked in. That is not "dev", so a plain `== "dev"` check would accept
+//     it and /version would present a placeholder as the deployed commit.
+//   - No -ldflags at all, leaving the "dev" default. Render exports
+//     RENDER_GIT_COMMIT into the runtime environment regardless, so prefer it.
+//
+// env is injected so this is testable without touching process state.
+func resolveBuildInfo(sha, ts string, env func(string) string) (string, string) {
+	unsubstituted := func(v string) bool { return strings.HasPrefix(v, "${") }
+
+	if unsubstituted(sha) {
+		sha = "dev"
+	}
+	if unsubstituted(ts) {
+		ts = "unknown"
+	}
+
+	if sha == "dev" {
+		for _, key := range []string{"RENDER_GIT_COMMIT", "BUILD_SHA"} {
+			if v := env(key); v != "" && !unsubstituted(v) {
+				sha = v
+				break
+			}
+		}
+	}
+	return sha, ts
+}
+
+// proxyProbe fires the one-shot diagnostic in securityHeaders. Temporary;
+// delete it with that block.
+var proxyProbe sync.Once
+
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -448,6 +494,21 @@ func securityHeaders(next http.Handler) http.Handler {
 		// deployed site. Trust X-Forwarded-Proto for the same reason, and in
 		// the same shape, as internal/auth/oauth.go does when deciding whether
 		// to mark the session cookie Secure.
+		// Temporary: HSTS is still absent from the live response even though
+		// the X-Forwarded-Proto condition below deployed, so record what the
+		// proxy actually sends. Logged ONCE per process — on every request it
+		// would be one line per page load forever. Remove this block, and the
+		// proxyProbe var, once the answer is in the Render log.
+		proxyProbe.Do(func() {
+			slog.Info("proxy header probe",
+				"path", r.URL.Path,
+				"tls_not_nil", r.TLS != nil,
+				"x_forwarded_proto", r.Header.Get("X-Forwarded-Proto"),
+				"x_forwarded_ssl", r.Header.Get("X-Forwarded-Ssl"),
+				"forwarded", r.Header.Get("Forwarded"),
+				"host", r.Host,
+			)
+		})
 		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}

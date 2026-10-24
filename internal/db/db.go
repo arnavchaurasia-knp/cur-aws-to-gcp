@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     session_id TEXT,
     agent_pid INTEGER DEFAULT 0,
     attempts   INTEGER DEFAULT 1,
+    gcp_od     REAL,
     created_at DATETIME DEFAULT (datetime('now')),
     updated_at DATETIME DEFAULT (datetime('now')),
     cancelled_at DATETIME
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS deleted_jobs (
     status     TEXT NOT NULL,
     input_ext  TEXT,
     aws_spend  REAL,
+    gcp_od     REAL,
     error      TEXT,
     session_id TEXT,
     created_at DATETIME,
@@ -185,6 +187,8 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 		`ALTER TABLE jobs ADD COLUMN cancelled_at DATETIME`,
 		`ALTER TABLE users ADD COLUMN password_hash TEXT`,
 		`ALTER TABLE jobs ADD COLUMN assumptions_version TEXT`,
+		`ALTER TABLE jobs ADD COLUMN gcp_od REAL`,
+		`ALTER TABLE deleted_jobs ADD COLUMN gcp_od REAL`,
 	} {
 		if _, err := conn.Exec(ddl); err != nil {
 			msg := err.Error()

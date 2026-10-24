@@ -27,7 +27,7 @@ import (
 
 const defaultAdminPageSize = 50
 
-// AdminListAllPaged extends AdminListAll with limit/offset/from/to/status
+// AdminListAllPaged extends AdminListAll with limit/offset/from/to/status/q/sort/dir
 // query params and a total count for pagination. Registered at the same
 // GET /api/admin/jobs route (replaces the plain AdminListAll handler).
 func (h *Handler) AdminListAllPaged(w http.ResponseWriter, r *http.Request) {
@@ -58,8 +58,11 @@ func (h *Handler) AdminListAllPaged(w http.ResponseWriter, r *http.Request) {
 			to = &t
 		}
 	}
+	searchQuery := q.Get("q")
+	sortBy := q.Get("sort")
+	sortDir := q.Get("dir")
 
-	jobList, err := h.db.ListAllJobsFiltered(limit, offset, status, from, to)
+	jobList, err := h.db.ListAllJobsFiltered(limit, offset, status, from, to, searchQuery, sortBy, sortDir)
 	if err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
@@ -67,7 +70,7 @@ func (h *Handler) AdminListAllPaged(w http.ResponseWriter, r *http.Request) {
 	if jobList == nil {
 		jobList = []*db.Job{}
 	}
-	total, err := h.db.CountAllJobs(status, from, to)
+	total, err := h.db.CountAllJobs(status, from, to, searchQuery)
 	if err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
@@ -287,7 +290,8 @@ func (h *Handler) AdminDeleteJob(w http.ResponseWriter, r *http.Request) {
 
 // AdminListDeletedJobs lists all archived deleted jobs for compliance and auditing.
 func (h *Handler) AdminListDeletedJobs(w http.ResponseWriter, r *http.Request) {
-	list, err := h.db.ListDeletedJobs()
+	searchQuery := r.URL.Query().Get("q")
+	list, err := h.db.ListDeletedJobs(searchQuery)
 	if err != nil {
 		http.Error(w, `{"error":"failed to query deleted jobs"}`, http.StatusInternalServerError)
 		return
@@ -389,7 +393,22 @@ func (h *Handler) AdminAuditLog(w http.ResponseWriter, r *http.Request) {
 			offset = n
 		}
 	}
-	entries, err := h.db.ListAuditLog(limit, offset)
+	actor := q.Get("actor")
+	action := q.Get("action")
+	var from, to *time.Time
+	if v := q.Get("from"); v != "" {
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			from = &t
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			t = t.Add(24*time.Hour - time.Second)
+			to = &t
+		}
+	}
+
+	entries, err := h.db.ListAuditLog(limit, offset, actor, action, from, to)
 	if err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return

@@ -408,7 +408,7 @@ func TestShareRevokeIsAudited(t *testing.T) {
 	h.AdminDeleteReportShare(w, req)
 	assert.Equal(t, http.StatusNoContent, w.Code)
 
-	entries, err := d.ListAuditLog(10, 0)
+	entries, err := d.ListAuditLog(10, 0, "", "", nil, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, entries)
 	found := false

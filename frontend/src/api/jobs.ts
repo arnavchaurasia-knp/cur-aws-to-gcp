@@ -1,7 +1,7 @@
 // frontend/src/api/jobs.ts
 export interface Job {
   id: string; owner: string; prospect: string; status: string
-  aws_spend: number | null; error: string; created_at: string
+  aws_spend: number | null; gcp_od?: number | null; error: string; created_at: string
 }
 
 export interface RunResult {

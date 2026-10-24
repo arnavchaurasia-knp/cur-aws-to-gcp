@@ -16,6 +16,8 @@ services:
         value: /app/skill/aws-gcp-cost-projection
       - key: DEV_AUTH_BYPASS
         value: "false"
+      - key: BUILD_SHA
+        value: ${RENDER_GIT_COMMIT}
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET

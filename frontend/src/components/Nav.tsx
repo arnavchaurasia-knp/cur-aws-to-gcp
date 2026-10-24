@@ -7,13 +7,61 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
   const location = useLocation()
   const isAdmin = Boolean(user?.is_admin)
   const isFacetsEmployee = Boolean(user?.is_facets_employee)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const settingsRef = useRef<HTMLDivElement>(null)
+  const mobileRef = useRef<HTMLDivElement>(null)
 
-  const navItemClass = (path: string) => {
-    const isActive = location.pathname === path
+  const navItemClass = (path: string, exact = true) => {
+    const isActive = exact ? location.pathname === path : location.pathname.startsWith(path)
     return isActive
       ? 'nav-link text-[#00C2BB] font-medium'
       : 'nav-link text-gray-400 hover:text-white transition-colors duration-150'
   }
+
+  const isSettingsActive = [
+    '/admin/analytics',
+    '/admin/audit',
+    '/admin/assumptions',
+    '/admin/report-settings',
+  ].some(p => location.pathname === p) || (location.pathname === '/admin' && location.search.includes('tab=shares'))
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!settingsOpen) return
+    const handleClickOutside = (e: MouseEvent | TouchEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('touchstart', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('touchstart', handleClickOutside)
+    }
+  }, [settingsOpen])
+
+  // Close mobile drawer on route change or click outside
+  useEffect(() => {
+    setMobileMenuOpen(false)
+    setSettingsOpen(false)
+  }, [location.pathname, location.search])
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return
+    const handleClickOutside = (e: MouseEvent | TouchEvent) => {
+      if (mobileRef.current && !mobileRef.current.contains(e.target as Node)) {
+        setMobileMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('touchstart', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('touchstart', handleClickOutside)
+    }
+  }, [mobileMenuOpen])
 
   return (
     <nav className="flex items-center justify-between px-6 py-3 border-b border-white/10 anim-slide-down backdrop-blur-md bg-[#0a0a0f]/85 sticky top-0 z-30">
@@ -27,29 +75,154 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
           </span>
         </Link>
       </div>
+
       <div className="flex items-center gap-4 text-sm text-gray-400">
+        {/* Desktop Nav */}
         <div className="hidden sm:flex items-center gap-4">
           {isAdmin && (
-            <>
-              <Link to="/admin" className={navItemClass('/admin')}>All Reports</Link>
-              <Link to="/admin/users" className={navItemClass('/admin/users')}>Users</Link>
-              <Link to="/admin/catalog" className={navItemClass('/admin/catalog')}>Catalog</Link>
-              <Link to="/admin/analytics" className={navItemClass('/admin/analytics')}>Analytics</Link>
-              <Link to="/admin/audit" className={navItemClass('/admin/audit')}>Audit</Link>
-            </>
+            <Link to="/admin" className={navItemClass('/admin')}>All Reports</Link>
           )}
           {isFacetsEmployee && (
             <Link to="/facets" className={navItemClass('/facets')}>Logs &amp; Engine</Link>
           )}
-        </div>
-        <div className="sm:hidden flex items-center gap-2 text-xs">
           {isAdmin && (
-            <Link to="/admin" className="nav-link text-[#00C2BB]">Admin</Link>
-          )}
-          {isFacetsEmployee && (
-            <Link to="/facets" className="nav-link text-gray-400">Logs</Link>
+            <>
+              <Link to="/admin/users" className={navItemClass('/admin/users')}>Users</Link>
+              <Link to="/admin/catalog" className={navItemClass('/admin/catalog')}>Catalog</Link>
+
+              {/* Settings Dropdown */}
+              <div className="relative" ref={settingsRef}>
+                <button
+                  onClick={() => setSettingsOpen(v => !v)}
+                  className={`flex items-center gap-1.5 py-1 px-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer ${
+                    isSettingsActive ? 'text-[#00C2BB] font-medium' : 'text-gray-400 hover:text-white'
+                  }`}
+                  aria-haspopup="true"
+                  aria-expanded={settingsOpen}
+                >
+                  <span>Settings</span>
+                  <svg
+                    className={`h-3 w-3 text-gray-500 transition-transform duration-150 ${settingsOpen ? 'rotate-180' : ''}`}
+                    viewBox="0 0 12 12"
+                    fill="none"
+                  >
+                    <path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+
+                {settingsOpen && (
+                  <div className="absolute right-0 mt-2 w-52 z-50 rounded-lg border border-white/10 bg-[#13131a] shadow-2xl py-1 overflow-hidden anim-scale-in text-xs">
+                    <Link
+                      to="/admin/analytics"
+                      onClick={() => setSettingsOpen(false)}
+                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                    >
+                      <span>📈</span>
+                      <span>Analytics</span>
+                    </Link>
+                    <Link
+                      to="/admin/audit"
+                      onClick={() => setSettingsOpen(false)}
+                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                    >
+                      <span>📋</span>
+                      <span>Audit</span>
+                    </Link>
+                    <Link
+                      to="/admin/assumptions"
+                      onClick={() => setSettingsOpen(false)}
+                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                    >
+                      <span>⚙️</span>
+                      <span>Assumptions</span>
+                    </Link>
+                    <Link
+                      to="/admin/report-settings"
+                      onClick={() => setSettingsOpen(false)}
+                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                    >
+                      <span>📑</span>
+                      <span>Report Settings</span>
+                    </Link>
+                    <Link
+                      to="/admin?tab=shares"
+                      onClick={() => setSettingsOpen(false)}
+                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                    >
+                      <span>🔗</span>
+                      <span>Shares</span>
+                    </Link>
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </div>
+
+        {/* Mobile Hamburger / Menu Button */}
+        <div className="sm:hidden flex items-center gap-2 text-xs" ref={mobileRef}>
+          <button
+            onClick={() => setMobileMenuOpen(v => !v)}
+            className="p-1.5 rounded-lg border border-white/10 text-gray-300 hover:text-white hover:bg-white/5 cursor-pointer"
+            aria-label="Toggle Navigation Menu"
+            aria-expanded={mobileMenuOpen}
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              {mobileMenuOpen ? (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              )}
+            </svg>
+          </button>
+
+          {mobileMenuOpen && (
+            <div className="absolute top-full left-0 right-0 bg-[#13131a] border-b border-white/10 p-4 shadow-2xl flex flex-col gap-2 anim-slide-down">
+              <Link to="/" onClick={() => setMobileMenuOpen(false)} className="text-gray-300 hover:text-white py-1">
+                Upload New CUR
+              </Link>
+              {isAdmin && (
+                <>
+                  <Link to="/admin" onClick={() => setMobileMenuOpen(false)} className="text-gray-300 hover:text-white py-1 font-medium">
+                    All Reports
+                  </Link>
+                  <Link to="/admin/users" onClick={() => setMobileMenuOpen(false)} className="text-gray-300 hover:text-white py-1">
+                    Users
+                  </Link>
+                  <Link to="/admin/catalog" onClick={() => setMobileMenuOpen(false)} className="text-gray-300 hover:text-white py-1">
+                    Catalog
+                  </Link>
+                  <div className="pt-2 border-t border-white/10">
+                    <p className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">Settings &amp; Tools</p>
+                    <Link to="/admin/analytics" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
+                      Analytics
+                    </Link>
+                    <Link to="/admin/audit" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
+                      Audit
+                    </Link>
+                    <Link to="/admin/assumptions" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
+                      Assumptions
+                    </Link>
+                    <Link to="/admin/report-settings" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
+                      Report Settings
+                    </Link>
+                    <Link to="/admin?tab=shares" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
+                      Shares
+                    </Link>
+                  </div>
+                </>
+              )}
+              {isFacetsEmployee && (
+                <div className="pt-2 border-t border-white/10">
+                  <Link to="/facets" onClick={() => setMobileMenuOpen(false)} className="text-[#00C2BB] hover:text-white py-1 font-medium flex items-center gap-1.5">
+                    <span>⚡</span> Logs &amp; Engine
+                  </Link>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         <UserMenu user={user} />
       </div>
     </nav>

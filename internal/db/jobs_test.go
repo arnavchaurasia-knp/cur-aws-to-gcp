@@ -150,3 +150,81 @@ func TestGetJobDiagnostics_NotFound(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, row)
 }
+
+func TestListAllJobsFiltered_SearchAndSort(t *testing.T) {
+	d := newTestDB(t)
+	d.CreateJob("j-alpha", "alice@facets.cloud", "Acme Corp", ".csv", "")
+	d.CreateJob("j-beta", "bob@facets.cloud", "Beta LLC", ".csv", "")
+	d.CreateJob("j-gamma", "charlie@facets.cloud", "Acme Inc", ".csv", "")
+
+	gcp1, gcp2, gcp3 := 900.0, 1800.0, 600.0
+	_ = d.UpdateJobDoneWithGCPOD("j-alpha", 1000.0, &gcp1)
+	_ = d.UpdateJobDoneWithGCPOD("j-beta", 2000.0, &gcp2)
+	_ = d.UpdateJobDoneWithGCPOD("j-gamma", 500.0, &gcp3)
+
+	// Search for 'acme'
+	jobs, err := d.ListAllJobsFiltered(10, 0, "", nil, nil, "acme", "aws_spend", "desc")
+	require.NoError(t, err)
+	assert.Len(t, jobs, 2)
+	assert.Equal(t, "j-alpha", jobs[0].ID)
+	assert.Equal(t, "j-gamma", jobs[1].ID)
+	assert.NotNil(t, jobs[0].GCPOD)
+	assert.Equal(t, 900.0, *jobs[0].GCPOD)
+
+	// Count with search
+	count, err := d.CountAllJobs("", nil, nil, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+
+	// Sort ascending by aws_spend
+	jobsAsc, err := d.ListAllJobsFiltered(10, 0, "", nil, nil, "", "aws_spend", "asc")
+	require.NoError(t, err)
+	assert.Len(t, jobsAsc, 3)
+	assert.Equal(t, "j-gamma", jobsAsc[0].ID)
+	assert.Equal(t, "j-alpha", jobsAsc[1].ID)
+	assert.Equal(t, "j-beta", jobsAsc[2].ID)
+
+	// Test invalid sort column defaults safely to created_at
+	jobsSafe, err := d.ListAllJobsFiltered(10, 0, "", nil, nil, "", "malicious_col; DROP TABLE jobs;--", "desc")
+	require.NoError(t, err)
+	assert.Len(t, jobsSafe, 3)
+}
+
+func TestListDeletedJobs_Search(t *testing.T) {
+	d := newTestDB(t)
+	d.CreateJob("j-del-1", "alice@facets.cloud", "Target Corp", ".csv", "")
+	d.CreateJob("j-del-2", "bob@facets.cloud", "Other Corp", ".csv", "")
+
+	_ = d.ArchiveAndDeleteJob("j-del-1", "admin@facets.cloud")
+	_ = d.ArchiveAndDeleteJob("j-del-2", "admin@facets.cloud")
+
+	// Search by prospect
+	delTarget, err := d.ListDeletedJobs("target")
+	require.NoError(t, err)
+	assert.Len(t, delTarget, 1)
+	assert.Equal(t, "j-del-1", delTarget[0].ID)
+
+	// Search by deleted_by
+	delAll, err := d.ListDeletedJobs("admin")
+	require.NoError(t, err)
+	assert.Len(t, delAll, 2)
+}
+
+func TestListAuditLog_Filtering(t *testing.T) {
+	d := newTestDB(t)
+	_ = d.LogAdminAction("alice@facets.cloud", "login", "u-1", "success")
+	_ = d.LogAdminAction("bob@facets.cloud", "revoke_share", "tok-1", "success")
+	_ = d.LogAdminAction("alice@facets.cloud", "delete_job", "j-1", "success")
+
+	// Filter by actor
+	byActor, err := d.ListAuditLog(10, 0, "alice", "", nil, nil)
+	require.NoError(t, err)
+	assert.Len(t, byActor, 2)
+
+	// Filter by action
+	byAction, err := d.ListAuditLog(10, 0, "", "revoke_share", nil, nil)
+	require.NoError(t, err)
+	assert.Len(t, byAction, 1)
+	assert.Equal(t, "bob@facets.cloud", byAction[0].ActorEmail)
+}
+

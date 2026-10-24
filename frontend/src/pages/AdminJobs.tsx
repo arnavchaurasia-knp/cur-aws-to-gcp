@@ -50,22 +50,38 @@ export function StatCard({ label, value, color = 'text-white', delay = 0 }: Stat
   )
 }
 
-const PAGE_SIZE = 25
-
 export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('All reports — admin')
   const nav = useNavigate()
-  const [tab, setTab] = useState<'active' | 'deleted' | 'shares'>('active')
+  const searchParams = useMemo(() => new URLSearchParams(window.location.search), [])
+  const [tab, setTab] = useState<'active' | 'deleted' | 'shares'>(() => {
+    const t = searchParams.get('tab')
+    if (t === 'deleted' || t === 'shares') return t
+    return 'active'
+  })
   const [jobs, setJobs] = useState<Job[] | null>(null)
   const [deletedJobs, setDeletedJobs] = useState<DeletedJob[] | null>(null)
   const [shares, setShares] = useState<ReportShare[] | null>(null)
   const [revokingToken, setRevokingToken] = useState<string | null>(null)
   const [total, setTotal] = useState(0)
-  const [offset, setOffset] = useState(0)
-  const [statusFilter, setStatusFilter] = useState('')
-  const [fromDate, setFromDate] = useState('')
-  const [toDate, setToDate] = useState('')
-  const [query, setQuery] = useState<string>(() => new URLSearchParams(window.location.search).get('q') || '')
+  const [offset, setOffset] = useState(() => {
+    const o = Number.parseInt(searchParams.get('offset') || '0', 10)
+    return Number.isFinite(o) && o >= 0 ? o : 0
+  })
+  const [pageSize, setPageSize] = useState<number>(() => {
+    const ps = Number.parseInt(searchParams.get('limit') || '50', 10)
+    return [25, 50, 100, 200].includes(ps) ? ps : 50
+  })
+  const [sortField, setSortField] = useState<string>(() => searchParams.get('sort') || 'created_at')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => {
+    const d = searchParams.get('dir')
+    return d === 'asc' ? 'asc' : 'desc'
+  })
+  const [statusFilter, setStatusFilter] = useState(() => searchParams.get('status') || '')
+  const [fromDate, setFromDate] = useState(() => searchParams.get('from') || '')
+  const [toDate, setToDate] = useState(() => searchParams.get('to') || '')
+  const [query, setQuery] = useState<string>(() => searchParams.get('q') || '')
+  const [debouncedQuery, setDebouncedQuery] = useState<string>(() => searchParams.get('q') || '')
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [rowError, setRowError] = useState<Record<string, string>>({})
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -73,6 +89,33 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   const [globalBusy, setGlobalBusy] = useState(false)
   const [globalError, setGlobalError] = useState<string | null>(null)
   const [apiPermissionError, setApiPermissionError] = useState<{ endpoint: string; status: number } | null>(null)
+
+  // Debounce search query by 300ms
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setDebouncedQuery(query.trim())
+      setOffset(0)
+    }, 300)
+    return () => clearTimeout(handle)
+  }, [query])
+
+  // Sync state to URL search params
+  useEffect(() => {
+    const params = new URLSearchParams()
+    if (tab !== 'active') params.set('tab', tab)
+    if (debouncedQuery) params.set('q', debouncedQuery)
+    if (statusFilter) params.set('status', statusFilter)
+    if (fromDate) params.set('from', fromDate)
+    if (toDate) params.set('to', toDate)
+    if (sortField !== 'created_at') params.set('sort', sortField)
+    if (sortDir !== 'desc') params.set('dir', sortDir)
+    if (pageSize !== 50) params.set('limit', String(pageSize))
+    if (offset > 0) params.set('offset', String(offset))
+
+    const newQueryStr = params.toString()
+    const newRelativePathQuery = window.location.pathname + (newQueryStr ? '?' + newQueryStr : '')
+    window.history.replaceState(null, '', newRelativePathQuery)
+  }, [tab, debouncedQuery, statusFilter, fromDate, toDate, sortField, sortDir, pageSize, offset])
 
   // Dialog States
   const [confirmStopAllOpen, setConfirmStopAllOpen] = useState(false)
@@ -107,20 +150,33 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   const refreshActive = () => {
     refreshState()
     return listAllJobsPaged({
-      limit: PAGE_SIZE,
+      limit: pageSize,
       offset,
       status: statusFilter || undefined,
       from: fromDate || undefined,
       to: toDate || undefined,
+      q: debouncedQuery || undefined,
+      sort: sortField,
+      dir: sortDir,
     }).then(res => { setJobs(res.jobs); setTotal(res.total) }).catch(err => handleApiError(err, 'listAllJobsPaged'))
   }
 
   const refreshDeleted = () => {
-    return listDeletedJobs().then(setDeletedJobs).catch(err => handleApiError(err, 'listDeletedJobs'))
+    return listDeletedJobs(debouncedQuery || undefined).then(setDeletedJobs).catch(err => handleApiError(err, 'listDeletedJobs'))
   }
 
   const refreshShares = () => {
     return listShares().then(setShares).catch(err => handleApiError(err, 'listShares'))
+  }
+
+  const handleSort = (field: string) => {
+    if (sortField === field) {
+      setSortDir(prev => (prev === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortField(field)
+      setSortDir('asc')
+    }
+    setOffset(0)
   }
 
   useEffect(() => {
@@ -134,7 +190,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     }, 25_000)
     return () => clearInterval(ticker)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [offset, statusFilter, fromDate, toDate, tab])
+  }, [offset, pageSize, statusFilter, fromDate, toDate, debouncedQuery, sortField, sortDir, tab])
 
   // Open log drawer for job
   const handleOpenLogs = async (e: React.MouseEvent, j: Job) => {
@@ -243,40 +299,20 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     }
   }
 
-  const filtered = useMemo(() => {
-    if (!jobs) return []
-    const q = query.trim().toLowerCase()
-    if (!q) return jobs
-    return jobs.filter(j =>
-      j.owner.toLowerCase().includes(q) ||
-      j.prospect.toLowerCase().includes(q) ||
-      j.status.toLowerCase().includes(q) ||
-      j.id.toLowerCase().includes(q)
-    )
-  }, [jobs, query])
+  const filtered = useMemo(() => jobs ?? [], [jobs])
 
-  const filteredDeleted = useMemo(() => {
-    if (!deletedJobs) return []
-    const q = query.trim().toLowerCase()
-    if (!q) return deletedJobs
-    return deletedJobs.filter(j =>
-      j.owner.toLowerCase().includes(q) ||
-      j.prospect.toLowerCase().includes(q) ||
-      j.deleted_by.toLowerCase().includes(q) ||
-      j.id.toLowerCase().includes(q)
-    )
-  }, [deletedJobs, query])
+  const filteredDeleted = useMemo(() => deletedJobs ?? [], [deletedJobs])
 
   const filteredShares = useMemo(() => {
     if (!shares) return []
-    const q = query.trim().toLowerCase()
+    const q = debouncedQuery.toLowerCase()
     if (!q) return shares
     return shares.filter(s =>
       s.job_id.toLowerCase().includes(q) ||
       s.created_by.toLowerCase().includes(q) ||
       s.token.toLowerCase().includes(q)
     )
-  }, [shares, query])
+  }, [shares, debouncedQuery])
 
   const handleRevokeShareClick = (token: string) => {
     setPendingRevokeToken(token)
@@ -328,8 +364,8 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
       .sort((a, b) => b.latest.localeCompare(a.latest))
   }, [filtered])
 
-  const page = Math.floor(offset / PAGE_SIZE) + 1
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const page = Math.floor(offset / pageSize) + 1
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
 
   return (
     <div className="min-h-screen text-white bg-[#0a0a0f]">
@@ -493,9 +529,9 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                 <input type="date" value={toDate} onChange={e => { setToDate(e.target.value); setOffset(0) }}
                   className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" />
               </label>
-              {query && (
+              {debouncedQuery && (
                 <span className="text-xs text-gray-400 ml-auto">
-                  {filtered.length} matches
+                  {total} results for &lsquo;{debouncedQuery}&rsquo;
                 </span>
               )}
             </div>
@@ -543,126 +579,190 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                         {!isCollapsed && (
                           <div className="overflow-x-auto">
                             <table className="w-full text-sm">
-                              <thead className="bg-white/[0.02] text-[11px] uppercase tracking-wider text-gray-400 border-b border-white/5">
+                              <thead className="bg-white/[0.02] text-[11px] uppercase tracking-wider text-gray-400 border-b border-white/5 select-none">
                                 <tr>
-                                  <th className="text-left px-4 py-2.5">When</th>
-                                  <th className="text-left px-4 py-2.5">Prospect</th>
-                                  <th className="text-left px-4 py-2.5">Status</th>
-                                  <th className="text-right px-4 py-2.5">AWS Spend</th>
+                                  <th
+                                    onClick={() => handleSort('created_at')}
+                                    className="text-left px-4 py-2.5 cursor-pointer hover:text-white transition-colors"
+                                  >
+                                    When {sortField === 'created_at' && (sortDir === 'asc' ? '▲' : '▼')}
+                                  </th>
+                                  <th
+                                    onClick={() => handleSort('prospect')}
+                                    className="text-left px-4 py-2.5 cursor-pointer hover:text-white transition-colors"
+                                  >
+                                    Prospect {sortField === 'prospect' && (sortDir === 'asc' ? '▲' : '▼')}
+                                  </th>
+                                  <th
+                                    onClick={() => handleSort('owner')}
+                                    className="text-left px-4 py-2.5 cursor-pointer hover:text-white transition-colors"
+                                  >
+                                    Owner {sortField === 'owner' && (sortDir === 'asc' ? '▲' : '▼')}
+                                  </th>
+                                  <th
+                                    onClick={() => handleSort('status')}
+                                    className="text-left px-4 py-2.5 cursor-pointer hover:text-white transition-colors"
+                                  >
+                                    Status {sortField === 'status' && (sortDir === 'asc' ? '▲' : '▼')}
+                                  </th>
+                                  <th
+                                    onClick={() => handleSort('aws_spend')}
+                                    className="text-right px-4 py-2.5 cursor-pointer hover:text-white transition-colors"
+                                  >
+                                    AWS Spend {sortField === 'aws_spend' && (sortDir === 'asc' ? '▲' : '▼')}
+                                  </th>
+                                  <th
+                                    onClick={() => handleSort('gcp_od')}
+                                    className="text-right px-4 py-2.5 cursor-pointer hover:text-white transition-colors"
+                                  >
+                                    GCP (OD) {sortField === 'gcp_od' && (sortDir === 'asc' ? '▲' : '▼')}
+                                  </th>
+                                  <th className="text-right px-4 py-2.5">Ratio</th>
                                   <th className="text-center px-4 py-2.5">Exports</th>
                                   <th className="text-right px-4 py-2.5">Actions</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-white/5">
-                                {g.jobs.map(j => (
-                                  <tr
-                                    key={j.id}
-                                    onClick={() => nav(`/jobs/${j.id}`)}
-                                    className="cursor-pointer hover:bg-white/[0.04] transition-colors duration-100"
-                                  >
-                                    <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">
-                                      {fmtWhen(j.created_at)}
-                                    </td>
-                                    <td className="px-4 py-3">
-                                      <p className="text-gray-200 font-medium">{j.prospect}</p>
-                                      <p className="text-[11px] text-gray-500 font-mono mt-0.5">{j.id.slice(0, 8)}</p>
-                                    </td>
-                                    <td className={`px-4 py-3 ${statusColor[j.status] ?? 'text-gray-400'}`}>
-                                      <span className="flex items-center gap-1.5 font-medium">
-                                        <span className={`text-xs ${j.status === 'running' ? 'animate-pulse' : ''}`}>
-                                          {statusIcon[j.status] ?? ''}
+                                {g.jobs.map(j => {
+                                  const hasRatio = j.aws_spend != null && j.aws_spend > 0 && j.gcp_od != null && j.gcp_od > 0
+                                  const ratio = hasRatio ? j.gcp_od! / j.aws_spend! : null
+                                  const isImplausible = ratio != null && (ratio < 0.5 || ratio > 1.5)
+
+                                  return (
+                                    <tr
+                                      key={j.id}
+                                      onClick={() => nav(`/jobs/${j.id}`)}
+                                      className="cursor-pointer hover:bg-white/[0.04] transition-colors duration-100"
+                                    >
+                                      <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">
+                                        {fmtWhen(j.created_at)}
+                                      </td>
+                                      <td className="px-4 py-3">
+                                        <p className="text-gray-200 font-medium">{j.prospect}</p>
+                                        <p className="text-[11px] text-gray-500 font-mono mt-0.5">{j.id.slice(0, 8)}</p>
+                                      </td>
+                                      <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                                        {j.owner || '—'}
+                                      </td>
+                                      <td className={`px-4 py-3 ${statusColor[j.status] ?? 'text-gray-400'}`}>
+                                        <span className="flex items-center gap-1.5 font-medium">
+                                          <span className={`text-xs ${j.status === 'running' ? 'animate-pulse' : ''}`}>
+                                            {statusIcon[j.status] ?? ''}
+                                          </span>
+                                          {j.status.charAt(0).toUpperCase() + j.status.slice(1)}
                                         </span>
-                                        {j.status.charAt(0).toUpperCase() + j.status.slice(1)}
-                                      </span>
-                                      {j.status === 'failed' && j.error && (
-                                        <p className="text-xs text-orange-400/80 mt-0.5 max-w-xs truncate" title={j.error}>
-                                          {j.error}
-                                        </p>
-                                      )}
-                                      {rowError[j.id] && (
-                                        <p className="text-xs text-orange-400 mt-0.5">{rowError[j.id]}</p>
-                                      )}
-                                    </td>
-                                    <td className="px-4 py-3 text-right text-gray-300 tabular-nums font-medium">
-                                      {fmtMoney(j.aws_spend)}
-                                    </td>
+                                        {j.status === 'failed' && j.error && (
+                                          <p className="text-xs text-orange-400/80 mt-0.5 max-w-xs truncate" title={j.error}>
+                                            {j.error}
+                                          </p>
+                                        )}
+                                        {rowError[j.id] && (
+                                          <p className="text-xs text-orange-400 mt-0.5">{rowError[j.id]}</p>
+                                        )}
+                                      </td>
+                                      <td className="px-4 py-3 text-right text-gray-300 tabular-nums font-medium">
+                                        {fmtMoney(j.aws_spend)}
+                                      </td>
+                                      <td className="px-4 py-3 text-right text-gray-300 tabular-nums font-medium">
+                                        {fmtMoney(j.gcp_od ?? null)}
+                                      </td>
+                                      <td className="px-4 py-3 text-right tabular-nums text-xs whitespace-nowrap">
+                                        {ratio != null ? (
+                                          isImplausible ? (
+                                            <span
+                                              title={`Ratio ${ratio.toFixed(2)}x is outside expected 0.5x–1.5x range`}
+                                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                                            >
+                                              <span>⚠️</span>
+                                              <span>{ratio.toFixed(2)}x</span>
+                                            </span>
+                                          ) : (
+                                            <span className="text-gray-300 font-medium">
+                                              {ratio.toFixed(2)}x
+                                            </span>
+                                          )
+                                        ) : (
+                                          <span className="text-gray-500">—</span>
+                                        )}
+                                      </td>
 
-                                    {/* Direct Download Exports */}
-                                    <td className="px-4 py-3 text-center whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                                      {j.status === 'done' ? (
-                                        <div className="inline-flex items-center gap-1.5 text-xs">
-                                          <a
-                                            href={downloadURL(j.id)}
-                                            title="Download HTML Report"
-                                            className="px-2 py-1 rounded bg-white/5 hover:bg-[#645DF6]/30 text-gray-300 hover:text-white transition-colors"
+                                      {/* Direct Download Exports */}
+                                      <td className="px-4 py-3 text-center whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                                        {j.status === 'done' ? (
+                                          <div className="inline-flex items-center gap-1.5 text-xs">
+                                            <a
+                                              href={downloadURL(j.id)}
+                                              title="Download HTML Report"
+                                              className="px-2 py-1 rounded bg-white/5 hover:bg-[#645DF6]/30 text-gray-300 hover:text-white transition-colors"
+                                            >
+                                              HTML
+                                            </a>
+                                            <a
+                                              href={downloadURL(j.id, undefined, 'xlsx')}
+                                              title="Download Excel Spreadsheet"
+                                              className="px-2 py-1 rounded bg-white/5 hover:bg-[#00C2BB]/30 text-gray-300 hover:text-white transition-colors"
+                                            >
+                                              XLSX
+                                            </a>
+                                            <a
+                                              href={downloadURL(j.id, undefined, 'csv')}
+                                              title="Download CSV"
+                                              className="px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white transition-colors"
+                                            >
+                                              CSV
+                                            </a>
+                                          </div>
+                                        ) : (
+                                          <span className="text-xs text-gray-600">—</span>
+                                        )}
+                                      </td>
+
+                                      {/* Action Buttons */}
+                                      <td className="px-4 py-3 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                                        <div className="flex items-center justify-end gap-2.5">
+                                          <button
+                                            onClick={e => handleOpenLogs(e, j)}
+                                            title="View Live Execution Logs"
+                                            className="text-xs px-2 py-1 rounded border border-white/10 hover:border-white/30 text-gray-300 hover:text-white transition-colors cursor-pointer"
                                           >
-                                            HTML
-                                          </a>
-                                          <a
-                                            href={downloadURL(j.id, undefined, 'xlsx')}
-                                            title="Download Excel Spreadsheet"
-                                            className="px-2 py-1 rounded bg-white/5 hover:bg-[#00C2BB]/30 text-gray-300 hover:text-white transition-colors"
-                                          >
-                                            XLSX
-                                          </a>
-                                          <a
-                                            href={downloadURL(j.id, undefined, 'csv')}
-                                            title="Download CSV"
-                                            className="px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white transition-colors"
-                                          >
-                                            CSV
-                                          </a>
+                                            Logs
+                                          </button>
+
+                                          {j.status === 'failed' && (
+                                            <button
+                                              onClick={e => handleRetry(e, j.id)}
+                                              disabled={busy.has(j.id)}
+                                              className="text-xs font-semibold px-2 py-1 rounded bg-[#645DF6]/20 hover:bg-[#645DF6]/40 text-[#8981ff] transition-colors cursor-pointer disabled:opacity-40"
+                                            >
+                                              {busy.has(j.id) ? '…' : 'Retry'}
+                                            </button>
+                                          )}
+
+                                          {(j.status === 'running' || j.status === 'pending') && (
+                                            <button
+                                              onClick={e => handleCancelClick(e, j.id)}
+                                              disabled={busy.has(j.id)}
+                                              className="text-xs font-semibold px-2 py-1 rounded bg-orange-500/20 hover:bg-orange-500/40 text-orange-400 transition-colors cursor-pointer disabled:opacity-40"
+                                            >
+                                              {busy.has(j.id) ? '…' : 'Cancel'}
+                                            </button>
+                                          )}
+
+                                          {(j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') && (
+                                            <button
+                                              onClick={e => handleDeleteClick(e, j.id, j.prospect)}
+                                              disabled={busy.has(j.id)}
+                                              title="Move to Deleted Jobs Archive"
+                                              className="text-xs px-2 py-1 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer disabled:opacity-40"
+                                            >
+                                              {busy.has(j.id) ? '…' : 'Delete'}
+                                            </button>
+                                          )}
                                         </div>
-                                      ) : (
-                                        <span className="text-xs text-gray-600">—</span>
-                                      )}
-                                    </td>
-
-                                    {/* Action Buttons */}
-                                    <td className="px-4 py-3 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                                      <div className="flex items-center justify-end gap-2.5">
-                                        <button
-                                          onClick={e => handleOpenLogs(e, j)}
-                                          title="View Live Execution Logs"
-                                          className="text-xs px-2 py-1 rounded border border-white/10 hover:border-white/30 text-gray-300 hover:text-white transition-colors cursor-pointer"
-                                        >
-                                          Logs
-                                        </button>
-
-                                        {j.status === 'failed' && (
-                                          <button
-                                            onClick={e => handleRetry(e, j.id)}
-                                            disabled={busy.has(j.id)}
-                                            className="text-xs font-semibold px-2 py-1 rounded bg-[#645DF6]/20 hover:bg-[#645DF6]/40 text-[#8981ff] transition-colors cursor-pointer disabled:opacity-40"
-                                          >
-                                            {busy.has(j.id) ? '…' : 'Retry'}
-                                          </button>
-                                        )}
-
-                                        {(j.status === 'running' || j.status === 'pending') && (
-                                          <button
-                                            onClick={e => handleCancelClick(e, j.id)}
-                                            disabled={busy.has(j.id)}
-                                            className="text-xs font-semibold px-2 py-1 rounded bg-orange-500/20 hover:bg-orange-500/40 text-orange-400 transition-colors cursor-pointer disabled:opacity-40"
-                                          >
-                                            {busy.has(j.id) ? '…' : 'Cancel'}
-                                          </button>
-                                        )}
-
-                                        {(j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') && (
-                                          <button
-                                            onClick={e => handleDeleteClick(e, j.id, j.prospect)}
-                                            disabled={busy.has(j.id)}
-                                            title="Move to Deleted Jobs Archive"
-                                            className="text-xs px-2 py-1 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer disabled:opacity-40"
-                                          >
-                                            {busy.has(j.id) ? '…' : 'Delete'}
-                                          </button>
-                                        )}
-                                      </div>
-                                    </td>
-                                  </tr>
-                                ))}
+                                      </td>
+                                    </tr>
+                                  )
+                                })}
                               </tbody>
                             </table>
                           </div>
@@ -674,25 +774,45 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
               </div>
             )}
 
-            {total > PAGE_SIZE && (
-              <div className="flex items-center justify-center gap-4 mt-8 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-4 mt-8 text-sm">
+              <div className="flex items-center gap-2 text-xs text-gray-400">
+                <span>Rows per page:</span>
+                <select
+                  value={pageSize}
+                  onChange={e => {
+                    const newSize = Number.parseInt(e.target.value, 10)
+                    setPageSize(newSize)
+                    setOffset(0)
+                  }}
+                  className="bg-[#12121a] border border-white/10 rounded px-2 py-1 text-xs text-gray-200 cursor-pointer"
+                >
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={200}>200</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-4">
                 <button
-                  onClick={() => setOffset(o => Math.max(0, o - PAGE_SIZE))}
+                  onClick={() => setOffset(o => Math.max(0, o - pageSize))}
                   disabled={offset === 0}
                   className="px-3 py-1.5 rounded-lg border border-white/10 text-gray-300 disabled:opacity-30 hover:bg-white/5 cursor-pointer"
                 >
                   ← Prev
                 </button>
-                <span className="text-gray-500 text-xs">Page {page} of {pageCount} · {total} total</span>
+                <span className="text-gray-400 text-xs tabular-nums">
+                  Page {page} of {pageCount} · {total} jobs
+                </span>
                 <button
-                  onClick={() => setOffset(o => o + PAGE_SIZE)}
-                  disabled={offset + PAGE_SIZE >= total}
+                  onClick={() => setOffset(o => o + pageSize)}
+                  disabled={offset + pageSize >= total}
                   className="px-3 py-1.5 rounded-lg border border-white/10 text-gray-300 disabled:opacity-30 hover:bg-white/5 cursor-pointer"
                 >
                   Next →
                 </button>
               </div>
-            )}
+            </div>
           </>
         )}
 

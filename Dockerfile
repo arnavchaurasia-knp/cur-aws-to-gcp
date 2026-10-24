@@ -19,8 +19,12 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
+ARG BUILD_SHA=dev
+ARG BUILD_TIME=unknown
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /app/cur-web ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-X main.buildSHA=${BUILD_SHA} -X main.buildTime=${BUILD_TIME}" \
+    -o /app/cur-web ./cmd/server
 
 # ====================================================================
 # Stage 3: Final runtime environment (Debian with Python 3 & DuckDB)

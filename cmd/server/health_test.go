@@ -271,3 +271,95 @@ func TestSecurityHeadersHSTSBehindProxy(t *testing.T) {
 		})
 	}
 }
+
+func TestVersionHandler(t *testing.T) {
+	handler := versionHandler("2026-10-23T16:16:20Z", 0)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/version", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("json unmarshal: %v", err)
+	}
+	if res["build_sha"] == "" {
+		t.Errorf("expected non-empty build_sha, got %v", res["build_sha"])
+	}
+	if res["build_time"] == "" {
+		t.Errorf("expected non-empty build_time, got %v", res["build_time"])
+	}
+	if res["catalog_fetched_at"] != "2026-10-23T16:16:20Z" {
+		t.Errorf("expected catalog_fetched_at to match, got %v", res["catalog_fetched_at"])
+	}
+}
+
+// TestResolveBuildInfo covers the ways build metadata arrives wrong. The
+// placeholder case is the point: "${RENDER_GIT_COMMIT}" is not "dev", so a
+// naive check accepts it and /version then presents a literal placeholder as
+// the deployed commit — which reads as a real answer and is not one.
+func TestResolveBuildInfo(t *testing.T) {
+	noEnv := func(string) string { return "" }
+
+	cases := []struct {
+		name     string
+		sha      string
+		ts       string
+		env      map[string]string
+		wantSHA  string
+		wantTime string
+	}{
+		{
+			name: "ldflags injected properly", sha: "abc1234", ts: "2026-10-24",
+			env: nil, wantSHA: "abc1234", wantTime: "2026-10-24",
+		},
+		{
+			name: "unsubstituted build arg falls back to env",
+			sha:  "${RENDER_GIT_COMMIT}", ts: "${BUILD_TIME}",
+			env:     map[string]string{"RENDER_GIT_COMMIT": "deadbee"},
+			wantSHA: "deadbee", wantTime: "unknown",
+		},
+		{
+			name: "unsubstituted with no env never reports the placeholder",
+			sha:  "${RENDER_GIT_COMMIT}", ts: "${BUILD_TIME}",
+			env:     nil,
+			wantSHA: "dev", wantTime: "unknown",
+		},
+		{
+			name: "no ldflags, render env present",
+			sha:  "dev", ts: "unknown",
+			env:     map[string]string{"RENDER_GIT_COMMIT": "cafe123"},
+			wantSHA: "cafe123", wantTime: "unknown",
+		},
+		{
+			name: "env itself unsubstituted is rejected",
+			sha:  "dev", ts: "unknown",
+			env:     map[string]string{"BUILD_SHA": "${RENDER_GIT_COMMIT}"},
+			wantSHA: "dev", wantTime: "unknown",
+		},
+		{
+			name: "RENDER_GIT_COMMIT wins over BUILD_SHA",
+			sha:  "dev", ts: "unknown",
+			env:     map[string]string{"RENDER_GIT_COMMIT": "aaa", "BUILD_SHA": "bbb"},
+			wantSHA: "aaa", wantTime: "unknown",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := noEnv
+			if tc.env != nil {
+				lookup = func(k string) string { return tc.env[k] }
+			}
+			gotSHA, gotTime := resolveBuildInfo(tc.sha, tc.ts, lookup)
+			if gotSHA != tc.wantSHA {
+				t.Errorf("sha: got %q, want %q", gotSHA, tc.wantSHA)
+			}
+			if gotTime != tc.wantTime {
+				t.Errorf("time: got %q, want %q", gotTime, tc.wantTime)
+			}
+		})
+	}
+}

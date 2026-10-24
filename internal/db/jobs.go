@@ -2,6 +2,8 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -12,6 +14,7 @@ type Job struct {
 	Status      string     `json:"status"`
 	InputExt    string     `json:"input_ext"`
 	AWSSpend    *float64   `json:"aws_spend"`
+	GCPOD       *float64   `json:"gcp_od,omitempty"`
 	Error       string     `json:"error"`
 	SessionID   string     `json:"session_id"`
 	AgentPID    int        `json:"agent_pid"`
@@ -84,7 +87,7 @@ func (d *DB) ResetJobForRetry(id, sessionID string) error {
 
 func (d *DB) ListNonTerminalJobs() ([]*Job, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, agent_pid, attempts, created_at, updated_at
+		`SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, created_at, updated_at
 		 FROM jobs WHERE status IN ('pending', 'running') ORDER BY created_at`,
 	)
 	if err != nil {
@@ -104,7 +107,7 @@ func (d *DB) ListNonTerminalJobs() ([]*Job, error) {
 
 func (d *DB) GetJob(id string) (*Job, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, agent_pid, attempts, created_at, updated_at
+		`SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, created_at, updated_at
 		 FROM jobs WHERE id = ?`, id,
 	)
 	return scanJob(row)
@@ -114,7 +117,7 @@ func (d *DB) GetJob(id string) (*Job, error) {
 // the handler wrapping this is responsible for the access check.
 func (d *DB) ListAllJobs() ([]*Job, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, agent_pid, attempts, created_at, updated_at
+		`SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, created_at, updated_at
 		 FROM jobs ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -134,7 +137,7 @@ func (d *DB) ListAllJobs() ([]*Job, error) {
 
 func (d *DB) ListJobsByOwner(owner string) ([]*Job, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, agent_pid, attempts, created_at, updated_at
+		`SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, created_at, updated_at
 		 FROM jobs WHERE owner = ? ORDER BY created_at DESC`, owner,
 	)
 	if err != nil {
@@ -165,6 +168,17 @@ func (d *DB) UpdateJobDone(id string, spend float64) error {
 		spend, id,
 	)
 	return err
+}
+
+func (d *DB) UpdateJobDoneWithGCPOD(id string, spend float64, gcpOD *float64) error {
+	if gcpOD != nil {
+		_, err := d.conn.Exec(
+			`UPDATE jobs SET status='done', aws_spend=?, gcp_od=?, updated_at=datetime('now') WHERE id=?`,
+			spend, *gcpOD, id,
+		)
+		return err
+	}
+	return d.UpdateJobDone(id, spend)
 }
 
 func (d *DB) UpdateJobFailed(id, errMsg string) error {
@@ -198,8 +212,8 @@ func (d *DB) ArchiveAndDeleteJob(id, deletedBy string) error {
 	defer tx.Rollback()
 
 	_, _ = tx.Exec(`
-		INSERT INTO deleted_jobs (id, owner, prospect, status, input_ext, aws_spend, error, session_id, created_at, deleted_at, deleted_by)
-		SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, created_at, datetime('now'), ?
+		INSERT INTO deleted_jobs (id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, created_at, deleted_at, deleted_by)
+		SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, created_at, datetime('now'), ?
 		FROM jobs WHERE id = ?
 	`, deletedBy, id)
 
@@ -217,6 +231,7 @@ type DeletedJob struct {
 	Status    string   `json:"status"`
 	InputExt  string   `json:"input_ext"`
 	AWSSpend  *float64 `json:"aws_spend"`
+	GCPOD     *float64 `json:"gcp_od,omitempty"`
 	Error     string   `json:"error"`
 	SessionID string   `json:"session_id"`
 	CreatedAt string   `json:"created_at"`
@@ -224,14 +239,20 @@ type DeletedJob struct {
 	DeletedBy string   `json:"deleted_by"`
 }
 
-// ListDeletedJobs returns all archived deleted jobs, newest-deleted first.
-func (d *DB) ListDeletedJobs() ([]*DeletedJob, error) {
-	rows, err := d.conn.Query(`
-		SELECT id, owner, prospect, status, input_ext, aws_spend, COALESCE(error, ''), COALESCE(session_id, ''),
-		       COALESCE(created_at, ''), deleted_at, deleted_by
-		FROM deleted_jobs
-		ORDER BY deleted_at DESC
-	`)
+// ListDeletedJobs returns all archived deleted jobs, optionally filtered by search term q.
+func (d *DB) ListDeletedJobs(searchQuery ...string) ([]*DeletedJob, error) {
+	q := `SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, COALESCE(error, ''), COALESCE(session_id, ''),
+	             COALESCE(created_at, ''), deleted_at, deleted_by
+	      FROM deleted_jobs WHERE 1=1`
+	var args []any
+	if len(searchQuery) > 0 && strings.TrimSpace(searchQuery[0]) != "" {
+		term := strings.TrimSpace(searchQuery[0])
+		q += ` AND (LOWER(prospect) LIKE '%' || LOWER(?) || '%' OR LOWER(owner) LIKE '%' || LOWER(?) || '%' OR LOWER(deleted_by) LIKE '%' || LOWER(?) || '%' OR LOWER(id) LIKE '%' || LOWER(?) || '%')`
+		args = append(args, term, term, term, term)
+	}
+	q += ` ORDER BY deleted_at DESC`
+
+	rows, err := d.conn.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -240,9 +261,9 @@ func (d *DB) ListDeletedJobs() ([]*DeletedJob, error) {
 	var list []*DeletedJob
 	for rows.Next() {
 		var j DeletedJob
-		var spend sql.NullFloat64
+		var spend, gcpOD sql.NullFloat64
 		if err := rows.Scan(
-			&j.ID, &j.Owner, &j.Prospect, &j.Status, &j.InputExt, &spend,
+			&j.ID, &j.Owner, &j.Prospect, &j.Status, &j.InputExt, &spend, &gcpOD,
 			&j.Error, &j.SessionID, &j.CreatedAt, &j.DeletedAt, &j.DeletedBy,
 		); err != nil {
 			return nil, err
@@ -250,16 +271,18 @@ func (d *DB) ListDeletedJobs() ([]*DeletedJob, error) {
 		if spend.Valid {
 			j.AWSSpend = &spend.Float64
 		}
+		if gcpOD.Valid {
+			j.GCPOD = &gcpOD.Float64
+		}
 		list = append(list, &j)
 	}
 	return list, nil
 }
 
-// ListAllJobsFiltered supports the admin jobs page: pagination plus optional
-// status/date-range filtering. Any of status/from/to may be empty/nil to skip
-// that filter.
-func (d *DB) ListAllJobsFiltered(limit, offset int, status string, from, to *time.Time) ([]*Job, error) {
-	q := `SELECT id, owner, prospect, status, input_ext, aws_spend, error, session_id, agent_pid, attempts, created_at, updated_at
+// ListAllJobsFiltered supports the admin jobs page: pagination, server-side search (q),
+// sort/dir, and status/date-range filtering.
+func (d *DB) ListAllJobsFiltered(limit, offset int, status string, from, to *time.Time, searchQuery, sortBy, sortDir string) ([]*Job, error) {
+	q := `SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, created_at, updated_at
 	      FROM jobs WHERE 1=1`
 	var args []any
 	if status != "" {
@@ -274,7 +297,35 @@ func (d *DB) ListAllJobsFiltered(limit, offset int, status string, from, to *tim
 		q += ` AND created_at <= ?`
 		args = append(args, to.UTC().Format("2006-01-02 15:04:05"))
 	}
-	q += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	if strings.TrimSpace(searchQuery) != "" {
+		term := strings.TrimSpace(searchQuery)
+		q += ` AND (LOWER(prospect) LIKE '%' || LOWER(?) || '%' OR LOWER(owner) LIKE '%' || LOWER(?) || '%' OR LOWER(id) LIKE '%' || LOWER(?) || '%' OR LOWER(status) LIKE '%' || LOWER(?) || '%')`
+		args = append(args, term, term, term, term)
+	}
+
+	// Validate sort column against strict allow-list
+	orderCol := "created_at"
+	switch strings.ToLower(strings.TrimSpace(sortBy)) {
+	case "created_at", "when":
+		orderCol = "created_at"
+	case "aws_spend", "spend":
+		orderCol = "aws_spend"
+	case "gcp_od":
+		orderCol = "gcp_od"
+	case "prospect":
+		orderCol = "prospect"
+	case "status":
+		orderCol = "status"
+	case "owner":
+		orderCol = "owner"
+	}
+
+	orderDir := "DESC"
+	if strings.ToLower(strings.TrimSpace(sortDir)) == "asc" {
+		orderDir = "ASC"
+	}
+
+	q += fmt.Sprintf(` ORDER BY %s %s LIMIT ? OFFSET ?`, orderCol, orderDir)
 	args = append(args, limit, offset)
 
 	rows, err := d.conn.Query(q, args...)
@@ -293,7 +344,7 @@ func (d *DB) ListAllJobsFiltered(limit, offset int, status string, from, to *tim
 	return jobs, nil
 }
 
-func (d *DB) CountAllJobs(status string, from, to *time.Time) (int, error) {
+func (d *DB) CountAllJobs(status string, from, to *time.Time, searchQuery ...string) (int, error) {
 	q := `SELECT COUNT(*) FROM jobs WHERE 1=1`
 	var args []any
 	if status != "" {
@@ -307,6 +358,11 @@ func (d *DB) CountAllJobs(status string, from, to *time.Time) (int, error) {
 	if to != nil {
 		q += ` AND created_at <= ?`
 		args = append(args, to.UTC().Format("2006-01-02 15:04:05"))
+	}
+	if len(searchQuery) > 0 && strings.TrimSpace(searchQuery[0]) != "" {
+		term := strings.TrimSpace(searchQuery[0])
+		q += ` AND (LOWER(prospect) LIKE '%' || LOWER(?) || '%' OR LOWER(owner) LIKE '%' || LOWER(?) || '%' OR LOWER(id) LIKE '%' || LOWER(?) || '%' OR LOWER(status) LIKE '%' || LOWER(?) || '%')`
+		args = append(args, term, term, term, term)
 	}
 	var count int
 	err := d.conn.QueryRow(q, args...).Scan(&count)
@@ -330,11 +386,32 @@ type AuditEntry struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-func (d *DB) ListAuditLog(limit, offset int) ([]*AuditEntry, error) {
-	rows, err := d.conn.Query(
-		`SELECT id, actor_email, action, target_id, details, created_at
-		 FROM admin_audit ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset,
-	)
+func (d *DB) ListAuditLog(limit, offset int, actor, action string, from, to *time.Time) ([]*AuditEntry, error) {
+	q := `SELECT id, actor_email, action, target_id, details, created_at
+	      FROM admin_audit WHERE 1=1`
+	var args []any
+	if strings.TrimSpace(actor) != "" {
+		term := strings.TrimSpace(actor)
+		q += ` AND LOWER(actor_email) LIKE '%' || LOWER(?) || '%'`
+		args = append(args, term)
+	}
+	if strings.TrimSpace(action) != "" {
+		term := strings.TrimSpace(action)
+		q += ` AND LOWER(action) LIKE '%' || LOWER(?) || '%'`
+		args = append(args, term)
+	}
+	if from != nil {
+		q += ` AND created_at >= ?`
+		args = append(args, from.UTC().Format("2006-01-02 15:04:05"))
+	}
+	if to != nil {
+		q += ` AND created_at <= ?`
+		args = append(args, to.UTC().Format("2006-01-02 15:04:05"))
+	}
+	q += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+
+	rows, err := d.conn.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -431,6 +508,7 @@ type scanner interface {
 func scanJob(s scanner) (*Job, error) {
 	var j Job
 	var spend sql.NullFloat64
+	var gcpOD sql.NullFloat64
 	var errStr sql.NullString
 	var sessionID sql.NullString
 	var agentPID sql.NullInt64
@@ -439,7 +517,7 @@ func scanJob(s scanner) (*Job, error) {
 	var updatedAtStr string
 
 	err := s.Scan(&j.ID, &j.Owner, &j.Prospect, &j.Status, &j.InputExt,
-		&spend, &errStr, &sessionID, &agentPID, &attempts, &createdAtStr, &updatedAtStr)
+		&spend, &gcpOD, &errStr, &sessionID, &agentPID, &attempts, &createdAtStr, &updatedAtStr)
 	if err != nil {
 		return nil, err
 	}
@@ -465,6 +543,9 @@ func scanJob(s scanner) (*Job, error) {
 
 	if spend.Valid {
 		j.AWSSpend = &spend.Float64
+	}
+	if gcpOD.Valid {
+		j.GCPOD = &gcpOD.Float64
 	}
 	if errStr.Valid {
 		j.Error = errStr.String

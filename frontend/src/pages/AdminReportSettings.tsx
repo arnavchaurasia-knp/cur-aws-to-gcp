@@ -11,6 +11,7 @@ import {
 } from '../api/admin'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 
 export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('Report settings — admin')
@@ -20,6 +21,8 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState<string | null>(null) // key being saved
   const [editingValue, setEditingValue] = useState<string>('')
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
+  const [resetting, setResetting] = useState(false)
 
   const groups = ['sections', 'columns', 'rows'] as const
 
@@ -93,17 +96,20 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
   }
 
   const handleReset = async () => {
-    if (!window.confirm('Reset all report settings to their defaults? This cannot be undone.')) return
+    setResetting(true)
     setError(null)
     try {
       const result = await resetReportSettings()
       if (result) {
         await refresh()
+        setResetConfirmOpen(false)
       } else {
         setError('reset failed')
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'reset failed')
+    } finally {
+      setResetting(false)
     }
   }
 
@@ -291,12 +297,23 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
 
             <div className="bg-white/[0.03] border border-white/10 rounded-lg p-6">
               <button
-                onClick={handleReset}
-                className="w-full py-2.5 rounded bg-red-900/30 border border-red-900/50 text-red-400 text-xs font-medium hover:bg-red-900/50 hover:text-red-300"
+                onClick={() => setResetConfirmOpen(true)}
+                className="w-full py-2.5 rounded bg-red-900/30 border border-red-900/50 text-red-400 text-xs font-medium hover:bg-red-900/50 hover:text-red-300 cursor-pointer"
               >
                 Reset all settings to defaults
               </button>
             </div>
+
+            <ConfirmDialog
+              open={resetConfirmOpen}
+              onOpenChange={setResetConfirmOpen}
+              title="Reset report settings"
+              description="Reset all report settings to their defaults? This cannot be undone."
+              confirmLabel="Reset settings"
+              destructive
+              loading={resetting}
+              onConfirm={handleReset}
+            />
           </>
         )}
       </div>

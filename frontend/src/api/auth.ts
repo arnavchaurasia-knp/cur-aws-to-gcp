@@ -1,4 +1,11 @@
-export interface UserInfo { email: string; name: string; picture?: string; is_admin?: boolean }
+export interface UserInfo {
+  email: string
+  name: string
+  picture?: string
+  role?: string
+  is_admin?: boolean
+  is_facets_employee?: boolean
+}
 
 export async function getMe(): Promise<UserInfo | null> {
   const res = await fetch('/api/auth/me')

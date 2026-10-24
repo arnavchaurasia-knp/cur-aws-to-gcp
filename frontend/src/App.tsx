@@ -40,14 +40,8 @@ export default function App() {
     </div>
   )
 
-  const email = (user?.email || '').toLowerCase()
-  const isFacetsUser = Boolean(
-    email && (
-      email.endsWith('@facets.cloud') ||
-      email.endsWith('@facets.io') ||
-      email.includes('@facets.')
-    )
-  )
+  const isAdmin = Boolean(user?.is_admin)
+  const isFacetsEmployee = Boolean(user?.is_facets_employee)
 
   return (
     <BrowserRouter>
@@ -56,16 +50,16 @@ export default function App() {
         <Route path="/login" element={user ? <Navigate to="/" /> : <Login />} />
         <Route path="/" element={user ? <Upload user={user} /> : <Navigate to="/login" />} />
         <Route path="/jobs/:id" element={user ? <JobStatus user={user} /> : <Navigate to="/login" />} />
-        <Route path="/admin" element={user && isFacetsUser ? <AdminJobs user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/users" element={user && isFacetsUser ? <AdminUsers user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/catalog" element={user && isFacetsUser ? <AdminCatalog user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/assumptions" element={user && isFacetsUser ? <AdminAssumptions user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/report-settings" element={user && isFacetsUser ? <AdminReportSettings user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/audit" element={user && isFacetsUser ? <AdminAudit user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/analytics" element={user && isFacetsUser ? <AdminAnalytics user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin" element={user && isAdmin ? <AdminJobs user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin/users" element={user && isAdmin ? <AdminUsers user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin/catalog" element={user && isAdmin ? <AdminCatalog user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin/assumptions" element={user && isAdmin ? <AdminAssumptions user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin/report-settings" element={user && isAdmin ? <AdminReportSettings user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin/audit" element={user && isAdmin ? <AdminAudit user={user} /> : <Navigate to="/" />} />
+        <Route path="/admin/analytics" element={user && isAdmin ? <AdminAnalytics user={user} /> : <Navigate to="/" />} />
         <Route path="/reports/:token" element={<SharedReport />} />
         {/* Visible and accessible only for @facets sessions */}
-        <Route path="/facets" element={user && isFacetsUser ? <Facets user={user} /> : <Navigate to="/" />} />
+        <Route path="/facets" element={user && isFacetsEmployee ? <Facets user={user} /> : <Navigate to="/" />} />
         <Route path="*" element={<Navigate to={user ? "/" : "/login"} replace />} />
       </Routes>
     </BrowserRouter>

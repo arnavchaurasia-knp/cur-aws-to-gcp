@@ -82,14 +82,14 @@ func (d *DB) AuthenticateUser(email, password string) (bool, error) {
 }
 
 // UpsertUserSeen records that email successfully logged in, creating a
-// `viewer`-role row on first sight and bumping updated_at on every
+// row with role on first sight and bumping updated_at on every
 // subsequent login. Never touches an existing row's role — promotion/
 // demotion only happens via SetUserRole.
-func (d *DB) UpsertUserSeen(email string) error {
+func (d *DB) UpsertUserSeen(email, role string) error {
 	_, err := d.conn.Exec(
-		`INSERT INTO users (email, role) VALUES (?, 'viewer')
+		`INSERT INTO users (email, role) VALUES (?, ?)
 		 ON CONFLICT(email) DO UPDATE SET updated_at=datetime('now')`,
-		email,
+		email, role,
 	)
 	return err
 }

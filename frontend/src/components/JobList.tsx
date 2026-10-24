@@ -3,6 +3,7 @@ import { deleteJob } from '../api/jobs'
 import { useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { toast } from 'sonner'
+import { ConfirmDialog } from './ConfirmDialog'
 
 const statusColor: Record<string, string> = {
   pending:   'text-gray-400',
@@ -37,14 +38,16 @@ function StatusBadge({ status }: Readonly<{ status: string }>) {
 export function JobList({ jobs, onJobDeleted }: Readonly<{ jobs: Job[]; onJobDeleted?: (id: string) => void }>) {
   const nav = useNavigate()
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; prospect: string } | null>(null)
 
-  const handleDelete = async (e: React.MouseEvent, id: string, prospect: string) => {
-    e.stopPropagation()
-    if (!confirm(`Delete report for "${prospect}"?`)) return
+  const confirmDelete = async () => {
+    if (!pendingDelete) return
+    const { id, prospect } = pendingDelete
     setDeletingId(id)
     try {
       await deleteJob(id)
       toast.success(`Report for "${prospect}" deleted`)
+      setPendingDelete(null)
       if (onJobDeleted) {
         onJobDeleted(id)
       } else {
@@ -57,8 +60,14 @@ export function JobList({ jobs, onJobDeleted }: Readonly<{ jobs: Job[]; onJobDel
     }
   }
 
+  const handleDelete = (e: React.MouseEvent, id: string, prospect: string) => {
+    e.stopPropagation()
+    setPendingDelete({ id, prospect })
+  }
+
   if (!jobs.length) return <p className="text-sm text-gray-500">No reports yet</p>
   return (
+    <>
     <ul className="divide-y divide-white/10 text-sm">
       {jobs.map((j, i) => {
         const isTerminal = j.status === 'done' || j.status === 'failed' || j.status === 'cancelled'
@@ -98,5 +107,18 @@ export function JobList({ jobs, onJobDeleted }: Readonly<{ jobs: Job[]; onJobDel
         )
       })}
     </ul>
+    <ConfirmDialog
+      open={pendingDelete !== null}
+      onOpenChange={(open) => {
+        if (!open) setPendingDelete(null)
+      }}
+      title="Delete report"
+      description={`Delete report for "${pendingDelete?.prospect}"? This action cannot be undone.`}
+      confirmLabel="Delete"
+      destructive
+      loading={deletingId !== null}
+      onConfirm={confirmDelete}
+    />
+    </>
   )
 }

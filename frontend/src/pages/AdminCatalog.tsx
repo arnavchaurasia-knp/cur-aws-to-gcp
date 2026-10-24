@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Nav } from '../components/Nav'
 import {
   getCatalogStatus,
@@ -10,30 +11,43 @@ import {
 } from '../api/admin'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
+import { parseAdminApiError, type AdminApiErrorState } from '../components/adminError'
 
 export function AdminCatalog({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('Catalog — admin')
+  const nav = useNavigate()
   const [status, setStatus] = useState<CatalogStatus | null>(null)
   const [notifyStatus, setNotifyStatus] = useState<NotifyStatus | null>(null)
+  const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [notifying, setNotifying] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<AdminApiErrorState | null>(null)
 
   const refresh = async () => {
-    const [s, n] = await Promise.all([getCatalogStatus(), getNotifyStatus()])
-    setStatus(s)
-    setNotifyStatus(n)
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const [s, n] = await Promise.all([getCatalogStatus(), getNotifyStatus()])
+      setStatus(s)
+      setNotifyStatus(n)
+    } catch (err) {
+      const parsed = parseAdminApiError(err, 'Catalog & Notification Status', () => nav('/login'))
+      setLoadError(parsed)
+    } finally {
+      setLoading(false)
+    }
   }
   useEffect(() => { refresh() }, [])
 
   const handleRefresh = async () => {
     setRefreshing(true)
-    setError(null)
+    setActionError(null)
     try {
       await triggerCatalogRefresh()
       setTimeout(refresh, 3000)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'refresh failed')
+      setActionError(err instanceof Error ? err.message : 'refresh failed')
     } finally {
       setRefreshing(false)
     }
@@ -41,25 +55,40 @@ export function AdminCatalog({ user }: Readonly<{ user: UserInfo }>) {
 
   const handleNotifyTest = async () => {
     setNotifying(true)
-    setError(null)
+    setActionError(null)
     try {
       await notifyTest()
       setTimeout(refresh, 1000)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'test notification failed')
+      setActionError(err instanceof Error ? err.message : 'test notification failed')
     } finally {
       setNotifying(false)
     }
   }
 
   return (
-    <div className="min-h-screen text-white">
+    <div className="min-h-screen text-white bg-[#0a0a0f]">
       <Nav user={user} />
       <div className="max-w-2xl mx-auto px-6 py-10">
         <h1 className="text-2xl font-semibold mb-1">GCP catalog</h1>
         <p className="text-sm text-gray-500 mb-8">Freshness of the GCP SKU pricing catalog used for projections.</p>
 
-        {status === null && <p className="text-sm text-gray-500">Loading…</p>}
+        {loading && <p className="text-sm text-gray-500 py-12 text-center">Loading…</p>}
+
+        {loadError && (
+          <div className="p-4 rounded-xl bg-orange-950/40 border border-orange-500/40 text-orange-400 text-sm mb-6">
+            <strong className="block font-semibold mb-1">
+              {loadError.status === 403 ? 'Permission Denied' : 'Failed to load catalog status'}
+            </strong>
+            <p className="text-xs text-orange-300">{loadError.message}</p>
+            <button
+              onClick={refresh}
+              className="mt-3 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white text-xs font-medium border border-white/10 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        )}
 
         {status && (
           <div className="bg-white/[0.03] border border-white/10 rounded-lg p-6 space-y-4">
@@ -75,7 +104,7 @@ export function AdminCatalog({ user }: Readonly<{ user: UserInfo }>) {
                 {status.stale ? 'Stale' : 'Fresh'}
               </span>
             </div>
-            {error && <p className="text-xs text-orange-400">{error}</p>}
+            {actionError && <p className="text-xs text-orange-400">{actionError}</p>}
             <button
               onClick={handleRefresh}
               disabled={refreshing}

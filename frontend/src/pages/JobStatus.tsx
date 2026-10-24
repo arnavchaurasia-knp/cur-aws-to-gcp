@@ -7,12 +7,14 @@ import { Summary } from '../components/Summary'
 import { ContactCard } from '../components/ContactCard'
 import { Reveal } from '../components/Reveal'
 import { getJob, getProgress, listJobs, downloadURL, refineJob, retryJob, cancelJob, deleteJob, getRuns, getSummary, regenerateReport, compareRuns } from '../api/jobs'
+import { shareJob } from '../api/admin'
 import type { Job, Progress, RunResult } from '../api/jobs'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { TOTAL_PHASES } from '../lib/phases'
 import { toast } from 'sonner'
 import { JobHealth } from '../components/JobHealth'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 
 function formatDollars(n: number): string {
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -284,14 +286,35 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
   const [comparing, setComparing] = useState(false)
   const [compareError, setCompareError] = useState<string | null>(null)
   const [comparison, setComparison] = useState<any>(null)
+  const [sharing, setSharing] = useState(false)
+  const [shareUrl, setShareUrl] = useState<string | null>(null)
+
+  const submitShare = async () => {
+    if (!id) return
+    setSharing(true)
+    try {
+      const res = await shareJob(id)
+      setShareUrl(res.url)
+      const fullUrl = `${window.location.origin}${res.url}`
+      await navigator.clipboard.writeText(fullUrl)
+      toast.success('Share link copied to clipboard (valid 90 days)')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Share failed')
+    } finally {
+      setSharing(false)
+    }
+  }
+
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false)
 
   const submitDelete = async () => {
     if (!id || !job) return
-    if (!confirm(`Delete this job run for "${job.prospect}"? It will be removed from your active reports.`)) return
     setDeleting(true)
     try {
       await deleteJob(id)
       toast.success(`Job run for "${job.prospect}" deleted`)
+      setDeleteConfirmOpen(false)
       navigate('/', { replace: true })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Delete failed')
@@ -300,13 +323,14 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
   }
 
   const submitCancel = async () => {
-    if (!id || !confirm('Stop this estimation run?')) return
+    if (!id) return
     setCancelling(true)
     setCancelError(null)
     try {
       await cancelJob(id)
       setJob(prev => prev ? { ...prev, status: 'cancelled' } : prev)
       setJobs(prev => prev.map(old => old.id === id ? { ...old, status: 'cancelled' } : old))
+      setCancelConfirmOpen(false)
     } catch (e: unknown) {
       setCancelError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -448,9 +472,9 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
               <div className="mt-4 pt-3 border-t border-[#645DF6]/20 flex items-center justify-between">
                 {cancelError && <span className="text-xs text-orange-400">{cancelError}</span>}
                 <button
-                  onClick={submitCancel}
+                  onClick={() => setCancelConfirmOpen(true)}
                   disabled={cancelling}
-                  className="px-3 py-1.5 rounded-lg border border-orange-500/30 text-xs font-medium text-orange-400 hover:bg-orange-500/10 disabled:opacity-40 transition-colors ml-auto"
+                  className="px-3 py-1.5 rounded-lg border border-orange-500/30 text-xs font-medium text-orange-400 hover:bg-orange-500/10 disabled:opacity-40 transition-colors ml-auto cursor-pointer"
                 >
                   {cancelling ? 'Stopping…' : 'Cancel / Stop'}
                 </button>
@@ -490,6 +514,21 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                       py-2.5 font-medium text-gray-300 hover:text-white text-center text-sm block transition-colors duration-150">
                     ↓ CSV
                   </a>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <button
+                    onClick={submitShare}
+                    disabled={sharing}
+                    className="text-xs px-3 py-1.5 rounded-lg border border-white/10 hover:bg-white/5 text-gray-300 hover:text-white transition-colors cursor-pointer flex items-center gap-1.5"
+                  >
+                    <span>🔗</span>
+                    <span>{sharing ? 'Generating link…' : 'Share Report Link (90-day)'}</span>
+                  </button>
+                  {shareUrl && (
+                    <span className="text-xs text-[#00C2BB] truncate">
+                      Link copied to clipboard! ({window.location.origin}{shareUrl})
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -699,7 +738,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
             {(job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') && (
               <button
                 type="button"
-                onClick={submitDelete}
+                onClick={() => setDeleteConfirmOpen(true)}
                 disabled={deleting}
                 className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-red-400 transition-colors duration-150 disabled:opacity-40 cursor-pointer"
               >
@@ -721,6 +760,28 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
           </div>
         </aside>
       </div>
+
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        onOpenChange={setDeleteConfirmOpen}
+        title="Delete job run"
+        description={`Delete this job run for "${job.prospect}"? It will be removed from your active reports.`}
+        confirmLabel="Delete run"
+        destructive
+        loading={deleting}
+        onConfirm={submitDelete}
+      />
+
+      <ConfirmDialog
+        open={cancelConfirmOpen}
+        onOpenChange={setCancelConfirmOpen}
+        title="Stop estimation run"
+        description="Stop this estimation run? No further phases will be executed."
+        confirmLabel="Stop run"
+        destructive
+        loading={cancelling}
+        onConfirm={submitCancel}
+      />
     </div>
   )
 }

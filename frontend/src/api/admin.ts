@@ -1,5 +1,5 @@
-// frontend/src/api/admin.ts
 import type { Job } from './jobs'
+import { getJSON } from './http'
 
 export interface PagedJobs {
   jobs: Job[]
@@ -23,9 +23,7 @@ export async function listAllJobsPaged(params: ListJobsParams = {}): Promise<Pag
   if (params.status) qs.set('status', params.status)
   if (params.from) qs.set('from', params.from)
   if (params.to) qs.set('to', params.to)
-  const res = await fetch(`/api/admin/jobs?${qs.toString()}`)
-  if (!res.ok) return { jobs: [], total: 0, limit: params.limit ?? 50, offset: params.offset ?? 0 }
-  return res.json()
+  return getJSON<PagedJobs>(`/api/admin/jobs?${qs.toString()}`)
 }
 
 export async function cancelJob(id: string): Promise<void> {
@@ -68,11 +66,7 @@ export interface SystemState {
 }
 
 export async function getSystemState(): Promise<SystemState> {
-  const res = await fetch('/api/admin/system/state')
-  if (!res.ok) {
-    return { halted: false, stop_all: false }
-  }
-  return res.json()
+  return getJSON<SystemState>('/api/admin/system/state')
 }
 
 export async function deleteJob(id: string): Promise<void> {
@@ -91,9 +85,7 @@ export interface AdminUser {
 }
 
 export async function listUsers(): Promise<AdminUser[]> {
-  const res = await fetch('/api/admin/users')
-  if (!res.ok) return []
-  return res.json()
+  return getJSON<AdminUser[]>('/api/admin/users')
 }
 
 export async function setUserRole(email: string, role: string): Promise<void> {
@@ -113,10 +105,8 @@ export interface CatalogStatus {
   stale: boolean
 }
 
-export async function getCatalogStatus(): Promise<CatalogStatus | null> {
-  const res = await fetch('/api/admin/catalog/status')
-  if (!res.ok) return null
-  return res.json()
+export async function getCatalogStatus(): Promise<CatalogStatus> {
+  return getJSON<CatalogStatus>('/api/admin/catalog/status')
 }
 
 export async function triggerCatalogRefresh(): Promise<void> {
@@ -145,9 +135,7 @@ export async function listAuditLog(params: { limit?: number; offset?: number } =
   const qs = new URLSearchParams()
   if (params.limit != null) qs.set('limit', String(params.limit))
   if (params.offset != null) qs.set('offset', String(params.offset))
-  const res = await fetch(`/api/admin/audit?${qs.toString()}`)
-  if (!res.ok) return []
-  return res.json()
+  return getJSON<AuditEntry[]>(`/api/admin/audit?${qs.toString()}`)
 }
 
 export interface DayCount {
@@ -164,10 +152,8 @@ export interface UsageStats {
   jobs_by_day: DayCount[] | null
 }
 
-export async function getAnalytics(): Promise<UsageStats | null> {
-  const res = await fetch('/api/admin/analytics')
-  if (!res.ok) return null
-  return res.json()
+export async function getAnalytics(): Promise<UsageStats> {
+  return getJSON<UsageStats>('/api/admin/analytics')
 }
 
 export async function shareJob(id: string): Promise<{ token: string; url: string }> {
@@ -177,6 +163,29 @@ export async function shareJob(id: string): Promise<{ token: string; url: string
     throw new Error(text || `share failed (${res.status})`)
   }
   return res.json()
+}
+
+export interface ReportShare {
+  token: string // masked in list: first 6 chars + …
+  job_id: string
+  created_by: string
+  created_at: string
+  expires_at?: string
+  expired: boolean
+}
+
+export async function listShares(): Promise<ReportShare[]> {
+  return getJSON<ReportShare[]>('/api/admin/shares')
+}
+
+export async function revokeShare(token: string): Promise<void> {
+  const res = await fetch(`/api/admin/shares/${encodeURIComponent(token)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok && res.status !== 204) {
+    const text = await res.text()
+    throw new Error(text || `revoke failed (${res.status})`)
+  }
 }
 
 export interface DeletedJob {
@@ -194,9 +203,7 @@ export interface DeletedJob {
 }
 
 export async function listDeletedJobs(): Promise<DeletedJob[]> {
-  const res = await fetch('/api/admin/deleted-jobs')
-  if (!res.ok) return []
-  return res.json()
+  return getJSON<DeletedJob[]>('/api/admin/deleted-jobs')
 }
 
 export interface Assumption {
@@ -228,10 +235,8 @@ export interface AssumptionsResponse {
   version: string
 }
 
-export async function getAssumptions(): Promise<AssumptionsResponse | null> {
-  const res = await fetch('/api/admin/assumptions')
-  if (!res.ok) return null
-  return res.json()
+export async function getAssumptions(): Promise<AssumptionsResponse> {
+  return getJSON<AssumptionsResponse>('/api/admin/assumptions')
 }
 
 export interface PutAssumptionBody {
@@ -239,20 +244,21 @@ export interface PutAssumptionBody {
   reason: string
 }
 
-export async function putAssumption(key: string, body: PutAssumptionBody): Promise<{ key: string; value: number; version: string } | null> {
+export async function putAssumption(key: string, body: PutAssumptionBody): Promise<{ key: string; value: number; version: string }> {
   const res = await fetch(`/api/admin/assumptions/${encodeURIComponent(key)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!res.ok) return null
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `role update failed (${res.status})`)
+  }
   return res.json()
 }
 
 export async function getAssumptionHistory(): Promise<AssumptionHistory[]> {
-  const res = await fetch('/api/admin/assumptions/history')
-  if (!res.ok) return []
-  return res.json()
+  return getJSON<AssumptionHistory[]>('/api/admin/assumptions/history')
 }
 
 // ─── Report settings ───
@@ -286,10 +292,8 @@ export interface ReportSettingsResponse {
   version: string
 }
 
-export async function getReportSettings(): Promise<ReportSettingsResponse | null> {
-  const res = await fetch('/api/admin/report-settings')
-  if (!res.ok) return null
-  return res.json()
+export async function getReportSettings(): Promise<ReportSettingsResponse> {
+  return getJSON<ReportSettingsResponse>('/api/admin/report-settings')
 }
 
 export interface PutReportSettingBody {
@@ -297,25 +301,29 @@ export interface PutReportSettingBody {
   reason: string
 }
 
-export async function putReportSetting(key: string, body: PutReportSettingBody): Promise<{ key: string; value: string; version: string } | null> {
+export async function putReportSetting(key: string, body: PutReportSettingBody): Promise<{ key: string; value: string; version: string }> {
   const res = await fetch(`/api/admin/report-settings/${encodeURIComponent(key)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!res.ok) return null
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `role update failed (${res.status})`)
+  }
   return res.json()
 }
 
 export async function getReportSettingHistory(): Promise<ReportSettingChange[]> {
-  const res = await fetch('/api/admin/report-settings/history')
-  if (!res.ok) return []
-  return res.json()
+  return getJSON<ReportSettingChange[]>('/api/admin/report-settings/history')
 }
 
-export async function resetReportSettings(): Promise<{ version: string } | null> {
+export async function resetReportSettings(): Promise<{ version: string }> {
   const res = await fetch('/api/admin/report-settings/reset', { method: 'POST' })
-  if (!res.ok) return null
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `reset failed (${res.status})`)
+  }
   return res.json()
 }
 
@@ -326,11 +334,14 @@ export interface RegenerateReportResponse {
   version: string
 }
 
-export async function regenerateReport(id: string): Promise<RegenerateReportResponse | null> {
+export async function regenerateReport(id: string): Promise<RegenerateReportResponse> {
   const res = await fetch(`/api/admin/jobs/${encodeURIComponent(id)}/regenerate-report`, {
     method: 'POST',
   })
-  if (!res.ok) return null
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `regenerate failed (${res.status})`)
+  }
   return res.json()
 }
 
@@ -377,16 +388,12 @@ export interface JobDiagnosticRecordsResponse {
   records: JobDiagnosticRecord[]
 }
 
-export async function getJobDiagnostics(id: string): Promise<JobDiagnosticsResponse | null> {
-  const res = await fetch(`/api/admin/jobs/${encodeURIComponent(id)}/diagnostics`)
-  if (!res.ok) return null
-  return res.json()
+export async function getJobDiagnostics(id: string): Promise<JobDiagnosticsResponse> {
+  return getJSON<JobDiagnosticsResponse>(`/api/admin/jobs/${encodeURIComponent(id)}/diagnostics`)
 }
 
-export async function getJobDiagnosticRecords(id: string): Promise<JobDiagnosticRecordsResponse | null> {
-  const res = await fetch(`/api/admin/jobs/${encodeURIComponent(id)}/diagnostics/records`)
-  if (!res.ok) return null
-  return res.json()
+export async function getJobDiagnosticRecords(id: string): Promise<JobDiagnosticRecordsResponse> {
+  return getJSON<JobDiagnosticRecordsResponse>(`/api/admin/jobs/${encodeURIComponent(id)}/diagnostics/records`)
 }
 
 // ─── Notification health ───
@@ -400,15 +407,15 @@ export interface NotifyStatus {
   slack: NotifyChannelStatus
 }
 
-export async function getNotifyStatus(): Promise<NotifyStatus | null> {
-  const res = await fetch('/api/admin/notify/status')
-  if (!res.ok) return null
-  return res.json()
+export async function getNotifyStatus(): Promise<NotifyStatus> {
+  return getJSON<NotifyStatus>('/api/admin/notify/status')
 }
 
-export async function notifyTest(): Promise<{ status: string } | null> {
+export async function notifyTest(): Promise<{ status: string }> {
   const res = await fetch('/api/admin/notify/test', { method: 'POST' })
-  if (!res.ok) return null
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `notify test failed (${res.status})`)
+  }
   return res.json()
 }
-

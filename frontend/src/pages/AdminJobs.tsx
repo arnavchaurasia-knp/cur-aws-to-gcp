@@ -4,9 +4,11 @@ import { Nav } from '../components/Nav'
 import { Reveal } from '../components/Reveal'
 import { retryJob, downloadURL } from '../api/jobs'
 import type { Job } from '../api/jobs'
-import { listAllJobsPaged, cancelJob, deleteJob, cancelAllJobs, resumeAllJobs, getSystemState, listDeletedJobs } from '../api/admin'
+import { listAllJobsPaged, cancelJob, deleteJob, cancelAllJobs, resumeAllJobs, getSystemState, listDeletedJobs, listShares, revokeShare } from '../api/admin'
 import type { UserInfo } from '../api/auth'
-import type { DeletedJob } from '../api/admin'
+import type { DeletedJob, ReportShare } from '../api/admin'
+import { parseAdminApiError } from '../components/adminError'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { facetsGetLogs } from '../api/facets'
 import { useTitle } from '../lib/useTitle'
 import { toast } from 'sonner'
@@ -53,9 +55,11 @@ const PAGE_SIZE = 25
 export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('All reports — admin')
   const nav = useNavigate()
-  const [tab, setTab] = useState<'active' | 'deleted'>('active')
+  const [tab, setTab] = useState<'active' | 'deleted' | 'shares'>('active')
   const [jobs, setJobs] = useState<Job[] | null>(null)
   const [deletedJobs, setDeletedJobs] = useState<DeletedJob[] | null>(null)
+  const [shares, setShares] = useState<ReportShare[] | null>(null)
+  const [revokingToken, setRevokingToken] = useState<string | null>(null)
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
   const [statusFilter, setStatusFilter] = useState('')
@@ -68,6 +72,24 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   const [halted, setHalted] = useState(false)
   const [globalBusy, setGlobalBusy] = useState(false)
   const [globalError, setGlobalError] = useState<string | null>(null)
+  const [apiPermissionError, setApiPermissionError] = useState<{ endpoint: string; status: number } | null>(null)
+
+  // Dialog States
+  const [confirmStopAllOpen, setConfirmStopAllOpen] = useState(false)
+  const [pendingCancelJob, setPendingCancelJob] = useState<{ id: string } | null>(null)
+  const [pendingDeleteJob, setPendingDeleteJob] = useState<{ id: string; prospect: string } | null>(null)
+  const [pendingRevokeToken, setPendingRevokeToken] = useState<string | null>(null)
+
+  // Handle API errors: 401 → login, 403 → permission message, other → error status
+  const handleApiError = (err: unknown, endpoint: string): void => {
+    const parsed = parseAdminApiError(err, endpoint, () => nav('/login'))
+    if (parsed.status === 401) return
+    if (parsed.status === 403) {
+      setApiPermissionError({ endpoint: parsed.endpoint, status: parsed.status })
+      return
+    }
+    setGlobalError(parsed.message)
+  }
 
   // Log Modal
   const [activeLogJob, setActiveLogJob] = useState<Job | null>(null)
@@ -80,7 +102,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     return next
   })
 
-  const refreshState = () => getSystemState().then(s => setHalted(s.halted || s.stop_all)).catch(() => {})
+  const refreshState = () => getSystemState().then(s => setHalted(s.halted || s.stop_all)).catch(err => handleApiError(err, 'getSystemState'))
 
   const refreshActive = () => {
     refreshState()
@@ -90,20 +112,25 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
       status: statusFilter || undefined,
       from: fromDate || undefined,
       to: toDate || undefined,
-    }).then(res => { setJobs(res.jobs); setTotal(res.total) })
+    }).then(res => { setJobs(res.jobs); setTotal(res.total) }).catch(err => handleApiError(err, 'listAllJobsPaged'))
   }
 
   const refreshDeleted = () => {
-    return listDeletedJobs().then(setDeletedJobs).catch(() => setDeletedJobs([]))
+    return listDeletedJobs().then(setDeletedJobs).catch(err => handleApiError(err, 'listDeletedJobs'))
   }
 
+  const refreshShares = () => {
+    return listShares().then(setShares).catch(err => handleApiError(err, 'listShares'))
+  }
 
   useEffect(() => {
     refreshActive()
     refreshDeleted()
+    refreshShares()
     const ticker = setInterval(() => {
       refreshActive()
       if (tab === 'deleted') refreshDeleted()
+      if (tab === 'shares') refreshShares()
     }, 25_000)
     return () => clearInterval(ticker)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -125,14 +152,13 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     }
   }
 
-  const handleStopAll = async () => {
-    if (!confirm('EMERGENCY: Stop ALL running jobs across the host and halt orchestration?')) return
-    if (!confirm('DOUBLE-CONFIRM: This will cancel every active run and prevent any new jobs from starting until resumed. Proceed?')) return
+  const executeStopAll = async () => {
     setGlobalBusy(true)
     setGlobalError(null)
     try {
       await cancelAllJobs()
       toast.error('All active runs cancelled and orchestration halted')
+      setConfirmStopAllOpen(false)
       await refreshActive()
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : 'stop-all failed')
@@ -172,13 +198,19 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     }
   }
 
-  const handleCancel = async (e: React.MouseEvent, id: string) => {
+  const handleCancelClick = (e: React.MouseEvent, id: string) => {
     e.stopPropagation()
-    if (!confirm('Cancel this job?')) return
+    setPendingCancelJob({ id })
+  }
+
+  const executeCancel = async () => {
+    if (!pendingCancelJob) return
+    const id = pendingCancelJob.id
     setBusy(prev => new Set(prev).add(id))
     try {
       await cancelJob(id)
       toast.warning(`Job ${id.slice(0, 8)} cancelled`)
+      setPendingCancelJob(null)
       await refreshActive()
     } catch (err) {
       setRowError(prev => ({ ...prev, [id]: err instanceof Error ? err.message : 'cancel failed' }))
@@ -187,13 +219,19 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     }
   }
 
-  const handleDelete = async (e: React.MouseEvent, id: string, prospect: string) => {
+  const handleDeleteClick = (e: React.MouseEvent, id: string, prospect: string) => {
     e.stopPropagation()
-    if (!confirm(`Archive & delete job for "${prospect}"? It will be safely moved to Deleted Jobs archive.`)) return
+    setPendingDeleteJob({ id, prospect })
+  }
+
+  const executeDelete = async () => {
+    if (!pendingDeleteJob) return
+    const { id } = pendingDeleteJob
     setBusy(prev => new Set(prev).add(id))
     try {
       await deleteJob(id)
       toast.success(`Job archived to deleted_jobs table`)
+      setPendingDeleteJob(null)
       await refreshActive()
       await refreshDeleted()
     } catch (err) {
@@ -228,6 +266,37 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
       j.id.toLowerCase().includes(q)
     )
   }, [deletedJobs, query])
+
+  const filteredShares = useMemo(() => {
+    if (!shares) return []
+    const q = query.trim().toLowerCase()
+    if (!q) return shares
+    return shares.filter(s =>
+      s.job_id.toLowerCase().includes(q) ||
+      s.created_by.toLowerCase().includes(q) ||
+      s.token.toLowerCase().includes(q)
+    )
+  }, [shares, query])
+
+  const handleRevokeShareClick = (token: string) => {
+    setPendingRevokeToken(token)
+  }
+
+  const executeRevokeShare = async () => {
+    if (!pendingRevokeToken) return
+    const token = pendingRevokeToken
+    setRevokingToken(token)
+    try {
+      await revokeShare(token)
+      toast.success('Share link revoked')
+      setPendingRevokeToken(null)
+      await refreshShares()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Revoke failed')
+    } finally {
+      setRevokingToken(null)
+    }
+  }
 
   const totals = useMemo(() => {
     if (!jobs) return { total: 0, done: 0, failed: 0, running: 0, spend: 0 }
@@ -293,7 +362,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
             </Link>
             {!halted ? (
               <button
-                onClick={handleStopAll}
+                onClick={() => setConfirmStopAllOpen(true)}
                 disabled={globalBusy}
                 className="px-3 py-1.5 rounded-lg border border-red-500/40 text-red-400 hover:bg-red-500/10 text-xs font-semibold disabled:opacity-40 transition-colors ml-2 cursor-pointer"
               >
@@ -338,6 +407,11 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
             {globalError}
           </div>
         )}
+        {apiPermissionError && (
+          <div className="mb-4 p-3 rounded-lg bg-amber-950/40 border border-amber-500/40 text-amber-400 text-xs">
+            Permission denied accessing <code>{apiPermissionError.endpoint}</code> (status {apiPermissionError.status}). Contact your administrator.
+          </div>
+        )}
 
         {/* Enterprise KPI Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3.5 mb-7">
@@ -369,6 +443,17 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
           >
             Archived / Deleted Runs ({deletedJobs ? deletedJobs.length : '…'})
             {tab === 'deleted' && (
+              <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#00C2BB]" />
+            )}
+          </button>
+          <button
+            onClick={() => setTab('shares')}
+            className={`pb-3 px-4 text-sm font-semibold transition-colors relative cursor-pointer ${
+              tab === 'shares' ? 'text-[#00C2BB]' : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            Shared Links ({shares ? shares.length : '…'})
+            {tab === 'shares' && (
               <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#00C2BB]" />
             )}
           </button>
@@ -556,7 +641,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
 
                                         {(j.status === 'running' || j.status === 'pending') && (
                                           <button
-                                            onClick={e => handleCancel(e, j.id)}
+                                            onClick={e => handleCancelClick(e, j.id)}
                                             disabled={busy.has(j.id)}
                                             className="text-xs font-semibold px-2 py-1 rounded bg-orange-500/20 hover:bg-orange-500/40 text-orange-400 transition-colors cursor-pointer disabled:opacity-40"
                                           >
@@ -566,7 +651,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
 
                                         {(j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') && (
                                           <button
-                                            onClick={e => handleDelete(e, j.id, j.prospect)}
+                                            onClick={e => handleDeleteClick(e, j.id, j.prospect)}
                                             disabled={busy.has(j.id)}
                                             title="Move to Deleted Jobs Archive"
                                             className="text-xs px-2 py-1 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer disabled:opacity-40"
@@ -692,6 +777,99 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
           </div>
         )}
 
+        {/* Shared Links Tab Controls & Table */}
+        {tab === 'shares' && (
+          <div className="anim-fade-in">
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+              <input
+                type="text"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Search shares by job ID, creator, or token…"
+                className="w-full sm:w-80 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm
+                  placeholder:text-gray-500 transition-colors duration-150 focus:border-[#645DF6]"
+              />
+              <span className="text-xs text-gray-400">
+                Audit &amp; Access: Active and expired prospect share links. Revoking invalidates access immediately.
+              </span>
+            </div>
+
+            {shares === null && (
+              <div className="text-sm text-gray-500 py-16 text-center">Loading shared report links…</div>
+            )}
+
+            {shares !== null && filteredShares.length === 0 && (
+              <div className="text-center py-16 border border-white/10 rounded-xl bg-white/[0.01]">
+                <p className="text-gray-300 font-medium">No shared report links found</p>
+                <p className="text-xs text-gray-500 mt-1">When users generate a public link from a completed report, it appears here.</p>
+              </div>
+            )}
+
+            {shares !== null && filteredShares.length > 0 && (
+              <div className="border border-white/10 rounded-xl overflow-hidden bg-white/[0.01]">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-white/[0.02] text-[11px] uppercase tracking-wider text-gray-400 border-b border-white/5">
+                      <tr>
+                        <th className="text-left px-4 py-2.5">Masked Token</th>
+                        <th className="text-left px-4 py-2.5">Job ID</th>
+                        <th className="text-left px-4 py-2.5">Created By</th>
+                        <th className="text-left px-4 py-2.5">Created At</th>
+                        <th className="text-left px-4 py-2.5">Expires At</th>
+                        <th className="text-left px-4 py-2.5">Status</th>
+                        <th className="text-right px-4 py-2.5">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {filteredShares.map(s => (
+                        <tr key={s.token} className="hover:bg-white/[0.02] transition-colors">
+                          <td className="px-4 py-3 font-mono text-xs text-gray-300 whitespace-nowrap">
+                            {s.token}
+                          </td>
+                          <td className="px-4 py-3 text-xs whitespace-nowrap">
+                            <Link to={`/jobs/${s.job_id}`} className="text-[#00C2BB] hover:underline font-mono">
+                              {s.job_id}
+                            </Link>
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-300">
+                            {s.created_by || '—'}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                            {fmtWhen(s.created_at)}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                            {s.expires_at ? fmtWhen(s.expires_at) : 'Never'}
+                          </td>
+                          <td className="px-4 py-3 text-xs whitespace-nowrap">
+                            {s.expired ? (
+                              <span className="px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/20 text-[11px]">
+                                Expired
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[11px]">
+                                Active
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right whitespace-nowrap">
+                            <button
+                              onClick={() => handleRevokeShareClick(s.token)}
+                              disabled={revokingToken === s.token}
+                              className="px-2.5 py-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs font-medium transition-colors disabled:opacity-40 cursor-pointer"
+                            >
+                              {revokingToken === s.token ? 'Revoking…' : 'Revoke'}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Live Logs Slide-out / Modal */}
         {activeLogJob && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm anim-fade-in">
@@ -744,6 +922,61 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
             </div>
           </div>
         )}
+
+        {/* Global Stop-All Emergency Dialog with typed confirmation */}
+        <ConfirmDialog
+          open={confirmStopAllOpen}
+          onOpenChange={setConfirmStopAllOpen}
+          title="EMERGENCY: Stop All Runs"
+          description="This will cancel every active run and halt orchestration across the host. New jobs will be prevented from starting until manually resumed."
+          confirmLabel="Halt Orchestration"
+          destructive
+          loading={globalBusy}
+          requireTypedWord="STOP"
+          onConfirm={executeStopAll}
+        />
+
+        {/* Cancel Individual Job Dialog */}
+        <ConfirmDialog
+          open={pendingCancelJob !== null}
+          onOpenChange={(open) => {
+            if (!open) setPendingCancelJob(null)
+          }}
+          title="Cancel job"
+          description="Cancel this running job? Active child processes will be terminated."
+          confirmLabel="Cancel job"
+          destructive
+          loading={pendingCancelJob ? busy.has(pendingCancelJob.id) : false}
+          onConfirm={executeCancel}
+        />
+
+        {/* Archive & Delete Job Dialog */}
+        <ConfirmDialog
+          open={pendingDeleteJob !== null}
+          onOpenChange={(open) => {
+            if (!open) setPendingDeleteJob(null)
+          }}
+          title="Archive & delete job"
+          description={`Archive & delete job for "${pendingDeleteJob?.prospect}"? It will be safely moved to Deleted Jobs archive.`}
+          confirmLabel="Delete job"
+          destructive
+          loading={pendingDeleteJob ? busy.has(pendingDeleteJob.id) : false}
+          onConfirm={executeDelete}
+        />
+
+        {/* Revoke Share Link Dialog */}
+        <ConfirmDialog
+          open={pendingRevokeToken !== null}
+          onOpenChange={(open) => {
+            if (!open) setPendingRevokeToken(null)
+          }}
+          title="Revoke share link"
+          description="Revoke this share link immediately? Anyone with this URL will see 404."
+          confirmLabel="Revoke link"
+          destructive
+          loading={pendingRevokeToken !== null && revokingToken === pendingRevokeToken}
+          onConfirm={executeRevokeShare}
+        />
 
       </div>
     </div>

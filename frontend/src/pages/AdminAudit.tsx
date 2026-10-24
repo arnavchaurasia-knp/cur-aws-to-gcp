@@ -1,30 +1,65 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Nav } from '../components/Nav'
 import { listAuditLog } from '../api/admin'
 import type { AuditEntry } from '../api/admin'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
+import { parseAdminApiError, type AdminApiErrorState } from '../components/adminError'
 
 const PAGE_SIZE = 50
 
 export function AdminAudit({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('Audit log — admin')
+  const nav = useNavigate()
   const [entries, setEntries] = useState<AuditEntry[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<AdminApiErrorState | null>(null)
   const [offset, setOffset] = useState(0)
 
+  const loadData = () => {
+    setLoading(true)
+    setLoadError(null)
+    listAuditLog({ limit: PAGE_SIZE, offset })
+      .then(res => setEntries(res))
+      .catch(err => {
+        const parsed = parseAdminApiError(err, 'Audit Log', () => nav('/login'))
+        setLoadError(parsed)
+      })
+      .finally(() => setLoading(false))
+  }
+
   useEffect(() => {
-    listAuditLog({ limit: PAGE_SIZE, offset }).then(setEntries)
+    loadData()
   }, [offset])
 
   return (
-    <div className="min-h-screen text-white">
+    <div className="min-h-screen text-white bg-[#0a0a0f]">
       <Nav user={user} />
       <div className="max-w-5xl mx-auto px-6 py-10">
         <h1 className="text-2xl font-semibold mb-1">Audit log</h1>
         <p className="text-sm text-gray-500 mb-8">Every admin action, most recent first.</p>
 
-        {entries === null && <p className="text-sm text-gray-500 py-12 text-center">Loading…</p>}
-        {entries !== null && entries.length === 0 && <p className="text-sm text-gray-500 py-12 text-center">No admin actions logged yet.</p>}
+        {loading && <p className="text-sm text-gray-500 py-12 text-center">Loading…</p>}
+
+        {loadError && (
+          <div className="p-4 rounded-xl bg-orange-950/40 border border-orange-500/40 text-orange-400 text-sm mb-6">
+            <strong className="block font-semibold mb-1">
+              {loadError.status === 403 ? 'Permission Denied' : 'Failed to load audit log'}
+            </strong>
+            <p className="text-xs text-orange-300">{loadError.message}</p>
+            <button
+              onClick={loadData}
+              className="mt-3 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white text-xs font-medium border border-white/10 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {!loading && !loadError && entries !== null && entries.length === 0 && (
+          <p className="text-sm text-gray-500 py-12 text-center">No admin actions logged yet.</p>
+        )}
 
         {entries && entries.length > 0 && (
           <div className="border border-white/10 rounded-xl overflow-hidden">

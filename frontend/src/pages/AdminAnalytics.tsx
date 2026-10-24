@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Nav } from '../components/Nav'
 import { StatCard } from './AdminJobs'
 import { getAnalytics } from '../api/admin'
@@ -6,23 +7,60 @@ import type { UsageStats } from '../api/admin'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { parseAdminApiError, type AdminApiErrorState } from '../components/adminError'
 
 export function AdminAnalytics({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('Analytics — admin')
+  const nav = useNavigate()
   const [stats, setStats] = useState<UsageStats | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<AdminApiErrorState | null>(null)
 
-  useEffect(() => { getAnalytics().then(setStats) }, [])
+  const loadData = () => {
+    setLoading(true)
+    setLoadError(null)
+    getAnalytics()
+      .then(res => setStats(res))
+      .catch(err => {
+        const parsed = parseAdminApiError(err, 'Platform Analytics', () => nav('/login'))
+        setLoadError(parsed)
+      })
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => {
+    loadData()
+  }, [])
 
   const chartData = (stats?.jobs_by_day ?? []).map(d => ({ day: d.day.slice(5), count: d.count }))
 
   return (
-    <div className="min-h-screen text-white">
+    <div className="min-h-screen text-white bg-[#0a0a0f]">
       <Nav user={user} />
       <div className="max-w-5xl mx-auto px-6 py-10">
         <h1 className="text-2xl font-semibold mb-1">Analytics</h1>
         <p className="text-sm text-gray-500 mb-8">Platform-wide usage over the last 30 days.</p>
 
-        {stats === null && <p className="text-sm text-gray-500 py-12 text-center">Loading…</p>}
+        {loading && <p className="text-sm text-gray-500 py-12 text-center">Loading…</p>}
+
+        {loadError && (
+          <div className="p-4 rounded-xl bg-orange-950/40 border border-orange-500/40 text-orange-400 text-sm mb-6">
+            <strong className="block font-semibold mb-1">
+              {loadError.status === 403 ? 'Permission Denied' : 'Failed to load analytics'}
+            </strong>
+            <p className="text-xs text-orange-300">{loadError.message}</p>
+            <button
+              onClick={loadData}
+              className="mt-3 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white text-xs font-medium border border-white/10 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {!loading && !loadError && stats && stats.total_jobs === 0 && (
+          <p className="text-sm text-gray-500 py-12 text-center">No jobs found in the last 30 days.</p>
+        )}
 
         {stats && (
           <>

@@ -43,17 +43,20 @@ func (s *Session) IsAdmin(adminEmails []string) bool {
 	if !s.IsFacetsEmployee() {
 		return false
 	}
-	if s.Role == "viewer" {
-		return false
-	}
-	if s.Role == "admin" {
-		return true
-	}
+	// Break-glass: explicit admin email list takes precedence over the stored
+	// role, so an admin can demote themselves from "viewer" and still be an
+	// admin, and a demoted admin can be recovered via ADMIN_EMAILS.
 	email := strings.ToLower(s.Email)
 	for _, a := range adminEmails {
 		if a == email {
 			return true
 		}
+	}
+	if s.Role == "admin" {
+		return true
+	}
+	if s.Role == "viewer" {
+		return false
 	}
 	// All @facets accounts default to admin
 	return true

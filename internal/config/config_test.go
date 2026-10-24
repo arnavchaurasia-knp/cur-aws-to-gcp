@@ -15,7 +15,7 @@ func TestLoadFromEnv(t *testing.T) {
 	os.Setenv("GOOGLE_CLIENT_ID", "client-id")
 	os.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
 	os.Setenv("GOOGLE_REDIRECT_URI", "http://localhost/callback")
-	os.Setenv("SESSION_SECRET", "aabbccddeeff00112233445566778899")
+	os.Setenv("SESSION_SECRET", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
 	os.Setenv("RESEND_API_KEY", "re_test")
 	os.Setenv("RESEND_FROM", "test@example.com")
 	os.Setenv("APP_BASE_URL", "http://localhost:9090")

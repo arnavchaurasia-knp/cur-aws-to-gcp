@@ -6,16 +6,17 @@ import type { AdminUser } from '../api/admin'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 
-const ROLES = ['viewer', 'admin', 'facets']
-
 export function AdminUsers({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('Users — admin')
   const [users, setUsers] = useState<AdminUser[] | null>(null)
   const [search, setSearch] = useState('')
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [error, setError] = useState<Record<string, string>>({})
+  const [globalError, setGlobalError] = useState<string | null>(null)
 
-  const refresh = () => listUsers().then(setUsers)
+  const refresh = () => listUsers().then(setUsers).catch(err => {
+    setGlobalError(err instanceof Error ? err.message : 'load failed')
+  })
   useEffect(() => { refresh() }, [])
 
   const filteredUsers = useMemo(() => {
@@ -58,6 +59,11 @@ export function AdminUsers({ user }: Readonly<{ user: UserInfo }>) {
           </div>
         </div>
 
+        {globalError && (
+          <div className="mb-4 p-3 rounded-lg bg-orange-950/40 border border-orange-500/40 text-orange-400 text-xs">
+            {globalError}
+          </div>
+        )}
         {users === null && <p className="text-sm text-gray-500 py-12 text-center">Loading…</p>}
         {users !== null && users.length === 0 && <p className="text-sm text-gray-500 py-12 text-center">No users registered yet.</p>}
         {filteredUsers !== null && users !== null && users.length > 0 && filteredUsers.length === 0 && (
@@ -76,31 +82,56 @@ export function AdminUsers({ user }: Readonly<{ user: UserInfo }>) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {filteredUsers.map(u => (
-                  <tr key={u.email} className="hover:bg-white/[0.02] transition-colors">
-                    <td className="px-5 py-3 text-gray-200 font-mono text-xs">{u.email}</td>
-                    <td className="px-5 py-3">
-                      <select
-                        value={u.role}
-                        disabled={busy.has(u.email)}
-                        onChange={e => handleChange(u.email, e.target.value)}
-                        className="bg-white/5 border border-white/10 rounded-lg px-2.5 py-1 text-xs text-gray-200 disabled:opacity-40 focus:outline-none focus:border-[#645DF6]"
-                      >
-                        {ROLES.map(r => <option key={r} value={r} className="bg-gray-900 text-white">{r}</option>)}
-                      </select>
-                      {error[u.email] && <p className="text-xs text-orange-400 mt-1">{error[u.email]}</p>}
-                    </td>
-                    <td className="px-5 py-3 text-gray-400 text-xs">{new Date(u.updated_at).toLocaleString()}</td>
-                    <td className="px-5 py-3 text-right">
-                      <Link
-                        to={`/admin?q=${encodeURIComponent(u.email)}`}
-                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-[#00C2BB]/10 text-[#00C2BB] hover:bg-[#00C2BB]/20 text-xs font-medium transition-colors"
-                      >
-                        View runs →
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
+                {filteredUsers.map(u => {
+                  const canSetAdmin = Boolean(user?.is_facets_employee)
+                  const isStoredAdminNonFacets = u.role === 'admin' && !canSetAdmin
+
+                  return (
+                    <tr key={u.email} className="hover:bg-white/[0.02] transition-colors">
+                      <td className="px-5 py-3 text-gray-200 font-mono text-xs">
+                        <div className="flex items-center gap-2">
+                          <span>{u.email}</span>
+                          {isStoredAdminNonFacets && (
+                            <span
+                              title="Stored as admin, not effective (restricted to @facets accounts)"
+                              className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                            >
+                              ineffective admin
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-5 py-3">
+                        <select
+                          value={u.role}
+                          disabled={busy.has(u.email)}
+                          onChange={e => handleChange(u.email, e.target.value)}
+                          className="bg-white/5 border border-white/10 rounded-lg px-2.5 py-1 text-xs text-gray-200 disabled:opacity-40 focus:outline-none focus:border-[#645DF6]"
+                        >
+                          <option value="viewer" className="bg-gray-900 text-white">viewer</option>
+                          <option
+                            value="admin"
+                            disabled={!canSetAdmin}
+                            title={!canSetAdmin ? "Admin access is restricted to @facets accounts" : undefined}
+                            className="bg-gray-900 text-white disabled:text-gray-500"
+                          >
+                            admin {!canSetAdmin ? "(@facets only)" : ""}
+                          </option>
+                        </select>
+                        {error[u.email] && <p className="text-xs text-orange-400 mt-1">{error[u.email]}</p>}
+                      </td>
+                      <td className="px-5 py-3 text-gray-400 text-xs">{new Date(u.updated_at).toLocaleString()}</td>
+                      <td className="px-5 py-3 text-right">
+                        <Link
+                          to={`/admin?q=${encodeURIComponent(u.email)}`}
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-[#00C2BB]/10 text-[#00C2BB] hover:bg-[#00C2BB]/20 text-xs font-medium transition-colors"
+                        >
+                          View runs →
+                        </Link>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

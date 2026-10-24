@@ -18,7 +18,7 @@ import (
 // interface here (rather than importing internal/db directly) to avoid a
 // dependency from internal/auth on internal/db.
 type userStore interface {
-	UpsertUserSeen(email string) error
+	UpsertUserSeen(email, role string) error
 	GetUserRole(email string) (string, error)
 	AuthenticateUser(email, password string) (bool, error)
 }
@@ -217,7 +217,7 @@ func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			if r, err := h.users.GetUserRole(email); err == nil && r != "" {
 				role = r
 			}
-			_ = h.users.UpsertUserSeen(email)
+			_ = h.users.UpsertUserSeen(email, role)
 		}
 		if (&Session{Email: email, Role: role}).IsAdmin(h.adminEmails) {
 			role = "admin"
@@ -461,7 +461,7 @@ func (h *OAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		if r, err := h.users.GetUserRole(info.Email); err == nil && r != "" {
 			role = r
 		}
-		_ = h.users.UpsertUserSeen(info.Email)
+		_ = h.users.UpsertUserSeen(info.Email, role)
 	}
 	if (&Session{Email: info.Email, Role: role}).IsAdmin(h.adminEmails) {
 		role = "admin"
@@ -486,10 +486,12 @@ func (h *OAuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromCtx(r.Context())
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"email":    sess.Email,
-		"name":     sess.Name,
-		"picture":  sess.Picture,
-		"is_admin": sess.IsAdmin(h.adminEmails),
+		"email":             sess.Email,
+		"name":              sess.Name,
+		"picture":           sess.Picture,
+		"role":              sess.Role,
+		"is_admin":          sess.IsAdmin(h.adminEmails),
+		"is_facets_employee": sess.IsFacetsEmployee(),
 	})
 }
 

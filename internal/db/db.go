@@ -139,6 +139,11 @@ CREATE TABLE IF NOT EXISTS job_diagnostics (
     workload_usd REAL    NOT NULL DEFAULT 0,
     recorded_at  DATETIME DEFAULT (datetime('now')),
     PRIMARY KEY (job_id, run_id)
+);
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name       TEXT PRIMARY KEY,
+    applied_at DATETIME DEFAULT (datetime('now'))
 );`
 
 // Open opens a database connection. If remoteURL is provided and non-empty (e.g. Turso libsql://),
@@ -186,6 +191,37 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 			if !strings.Contains(msg, "duplicate column") && !strings.Contains(msg, "already exists") {
 				return nil, err
 			}
+		}
+	}
+
+	// One-shot repair for existing Facets-domain rows still at 'viewer' to 'admin'.
+	// Guarded by schema_migrations so demoting a user to viewer persists across restarts.
+	var migrationApplied int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name = 'repair_facets_viewer_roles_2026_10'`).Scan(&migrationApplied); err != nil {
+		return nil, err
+	}
+	if migrationApplied == 0 {
+		tx, err := conn.Begin()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(`
+			UPDATE users
+			SET role = 'admin', updated_at = datetime('now')
+			WHERE role = 'viewer'
+			  AND (email LIKE '%@facets.cloud' OR email LIKE '%@facets.io' OR email LIKE '%@facets.%')
+		`); err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO schema_migrations (name, applied_at) VALUES ('repair_facets_viewer_roles_2026_10', datetime('now'))
+		`); err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
 		}
 	}
 

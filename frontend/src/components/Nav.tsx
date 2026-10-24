@@ -5,14 +5,8 @@ import { useState, useRef, useEffect } from 'react'
 
 export function Nav({ user }: Readonly<{ user: UserInfo }>) {
   const location = useLocation()
-  const email = (user?.email || '').toLowerCase()
-  const isFacetsUser = Boolean(
-    email && (
-      email.endsWith('@facets.cloud') ||
-      email.endsWith('@facets.io') ||
-      email.includes('@facets.')
-    )
-  )
+  const isAdmin = Boolean(user?.is_admin)
+  const isFacetsEmployee = Boolean(user?.is_facets_employee)
 
   const navItemClass = (path: string) => {
     const isActive = location.pathname === path
@@ -34,29 +28,35 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
         </Link>
       </div>
       <div className="flex items-center gap-4 text-sm text-gray-400">
-        {isFacetsUser && (
-          <div className="hidden sm:flex items-center gap-4">
-            <Link to="/admin" className={navItemClass('/admin')}>All Reports</Link>
+        <div className="hidden sm:flex items-center gap-4">
+          {isAdmin && (
+            <>
+              <Link to="/admin" className={navItemClass('/admin')}>All Reports</Link>
+              <Link to="/admin/users" className={navItemClass('/admin/users')}>Users</Link>
+              <Link to="/admin/catalog" className={navItemClass('/admin/catalog')}>Catalog</Link>
+              <Link to="/admin/analytics" className={navItemClass('/admin/analytics')}>Analytics</Link>
+              <Link to="/admin/audit" className={navItemClass('/admin/audit')}>Audit</Link>
+            </>
+          )}
+          {isFacetsEmployee && (
             <Link to="/facets" className={navItemClass('/facets')}>Logs &amp; Engine</Link>
-            <Link to="/admin/users" className={navItemClass('/admin/users')}>Users</Link>
-            <Link to="/admin/catalog" className={navItemClass('/admin/catalog')}>Catalog</Link>
-            <Link to="/admin/analytics" className={navItemClass('/admin/analytics')}>Analytics</Link>
-            <Link to="/admin/audit" className={navItemClass('/admin/audit')}>Audit</Link>
-          </div>
-        )}
-        {isFacetsUser && (
-          <div className="sm:hidden flex items-center gap-2 text-xs">
+          )}
+        </div>
+        <div className="sm:hidden flex items-center gap-2 text-xs">
+          {isAdmin && (
             <Link to="/admin" className="nav-link text-[#00C2BB]">Admin</Link>
+          )}
+          {isFacetsEmployee && (
             <Link to="/facets" className="nav-link text-gray-400">Logs</Link>
-          </div>
-        )}
-        <UserMenu user={user} isFacetsUser={isFacetsUser} />
+          )}
+        </div>
+        <UserMenu user={user} />
       </div>
     </nav>
   )
 }
 
-function UserMenu({ user, isFacetsUser }: Readonly<{ user: UserInfo; isFacetsUser?: boolean }>) {
+function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const initial = (user.name || user.email || '?').trim().charAt(0).toUpperCase()
@@ -109,14 +109,14 @@ function UserMenu({ user, isFacetsUser }: Readonly<{ user: UserInfo; isFacetsUse
           <div className="px-4 py-3 border-b border-white/10">
             <p className="text-sm font-medium text-white truncate">{user.name || 'Signed in'}</p>
             <p className="text-xs text-gray-400 truncate">{user.email}</p>
-            {isFacetsUser && (
+            {user.is_facets_employee && (
               <span className="inline-block mt-1.5 px-2 py-0.5 text-[10px] uppercase font-semibold tracking-wider bg-[#00C2BB]/15 text-[#00C2BB] border border-[#00C2BB]/30 rounded">
                 Facets Team Admin
               </span>
             )}
           </div>
 
-          {isFacetsUser && (
+          {user.is_facets_employee && (
             <div className="py-1 border-b border-white/10 text-xs">
               <Link
                 to="/admin"

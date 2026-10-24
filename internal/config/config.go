@@ -1,8 +1,9 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
-	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -54,7 +55,7 @@ type Config struct {
 	AdminEmails []string
 	// AllowedDomains is a comma-separated list of Google Workspace domains
 	// permitted to log in, from $ALLOWED_DOMAINS. Defaults to
-	// "google.com,facets.cloud" if unset.
+	// "facets.cloud" if unset.
 	AllowedDomains []string
 	// FacetsLoginEmails is a comma-separated allow-list from
 	// $FACETS_LOGIN_EMAILS. Only these emails may complete a login where
@@ -117,22 +118,49 @@ func LoadFromEnv() (*Config, error) {
 		}
 	}
 
+	// ANTIGRAVITY_API_KEY is intentionally NOT in the required list. It must be
+	// set in the host environment (VM-wide on prod, shell on dev) so the
+	// spawned agy subprocess inherits it via os.Environ(). GEMINI_API_KEY is
+	// ignored by agy — use ANTIGRAVITY_API_KEY.
 	required := []string{"SESSION_SECRET", "APP_BASE_URL"}
 	if !devBypass {
 		required = append(required,
 			"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI",
 		)
 		// Notification vars are optional locally; warn but don't block startup.
-		for _, k := range []string{"RESEND_API_KEY", "RESEND_FROM", "SLACK_WEBHOOK_URL"} {
-			if os.Getenv(k) == "" {
-				log.Printf("WARNING: %s is not set — email/Slack notifications disabled", k)
-			}
+		var missingEmail []string
+		if os.Getenv("RESEND_API_KEY") == "" {
+			missingEmail = append(missingEmail, "RESEND_API_KEY")
+		}
+		if os.Getenv("RESEND_FROM") == "" {
+			missingEmail = append(missingEmail, "RESEND_FROM")
+		}
+		if len(missingEmail) > 0 {
+			slog.Warn("email notifications disabled (" + strings.Join(missingEmail, ", ") + " unset)")
+		}
+
+		if os.Getenv("SLACK_WEBHOOK_URL") == "" {
+			slog.Warn("Slack notifications disabled (SLACK_WEBHOOK_URL unset)")
 		}
 	}
-	// ANTIGRAVITY_API_KEY is intentionally NOT in the required list. It must be
-	// set in the host environment (VM-wide on prod, shell on dev) so the
-	// spawned agy subprocess inherits it via os.Environ(). GEMINI_API_KEY is
-	// ignored by agy — use ANTIGRAVITY_API_KEY.
+	// ALLOWED_DOMAINS=* allows any Google account to sign in — requires explicit opt-in.
+	allowedDomainsEnv := os.Getenv("ALLOWED_DOMAINS")
+	if allowedDomainsEnv == "*" {
+		if os.Getenv("ALLOW_ANY_DOMAIN") != "true" {
+			return nil, errors.New("ALLOWED_DOMAINS=* requires explicit ALLOW_ANY_DOMAIN=true — refusing to allow all Google accounts")
+		}
+		slog.Warn("ALLOWED_DOMAINS=* is active — any Google account can authenticate")
+	}
+	// SESSION_SECRET must be valid base64 (>=32 bytes decoded) unless dev bypass.
+	if !devBypass {
+		decoded, err := base64.StdEncoding.DecodeString(os.Getenv("SESSION_SECRET"))
+		if err != nil {
+			return nil, errors.New("SESSION_SECRET is not valid base64 — refusing to start without a valid session key")
+		}
+		if len(decoded) < 32 {
+			return nil, errors.New("SESSION_SECRET decodes to fewer than 32 bytes — refusing to start without a strong session key")
+		}
+	}
 	for _, k := range required {
 		if os.Getenv(k) == "" {
 			return nil, errors.New("missing required env var: " + k)
@@ -192,12 +220,6 @@ func LoadFromEnv() (*Config, error) {
 	}
 	if s3Region == "" {
 		s3Region = "auto"
-	}
-
-	// Validate ALLOWED_DOMAINS: wildcard "*" requires explicit opt-in.
-	allowedDomainsEnv := os.Getenv("ALLOWED_DOMAINS")
-	if allowedDomainsEnv == "*" && os.Getenv("ALLOW_ANY_DOMAIN") != "true" {
-		return nil, errors.New("ALLOWED_DOMAINS=* requires explicit ALLOW_ANY_DOMAIN=true — refusing to allow all Google accounts")
 	}
 
 	return &Config{

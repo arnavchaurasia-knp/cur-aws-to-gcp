@@ -23,14 +23,25 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
   useEffect(() => { listJobs().then(setJobs) }, [])
 
   const submit = async () => {
-    if (!file || !prospect.trim()) return
-    setSubmitting(true)
+    if (submitting) return
     setError(null)
+
+    if (!prospect.trim()) {
+      setError('Please enter a prospect / customer name before submitting.')
+      return
+    }
+    if (!file) {
+      setError('Please select or drop an AWS bill file to upload.')
+      return
+    }
+
+    setSubmitting(true)
     try {
       const { id } = await createJob(file, prospect.trim())
       nav(`/jobs/${id}`)
     } catch (err: any) {
       setError(err?.message || 'Upload failed')
+      listJobs().then(setJobs).catch(() => {})
     } finally {
       setSubmitting(false)
     }
@@ -51,14 +62,14 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
           </div>
           <div className="flex flex-col gap-2 anim-fade-in-up delay-100">
             <label htmlFor="prospect-name" className="text-xs uppercase tracking-wider text-gray-400">Prospect / Customer Name</label>
-            <input id="prospect-name" value={prospect} onChange={e => setProspect(e.target.value)}
+            <input id="prospect-name" value={prospect} onChange={e => { setProspect(e.target.value); if (error) setError(null) }}
               placeholder="e.g. Acme Corp"
               className="bg-white/5 border border-white/20 rounded-lg px-4 py-2 text-sm outline-none
                 focus:border-[#645DF6] transition-colors duration-150" />
           </div>
           <div className="flex flex-col gap-2 anim-fade-in-up delay-175">
             <label htmlFor="bill-upload" className="text-xs uppercase tracking-wider text-gray-400">AWS bill — CUR export, Cost Explorer CSV, Parquet, ZIP, or console PDF</label>
-            <DropZone file={file} onChange={setFile} inputId="bill-upload" />
+            <DropZone file={file} onChange={f => { setFile(f); if (error) setError(null) }} inputId="bill-upload" />
           </div>
           {error && (
             <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400 anim-fade-in-up">
@@ -67,9 +78,9 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
           )}
 
           <div className="anim-fade-in-up delay-250">
-            <button onClick={submit} disabled={!ready}
+            <button onClick={submit} disabled={submitting}
               className={`w-full py-3 rounded-lg font-medium text-white transition-all duration-200
-                ${ready ? 'btn-shimmer anim-glow-breathe cursor-pointer' : 'bg-gradient-to-r from-[#645DF6] to-[#00C2BB] opacity-40 cursor-not-allowed'}`}>
+                ${ready ? 'btn-shimmer anim-glow-breathe cursor-pointer' : submitting ? 'bg-gradient-to-r from-[#645DF6] to-[#00C2BB] opacity-40 cursor-wait' : 'btn-shimmer opacity-85 hover:opacity-100 cursor-pointer'}`}>
               {submitting ? 'Uploading…' : 'Submit'}
             </button>
           </div>

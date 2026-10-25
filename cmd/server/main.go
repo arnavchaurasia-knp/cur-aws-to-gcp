@@ -182,9 +182,17 @@ func main() {
 	r.Get("/version", versionHandler(catalogFetchedAt, catalogAgeDays))
 
 	// Rate limiting for sensitive endpoints
-	loginLimiter := jobs.NewRateLimitMiddleware(10.0/60.0, 10)  // 10/min/IP
-	uploadLimiter := jobs.NewRateLimitMiddleware(5.0/3600.0, 5) // 5/hour/session
-	shareLimiter := jobs.NewRateLimitMiddleware(60.0/60.0, 60)  // 60/min/IP
+	loginLimiter := jobs.NewRateLimitMiddleware(10.0/60.0, 10) // 10/min/IP
+	// Upload limiter: 2 uploads per second (2.0 rate, burst of 2).
+	// Uses token bucket algorithm to prevent window boundary burst exploitation.
+	// Keyed on authenticated session user email when present, falling back to IP.
+	uploadLimiter := jobs.NewRateLimitMiddlewareWithKey(2.0, 2, func(r *http.Request) string {
+		if sess := auth.SessionFromCtx(r.Context()); sess != nil && sess.Email != "" {
+			return "user:" + sess.Email
+		}
+		return ""
+	})
+	shareLimiter := jobs.NewRateLimitMiddleware(60.0/60.0, 60) // 60/min/IP
 
 	// Auth (no session required)
 	r.Get("/api/auth/login", loginLimiter(http.HandlerFunc(oauthH.Login)))

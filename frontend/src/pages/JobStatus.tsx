@@ -422,31 +422,65 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
 
   useEffect(() => { listJobs().then(setJobs) }, [])
 
+  const [loadError, setLoadError] = useState<string | null>(null)
+
   useEffect(() => {
     if (!id) return
     let cancelled = false
     let prevStatus: string | null = null
     const poll = async () => {
       if (cancelled) return
-      const j = await getJob(id).catch(() => null)
-      if (!j || cancelled) return
-      setJob(j)
-      setJobs(prev => prev.map(old => old.id === j.id ? { ...old, status: j.status } : old))
-      if (j.status === 'running' || j.status === 'pending') {
-        getProgress(id).then(p => { if (!cancelled && p) setProgress(p) })
-        setTimeout(poll, 5000)
-      } else if (j.status === 'done' && prevStatus !== 'done') {
-        // First time we see done — fetch runs + summary.
-        getRuns(id).then(r => { if (!cancelled) setRuns(r) })
-        getSummary(id).then(s => { if (!cancelled) setSummary(s) })
+      try {
+        const j = await getJob(id)
+        if (cancelled) return
+        setJob(j)
+        setLoadError(null)
+        setJobs(prev => prev.map(old => old.id === j.id ? { ...old, status: j.status } : old))
+        if (j.status === 'running' || j.status === 'pending') {
+          getProgress(id).then(p => { if (!cancelled && p) setProgress(p) })
+          setTimeout(poll, 5000)
+        } else if (j.status === 'done' && prevStatus !== 'done') {
+          // First time we see done — fetch runs + summary.
+          getRuns(id).then(r => { if (!cancelled) setRuns(r) })
+          getSummary(id).then(s => { if (!cancelled) setSummary(s) })
+        }
+        prevStatus = j.status
+      } catch (err: unknown) {
+        if (!cancelled) {
+          setLoadError(err instanceof Error ? err.message : 'Job not found')
+        }
       }
-      prevStatus = j.status
     }
     poll()
     return () => { cancelled = true }
   }, [id, refining, retrying])
 
-  if (!job) return <div className="min-h-screen bg-[#0a0a0f] text-white"><Nav user={user} /></div>
+  if (!job) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] text-white">
+        <Nav user={user} />
+        <div className="max-w-xl mx-auto px-6 py-20 text-center">
+          {loadError ? (
+            <div className="p-6 bg-red-500/10 border border-red-500/30 rounded-xl space-y-4 anim-scale-in">
+              <p className="text-red-400 font-medium">Failed to load report</p>
+              <p className="text-xs text-gray-400">{loadError}</p>
+              <Link to="/" className="inline-block px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-xs font-semibold transition-colors">
+                ← Back to Upload
+              </Link>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-3">
+              <span className="relative flex w-3 h-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#645DF6] opacity-75" />
+                <span className="relative inline-flex rounded-full w-3 h-3 bg-[#645DF6]" />
+              </span>
+              <p className="text-sm text-gray-400">Loading estimation report…</p>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white">

@@ -202,6 +202,9 @@ func main() {
 		if webRoot == "" {
 			webRoot = filepath.Join(".", "frontend", "dist")
 		}
+		// Same reasoning as the SPA fallback below: index.html names the
+		// fingerprinted bundles and must not be cached.
+		w.Header().Set("Cache-Control", "no-store, must-revalidate")
 		http.ServeFile(w, r, filepath.Join(webRoot, "index.html"))
 	})
 
@@ -318,10 +321,24 @@ func main() {
 		r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 			p := strings.TrimPrefix(r.URL.Path, "/")
 			if _, err := fs.Stat(fsys, p); err == nil {
+				// Vite fingerprints everything under /assets/, so those URLs
+				// change whenever their contents do and may be cached forever.
+				if strings.HasPrefix(p, "assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				} else {
+					w.Header().Set("Cache-Control", "no-cache")
+				}
 				fileServer.ServeHTTP(w, r)
 				return
 			}
-			// SPA fallback — let React Router handle unknown paths
+			// SPA fallback — let React Router handle unknown paths.
+			//
+			// index.html names the fingerprinted bundles, so it must never be
+			// cached: served without Cache-Control, browsers apply heuristic
+			// freshness and can keep an old copy that points at asset hashes a
+			// later deploy has already removed, leaving a blank page until a
+			// hard reload.
+			w.Header().Set("Cache-Control", "no-store, must-revalidate")
 			http.ServeFile(w, r, filepath.Join(webRoot, "index.html"))
 		})
 	} else {

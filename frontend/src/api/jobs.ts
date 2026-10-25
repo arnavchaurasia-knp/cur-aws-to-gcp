@@ -21,41 +21,99 @@ export interface RunResult {
   confidence: string | null
 }
 
-export async function createJob(file: File, prospect: string): Promise<{ id: string }> {
-  const form = new FormData()
-  form.append('file', file)
-  form.append('prospect_name', prospect)
+export async function createJob(
+  file: File,
+  prospect: string,
+  onProgress?: (percent: number) => void
+): Promise<{ id: string }> {
+  const CHUNK_SIZE = 15 * 1024 * 1024 // 15 MB chunks to easily fit inside all proxy/Cloudflare limits
 
-  let res: Response
-  try {
-    res = await fetch('/api/jobs', { method: 'POST', body: form })
-  } catch (netErr: any) {
-    if (file.size > 100 * 1024 * 1024) {
-      const sizeMB = (file.size / (1024 * 1024)).toFixed(1)
-      throw new Error(
-        `Upload connection dropped (${sizeMB} MB). Cloudflare & reverse proxies disconnect files larger than 100 MB. Please compress this bill (.csv.gz or .zip) before uploading.`
-      )
-    }
-    throw new Error('Network error: Failed to reach the server. Please check your internet connection or try again.')
-  }
+  // If file is smaller than or equal to 25 MB, upload directly in one piece
+  if (file.size <= 25 * 1024 * 1024) {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('prospect_name', prospect)
 
-  if (!res.ok) {
-    let msg = `Upload failed (HTTP ${res.status})`
+    let res: Response
     try {
-      const text = await res.text()
-      try {
-        const data = JSON.parse(text)
-        if (data?.error) msg = data.error
-        else if (text) msg = text
-      } catch {
-        if (text) msg = text
-      }
+      res = await fetch('/api/jobs', { method: 'POST', body: form })
     } catch {
-      // Ignore stream reading errors and keep default HTTP status message
+      throw new Error('Network error: Failed to reach the server. Please check your internet connection.')
     }
-    throw new Error(msg)
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '')
+      try {
+        const parsed = JSON.parse(errText)
+        throw new Error(parsed?.error || `Upload failed (HTTP ${res.status})`)
+      } catch (e: any) {
+        throw new Error(errText || e?.message || `Upload failed (HTTP ${res.status})`)
+      }
+    }
+    onProgress?.(100)
+    return res.json()
   }
-  return res.json()
+
+  // Large file (> 25 MB): Slice into 15 MB chunks, upload sequentially, and combine on server
+  const uploadId = crypto.randomUUID()
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * CHUNK_SIZE
+    const end = Math.min(start + CHUNK_SIZE, file.size)
+    const chunkBlob = file.slice(start, end)
+
+    const chunkForm = new FormData()
+    chunkForm.append('upload_id', uploadId)
+    chunkForm.append('chunk_index', String(i))
+    chunkForm.append('total_chunks', String(totalChunks))
+    chunkForm.append('chunk', chunkBlob, file.name)
+
+    let chunkRes: Response
+    try {
+      chunkRes = await fetch('/api/jobs/chunk', { method: 'POST', body: chunkForm })
+    } catch {
+      throw new Error(`Connection lost while uploading part ${i + 1} of ${totalChunks}. Please try again.`)
+    }
+
+    if (!chunkRes.ok) {
+      const msg = await chunkRes.text().catch(() => '')
+      throw new Error(`Upload of part ${i + 1} failed: ${msg || chunkRes.statusText}`)
+    }
+
+    const percent = Math.round(((i + 1) / totalChunks) * 95)
+    onProgress?.(percent)
+  }
+
+  // All chunks uploaded: tell backend to reassemble and start the pipeline
+  let completeRes: Response
+  try {
+    completeRes = await fetch('/api/jobs/complete-chunked', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upload_id: uploadId,
+        prospect_name: prospect,
+        file_name: file.name,
+        total_chunks: totalChunks,
+      }),
+    })
+  } catch {
+    throw new Error('Connection lost while assembling bill on server. Please try again.')
+  }
+
+  if (!completeRes.ok) {
+    const msg = await completeRes.text().catch(() => '')
+    try {
+      const parsed = JSON.parse(msg)
+      throw new Error(parsed?.error || `Assembly failed (HTTP ${completeRes.status})`)
+    } catch (e: any) {
+      throw new Error(msg || e?.message || `Assembly failed (HTTP ${completeRes.status})`)
+    }
+  }
+
+  onProgress?.(100)
+  return completeRes.json()
 }
 
 export async function listJobs(): Promise<Job[]> {

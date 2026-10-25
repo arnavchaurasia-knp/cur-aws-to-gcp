@@ -222,6 +222,149 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"id": jobID, "status": "pending"})
 }
 
+// UploadChunk handles uploading a single chunk of a large bill.
+func (h *Handler) UploadChunk(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20) // max 32MB per chunk
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		http.Error(w, `{"error":"failed to parse chunk: `+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
+	uploadID := r.FormValue("upload_id")
+	if !isValidJobID(uploadID) {
+		http.Error(w, `{"error":"invalid upload_id"}`, http.StatusBadRequest)
+		return
+	}
+	indexStr := r.FormValue("chunk_index")
+	chunkIndex, err := strconv.Atoi(indexStr)
+	if err != nil || chunkIndex < 0 {
+		http.Error(w, `{"error":"invalid chunk_index"}`, http.StatusBadRequest)
+		return
+	}
+
+	file, _, err := r.FormFile("chunk")
+	if err != nil {
+		http.Error(w, `{"error":"chunk file required"}`, http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	uploadDir := filepath.Join(h.jobsDir, ".uploads", uploadID)
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		slog.Error("MkdirAll for chunk upload failed", "upload_id", uploadID, "err", err)
+		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	partPath := filepath.Join(uploadDir, fmt.Sprintf("part_%05d", chunkIndex))
+	partFile, err := os.Create(partPath)
+	if err != nil {
+		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+		return
+	}
+	if _, err := io.Copy(partFile, file); err != nil {
+		partFile.Close()
+		http.Error(w, `{"error":"chunk write failed"}`, http.StatusInternalServerError)
+		return
+	}
+	partFile.Close()
+
+	slog.Debug("chunk uploaded", "upload_id", uploadID, "chunk_index", chunkIndex, "user", sess.Email)
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "chunk_index": chunkIndex})
+}
+
+// CompleteChunkedUpload assembles the uploaded chunks into the final input file and spawns the job.
+func (h *Handler) CompleteChunkedUpload(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	var req struct {
+		UploadID     string `json:"upload_id"`
+		ProspectName string `json:"prospect_name"`
+		FileName     string `json:"file_name"`
+		TotalChunks  int    `json:"total_chunks"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request json"}`, http.StatusBadRequest)
+		return
+	}
+
+	prospect := strings.TrimSpace(req.ProspectName)
+	if len(prospect) == 0 || len(prospect) > 500 {
+		http.Error(w, `{"error":"prospect_name must be 1-500 characters"}`, http.StatusBadRequest)
+		return
+	}
+	if !isValidJobID(req.UploadID) || req.TotalChunks <= 0 || req.TotalChunks > 2000 {
+		http.Error(w, `{"error":"invalid upload parameters"}`, http.StatusBadRequest)
+		return
+	}
+
+	uploadDir := filepath.Join(h.jobsDir, ".uploads", req.UploadID)
+	ext := sanitizeExt(filepath.Ext(req.FileName))
+	jobID := uuid.New().String()
+	jobDir, _ := safeJobDir(h.jobsDir, jobID)
+	if err := os.MkdirAll(jobDir, 0755); err != nil {
+		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Reassemble parts into final input file
+	finalPath := filepath.Join(jobDir, "input"+ext)
+	finalFile, err := os.Create(finalPath)
+	if err != nil {
+		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	for i := 0; i < req.TotalChunks; i++ {
+		partPath := filepath.Join(uploadDir, fmt.Sprintf("part_%05d", i))
+		partFile, err := os.Open(partPath)
+		if err != nil {
+			finalFile.Close()
+			_ = os.Remove(finalPath)
+			slog.Error("missing chunk part", "upload_id", req.UploadID, "part", i)
+			http.Error(w, fmt.Sprintf(`{"error":"missing chunk part %d of %d"}`, i, req.TotalChunks), http.StatusBadRequest)
+			return
+		}
+		_, copyErr := io.Copy(finalFile, partFile)
+		partFile.Close()
+		if copyErr != nil {
+			finalFile.Close()
+			_ = os.Remove(finalPath)
+			http.Error(w, `{"error":"chunk assembly failed"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+	finalFile.Close()
+
+	// Clean up upload temp directory
+	_ = os.RemoveAll(uploadDir)
+
+	if err := os.WriteFile(filepath.Join(jobDir, "customer_name.txt"), []byte(prospect), 0644); err != nil {
+		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if err := h.db.CreateJob(jobID, sess.Email, prospect, ext, jobID); err != nil {
+		slog.Error("CreateJob failed", "job_id", jobID, "err", err)
+		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+		return
+	}
+	metrics.JobsSubmitted.Add(1)
+	slog.Info("chunked job submitted", "job_id", jobID, "prospect", prospect, "user", sess.Email, "ext", ext, "chunks", req.TotalChunks)
+
+	go func() {
+		if err := notify.PostJobSubmitted(h.notify.SlackURL, prospect, sess.Email, jobID); err != nil {
+			slog.Warn("PostJobSubmitted failed", "job_id", jobID, "err", err)
+		}
+	}()
+	go h.runJob(jobID, jobDir, ext, sess)
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"id": jobID, "status": "pending"})
+}
+
 func (h *Handler) runJob(jobID, jobDir, ext string, sess *auth.Session) {
 	h.db.UpdateJobRunning(jobID)
 	pid, assumptionsVersion, err := h.spawner.Start(jobDir, ext, jobID)

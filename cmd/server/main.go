@@ -227,6 +227,8 @@ func main() {
 		r.Use(auth.Middleware(sm, database.GetUserRole, cfg.DevAuthBypass))
 		r.Get("/api/auth/me", oauthH.Me)
 		r.Post("/api/jobs", uploadLimiter(jobHandler.Create))
+		r.Post("/api/jobs/chunk", jobHandler.UploadChunk)
+		r.Post("/api/jobs/complete-chunked", uploadLimiter(jobHandler.CompleteChunkedUpload))
 		r.Get("/api/jobs", jobHandler.List)
 		r.Get("/api/jobs/{id}", jobHandler.GetByID)
 		r.Get("/api/jobs/{id}/summary", jobHandler.Summary)

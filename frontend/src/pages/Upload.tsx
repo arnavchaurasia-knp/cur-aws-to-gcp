@@ -17,6 +17,7 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
   const [file, setFile] = useState<File | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [jobs, setJobs] = useState<Job[]>([])
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const nav = useNavigate()
 
@@ -36,14 +37,18 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
     }
 
     setSubmitting(true)
+    setUploadProgress(0)
     try {
-      const { id } = await createJob(file, prospect.trim())
+      const { id } = await createJob(file, prospect.trim(), pct => {
+        setUploadProgress(pct)
+      })
       nav(`/jobs/${id}`)
     } catch (err: any) {
       setError(err?.message || 'Upload failed')
       listJobs().then(setJobs).catch(() => {})
     } finally {
       setSubmitting(false)
+      setUploadProgress(null)
     }
   }
 
@@ -77,11 +82,26 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
             </div>
           )}
 
+          {submitting && uploadProgress !== null && (
+            <div className="space-y-1.5 anim-fade-in-up">
+              <div className="flex justify-between text-xs text-gray-400">
+                <span>{uploadProgress < 95 ? `Uploading in parts (${uploadProgress}%)…` : 'Assembling bill on server…'}</span>
+                <span>{uploadProgress}%</span>
+              </div>
+              <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-[#645DF6] to-[#00C2BB] transition-all duration-300 ease-out"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           <div className="anim-fade-in-up delay-250">
             <button onClick={submit} disabled={submitting}
               className={`w-full py-3 rounded-lg font-medium text-white transition-all duration-200
                 ${ready ? 'btn-shimmer anim-glow-breathe cursor-pointer' : submitting ? 'bg-gradient-to-r from-[#645DF6] to-[#00C2BB] opacity-40 cursor-wait' : 'btn-shimmer opacity-85 hover:opacity-100 cursor-pointer'}`}>
-              {submitting ? 'Uploading…' : 'Submit'}
+              {submitting ? (uploadProgress !== null ? `Uploading… ${uploadProgress}%` : 'Uploading…') : 'Submit'}
             </button>
           </div>
 

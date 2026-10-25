@@ -1157,6 +1157,8 @@ def _read_into_aws_raw(conn, path):
     elif p.endswith(".pdf"):
         _load_pdf(conn, path)
     else:  # .csv .tsv .txt and .gz/.zst variants of them
+        # [TEMPORARY: Render 512MB deployment constraint]
+        # Use streaming read_csv_auto with compression fallback.
         try:
             conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_csv_auto('{sql_path}', ALL_VARCHAR=TRUE)")
         except Exception as e:
@@ -1203,8 +1205,10 @@ def main():
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     
     conn = duckdb.connect(DB_PATH)
+    # [TEMPORARY: Render 512MB Free Tier deployment constraint]
+    # Bound DuckDB threads and memory aggressively so the container does not get killed by Linux OOM killer (exit code 137).
     conn.execute("PRAGMA threads=1")
-    conn.execute("PRAGMA max_memory='280MB'")
+    conn.execute("PRAGMA max_memory='220MB'")
     temp_dir = os.path.join(JOB_DIR, "projection-audit", "duckdb_temp")
     os.makedirs(temp_dir, exist_ok=True)
     conn.execute(f"PRAGMA temp_directory='{temp_dir.replace('\\', '/')}'")

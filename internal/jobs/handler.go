@@ -649,18 +649,19 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	_ = os.MkdirAll(jobDir, 0755)
-	// Remove failure.txt so the watcher doesn't immediately re-fail on the same
-	// structural error. The orchestrator reads phase_checkpoint.json at startup
-	// and resumes from the next unfinished phase — no manual START_PHASE injection
-	// needed and no racy os.Setenv.
-	if err := os.Remove(filepath.Join(jobDir, "failure.txt")); err != nil && !os.IsNotExist(err) {
-		http.Error(w, `{"error":"could not clear failure state; retry aborted"}`, http.StatusInternalServerError)
-		return
-	}
-	// Remove the orchestrator lock so the new run isn't blocked by a stale PID
-	// from the previous attempt (orphaned process or PID reuse on Windows).
+	_ = os.Remove(filepath.Join(jobDir, "failure.txt"))
 	_ = os.Remove(filepath.Join(jobDir, "orchestrator.lock"))
+	// [TEMPORARY: Render deployment constraint]
+	// If a previous run failed during Phase 1 (Ingestion), reset phase_checkpoint.json
+	// and any corrupt normalized_bill.csv so Phase 1 starts completely fresh with clean DuckDB state.
+	chkPath := filepath.Join(jobDir, "phase_checkpoint.json")
+	if data, err := os.ReadFile(chkPath); err == nil {
+		if strings.Contains(string(data), `"phase": 1`) || strings.Contains(string(data), `"phase":1`) {
+			_ = os.Remove(chkPath)
+			_ = os.Remove(filepath.Join(jobDir, "projection-audit", "normalized_bill.csv"))
+			_ = os.Remove(filepath.Join(jobDir, "projection-audit", "projection.duckdb"))
+		}
+	}
 
 	newSession := uuid.New().String()
 	if err := h.db.ResetJobForRetry(id, newSession); err != nil {

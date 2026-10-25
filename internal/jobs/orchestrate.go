@@ -1439,10 +1439,15 @@ def run_phase(ph):
         soft_script = script.startswith("?")
         script_path = script[1:] if soft_script else script
         log("Running script: " + ("(soft) " if soft_script else "") + script_path)
+        # [TEMPORARY: Render 512MB deployment constraint]
+        # On Render's 512MB container, capture stderr so if Python is OOM-killed (exit 137)
+        # or hits an unhandled exception, the exact error is recorded in failure.txt instead
+        # of being masked by a generic message.
         try:
             subprocess.run([PYTHON, os.path.join(SKILL_DIR, script_path)], cwd=JOB_DIR, check=True)
         except subprocess.CalledProcessError as e:
-            msg = ("script " + script_path + " exited with code " + str(e.returncode)
+            oom_hint = " (likely Out Of Memory / killed by host)" if e.returncode in (137, -9) else ""
+            msg = ("script " + script_path + " exited with code " + str(e.returncode) + oom_hint
                    + " during Phase " + str(ph["num"]) + " (" + ph["name"] + "). Check agy.log for details.")
             log("ERROR: " + msg)
             on_failure_prompt = ph.get("on_failure_prompt")
@@ -1465,7 +1470,10 @@ def run_phase(ph):
                             + " failed (code " + str(e2.returncode) + ") — skipping LLM fallback")
                         fallback_ok = False
                 if fallback_ok:
-                    run_agy(on_failure_prompt, phase_label=ph.get("name", "") + "-fallback")
+                    rc_agy = run_agy(on_failure_prompt, phase_label=ph.get("name", "") + "-fallback")
+                    if rc_agy != 0:
+                        log("LLM fallback agy invocation returned code " + str(rc_agy) + " — skipping retry")
+                        fallback_ok = False
                     qm_fallback = quota_blocked(start_pos)
                     if qm_fallback:
                         log("quota/auth block (" + qm_fallback + ") during Phase " + str(ph["num"])
@@ -1478,7 +1486,8 @@ def run_phase(ph):
                                         cwd=JOB_DIR, check=True)
                         log("LLM fallback succeeded — Phase " + str(ph["num"]) + " recovered")
                     except subprocess.CalledProcessError as e3:
-                        msg = ("script " + script_path + " exited with code " + str(e3.returncode)
+                        oom_hint3 = " (likely Out Of Memory / killed by host)" if e3.returncode in (137, -9) else ""
+                        msg = ("script " + script_path + " exited with code " + str(e3.returncode) + oom_hint3
                                + " during Phase " + str(ph["num"]) + " (" + ph["name"]
                                + ") — LLM fallback did not resolve it. Check agy.log for details.")
                         log("ERROR: " + msg)

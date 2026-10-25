@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback } from 'react'
-import { Navigate, useLocation } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { Navigate } from 'react-router-dom'
 import { Nav } from './Nav'
 import { Sidebar } from './Sidebar'
 import { ThemeToggle } from './ThemeToggle'
+import facetsFIcon from '../assets/facets-logo-f.svg'
 import type { UserInfo } from '../api/auth'
 
 interface LayoutProps {
@@ -11,34 +12,30 @@ interface LayoutProps {
 }
 
 export function Layout({ user, children }: LayoutProps) {
-  const location = useLocation()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [mobileSidebar, setMobileSidebar] = useState(false)
   const [currency, setCurrency] = useState('USD')
   const [language, setLanguage] = useState('en')
 
   // Load preferences from localStorage
   useEffect(() => {
     const saved = localStorage.getItem('cur-web-currency')
-    if (saved) setCurrency(saved as any)
+    if (saved) setCurrency(saved as 'USD' | 'EUR' | 'GBP' | 'INR' | 'JPY' | 'SGD')
     const savedLang = localStorage.getItem('cur-web-language')
     if (savedLang) setLanguage(savedLang)
   }, [])
 
-  const handleCurrencyChange = useCallback((val: string) => {
+  const handleCurrencyChange = (val: string) => {
     setCurrency(val)
     localStorage.setItem('cur-web-currency', val)
-  }, [])
+  }
 
-  const handleLanguageChange = useCallback((val: string) => {
+  const handleLanguageChange = (val: string) => {
     setLanguage(val)
     localStorage.setItem('cur-web-language', val)
-  }, [])
+  }
 
   // Redirect unauthenticated users
   if (!user) return <Navigate to="/login" replace />
-
-  const isAdmin = Boolean(user.is_admin)
 
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white">
@@ -48,7 +45,7 @@ export function Layout({ user, children }: LayoutProps) {
           {/* Left: Logo + currency/language selector */}
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 hidden md:flex">
-              <img src={require('../assets/facets-logo-f.svg')} alt="Facets" className="w-5 h-5" />
+              <img src={facetsFIcon} alt="Facets" className="w-5 h-5" />
               <span className="text-xs font-bold tracking-tight text-[#00C2BB] uppercase">facets</span>
               <span className="text-xs font-bold tracking-tight text-white">.cloud</span>
             </div>
@@ -96,28 +93,18 @@ export function Layout({ user, children }: LayoutProps) {
         </div>
       </header>
 
-      {/* Main content area (shifted right for sidebar when not collapsed) */}
-      <div className={`flex transition-all duration-300 ${sidebarCollapsed ? 'pl-16' : 'pl-64'}`}>
+      {/* Main content area */}
+      <div className={`flex ${sidebarCollapsed ? 'pl-16' : 'pl-64'}`}>
         {/* Sidebar */}
-        <Sidebar user={user} collapsed={sidebarCollapsed} />
+        <Sidebar
+          user={user}
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
 
         {/* Page Content */}
-        <main
-          className={`flex-1 pt-16 pb-8 transition-all duration-300 ${
-            sidebarCollapsed ? 'pl-0' : ''
-          }`}
-        >
-          {children}
-        </main>
+        <main className="flex-1 pt-16 pb-8">{children}</main>
       </div>
-
-      {/* Mobile overlay */}
-      {mobileSidebar && (
-        <div
-          className="fixed inset-0 z-49 bg-black/60 backdrop-blur"
-          onClick={() => setMobileSidebar(false)}
-        />
-      )}
     </div>
   )
 }

@@ -1,7 +1,5 @@
-import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import facetsFIcon from '../assets/facets-logo-f.svg'
-import facetsFullIcon from '../assets/facets-logo-full.svg'
 import type { UserInfo } from '../api/auth'
 
 interface SidebarItem {
@@ -12,7 +10,13 @@ interface SidebarItem {
   facetsOnly?: boolean
 }
 
-export function Sidebar({ user, collapsed }: Readonly<{ user: UserInfo; collapsed: boolean }>) {
+interface SidebarProps {
+  user: UserInfo
+  collapsed: boolean
+  onToggle: () => void
+}
+
+export function Sidebar({ user, collapsed, onToggle }: SidebarProps) {
   const location = useLocation()
   const isAdmin = Boolean(user?.is_admin)
   const isFacetsEmployee = Boolean(user?.is_facets_employee)
@@ -65,13 +69,13 @@ export function Sidebar({ user, collapsed }: Readonly<{ user: UserInfo; collapse
 
       {/* Nav items */}
       <nav className="flex-1 overflow-y-auto py-3 space-y-1">
-        {visibleItems.map((item, idx) => {
+        {visibleItems.map(item => {
           const active = isActive(item.to)
           return (
             <Link
               key={item.to}
               to={item.to}
-              onClick={() => setCollapsed(false)}
+              onClick={onToggle}
               className={`flex items-center gap-3 px-4 py-3 text-sm transition-colors duration-150
                 ${active
                   ? 'bg-[#645DF6]/20 text-[#00C2BB] border-r-2 border-[#00C2BB]'
@@ -90,7 +94,7 @@ export function Sidebar({ user, collapsed }: Readonly<{ user: UserInfo; collapse
       {/* Bottom: collapse toggle */}
       <div className="h-12 flex items-center justify-center px-2 border-t border-white/10">
         <button
-          onClick={() => setCollapsed(!collapsed)}
+          onClick={onToggle}
           className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-gray-400 hover:text-white transition-colors"
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
@@ -182,18 +186,18 @@ function TicketIcon() {
   )
 }
 
-function BillsIcon() {
-  return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-    </svg>
-  )
-}
-
 function ProfileIcon() {
   return (
     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+    </svg>
+  )
+}
+
+function BillsIcon() {
+  return (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
     </svg>
   )
 }

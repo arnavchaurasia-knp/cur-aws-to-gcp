@@ -5,9 +5,7 @@ import { useState, useRef, useEffect } from 'react'
 
 export function Nav({ user }: Readonly<{ user: UserInfo }>) {
   const location = useLocation()
-  const { theme, setTheme } = useTheme()
   const isAdmin = Boolean(user?.is_admin)
-  const isFacetsEmployee = Boolean(user?.is_facets_employee)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const settingsRef = useRef<HTMLDivElement>(null)
@@ -225,7 +223,7 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
           )}
         </div>
 
-        <UserMenu user={user} theme={theme} setTheme={setTheme} />
+        <UserMenu user={user} />
       </div>
     </nav>
   )

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { useTheme } from '../lib/themeContext'
 import facetsFIcon from '../assets/facets-logo-f.svg'
 

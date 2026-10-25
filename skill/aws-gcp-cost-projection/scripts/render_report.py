@@ -1400,10 +1400,10 @@ def main():
             return f'<td class="num">{od_str}</td>'
 
         def cell_cud1():
-            return f'<td class="num extra-col"{cud1_td_extra}>{cud1_str}</td>'
+            return f'<td class="num"{cud1_td_extra}>{cud1_str}</td>'
 
         def cell_cud3():
-            return f'<td class="num extra-col"{cud3_td_extra}>{cud3_str}</td>'
+            return f'<td class="num"{cud3_td_extra}>{cud3_str}</td>'
 
         def cell_diff():
             return diff_td

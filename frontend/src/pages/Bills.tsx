@@ -17,7 +17,6 @@ function fmtBytes(bytes: number): string {
 export function Bills({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('Uploaded Bills — admin')
   const [bills, setBills] = useState<UploadedBill[]>([])
-  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [settings, setSettings] = useState<NotificationSettings | null>(null)
   const [savingSettings, setSavingSettings] = useState(false)
@@ -25,15 +24,12 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
   const isAdmin = Boolean(user?.is_admin)
 
   const refreshBills = async () => {
-    setLoading(true)
     setError(null)
     try {
       const res = await listUploadedBills()
       setBills(res.bills)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to load bills')
-    } finally {
-      setLoading(false)
     }
   }
 

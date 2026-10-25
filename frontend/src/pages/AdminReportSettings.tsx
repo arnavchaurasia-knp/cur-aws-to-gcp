@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Layout } from '../components/Layout'
+import { Nav } from '../components/Nav'
 import {
   getReportSettings,
   putReportSetting,

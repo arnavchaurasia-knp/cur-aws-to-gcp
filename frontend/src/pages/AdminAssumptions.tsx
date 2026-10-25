@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import { Layout } from '../components/Layout'
 import {
   getAssumptions,
@@ -41,10 +41,6 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
 
   const handleValueChange = (key: string, val: string) => {
     setEdits(prev => ({ ...prev, [key]: { ...prev[key], value: val } }))
-  }
-
-  const handleReasonChange = (key: string, val: string) => {
-    setEdits(prev => ({ ...prev, [key]: { ...prev[key], reason: val } }))
   }
 
   const handleSave = async (key: string) => {
@@ -125,7 +121,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
           </div>
           <div className="flex items-center gap-3">
             <span className="text-xs font-mono text-[#00C2BB] bg-[#00C2BB]/10 px-2 py-1 rounded">
-              v{data.version}
+              v{data?.version}
             </span>
             <p className="text-xs text-gray-500 hidden sm:block">Version hash of all assumption values</p>
           </div>
@@ -159,7 +155,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {data.assumptions.map((a) => {
+                {data?.assumptions.map((a) => {
                   const isEditing = saving === a.key
                   const edit = getEdit(a.key)
                   const inRange = !edit.value || (Number(edit.value) >= a.min_value && Number(edit.value) <= a.max_value)

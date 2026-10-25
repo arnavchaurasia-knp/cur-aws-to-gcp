@@ -460,6 +460,8 @@ export interface UploadedBillsResponse {
 export async function listUploadedBills(): Promise<UploadedBillsResponse> {
   return getJSON<UploadedBillsResponse>('/api/admin/bills')
 }
+
+export interface Ticket {
   id: string
   title: string
   description: string

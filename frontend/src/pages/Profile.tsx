@@ -44,13 +44,13 @@ export function Profile({ user }: Readonly<{ user: UserInfo }>) {
     }
   }
 
-  if (loading) {
+  if (loading || !profile) {
     return (
       <Layout user={user}>
         <div className="max-w-2xl mx-auto px-6 py-10 text-center">
           <div className="flex items-center justify-center h-32">
             <div className="flex gap-2">
-              {[0,1,2,3].map((i, idx) => (
+              {[0, 1, 2, 3].map((i, idx) => (
                 <div key={i} className="w-2 h-2 rounded-full bg-[#00C2BB] animate-pulse" style={{ animationDelay: `${idx * 100}ms` }} />
               ))}
             </div>
@@ -93,7 +93,7 @@ export function Profile({ user }: Readonly<{ user: UserInfo }>) {
             <input
               type="text"
               value={profile.name || ''}
-              onChange={e => setProfile({ ...profile, name: e.target.value })}
+              onChange={e => setProfile({ ...profile, name: e.target.value } as UserProfile)}
               placeholder="Your full name"
               className="w-full bg-white/[0.03] border border-white/10 rounded-lg px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-[#645DF6] transition-colors"
             />
@@ -104,7 +104,7 @@ export function Profile({ user }: Readonly<{ user: UserInfo }>) {
             <input
               type="tel"
               value={profile.phone || ''}
-              onChange={e => setProfile({ ...profile, phone: e.target.value })}
+              onChange={e => setProfile({ ...profile, phone: e.target.value } as UserProfile)}
               placeholder="+1 (555) 000-0000"
               className="w-full bg-white/[0.03] border border-white/10 rounded-lg px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-[#645DF6] transition-colors"
             />
@@ -116,7 +116,7 @@ export function Profile({ user }: Readonly<{ user: UserInfo }>) {
               <input
                 type="text"
                 value={profile.company || ''}
-                onChange={e => setProfile({ ...profile, company: e.target.value })}
+                onChange={e => setProfile({ ...profile, company: e.target.value } as UserProfile)}
                 placeholder="Company or organization"
                 className="w-full bg-white/[0.03] border border-white/10 rounded-lg px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-[#645DF6] transition-colors"
               />
@@ -126,7 +126,7 @@ export function Profile({ user }: Readonly<{ user: UserInfo }>) {
               <input
                 type="text"
                 value={profile.department || ''}
-                onChange={e => setProfile({ ...profile, department: e.target.value })}
+                onChange={e => setProfile({ ...profile, department: e.target.value } as UserProfile)}
                 placeholder="Department or team"
                 className="w-full bg-white/[0.03] border border-white/10 rounded-lg px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-[#645DF6] transition-colors"
               />
@@ -137,7 +137,7 @@ export function Profile({ user }: Readonly<{ user: UserInfo }>) {
             <label className="block text-xs text-gray-400 uppercase tracking-wider mb-2">Time Zone</label>
             <select
               value={profile.time_zone || 'UTC'}
-              onChange={e => setProfile({ ...profile, time_zone: e.target.value })}
+              onChange={e => setProfile({ ...profile, time_zone: e.target.value } as UserProfile)}
               className="w-full bg-white/[0.03] border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-[#645DF6] transition-colors"
             >
               <option value="UTC">UTC</option>

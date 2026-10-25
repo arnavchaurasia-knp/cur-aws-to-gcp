@@ -44,7 +44,6 @@ export default function App() {
   )
 
   const isAdmin = Boolean(user?.is_admin)
-  const isFacetsEmployee = Boolean(user?.is_facets_employee)
 
   return (
     <ThemeProvider>

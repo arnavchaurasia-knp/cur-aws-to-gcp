@@ -1,6 +1,6 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import { Layout } from '../components/Layout'
-import { createTicket, listTickets, getTicket, updateTicket, type Ticket } from '../api/admin'
+import { createTicket, listTickets, updateTicket, type Ticket } from '../api/admin'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { toast } from 'sonner'
@@ -118,10 +118,7 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
     }
   }
 
-  const filtered = useMemo(() => {
-    const q = ''
-    return tickets
-  }, [tickets])
+  const filtered = tickets
 
   return (
     <Layout user={user}>

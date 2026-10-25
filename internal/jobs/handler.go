@@ -138,8 +138,7 @@ func (h *Handler) canAccess(sess *auth.Session, job *db.Job) bool {
 	return job.Owner == sess.Email || sess.IsAdmin(h.adminEmails)
 }
 
-const maxUploadBytes = 64 << 20 // 64 MiB — raise only with a measured reason.
-// The largest bill in the corpus is ~9 MB; this leaves real headroom.
+const maxUploadBytes = 512 << 20 // 512 MiB to support large raw CUR exports
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())

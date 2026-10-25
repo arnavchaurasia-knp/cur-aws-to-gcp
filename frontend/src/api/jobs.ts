@@ -25,7 +25,20 @@ export async function createJob(file: File, prospect: string): Promise<{ id: str
   const form = new FormData()
   form.append('file', file)
   form.append('prospect_name', prospect)
-  const res = await fetch('/api/jobs', { method: 'POST', body: form })
+
+  let res: Response
+  try {
+    res = await fetch('/api/jobs', { method: 'POST', body: form })
+  } catch (netErr: any) {
+    if (file.size > 100 * 1024 * 1024) {
+      const sizeMB = (file.size / (1024 * 1024)).toFixed(1)
+      throw new Error(
+        `Upload connection dropped (${sizeMB} MB). Cloudflare & reverse proxies disconnect files larger than 100 MB. Please compress this bill (.csv.gz or .zip) before uploading.`
+      )
+    }
+    throw new Error('Network error: Failed to reach the server. Please check your internet connection or try again.')
+  }
+
   if (!res.ok) {
     let msg = `Upload failed (HTTP ${res.status})`
     try {

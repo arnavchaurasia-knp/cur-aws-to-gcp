@@ -32,7 +32,20 @@ export function DropZone({ onChange, file, inputId }: Props) {
         <div className="flex flex-col items-center gap-2 anim-scale-in">
           <FileIcon />
           <p className="text-sm text-gray-200 font-medium">{file.name}</p>
-          <p className="text-xs text-[#00C2BB]">Click to change file</p>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-400">
+              {file.size < 1024 * 1024
+                ? `${(file.size / 1024).toFixed(1)} KB`
+                : `${(file.size / (1024 * 1024)).toFixed(1)} MB`}
+            </span>
+            <span className="text-xs text-gray-600">•</span>
+            <span className="text-xs text-[#00C2BB]">Click to change file</span>
+          </div>
+          {file.size > 100 * 1024 * 1024 && (
+            <div className="mt-2 px-3 py-1.5 bg-amber-500/10 border border-amber-500/30 rounded text-xs text-amber-400 max-w-md">
+              ⚠️ Large uncompressed bill ({(file.size / (1024 * 1024)).toFixed(0)} MB). Direct browser upload may exceed Cloudflare/proxy limits. Uploading a gzip-compressed version (<code>.csv.gz</code> or <code>.zip</code>) is recommended.
+            </div>
+          )}
         </div>
       ) : dragging ? (
         <div className="flex flex-col items-center gap-2">

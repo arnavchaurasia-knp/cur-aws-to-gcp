@@ -21,15 +21,46 @@ export interface RunResult {
   confidence: string | null
 }
 
+async function computeFileSHA256(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer()
+  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 export async function createJob(
   file: File,
   prospect: string,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number, statusText?: string) => void
 ): Promise<{ id: string }> {
+  // 1. Check if identical bill is already saved on server (deduplication)
+  try {
+    onProgress?.(0, 'Checking for existing bill…')
+    const hash = await computeFileSHA256(file)
+    const checkRes = await fetch(`/api/bills/check?hash=${hash}`)
+    if (checkRes.ok) {
+      const info = await checkRes.json()
+      if (info?.exists) {
+        onProgress?.(100, 'Identical bill found! Starting pipeline…')
+        const reuseRes = await fetch('/api/jobs/existing-bill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content_hash: hash, prospect_name: prospect }),
+        })
+        if (reuseRes.ok) {
+          return reuseRes.json()
+        }
+      }
+    }
+  } catch {
+    // If hash check fails or is unsupported, fall through to regular upload
+  }
+
   const CHUNK_SIZE = 15 * 1024 * 1024 // 15 MB chunks to easily fit inside all proxy/Cloudflare limits
 
   // If file is smaller than or equal to 25 MB, upload directly in one piece
   if (file.size <= 25 * 1024 * 1024) {
+    onProgress?.(10, 'Uploading bill…')
     const form = new FormData()
     form.append('file', file)
     form.append('prospect_name', prospect)

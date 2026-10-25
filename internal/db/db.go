@@ -143,6 +143,14 @@ CREATE TABLE IF NOT EXISTS job_diagnostics (
     PRIMARY KEY (job_id, run_id)
 );
 
+CREATE TABLE IF NOT EXISTS uploaded_bills (
+    content_hash TEXT PRIMARY KEY,
+    input_ext    TEXT NOT NULL,
+    file_size    INTEGER NOT NULL,
+    file_name    TEXT,
+    created_at   DATETIME DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     name       TEXT PRIMARY KEY,
     applied_at DATETIME DEFAULT (datetime('now'))
@@ -189,6 +197,13 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 		`ALTER TABLE jobs ADD COLUMN assumptions_version TEXT`,
 		`ALTER TABLE jobs ADD COLUMN gcp_od REAL`,
 		`ALTER TABLE deleted_jobs ADD COLUMN gcp_od REAL`,
+		`CREATE TABLE IF NOT EXISTS uploaded_bills (
+			content_hash TEXT PRIMARY KEY,
+			input_ext    TEXT NOT NULL,
+			file_size    INTEGER NOT NULL,
+			file_name    TEXT,
+			created_at   DATETIME DEFAULT (datetime('now'))
+		)`,
 	} {
 		if _, err := conn.Exec(ddl); err != nil {
 			msg := err.Error()

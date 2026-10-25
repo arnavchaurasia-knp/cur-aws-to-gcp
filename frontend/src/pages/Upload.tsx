@@ -21,6 +21,8 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
   const [error, setError] = useState<string | null>(null)
   const nav = useNavigate()
 
+  const [uploadStatus, setUploadStatus] = useState<string>('Uploading…')
+
   useEffect(() => { listJobs().then(setJobs) }, [])
 
   const submit = async () => {
@@ -38,9 +40,11 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
 
     setSubmitting(true)
     setUploadProgress(0)
+    setUploadStatus('Checking bill…')
     try {
-      const { id } = await createJob(file, prospect.trim(), pct => {
+      const { id } = await createJob(file, prospect.trim(), (pct, text) => {
         setUploadProgress(pct)
+        if (text) setUploadStatus(text)
       })
       nav(`/jobs/${id}`)
     } catch (err: any) {
@@ -85,7 +89,7 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
           {submitting && uploadProgress !== null && (
             <div className="space-y-1.5 anim-fade-in-up">
               <div className="flex justify-between text-xs text-gray-400">
-                <span>{uploadProgress < 95 ? `Uploading in parts (${uploadProgress}%)…` : 'Assembling bill on server…'}</span>
+                <span>{uploadStatus}</span>
                 <span>{uploadProgress}%</span>
               </div>
               <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">

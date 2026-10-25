@@ -33,6 +33,36 @@ func (d *DB) CreateJob(id, owner, prospect, inputExt, sessionID string) error {
 	return err
 }
 
+type UploadedBill struct {
+	ContentHash string    `json:"content_hash"`
+	InputExt    string    `json:"input_ext"`
+	FileSize    int64     `json:"file_size"`
+	FileName    string    `json:"file_name"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (d *DB) UpsertUploadedBill(hash, ext, fileName string, fileSize int64) error {
+	_, err := d.conn.Exec(
+		`INSERT INTO uploaded_bills (content_hash, input_ext, file_size, file_name)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(content_hash) DO UPDATE SET file_name=excluded.file_name`,
+		hash, ext, fileSize, fileName,
+	)
+	return err
+}
+
+func (d *DB) GetUploadedBill(hash string) (*UploadedBill, error) {
+	var b UploadedBill
+	err := d.conn.QueryRow(
+		`SELECT content_hash, input_ext, file_size, COALESCE(file_name, ''), created_at FROM uploaded_bills WHERE content_hash = ?`,
+		hash,
+	).Scan(&b.ContentHash, &b.InputExt, &b.FileSize, &b.FileName, &b.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
 func (d *DB) UpdateJobSessionID(id, sessionID string) error {
 	_, err := d.conn.Exec(
 		`UPDATE jobs SET session_id=?, updated_at=datetime('now') WHERE id=?`,

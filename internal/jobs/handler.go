@@ -3,6 +3,8 @@ package jobs
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -169,12 +171,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Sanitize the file extension against an allowlist before using it in
 	// the filesystem path — this breaks the taint chain from header.Filename.
-	// ingest.py handles format detection and writes failure.txt with a clear
-	// message if it can't parse the file.
 	ext := sanitizeExt(filepath.Ext(header.Filename))
 	jobID := uuid.New().String()
-	// Use safeJobDir (filepath.Clean + prefix check) even though jobID is
-	// server-generated, to satisfy path-traversal static analysis.
 	jobDir, _ := safeJobDir(h.jobsDir, jobID)
 	if err := os.MkdirAll(jobDir, 0755); err != nil {
 		slog.Error("MkdirAll failed", "job_id", jobID, "err", err)
@@ -182,21 +180,37 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Calculate SHA-256 while copying to destination
+	hasher := sha256.New()
 	dst, err := os.Create(filepath.Join(jobDir, "input"+ext))
 	if err != nil {
 		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
 		return
 	}
-	if _, err := io.Copy(dst, file); err != nil {
+	tee := io.MultiWriter(dst, hasher)
+	written, err := io.Copy(tee, file)
+	if err != nil {
 		dst.Close()
 		http.Error(w, `{"error":"file write failed"}`, http.StatusInternalServerError)
 		return
 	}
 	dst.Close()
 
-	// Persist the user-entered prospect name as the deterministic customer name
-	// for the report. Phase 6 reads this instead of guessing from the bill
-	// (which produced wrong labels like an AWS account ID or a discount line).
+	hashHex := hex.EncodeToString(hasher.Sum(nil))
+
+	// Cache into shared bills directory to save disk space on future identical runs
+	sharedBillsDir := filepath.Join(h.jobsDir, ".shared_bills")
+	_ = os.MkdirAll(sharedBillsDir, 0755)
+	sharedPath := filepath.Join(sharedBillsDir, hashHex+ext)
+	if _, err := os.Stat(sharedPath); os.IsNotExist(err) {
+		// Try hardlink first to save space, fall back to copy
+		if err := os.Link(filepath.Join(jobDir, "input"+ext), sharedPath); err != nil {
+			_ = copyFile(filepath.Join(jobDir, "input"+ext), sharedPath)
+		}
+	}
+	_ = h.db.UpsertUploadedBill(hashHex, ext, header.Filename, written)
+
+	// Persist the user-entered prospect name
 	if err := os.WriteFile(filepath.Join(jobDir, "customer_name.txt"), []byte(prospect), 0644); err != nil {
 		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
 		return
@@ -208,7 +222,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.JobsSubmitted.Add(1)
-	slog.Info("job submitted", "job_id", jobID, "prospect", prospect, "user", sess.Email, "ext", ext)
+	slog.Info("job submitted", "job_id", jobID, "prospect", prospect, "user", sess.Email, "ext", ext, "sha256", hashHex)
 
 	go func() {
 		if err := notify.PostJobSubmitted(h.notify.SlackURL, prospect, sess.Email, jobID); err != nil {
@@ -220,6 +234,130 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"id": jobID, "status": "pending"})
+}
+
+// CheckBill checks if a bill with given content_hash already exists in the server cache.
+func (h *Handler) CheckBill(w http.ResponseWriter, r *http.Request) {
+	hash := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("hash")))
+	if len(hash) != 64 {
+		http.Error(w, `{"error":"invalid sha256 hash"}`, http.StatusBadRequest)
+		return
+	}
+
+	bill, err := h.db.GetUploadedBill(hash)
+	if err != nil || bill == nil {
+		w.Header().Set(contentTypeHeader, contentTypeJSON)
+		json.NewEncoder(w).Encode(map[string]any{"exists": false})
+		return
+	}
+
+	// Verify the physical file still exists on disk
+	sharedPath := filepath.Join(h.jobsDir, ".shared_bills", bill.ContentHash+bill.InputExt)
+	if _, err := os.Stat(sharedPath); os.IsNotExist(err) {
+		w.Header().Set(contentTypeHeader, contentTypeJSON)
+		json.NewEncoder(w).Encode(map[string]any{"exists": false})
+		return
+	}
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"exists":       true,
+		"content_hash": bill.ContentHash,
+		"input_ext":    bill.InputExt,
+		"file_name":    bill.FileName,
+		"file_size":    bill.FileSize,
+	})
+}
+
+// CreateFromExistingBill launches a new job using an already cached bill without re-uploading.
+func (h *Handler) CreateFromExistingBill(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	var req struct {
+		ContentHash  string `json:"content_hash"`
+		ProspectName string `json:"prospect_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json request"}`, http.StatusBadRequest)
+		return
+	}
+
+	prospect := strings.TrimSpace(req.ProspectName)
+	if len(prospect) == 0 || len(prospect) > 500 {
+		http.Error(w, `{"error":"prospect_name must be 1-500 characters"}`, http.StatusBadRequest)
+		return
+	}
+
+	hash := strings.ToLower(strings.TrimSpace(req.ContentHash))
+	bill, err := h.db.GetUploadedBill(hash)
+	if err != nil || bill == nil {
+		http.Error(w, `{"error":"cached bill not found; please upload"}`, http.StatusNotFound)
+		return
+	}
+
+	sharedPath := filepath.Join(h.jobsDir, ".shared_bills", bill.ContentHash+bill.InputExt)
+	if _, err := os.Stat(sharedPath); os.IsNotExist(err) {
+		http.Error(w, `{"error":"cached bill file missing from disk; please upload"}`, http.StatusNotFound)
+		return
+	}
+
+	jobID := uuid.New().String()
+	jobDir, _ := safeJobDir(h.jobsDir, jobID)
+	if err := os.MkdirAll(jobDir, 0755); err != nil {
+		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Link cached bill directly into job directory
+	jobInputPath := filepath.Join(jobDir, "input"+bill.InputExt)
+	if err := os.Link(sharedPath, jobInputPath); err != nil {
+		// Fall back to copy if hard link fails (e.g. cross-volume)
+		if err := copyFile(sharedPath, jobInputPath); err != nil {
+			slog.Error("copy existing bill failed", "err", err)
+			http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(jobDir, "customer_name.txt"), []byte(prospect), 0644); err != nil {
+		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if err := h.db.CreateJob(jobID, sess.Email, prospect, bill.InputExt, jobID); err != nil {
+		slog.Error("CreateJob failed", "job_id", jobID, "err", err)
+		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
+		return
+	}
+	metrics.JobsSubmitted.Add(1)
+	slog.Info("job created from cached bill", "job_id", jobID, "prospect", prospect, "user", sess.Email, "sha256", hash)
+
+	go func() {
+		if err := notify.PostJobSubmitted(h.notify.SlackURL, prospect, sess.Email, jobID); err != nil {
+			slog.Warn("PostJobSubmitted failed", "job_id", jobID, "err", err)
+		}
+	}()
+	go h.runJob(jobID, jobDir, bill.InputExt, sess)
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"id": jobID, "status": "pending"})
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
 
 // UploadChunk handles uploading a single chunk of a large bill.
@@ -308,13 +446,17 @@ func (h *Handler) CompleteChunkedUpload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Reassemble parts into final input file
+	// Reassemble parts into final input file while computing SHA-256
 	finalPath := filepath.Join(jobDir, "input"+ext)
 	finalFile, err := os.Create(finalPath)
 	if err != nil {
 		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
 		return
 	}
+
+	hasher := sha256.New()
+	tee := io.MultiWriter(finalFile, hasher)
+	var totalBytes int64
 
 	for i := 0; i < req.TotalChunks; i++ {
 		partPath := filepath.Join(uploadDir, fmt.Sprintf("part_%05d", i))
@@ -326,8 +468,9 @@ func (h *Handler) CompleteChunkedUpload(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, fmt.Sprintf(`{"error":"missing chunk part %d of %d"}`, i, req.TotalChunks), http.StatusBadRequest)
 			return
 		}
-		_, copyErr := io.Copy(finalFile, partFile)
+		n, copyErr := io.Copy(tee, partFile)
 		partFile.Close()
+		totalBytes += n
 		if copyErr != nil {
 			finalFile.Close()
 			_ = os.Remove(finalPath)
@@ -336,6 +479,19 @@ func (h *Handler) CompleteChunkedUpload(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	finalFile.Close()
+
+	hashHex := hex.EncodeToString(hasher.Sum(nil))
+
+	// Cache into shared bills directory to save space on future identical runs
+	sharedBillsDir := filepath.Join(h.jobsDir, ".shared_bills")
+	_ = os.MkdirAll(sharedBillsDir, 0755)
+	sharedPath := filepath.Join(sharedBillsDir, hashHex+ext)
+	if _, err := os.Stat(sharedPath); os.IsNotExist(err) {
+		if err := os.Link(finalPath, sharedPath); err != nil {
+			_ = copyFile(finalPath, sharedPath)
+		}
+	}
+	_ = h.db.UpsertUploadedBill(hashHex, ext, req.FileName, totalBytes)
 
 	// Clean up upload temp directory
 	_ = os.RemoveAll(uploadDir)

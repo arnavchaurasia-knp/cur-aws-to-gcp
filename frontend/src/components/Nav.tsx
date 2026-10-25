@@ -5,6 +5,7 @@ import { useState, useRef, useEffect } from 'react'
 
 export function Nav({ user }: Readonly<{ user: UserInfo }>) {
   const location = useLocation()
+  const { theme, setTheme } = useTheme()
   const isAdmin = Boolean(user?.is_admin)
   const isFacetsEmployee = Boolean(user?.is_facets_employee)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -82,9 +83,6 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
           {isAdmin && (
             <Link to="/admin" className={navItemClass('/admin')}>All Reports</Link>
           )}
-          {isFacetsEmployee && (
-            <Link to="/facets" className={navItemClass('/facets')}>Logs &amp; Engine</Link>
-          )}
           {isAdmin && (
             <>
               <Link to="/admin/users" className={navItemClass('/admin/users')}>Users</Link>
@@ -143,6 +141,14 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
                     >
                       <span>📑</span>
                       <span>Report Settings</span>
+                    </Link>
+                    <Link
+                      to="/admin/tickets"
+                      onClick={() => setSettingsOpen(false)}
+                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                    >
+                      <span>🎫</span>
+                      <span>Support Tickets</span>
                     </Link>
                     <Link
                       to="/admin?tab=shares"
@@ -206,24 +212,20 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
                     <Link to="/admin/report-settings" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
                       Report Settings
                     </Link>
+                    <Link to="/admin/tickets" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
+                      Support Tickets
+                    </Link>
                     <Link to="/admin?tab=shares" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
                       Shares
                     </Link>
                   </div>
                 </>
-              )}
-              {isFacetsEmployee && (
-                <div className="pt-2 border-t border-white/10">
-                  <Link to="/facets" onClick={() => setMobileMenuOpen(false)} className="text-[#00C2BB] hover:text-white py-1 font-medium flex items-center gap-1.5">
-                    <span>⚡</span> Logs &amp; Engine
-                  </Link>
-                </div>
-              )}
+              )} 
             </div>
           )}
         </div>
 
-        <UserMenu user={user} />
+        <UserMenu user={user} theme={theme} setTheme={setTheme} />
       </div>
     </nav>
   )
@@ -299,14 +301,6 @@ function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
                 <span>📊</span>
                 <span>All Reports (Admin)</span>
               </Link>
-              <Link
-                to="/facets"
-                onClick={() => setOpen(false)}
-                className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
-              >
-                <span>⚡</span>
-                <span>Execution Logs &amp; Engine</span>
-              </Link>
             </div>
           )}
 
@@ -320,6 +314,16 @@ function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
           >
             Sign Out
           </button>
+
+          <div className="pt-3 border-t border-white/10">
+            <Link
+              to="/profile"
+              onClick={() => setOpen(false)}
+              className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-white/5 hover:text-white transition-colors duration-150 cursor-pointer flex items-center justify-between"
+            >
+              <span>👤 Profile</span>
+            </Link>
+          </div>
         </div>
       )}
     </div>

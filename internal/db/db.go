@@ -37,7 +37,9 @@ CREATE TABLE IF NOT EXISTS users (
     email      TEXT PRIMARY KEY,
     role       TEXT NOT NULL DEFAULT 'viewer',
     created_at DATETIME DEFAULT (datetime('now')),
-    updated_at DATETIME DEFAULT (datetime('now'))
+    updated_at DATETIME DEFAULT (datetime('now')),
+    email_notifications INTEGER NOT NULL DEFAULT 1,
+    slack_notifications INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS admin_audit (
@@ -154,6 +156,30 @@ CREATE TABLE IF NOT EXISTS uploaded_bills (
 CREATE TABLE IF NOT EXISTS schema_migrations (
     name       TEXT PRIMARY KEY,
     applied_at DATETIME DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS tickets (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'open',
+    priority    TEXT NOT NULL DEFAULT 'medium',
+    category    TEXT NOT NULL DEFAULT 'general',
+    created_by  TEXT NOT NULL,
+    created_at  DATETIME DEFAULT (datetime('now')),
+    updated_at  DATETIME DEFAULT (datetime('now')),
+    resolved_at DATETIME,
+    resolved_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_profiles (
+    email       TEXT PRIMARY KEY,
+    name        TEXT,
+    phone       TEXT,
+    company     TEXT,
+    department  TEXT,
+    time_zone   TEXT DEFAULT 'UTC',
+    updated_at  DATETIME DEFAULT (datetime('now'))
 );`
 
 // Open opens a database connection. If remoteURL is provided and non-empty (e.g. Turso libsql://),

@@ -10,11 +10,14 @@ import { AdminReportSettings } from './pages/AdminReportSettings'
 import { AdminAudit } from './pages/AdminAudit'
 import { AdminAnalytics } from './pages/AdminAnalytics'
 import { SharedReport } from './pages/SharedReport'
-import { Facets } from './pages/Facets'
+import { Tickets } from './pages/Tickets'
+import { Profile } from './pages/Profile'
+import { Bills } from './pages/Bills'
 import { useEffect, useState } from 'react'
 import { getMe } from './api/auth'
 import type { UserInfo } from './api/auth'
 import { Toaster } from 'sonner'
+import { ThemeProvider } from './lib/themeContext'
 
 export default function App() {
   const [user, setUser] = useState<UserInfo | null | undefined>(undefined)
@@ -44,24 +47,27 @@ export default function App() {
   const isFacetsEmployee = Boolean(user?.is_facets_employee)
 
   return (
-    <BrowserRouter>
-      <Toaster position="top-center" richColors closeButton theme="dark" duration={3500} toastOptions={{ duration: 3500 }} visibleToasts={3} />
-      <Routes>
-        <Route path="/login" element={user ? <Navigate to="/" /> : <Login />} />
-        <Route path="/" element={user ? <Upload user={user} /> : <Navigate to="/login" />} />
-        <Route path="/jobs/:id" element={user ? <JobStatus user={user} /> : <Navigate to="/login" />} />
-        <Route path="/admin" element={user && isAdmin ? <AdminJobs user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/users" element={user && isAdmin ? <AdminUsers user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/catalog" element={user && isAdmin ? <AdminCatalog user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/assumptions" element={user && isAdmin ? <AdminAssumptions user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/report-settings" element={user && isAdmin ? <AdminReportSettings user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/audit" element={user && isAdmin ? <AdminAudit user={user} /> : <Navigate to="/" />} />
-        <Route path="/admin/analytics" element={user && isAdmin ? <AdminAnalytics user={user} /> : <Navigate to="/" />} />
-        <Route path="/reports/:token" element={<SharedReport />} />
-        {/* Visible and accessible only for @facets sessions */}
-        <Route path="/facets" element={user && isFacetsEmployee ? <Facets user={user} /> : <Navigate to="/" />} />
-        <Route path="*" element={<Navigate to={user ? "/" : "/login"} replace />} />
-      </Routes>
-    </BrowserRouter>
+    <ThemeProvider>
+      <BrowserRouter>
+        <Toaster position="top-center" richColors closeButton theme="dark" duration={3500} toastOptions={{ duration: 3500 }} visibleToasts={3} />
+        <Routes>
+          <Route path="/login" element={user ? <Navigate to="/" /> : <Login />} />
+          <Route path="/" element={user ? <Upload user={user} /> : <Navigate to="/login" />} />
+          <Route path="/jobs/:id" element={user ? <JobStatus user={user} /> : <Navigate to="/login" />} />
+          <Route path="/admin" element={user && isAdmin ? <AdminJobs user={user} /> : <Navigate to="/" />} />
+          <Route path="/admin/users" element={user && isAdmin ? <AdminUsers user={user} /> : <Navigate to="/" />} />
+          <Route path="/admin/catalog" element={user && isAdmin ? <AdminCatalog user={user} /> : <Navigate to="/" />} />
+          <Route path="/admin/assumptions" element={user && isAdmin ? <AdminAssumptions user={user} /> : <Navigate to="/" />} />
+          <Route path="/admin/report-settings" element={user && isAdmin ? <AdminReportSettings user={user} /> : <Navigate to="/" />} />
+          <Route path="/admin/audit" element={user && isAdmin ? <AdminAudit user={user} /> : <Navigate to="/" />} />
+          <Route path="/admin/analytics" element={user && isAdmin ? <AdminAnalytics user={user} /> : <Navigate to="/" />} />
+          <Route path="/admin/tickets" element={user ? <Tickets user={user} /> : <Navigate to="/login" />} />
+        <Route path="/admin/bills" element={user && isAdmin ? <Bills user={user} /> : <Navigate to="/" />} />
+        <Route path="/profile" element={user ? <Profile user={user} /> : <Navigate to="/login" />} />
+          <Route path="/reports/:token" element={<SharedReport />} />
+          <Route path="*" element={<Navigate to={user ? "/" : "/login"} replace />} />
+        </Routes>
+      </BrowserRouter>
+    </ThemeProvider>
   )
 }

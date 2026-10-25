@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Nav } from '../components/Nav'
+import { Layout } from '../components/Layout'
 import { DropZone } from '../components/DropZone'
 import { JobList } from '../components/JobList'
 import { ContactCard } from '../components/ContactCard'
@@ -59,8 +59,7 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
   const ready = !!file && !!prospect.trim() && !submitting
 
   return (
-    <div className="min-h-screen bg-[#0a0a0f] text-white">
-      <Nav user={user} />
+    <Layout user={user}>
       <div className="max-w-5xl mx-auto px-6 py-10 grid gap-8 lg:grid-cols-[1fr_320px]">
         <main className="flex flex-col gap-6">
           <div className="anim-fade-in-up">
@@ -153,6 +152,6 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
           </div>
         </aside>
       </div>
-    </div>
+    </Layout>
   )
 }

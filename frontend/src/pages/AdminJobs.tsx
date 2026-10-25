@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { Nav } from '../components/Nav'
+import { Layout } from '../components/Layout'
 import { Reveal } from '../components/Reveal'
 import { retryJob, downloadURL } from '../api/jobs'
 import type { Job } from '../api/jobs'
@@ -46,6 +46,36 @@ export function StatCard({ label, value, color = 'text-white', delay = 0 }: Stat
     >
       <p className="text-xs uppercase tracking-wider text-gray-400 mb-1.5">{label}</p>
       <p className={`text-2xl font-bold tabular-nums ${color}`}>{value}</p>
+    </div>
+  )
+}
+
+// Standardized log line: parses timestamp + level, color-codes output.
+function LogLine({ line }: Readonly<{ line: string }>) {
+  const tsMatch = line.match(/^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})/)
+  const levelMatch = line.match(/\b(ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\b/i)
+
+  const timestamp = tsMatch ? tsMatch[1] : ''
+  const level = levelMatch ? levelMatch[1].toUpperCase() : 'INFO'
+  const message = line
+    .replace(/^\[?[\d\-T:\s\.]+\]?\s*/, '')
+    .replace(/\b(ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\b/i, '')
+    .trim()
+
+  const levelStyles: Record<string, string> = {
+    ERROR: 'text-red-400',
+    WARN: 'text-orange-400',
+    WARNING: 'text-orange-400',
+    INFO: 'text-[#00C2BB]',
+    DEBUG: 'text-gray-400',
+    TRACE: 'text-gray-500',
+  }
+
+  return (
+    <div className="flex gap-2 text-xs font-mono leading-tight border-b border-white/5 pb-1 last:border-0">
+      {timestamp && <span className="text-gray-500 w-24">{timestamp}</span>}
+      <span className={`font-bold w-16 ${levelStyles[level] || levelStyles.INFO}`}>[{level}]</span>
+      <span className="text-gray-300">{message || line}</span>
     </div>
   )
 }
@@ -368,8 +398,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
 
   return (
-    <div className="min-h-screen text-white bg-[#0a0a0f]">
-      <Nav user={user} />
+    <Layout user={user}>
       <div className="max-w-6xl mx-auto px-6 py-8">
 
         {/* Top Header & Admin Links */}
@@ -1028,16 +1057,22 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                 </div>
               </div>
 
-              <div className="p-6 overflow-auto flex-1 font-mono text-xs bg-black/40 text-gray-300 leading-relaxed whitespace-pre-wrap">
+              <div className="p-6 overflow-auto flex-1 font-mono text-xs bg-black/40 leading-relaxed">
                 {logsLoading && (
-                  <div className="text-gray-500 flex items-center gap-2">
+                  <div className="text-gray-500 flex items-center gap-2 p-2">
                     <span className="animate-pulse">Loading live execution logs…</span>
                   </div>
                 )}
                 {!logsLoading && (!logLines || logLines.length === 0) && (
-                  <p className="text-gray-500">No logs generated for this run yet.</p>
+                  <p className="text-gray-500 p-2">No logs generated for this run yet.</p>
                 )}
-                {!logsLoading && logLines && logLines.length > 0 && logLines.join('\n')}
+                {!logsLoading && logLines && logLines.length > 0 && (
+                  <div className="space-y-0 p-1">
+                    {logLines.map((line, i) => (
+                      <LogLine key={i} line={line} />
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1099,6 +1134,6 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
         />
 
       </div>
-    </div>
+    </Layout>
   )
 }

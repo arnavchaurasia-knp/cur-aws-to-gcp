@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Nav } from '../components/Nav'
+import { Layout } from '../components/Layout'
 import { StatCard } from './AdminJobs'
 import { getAnalytics } from '../api/admin'
 import type { UsageStats } from '../api/admin'
@@ -35,8 +35,7 @@ export function AdminAnalytics({ user }: Readonly<{ user: UserInfo }>) {
   const chartData = (stats?.jobs_by_day ?? []).map(d => ({ day: d.day.slice(5), count: d.count }))
 
   return (
-    <div className="min-h-screen text-white bg-[#0a0a0f]">
-      <Nav user={user} />
+    <Layout user={user}>
       <div className="max-w-5xl mx-auto px-6 py-10">
         <h1 className="text-2xl font-semibold mb-1">Analytics</h1>
         <p className="text-sm text-gray-500 mb-8">Platform-wide usage over the last 30 days.</p>
@@ -99,6 +98,6 @@ export function AdminAnalytics({ user }: Readonly<{ user: UserInfo }>) {
           </>
         )}
       </div>
-    </div>
+    </Layout>
   )
 }

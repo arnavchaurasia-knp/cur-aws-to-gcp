@@ -442,3 +442,86 @@ export async function notifyTest(): Promise<{ status: string }> {
   }
   return res.json()
 }
+
+// ─── Ticket management ───
+
+export interface UploadedBill {
+  content_hash: string
+  input_ext: string
+  file_size: number
+  file_name: string
+  created_at: string
+}
+
+export interface UploadedBillsResponse {
+  bills: UploadedBill[]
+}
+
+export async function listUploadedBills(): Promise<UploadedBillsResponse> {
+  return getJSON<UploadedBillsResponse>('/api/admin/bills')
+}
+  id: string
+  title: string
+  description: string
+  status: string
+  priority: string
+  category: string
+  created_by: string
+  created_at: string
+  updated_at: string
+  resolved_at?: string
+  resolved_by?: string
+}
+
+export interface TicketListResponse {
+  tickets: Ticket[]
+}
+
+export interface CreateTicketBody {
+  title: string
+  description: string
+  priority?: string
+  category?: string
+}
+
+export interface UpdateTicketBody {
+  status?: string
+  priority?: string
+  category?: string
+  title?: string
+  description?: string
+}
+
+export async function createTicket(body: CreateTicketBody): Promise<Ticket> {
+  const res = await fetch('/api/admin/tickets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `create ticket failed (${res.status})`)
+  }
+  return res.json()
+}
+
+export async function listTickets(): Promise<TicketListResponse> {
+  return getJSON<TicketListResponse>('/api/admin/tickets')
+}
+
+export async function getTicket(id: string): Promise<Ticket> {
+  return getJSON<Ticket>(`/api/admin/tickets/${encodeURIComponent(id)}`)
+}
+
+export async function updateTicket(id: string, body: UpdateTicketBody): Promise<Ticket> {
+  const res = await fetch(`/api/admin/tickets/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `update ticket failed (${res.status})`)
+  }
+  return res.json()
+}

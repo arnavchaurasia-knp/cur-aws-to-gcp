@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Nav } from '../components/Nav'
+import { Layout } from '../components/Layout'
 import {
   getCatalogStatus,
   triggerCatalogRefresh,
@@ -67,8 +67,7 @@ export function AdminCatalog({ user }: Readonly<{ user: UserInfo }>) {
   }
 
   return (
-    <div className="min-h-screen text-white bg-[#0a0a0f]">
-      <Nav user={user} />
+    <Layout user={user}>
       <div className="max-w-2xl mx-auto px-6 py-10">
         <h1 className="text-2xl font-semibold mb-1">GCP catalog</h1>
         <p className="text-sm text-gray-500 mb-8">Freshness of the GCP SKU pricing catalog used for projections.</p>
@@ -158,6 +157,6 @@ export function AdminCatalog({ user }: Readonly<{ user: UserInfo }>) {
           )}
         </div>
       </div>
-    </div>
+    </Layout>
   )
 }

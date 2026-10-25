@@ -100,7 +100,9 @@ func main() {
 		Email: notify.EmailConfig{
 			APIKey:  cfg.ResendAPIKey,
 			From:    cfg.ResendFrom,
-			BaseURL: cfg.AppBaseURL,
+			// Email "View Report" buttons link to the frontend (5173), not the API (8080).
+			// Fall back to AppBaseURL if FRONTEND_URL is unset.
+			BaseURL: firstNonEmpty(cfg.FrontendURL, cfg.AppBaseURL),
 		},
 		SlackURL: cfg.SlackWebhookURL,
 	}
@@ -242,6 +244,12 @@ func main() {
 		r.Get("/api/jobs/{id}/runs", jobHandler.Runs)
 		r.Post("/api/jobs/{id}/share", jobHandler.ShareJob)
 		r.Delete("/api/jobs/{id}", jobHandler.Delete)
+		// User profile
+		r.Get("/api/user/profile", jobHandler.GetUserProfile)
+		r.Put("/api/user/profile", jobHandler.SaveUserProfile)
+		// User notification settings
+		r.Get("/api/user/notifications", jobHandler.GetUserNotificationSettings)
+		r.Put("/api/user/notifications", jobHandler.UpdateUserNotificationSettings)
 
 		// Admin-only routes, gated by auth.RequireAdmin in addition to the
 		// session check already applied by this group.
@@ -275,6 +283,13 @@ func main() {
 			r.Get("/api/admin/jobs/{id}/compare", jobHandler.AdminCompareRuns)
 			r.Get("/api/admin/notify/status", jobHandler.AdminNotifyStatus)
 			r.Post("/api/admin/notify/test", jobHandler.AdminNotifyTest)
+			// Ticket management
+			r.Post("/api/admin/tickets", jobHandler.AdminCreateTicket)
+			r.Get("/api/admin/tickets", jobHandler.AdminListTickets)
+			r.Get("/api/admin/tickets/{id}", jobHandler.AdminGetTicket)
+			r.Put("/api/admin/tickets/{id}", jobHandler.AdminUpdateTicket)
+			// Uploaded bills listing (admin only)
+			r.Get("/api/admin/bills", jobHandler.ListUploadedBills)
 		})
 		// @facets.cloud-only internal panel: recent job logs + a manually
 		// selected multi-job portfolio summary. Each handler re-checks
@@ -382,6 +397,16 @@ func main() {
 	if err := srv.Shutdown(shutCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+// firstNonEmpty returns the first non-empty string from the given values.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func structuredRequestLogger(next http.Handler) http.Handler {

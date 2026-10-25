@@ -1050,3 +1050,169 @@ func (h *Handler) GetSharedReport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	json.NewEncoder(w).Encode(resp)
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Admin: ticket management
+// ─────────────────────────────────────────────────────────────────────────
+
+// AdminCreateTicket creates a new support ticket.
+func (h *Handler) AdminCreateTicket(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Priority    string `json:"priority"`
+		Category    string `json:"category"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if body.Title == "" || body.Description == "" {
+		http.Error(w, `{"error":"title and description are required"}`, http.StatusBadRequest)
+		return
+	}
+	if body.Priority == "" {
+		body.Priority = "medium"
+	}
+	if body.Category == "" {
+		body.Category = "general"
+	}
+	ticket := &db.Ticket{
+		ID:          db.SanitizeTicketID("ticket"),
+		Title:       body.Title,
+		Description: body.Description,
+		Status:      "open",
+		Priority:    body.Priority,
+		Category:    body.Category,
+		CreatedBy:   sess.Email,
+	}
+	if err := h.db.CreateTicket(ticket); err != nil {
+		http.Error(w, `{"error":"failed to create ticket"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(ticket)
+}
+
+// AdminListTickets returns tickets. Admins see all; non-admins see only their own.
+func (h *Handler) AdminListTickets(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	isAdmin := sess.IsAdmin(h.adminEmails)
+	createdBy := ""
+	if !isAdmin {
+		createdBy = sess.Email
+	}
+	tickets, err := h.db.ListTickets(createdBy)
+	if err != nil {
+		http.Error(w, `{"error":"failed to list tickets"}`, http.StatusInternalServerError)
+		return
+	}
+	if tickets == nil {
+		tickets = []db.Ticket{}
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{"tickets": tickets})
+}
+
+// AdminGetTicket returns a single ticket.
+func (h *Handler) AdminGetTicket(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	ticket, err := h.db.GetTicket(id)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get ticket"}`, http.StatusInternalServerError)
+		return
+	}
+	if ticket == nil {
+		http.Error(w, `{"error":"ticket not found"}`, http.StatusNotFound)
+		return
+	}
+	isAdmin := sess.IsAdmin(h.adminEmails)
+	if !isAdmin && ticket.CreatedBy != sess.Email {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(ticket)
+}
+
+// AdminUpdateTicket updates a ticket's status or other fields.
+func (h *Handler) AdminUpdateTicket(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	ticket, err := h.db.GetTicket(id)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get ticket"}`, http.StatusInternalServerError)
+		return
+	}
+	if ticket == nil {
+		http.Error(w, `{"error":"ticket not found"}`, http.StatusNotFound)
+		return
+	}
+	isAdmin := sess.IsAdmin(h.adminEmails)
+	if !isAdmin && ticket.CreatedBy != sess.Email {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	var body struct {
+		Status      string `json:"status"`
+		Priority    string `json:"priority"`
+		Category    string `json:"category"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	// Only admins can change status to resolved/closed
+	if body.Status != "" && body.Status != ticket.Status && !isAdmin {
+		http.Error(w, `{"error":"only admins can change ticket status"}`, http.StatusForbidden)
+		return
+	}
+	if body.Status != "" {
+		if err := h.db.UpdateTicketStatus(id, body.Status, sess.Email); err != nil {
+			http.Error(w, `{"error":"failed to update ticket"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+	if body.Title != "" || body.Description != "" || body.Priority != "" || body.Category != "" {
+		title := body.Title
+		description := body.Description
+		priority := body.Priority
+		category := body.Category
+		if title == "" { title = ticket.Title }
+		if description == "" { description = ticket.Description }
+		if priority == "" { priority = ticket.Priority }
+		if category == "" { category = ticket.Category }
+		if err := h.db.UpdateTicket(id, title, description, priority, category); err != nil {
+			http.Error(w, `{"error":"failed to update ticket"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+	updated, err := h.db.GetTicket(id)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get updated ticket"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(updated)
+}

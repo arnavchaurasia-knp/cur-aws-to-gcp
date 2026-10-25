@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { Nav } from '../components/Nav'
+import { Layout } from '../components/Layout'
 import { listUsers, setUserRole } from '../api/admin'
 import type { AdminUser } from '../api/admin'
 import type { UserInfo } from '../api/auth'
@@ -40,8 +40,7 @@ export function AdminUsers({ user }: Readonly<{ user: UserInfo }>) {
   }
 
   return (
-    <div className="min-h-screen text-white">
-      <Nav user={user} />
+    <Layout user={user}>
       <div className="max-w-5xl mx-auto px-6 py-10">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
           <div>
@@ -137,6 +136,6 @@ export function AdminUsers({ user }: Readonly<{ user: UserInfo }>) {
           </div>
         )}
       </div>
-    </div>
+    </Layout>
   )
 }

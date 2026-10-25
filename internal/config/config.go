@@ -39,6 +39,9 @@ type Config struct {
 	ResendAPIKey       string
 	ResendFrom         string
 	AppBaseURL         string
+	// FrontendURL is the base URL of the React frontend (e.g. http://localhost:5173).
+	// Used in email links so "View Report" buttons open the frontend, not the API.
+	FrontendURL        string
 	SlackWebhookURL    string
 	DevAuthBypass      bool
 	AdminPassword      string
@@ -244,6 +247,7 @@ func LoadFromEnv() (*Config, error) {
 		ResendAPIKey:       os.Getenv("RESEND_API_KEY"),
 		ResendFrom:         os.Getenv("RESEND_FROM"),
 		AppBaseURL:         os.Getenv("APP_BASE_URL"),
+		FrontendURL:        os.Getenv("FRONTEND_URL"),
 		SlackWebhookURL:    os.Getenv("SLACK_WEBHOOK_URL"),
 		DevAuthBypass:      devBypass,
 		AdminPassword:      os.Getenv("ADMIN_PASSWORD"),

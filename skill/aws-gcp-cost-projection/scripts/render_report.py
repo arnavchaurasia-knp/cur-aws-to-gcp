@@ -1417,6 +1417,13 @@ def main():
         def cell_desc():
             return f'<td class="extra-col">{desc_html}</td>'
 
+        def cell_pct():
+            if not aws:
+                return "<td class='num'>—</td>"
+            pct = (od / aws * 100) if aws > 0 else 0
+            color = "#137333" if pct <= 100 else "#D93025"
+            return f"<td class='num' style='color:{color};font-weight:500'>{pct:.0f}%</td>"
+
         cell_builders = {
             "#": lambda: f"<td style='color:#80868B;font-size:11px'>{idx}</td>",
             "AWS Service → GCP Service": cell_svc,
@@ -1428,6 +1435,7 @@ def main():
             "GCP 1yr CUD": cell_cud1,
             "GCP 3yr CUD": cell_cud3,
             "Diff": cell_diff,
+            "GCP as % of AWS": cell_pct,
             "Line items": cell_line_items,
             "AWS Region": cell_aws_region,
         }

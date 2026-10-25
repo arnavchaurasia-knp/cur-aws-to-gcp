@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { Nav } from '../components/Nav'
+import { Layout } from '../components/Layout'
 import { JobList } from '../components/JobList'
 import { RunHistory } from '../components/RunHistory'
 import { Summary } from '../components/Summary'
@@ -457,8 +457,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
 
   if (!job) {
     return (
-      <div className="min-h-screen bg-[#0a0a0f] text-white">
-        <Nav user={user} />
+      <Layout user={user}>
         <div className="max-w-xl mx-auto px-6 py-20 text-center">
           {loadError ? (
             <div className="p-6 bg-red-500/10 border border-red-500/30 rounded-xl space-y-4 anim-scale-in">
@@ -478,13 +477,12 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
             </div>
           )}
         </div>
-      </div>
+      </Layout>
     )
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0f] text-white">
-      <Nav user={user} />
+    <Layout user={user}>
       <div className="max-w-5xl mx-auto px-6 py-10 grid gap-8 lg:grid-cols-[1fr_320px]">
         <main className="flex flex-col gap-6">
           <h1 className="text-2xl font-semibold anim-fade-in-up">
@@ -816,6 +814,6 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
         loading={cancelling}
         onConfirm={submitCancel}
       />
-    </div>
+    </Layout>
   )
 }

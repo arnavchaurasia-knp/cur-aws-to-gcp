@@ -1291,3 +1291,137 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// User profile
+// ─────────────────────────────────────────────────────────────────────────
+
+// GetUserProfile returns the authenticated user's profile.
+func (h *Handler) GetUserProfile(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	p, err := h.db.GetUserProfile(sess.Email)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get profile"}`, http.StatusInternalServerError)
+		return
+	}
+	if p == nil {
+		p = &db.UserProfile{Email: sess.Email, Name: sess.Name}
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(p)
+}
+
+// SaveUserProfile creates or updates the authenticated user's profile.
+func (h *Handler) SaveUserProfile(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	var body db.UserProfile
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	body.Email = sess.Email
+	if body.Name == "" {
+		body.Name = sess.Name
+	}
+	if err := h.db.SaveUserProfile(&body); err != nil {
+		http.Error(w, `{"error":"failed to save profile"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(body)
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// User notification settings
+// ─────────────────────────────────────────────────────────────────────────
+
+// GetUserNotificationSettings returns the authenticated user's notification preferences.
+func (h *Handler) GetUserNotificationSettings(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	settings, err := h.db.GetNotificationSettings(sess.Email)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get notification settings"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(settings)
+}
+
+// UpdateUserNotificationSettings updates the authenticated user's notification preferences.
+func (h *Handler) UpdateUserNotificationSettings(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		EmailNotifications   *bool `json:"email_notifications"`
+		SlackNotifications   *bool `json:"slack_notifications"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	// Fetch current settings to preserve unspecified fields
+	current, err := h.db.GetNotificationSettings(sess.Email)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get current settings"}`, http.StatusInternalServerError)
+		return
+	}
+	emailNotif := body.EmailNotifications
+	if emailNotif == nil {
+		emailNotif = &current.EmailNotifications
+	}
+	slackNotif := body.SlackNotifications
+	if slackNotif == nil {
+		slackNotif = &current.SlackNotifications
+	}
+	if err := h.db.UpdateNotificationSettings(sess.Email, *emailNotif, *slackNotif); err != nil {
+		http.Error(w, `{"error":"failed to update notification settings"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]bool{
+		"email_notifications":  *emailNotif,
+		"slack_notifications":  *slackNotif,
+	})
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Uploaded bills listing
+// ─────────────────────────────────────────────────────────────────────────
+
+// ListUploadedBills returns all uploaded bills (admin only).
+func (h *Handler) ListUploadedBills(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if !sess.IsAdmin(h.adminEmails) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	bills, err := h.db.ListUploadedBills()
+	if err != nil {
+		http.Error(w, `{"error":"failed to list bills"}`, http.StatusInternalServerError)
+		return
+	}
+	if bills == nil {
+		bills = []db.UploadedBill{}
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{"bills": bills})
+}

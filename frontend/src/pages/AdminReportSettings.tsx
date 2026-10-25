@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Nav } from '../components/Nav'
+import { Layout } from '../components/Layout'
 import {
   getReportSettings,
   putReportSetting,
@@ -115,28 +115,26 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
 
   if (loading) {
     return (
-      <div className="min-h-screen text-white">
-        <Nav user={user} />
+      <Layout user={user}>
         <div className="max-w-2xl mx-auto px-6 py-10">
           <p className="text-sm text-gray-500">Loading…</p>
         </div>
-      </div>
+      </Layout>
     )
   }
 
   if (error) {
     return (
-      <div className="min-h-screen text-white">
-        <Nav user={user} />
+      <Layout user={user}>
         <div className="max-w-2xl mx-auto px-6 py-10">
           <p className="text-xs text-orange-400">{error}</p>
         </div>
-      </div>
+      </Layout>
     )
   }
 
   return (
-    <div className="min-h-screen text-white">
+    <Layout user={user}>
       <Nav user={user} />
       <div className="max-w-4xl mx-auto px-6 py-10">
         <h1 className="text-2xl font-semibold mb-1">Report settings</h1>
@@ -314,9 +312,9 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
               loading={resetting}
               onConfirm={handleReset}
             />
-          </>
+          </> 
         )}
       </div>
-    </div>
+    </Layout>
   )
 }

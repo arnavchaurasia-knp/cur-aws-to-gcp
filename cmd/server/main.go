@@ -228,6 +228,8 @@ func main() {
 		r.Get("/api/auth/me", oauthH.Me)
 		r.Post("/api/jobs", uploadLimiter(jobHandler.Create))
 		r.Get("/api/jobs", jobHandler.List)
+		r.Get("/api/jobs/{id}", jobHandler.GetByID)
+		r.Get("/api/jobs/{id}/summary", jobHandler.Summary)
 		r.Get("/api/jobs/{id}/progress", jobHandler.Progress)
 		r.Post("/api/jobs/{id}/cancel", jobHandler.Cancel)
 		r.Post("/api/jobs/{id}/retry", jobHandler.Retry)

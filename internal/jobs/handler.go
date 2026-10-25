@@ -274,11 +274,17 @@ func (h *Handler) CheckBill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Normalize compound extensions if previously saved with single ext (e.g. .gz -> .csv.gz)
+	resolvedExt := bill.InputExt
+	if resolvedExt == ".gz" && strings.HasSuffix(strings.ToLower(bill.FileName), ".csv.gz") {
+		resolvedExt = ".csv.gz"
+	}
+
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	json.NewEncoder(w).Encode(map[string]any{
 		"exists":       true,
 		"content_hash": bill.ContentHash,
-		"input_ext":    bill.InputExt,
+		"input_ext":    resolvedExt,
 		"file_name":    bill.FileName,
 		"file_size":    bill.FileSize,
 	})
@@ -322,8 +328,13 @@ func (h *Handler) CreateFromExistingBill(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	resolvedExt := bill.InputExt
+	if resolvedExt == ".gz" && strings.HasSuffix(strings.ToLower(bill.FileName), ".csv.gz") {
+		resolvedExt = ".csv.gz"
+	}
+
 	// Link cached bill directly into job directory
-	jobInputPath := filepath.Join(jobDir, "input"+bill.InputExt)
+	jobInputPath := filepath.Join(jobDir, "input"+resolvedExt)
 	if err := os.Link(sharedPath, jobInputPath); err != nil {
 		// Fall back to copy if hard link fails (e.g. cross-volume)
 		if err := copyFile(sharedPath, jobInputPath); err != nil {
@@ -338,7 +349,7 @@ func (h *Handler) CreateFromExistingBill(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := h.db.CreateJob(jobID, sess.Email, prospect, bill.InputExt, jobID); err != nil {
+	if err := h.db.CreateJob(jobID, sess.Email, prospect, resolvedExt, jobID); err != nil {
 		slog.Error("CreateJob failed", "job_id", jobID, "err", err)
 		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
 		return
@@ -351,7 +362,7 @@ func (h *Handler) CreateFromExistingBill(w http.ResponseWriter, r *http.Request)
 			slog.Warn("PostJobSubmitted failed", "job_id", jobID, "err", err)
 		}
 	}()
-	go h.runJob(jobID, jobDir, bill.InputExt, sess)
+	go h.runJob(jobID, jobDir, resolvedExt, sess)
 
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	w.WriteHeader(http.StatusCreated)
@@ -624,6 +635,18 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 	if len(inputMatches) == 0 {
 		http.Error(w, `{"error":"Original input file is missing (server was restarted or redeployed). Please upload the bill again as a new report."}`, http.StatusBadRequest)
 		return
+	}
+
+	// Legacy repair: if job was started with bare .gz but is a gzipped CSV, rename to .csv.gz
+	for _, match := range inputMatches {
+		base := filepath.Base(match)
+		if base == "input.gz" {
+			newPath := filepath.Join(jobDir, "input.csv.gz")
+			if err := os.Rename(match, newPath); err == nil {
+				job.InputExt = ".csv.gz"
+			}
+			break
+		}
 	}
 
 	_ = os.MkdirAll(jobDir, 0755)

@@ -1157,7 +1157,13 @@ def _read_into_aws_raw(conn, path):
     elif p.endswith(".pdf"):
         _load_pdf(conn, path)
     else:  # .csv .tsv .txt and .gz/.zst variants of them
-        conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_csv_auto('{sql_path}', ALL_VARCHAR=TRUE)")
+        try:
+            conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_csv_auto('{sql_path}', ALL_VARCHAR=TRUE)")
+        except Exception as e:
+            if p.endswith(".gz"):
+                conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_csv('{sql_path}', compression='gzip', ALL_VARCHAR=TRUE, header=TRUE)")
+            else:
+                raise
 
 
 def load_raw(conn, input_file):

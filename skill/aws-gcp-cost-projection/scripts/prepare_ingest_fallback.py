@@ -45,12 +45,21 @@ def _preview_excel(path):
 
 
 def _preview_text(path):
-    with open(path, "r", errors="replace") as f:
-        text_lines = f.readlines()
+    if path.lower().endswith(".gz"):
+        import gzip
+        fh = gzip.open(path, "rt", errors="replace")
+    else:
+        fh = open(path, "r", errors="replace")
+    with fh:
+        text_lines = []
+        for line in fh:
+            text_lines.append(line)
+            if len(text_lines) >= MAX_TEXT_LINES:
+                break
     lines = [f"# Text/CSV file: {os.path.basename(path)}", ""]
     for i, line in enumerate(text_lines):
         if i >= MAX_TEXT_LINES:
-            lines.append(f"... ({len(text_lines) - MAX_TEXT_LINES} more lines truncated)")
+            lines.append(f"... ({MAX_TEXT_LINES} lines capped for preview)")
             break
         lines.append(line.rstrip("\n"))
     return "\n".join(lines)

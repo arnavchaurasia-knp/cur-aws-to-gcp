@@ -1379,8 +1379,8 @@ def _record_script_failure(fallback_msg):
         try:
             with open(fail_file, "r", encoding="utf-8") as _f:
                 content = _f.read().strip()
-                if content and not content.startswith("script ") and not content.startswith("pre_script "):
-                    return  # Preserve script's own specific failure message!
+                if content:
+                    return  # Preserve script's own specific failure message or traceback!
         except Exception:
             pass
     with open(fail_file, "w", encoding="utf-8") as _f:

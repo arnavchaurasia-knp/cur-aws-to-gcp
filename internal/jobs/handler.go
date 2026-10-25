@@ -116,6 +116,21 @@ func safeJobDir(baseDir, id string) (string, bool) {
 	return p, true
 }
 
+// extractFullExt preserves compound extensions like .csv.gz, .tsv.gz, etc.,
+// which DuckDB and format sniffers need to detect compression and delimiter.
+func extractFullExt(filename string) string {
+	lower := strings.ToLower(filename)
+	for _, compound := range []string{
+		".csv.gz", ".tsv.gz", ".json.gz", ".jsonl.gz", ".ndjson.gz",
+		".csv.zst", ".tsv.zst", ".json.zst", ".tar.gz",
+	} {
+		if strings.HasSuffix(lower, compound) {
+			return compound
+		}
+	}
+	return sanitizeExt(filepath.Ext(filename))
+}
+
 // sanitizeExt lowercases ext and strips any path-separator characters so it is
 // safe to embed in a filepath.Join call. filepath.Ext already guarantees no
 // separators, but this makes the sanitization explicit for static analysis.
@@ -171,7 +186,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Sanitize the file extension against an allowlist before using it in
 	// the filesystem path — this breaks the taint chain from header.Filename.
-	ext := sanitizeExt(filepath.Ext(header.Filename))
+	ext := extractFullExt(header.Filename)
 	jobID := uuid.New().String()
 	jobDir, _ := safeJobDir(h.jobsDir, jobID)
 	if err := os.MkdirAll(jobDir, 0755); err != nil {
@@ -438,7 +453,7 @@ func (h *Handler) CompleteChunkedUpload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	uploadDir := filepath.Join(h.jobsDir, ".uploads", req.UploadID)
-	ext := sanitizeExt(filepath.Ext(req.FileName))
+	ext := extractFullExt(req.FileName)
 	jobID := uuid.New().String()
 	jobDir, _ := safeJobDir(h.jobsDir, jobID)
 	if err := os.MkdirAll(jobDir, 0755); err != nil {

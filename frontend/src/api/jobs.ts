@@ -56,10 +56,10 @@ export async function createJob(
     // If hash check fails or is unsupported, fall through to regular upload
   }
 
-  const CHUNK_SIZE = 15 * 1024 * 1024 // 15 MB chunks to easily fit inside all proxy/Cloudflare limits
+  const CHUNK_SIZE = 30 * 1024 * 1024 // 30 MB chunks to safely stay within 100MB proxy limits
 
-  // If file is smaller than or equal to 25 MB, upload directly in one piece
-  if (file.size <= 25 * 1024 * 1024) {
+  // If file is smaller than or equal to 80 MB, upload directly in one piece for high speed
+  if (file.size <= 80 * 1024 * 1024) {
     onProgress?.(10, 'Uploading bill…')
     const form = new FormData()
     form.append('file', file)
@@ -85,7 +85,7 @@ export async function createJob(
     return res.json()
   }
 
-  // Large file (> 25 MB): Slice into 15 MB chunks, upload sequentially, and combine on server
+  // Large file (> 80 MB): Slice into 30 MB chunks, upload sequentially, and combine on server
   const uploadId = crypto.randomUUID()
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
 

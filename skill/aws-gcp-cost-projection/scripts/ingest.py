@@ -1146,17 +1146,18 @@ def _read_into_aws_raw(conn, path):
     Creating aws_raw as a VIEW streams large CSVs on-demand and eliminates the
     multi-gigabyte memory footprint that causes OOM kills on 512MB containers."""
     p = path.lower()
+    sql_path = path.replace("\\", "/")
     _drop_raw(conn)
     if p.endswith(".parquet"):
-        conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_parquet('{path}')")
+        conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_parquet('{sql_path}')")
     elif p.endswith((".json", ".jsonl", ".ndjson")):
-        conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_json_auto('{path}')")
+        conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_json_auto('{sql_path}')")
     elif p.endswith((".xlsx", ".xlsm", ".xls")):
         _load_excel(conn, path)
     elif p.endswith(".pdf"):
         _load_pdf(conn, path)
     else:  # .csv .tsv .txt and .gz/.zst variants of them
-        conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_csv_auto('{path}', ALL_VARCHAR=TRUE)")
+        conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_csv_auto('{sql_path}', ALL_VARCHAR=TRUE)")
 
 
 def load_raw(conn, input_file):

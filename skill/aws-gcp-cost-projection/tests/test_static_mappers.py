@@ -1392,3 +1392,88 @@ def test_empty_mapper_result_does_not_clobber(tmp_path, monkeypatch):
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# KMS — key-months and operations must not share a rate
+# ---------------------------------------------------------------------------
+
+def test_kms_key_months_map_to_software_key_versions():
+    """AWS $1.00/key/mo -> GCP software symmetric key versions at $0.06/mo.
+
+    The $1.00/mo GCP SKU is the HSM tier; using it here over-projects 16.7x.
+    """
+    rows = [row(product="AWS Key Management Service",
+                usage_type="USE1-KMS-Keys", unit="Keys")]
+    out = _with_sku(map_per_request, rows)
+    assert out[0]["gcp_service"] == "Cloud KMS"
+    assert out[0]["gcp_sku_name"] == "Active software symmetric key versions"
+    assert out[0]["component"] == "keys"
+    assert out[0]["unit_multiplier"] == 1.0
+
+
+def test_kms_custom_key_store_keeps_hsm_rate():
+    """An HSM-backed custom key store really is $1.00/mo on GCP too."""
+    rows = [row(product="AWS Key Management Service",
+                usage_type="USE1-KMS-Keys", operation="CustomKeyStore",
+                unit="Keys")]
+    out = _with_sku(map_per_request, rows)
+    assert out[0]["gcp_sku_name"] == "Active HSM symmetric key versions"
+
+
+def test_kms_external_key_store_uses_external_rate():
+    rows = [row(product="AWS Key Management Service",
+                usage_type="USE1-KMS-Keys", operation="External Key Store",
+                unit="Keys")]
+    out = _with_sku(map_per_request, rows)
+    assert out[0]["gcp_sku_name"] == "Active external symmetric key versions"
+
+
+def test_kms_requests_stay_at_parity():
+    """Operations are $0.03/10k on both sides — mapped, but not re-rated."""
+    rows = [row(product="AWS Key Management Service",
+                usage_type="USE1-KMS-Requests-Tier1", unit="Requests")]
+    out = _with_sku(map_per_request, rows)
+    assert out[0]["component"] == "requests"
+    assert "software symmetric key" in out[0]["gcp_sku_name"]
+    assert out[0]["unit_multiplier"] == 1.0
+
+
+def test_kms_sku_patterns_resolve_distinctly_in_the_real_catalog():
+    """Anchored patterns must hit three different SKUs, not collide."""
+    from apply_static_mappings import resolve_sku
+    ids = {p: str(resolve_sku("Cloud KMS", p, "us-central1"))
+           for p in ("^Active software symmetric key versions$",
+                     "^Active HSM symmetric key versions$",
+                     "^Cryptographic operations with a software symmetric key$")}
+    assert all(ids.values()), ids
+    assert len(set(ids.values())) == 3, ids
+
+
+# ---------------------------------------------------------------------------
+# Route 53 — hosted zones bill per month, queries per query
+# ---------------------------------------------------------------------------
+
+def test_route53_hosted_zone_maps_to_managed_zone():
+    """Zones must not reach the generic per-query pattern below them."""
+    rows = [row(product="Amazon Route 53", usage_type="HostedZone", unit="Mo")]
+    out = _with_sku(map_per_request, rows)
+    assert out[0]["gcp_service"] == "Cloud DNS"
+    assert out[0]["gcp_sku_name"] == "ManagedZone"
+    assert out[0]["component"] == "zones"
+
+
+def test_route53_queries_still_map_to_dns_query():
+    """Regression guard: the zone branch must not swallow query rows."""
+    rows = [row(product="Amazon Route 53", usage_type="DNS-Queries",
+                unit="Queries")]
+    out = _with_sku(map_per_request, rows)
+    assert out[0]["gcp_service"] == "Cloud DNS"
+    assert "DNS Query" in (out[0].get("gcp_sku_name") or "")
+
+
+def test_route53_recovery_controller_reaches_neither_mapping():
+    rows = [row(product="Amazon Route 53 Application Recovery Controller",
+                usage_type="Global-Cluster-Hours", unit="Hrs")]
+    out = _with_sku(map_per_request, rows)
+    assert not out or out[0].get("gcp_sku_name") != "ManagedZone"

@@ -469,7 +469,10 @@ CASES = [
     ("kms_keys",
      _row(product="AWS Key Management Service", product_code="awskms",
           usage_type="APS3-KMS-Keys", unit="Key-Months"),
-     "misc", "kms_keys"),
+     # per_request (not misc): classify_mechanics now routes KMS to the
+     # deterministic key-month/operations split in map_per_request, so the
+     # spec and the legacy classifier agree here.
+     "per_request", "kms_keys"),
     ("kms_requests",
      _row(product="AWS Key Management Service", product_code="awskms",
           usage_type="APS3-KMS-Requests", unit="Requests"),

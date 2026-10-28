@@ -3288,11 +3288,11 @@
       },
       {
         "id": "kms_keys",
-        "description": "KMS customer keys -> Cloud KMS active key versions ($1.00/key/mo parity).",
+        "description": "KMS customer keys -> Cloud KMS active SOFTWARE symmetric key versions ($0.06/key-version/mo vs AWS $1.00; HSM custom key stores are $1.00).",
         "match": {
           "usage_type_re": "Keys|Key-Months"
         },
-        "mechanic": "misc",
+        "mechanic": "per_request",
         "fields": [
           {
             "name": "key_months",
@@ -3307,12 +3307,12 @@
             "required": true
           }
         ],
-        "source_rule": "misc (Cloud KMS active key versions $1.00/key/month vs $1.00 AWS)",
+        "source_rule": "per_request (KMS branch: software key versions $0.06/mo, HSM $1.00/mo, external $3.00/mo)",
         "llm_guidance": {
           "gcp_target": "Cloud Key Management Service (KMS)",
           "strategy": "review",
           "confidence_max": 0.85,
-          "guidance": "AWS KMS customer-managed keys map 1:1 to Cloud KMS active key versions ($1.00/key/month vs $1.00 on AWS)."
+          "guidance": "AWS KMS customer-managed keys are software-backed unless the row names a custom key store; the GCP counterpart is active SOFTWARE symmetric key versions at $0.06/mo, not the $1.00 HSM tier."
         }
       },
       {

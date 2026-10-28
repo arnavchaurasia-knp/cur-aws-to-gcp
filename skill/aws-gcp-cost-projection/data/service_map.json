@@ -406,9 +406,9 @@
       "match": "key management",
       "category": "Security",
       "gcp_service": "Cloud KMS",
-      "mode": "review",
+      "mode": "keep",
       "confidence": 88,
-      "reason": "KMS -> Cloud KMS (per key-version + operations)."
+      "reason": "KMS -> Cloud KMS (key-months mapped to active software symmetric key versions; operations at parity)."
     },
     {
       "match": "secrets manager",

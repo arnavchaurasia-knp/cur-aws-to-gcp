@@ -1118,6 +1118,19 @@ RULES = [
         ),
     ),
     (
+        # AWS KMS. Without this rule KMS rows fall through to `misc` and are
+        # priced by the LLM, which has consistently used GCP's $1.00/mo HSM
+        # rate for ordinary software-backed keys — correct-looking parity that
+        # over-projects 16.7x, since the software tier is $0.06/mo.
+        # map_per_request() splits key-months from operations and picks the
+        # software / HSM / external SKU from the row itself.
+        "per_request",
+        lambda r: (
+            _re(r.get("product", ""), r"Key Management Service|\bKMS\b")
+            or r.get("canonical") == "kms"
+        ),
+    ),
+    (
         # AWS WAF per-request charges (standard WAF, BotControl, AntiDDoS-Request,
         # BotControl-Targeted-Request). PDF bills leave unit=None so we can't
         # rely on unit="Requests" — catch by product name before misc fallback.

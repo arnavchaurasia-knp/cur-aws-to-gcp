@@ -491,8 +491,10 @@ PER_REQUEST_MAP = [
     # instead of a confidently wrong "Cache Egress" SKU that doesn't exist.
     (r"WAF",                   "Cloud Armor",     "Cloud Armor Requests",          1.0),
     # Route 53 DNS queries → Cloud DNS. Both charge $0.40/M for first 1B queries
-    # and $0.20/M thereafter — cost parity. Hosted-zone fees are caught by
-    # flat_hourly (unit=Hrs) so only per-query rows reach this mapper.
+    # and $0.20/M thereafter — cost parity. Hosted-zone fees are handled by the explicit
+    # hosted-zone branch at the top of map_per_request() (FLAT_HOURLY_MAP has
+    # no Route 53 entry, and zones bill per month, so an hourly mechanic could
+    # never have caught them), leaving only per-query rows for this pattern.
     # Pattern matches catalog SKU "DNS Query (port 53)".
     # Negative lookahead excludes "Route 53 Application Recovery Controller"
     # (ARC) — a different, hourly-billed cluster/control-plane product that
@@ -1838,6 +1840,9 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region, allow_continent
         # "Cloud Armor"). Without this alias, resolve_sku("Cloud Armor", ...)
         # falls through with no service_id and returns None for every WAF row.
         "Cloud Armor": "Networking",
+        # Cloud KMS billing SKUs live under "Cloud Key Management Service (KMS)" in services.json
+        "Cloud KMS": "Cloud Key Management Service (KMS)",
+        "Cloud Key Management Service": "Cloud Key Management Service (KMS)",
     }
     services = _load_services()
     service_id = services.get(gcp_service) or services.get(_CATALOG_SERVICE_ALIASES.get(gcp_service, ""))
@@ -2885,6 +2890,103 @@ def map_per_request(rows):
                 "mapping_confidence": 0.95,
             })
             continue
+
+        # ---- AWS KMS ------------------------------------------------------
+        # Two distinct charge types that must NOT share one rate:
+        #   * key-months  — AWS $1.00/key/mo. The GCP counterpart for an
+        #     ordinary customer-managed key is "Active software symmetric key
+        #     versions" at $0.06/mo. Mapping these at AWS cost (the old
+        #     service_map mode="review" passthrough) over-projects 16.7x.
+        #     GCP's $1.00/mo SKU is the *HSM* tier — only correct for an AWS
+        #     custom key store, which is detected below.
+        #   * requests    — AWS $0.03/10k = GCP $0.03/10k. Genuine parity, so
+        #     the mapping exists to make the row deterministic, not to change
+        #     the number.
+        # Descriptions are anchored (^...$) because the catalog contains many
+        # near-identical names ("HSM symmetric cryptographic operations",
+        # "External symmetric cryptographic operations") that an unanchored
+        # pattern resolves to at random.
+        _kms_row = ("key management" in product or "kms" in product
+                    or canonical_service(r.get("product"), r.get("product_code")) == "kms")
+        if _kms_row:
+            _kms_blob = f"{product} {ut_raw} {(r.get('operation') or '').lower()}"
+            _unit = (r.get("unit") or "").lower()
+            _is_requests = ("request" in ut_raw or "operation" in _kms_blob
+                            or "request" in _unit or "count" in _unit)
+            _is_keys = (re.search(r"key[-\s]?month|\bkeys?\b", _kms_blob) is not None
+                        or _unit in ("keys", "key-mo", "key-months"))
+            if _is_requests or _is_keys:
+                if _is_requests:
+                    desc, component, note = (
+                        "^Cryptographic operations with a software symmetric key$",
+                        "requests",
+                        "KMS API requests → Cloud KMS software symmetric operations "
+                        "($0.03/10k both sides — parity)",
+                    )
+                elif re.search(r"external[-_ ]?key[-_ ]?store|\bxks\b", _kms_blob):
+                    desc, component, note = (
+                        "^Active external symmetric key versions$", "keys",
+                        "KMS external key store → Cloud KMS external key versions "
+                        "($3.00/mo — external key stores cost MORE on GCP, not less)",
+                    )
+                elif re.search(r"custom[-_ ]?key[-_ ]?store|cloudhsm|\bhsm\b", _kms_blob):
+                    desc, component, note = (
+                        "^Active HSM symmetric key versions$", "keys",
+                        "KMS custom key store (HSM-backed) → Cloud KMS HSM key versions "
+                        "($1.00/mo — parity with AWS; NOT the $0.06 software rate)",
+                    )
+                else:
+                    desc, component, note = (
+                        "^Active software symmetric key versions$", "keys",
+                        "KMS customer-managed key-months → Cloud KMS software symmetric "
+                        "key versions ($0.06/mo vs AWS $1.00 — assumes an ordinary "
+                        "software-backed CMK; an HSM custom key store would be $1.00)",
+                    )
+                sku = resolve_sku("Cloud KMS", desc, gcp_region or "global")
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud KMS",
+                    "gcp_sku_id":         sku if sku else None,
+                    "gcp_sku_name":       desc.strip("^$"),
+                    "component":          component,
+                    "strategy":           "map" if sku else "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    note + _no_rate_suffix(sku, gcp_region),
+                    "mapping_confidence": 0.90,
+                }
+                if sku:
+                    entry["gcp_sku_unit"] = sku.unit
+                out.append(entry)
+                continue
+
+        # Route 53 hosted-zone fees. These MUST be caught before the generic
+        # PER_REQUEST_MAP table below, whose "Route.?53" pattern would price a
+        # per-month zone charge against the per-query SKU — the same fabricated
+        # number that the ARC rows used to produce. AWS charges $0.50/zone/mo;
+        # Cloud DNS "ManagedZone" is $0.20/mo.
+        if re.search(r"route.?53|route53", product) and not re.search(r"recovery controller", product):
+            if re.search(r"hosted.?zone|hostedzone", f"{ut_raw} {(r.get('operation') or '').lower()}"):
+                sku = resolve_sku("Cloud DNS", "^ManagedZone$", gcp_region or "global")
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud DNS",
+                    "gcp_sku_id":         sku if sku else None,
+                    "gcp_sku_name":       "ManagedZone",
+                    "component":          "zones",
+                    "strategy":           "map" if sku else "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    (
+                        "Route 53 hosted zones → Cloud DNS ManagedZone "
+                        "($0.20/zone/mo vs AWS $0.50)" + _no_rate_suffix(sku, gcp_region)
+                    ),
+                    "mapping_confidence": 0.90,
+                }
+                if sku:
+                    entry["gcp_sku_unit"] = sku.unit
+                out.append(entry)
+                continue
 
         # AWS Backup per-resource backup-CREATION fee (e.g. "$0.11 per Namespace
         # for Backup-Creation-EKS-Namespace") — a control-plane/orchestration fee

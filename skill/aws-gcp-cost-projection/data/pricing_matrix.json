@@ -1,0 +1,454 @@
+{
+  "compute": [
+    {
+      "service": "Amazon Elastic Compute Cloud",
+      "canonical_service": "ec2",
+      "charge_type": "instance-hours (x86)",
+      "aws_unit": "Hrs",
+      "decision": "SKU",
+      "gcp_target": "Compute Engine custom/standard N2/N2D/C2/C3/E2 core+ram breakdown",
+      "status": "active",
+      "reason": "Deterministic family_mapper breakdown to core + ram SKUs"
+    },
+    {
+      "service": "Amazon Elastic Compute Cloud",
+      "canonical_service": "ec2",
+      "charge_type": "instance-hours (Graviton)",
+      "aws_unit": "Hrs",
+      "decision": "SKU",
+      "gcp_target": "Compute Engine Tau T2A / C4A with Arm infix in SKU desc",
+      "status": "active",
+      "reason": "Direct mapping to GCP Arm instances (T2A/C4A)"
+    },
+    {
+      "service": "Amazon Elastic Compute Cloud",
+      "canonical_service": "ec2",
+      "charge_type": "GPU (g4/g5/g6, p3-p5)",
+      "aws_unit": "Hrs",
+      "decision": "SKU",
+      "gcp_target": "Compute Engine attached GPUs (T4/L4/A100/H100) + host VM",
+      "status": "active",
+      "reason": "_gpu_profile maps accelerator hardware to GCE attached accelerator SKUs"
+    },
+    {
+      "service": "Amazon Elastic Compute Cloud",
+      "canonical_service": "ec2",
+      "charge_type": "Inferentia / Trainium",
+      "aws_unit": "Hrs",
+      "decision": "PASS",
+      "gcp_target": "Manual Review — Accelerator",
+      "status": "active",
+      "reason": "No GCP equivalent — TPU is analogue, needs workload porting"
+    },
+    {
+      "service": "Amazon Elastic Compute Cloud",
+      "canonical_service": "ec2",
+      "charge_type": "Spot instances",
+      "aws_unit": "Hrs",
+      "decision": "SKU",
+      "gcp_target": "Compute Engine Spot/Preemptible rate for family",
+      "status": "active",
+      "reason": "Guarded spot/preemptible matching against GCE spot SKUs"
+    },
+    {
+      "service": "Amazon Elastic Compute Cloud",
+      "canonical_service": "ec2",
+      "charge_type": "CPU credits (t-family)",
+      "aws_unit": "vCPU-mo",
+      "decision": "IGNORE",
+      "gcp_target": "$0",
+      "status": "active",
+      "reason": "E2 standard instances have no burst-credit surcharge on GCP"
+    },
+    {
+      "service": "Amazon Elastic Compute Cloud",
+      "canonical_service": "ec2",
+      "charge_type": "Public IPv4",
+      "aws_unit": "Hrs",
+      "decision": "SKU",
+      "gcp_target": "Compute Engine Static/In-use External IP Charge",
+      "status": "active",
+      "reason": "Mapped via resolve_sku Static Ip Charge"
+    },
+    {
+      "service": "Amazon Elastic Block Store",
+      "canonical_service": "ebs",
+      "charge_type": "gp2/gp3 capacity",
+      "aws_unit": "GB-Mo",
+      "decision": "SKU",
+      "gcp_target": "pd-balanced / Hyperdisk Balanced",
+      "status": "active",
+      "reason": "Block storage mapper maps gp2/gp3 to pd-balanced"
+    },
+    {
+      "service": "Amazon Elastic Block Store",
+      "canonical_service": "ebs",
+      "charge_type": "gp3 provisioned IOPS",
+      "aws_unit": "IOPS-Mo",
+      "decision": "IGNORE",
+      "gcp_target": "$0",
+      "status": "active",
+      "reason": "Baseline 3,000 IOPS included in pd-balanced capacity price"
+    },
+    {
+      "service": "Amazon Elastic Block Store",
+      "canonical_service": "ebs",
+      "charge_type": "io1/io2 provisioned IOPS",
+      "aws_unit": "IOPS-Mo",
+      "decision": "SKU",
+      "gcp_target": "pd-extreme provisioned IOPS",
+      "status": "active",
+      "reason": "GCP pd-extreme explicitly bills provisioned IOPS; not ignored"
+    },
+    {
+      "service": "Amazon Elastic Block Store",
+      "canonical_service": "ebs",
+      "charge_type": "EBS snapshots",
+      "aws_unit": "GB-Mo",
+      "decision": "SKU",
+      "gcp_target": "PD Snapshot storage",
+      "status": "active",
+      "reason": "Direct snapshot storage SKU match"
+    }
+  ],
+  "containers_serverless": [
+    {
+      "service": "Amazon Elastic Container Service",
+      "canonical_service": "ecs",
+      "charge_type": "Fargate vCPU-Hours",
+      "aws_unit": "Hrs",
+      "decision": "SKU",
+      "gcp_target": "GKE Autopilot Pod CPU Requests (mCPU × 1000)",
+      "status": "active",
+      "reason": "Direct mapping to Autopilot Pod CPU"
+    },
+    {
+      "service": "Amazon Elastic Container Service",
+      "canonical_service": "ecs",
+      "charge_type": "Fargate GB-Hours",
+      "aws_unit": "Hrs",
+      "decision": "SKU",
+      "gcp_target": "GKE Autopilot Pod Memory Requests × 1.0",
+      "status": "active",
+      "reason": "Direct mapping to Autopilot Pod Memory"
+    },
+    {
+      "service": "Amazon Elastic Container Service",
+      "canonical_service": "ecs",
+      "charge_type": "ECS management fee",
+      "aws_unit": "Hrs",
+      "decision": "IGNORE",
+      "gcp_target": "$0",
+      "status": "active",
+      "reason": "ECS control plane is free on AWS; GKE Standard cluster fee captured under EKS"
+    },
+    {
+      "service": "Amazon Elastic Kubernetes Service",
+      "canonical_service": "eks",
+      "charge_type": "EKS cluster-hours",
+      "aws_unit": "Hrs",
+      "decision": "SKU",
+      "gcp_target": "GKE Standard cluster management fee ($0.10/hr)",
+      "status": "active",
+      "reason": "1:1 parity ($0.10/hr = ~$73/mo per cluster)"
+    },
+    {
+      "service": "AWS Lambda",
+      "canonical_service": "lambda",
+      "charge_type": "Lambda GB-seconds",
+      "aws_unit": "Lambda-GB-Second",
+      "decision": "FORMULA",
+      "gcp_target": "Cloud Run Memory GiB-sec + CPU-sec (1 vCPU : 2 GiB ratio)",
+      "status": "active",
+      "reason": "Cloud Run serverless execution pricing formula"
+    },
+    {
+      "service": "AWS Lambda",
+      "canonical_service": "lambda",
+      "charge_type": "Lambda requests",
+      "aws_unit": "Requests",
+      "decision": "SKU",
+      "gcp_target": "Cloud Run Requests ($0.40 / million)",
+      "status": "active",
+      "reason": "Cloud Run request invocations SKU"
+    }
+  ],
+  "storage": [
+    {
+      "service": "Amazon Simple Storage Service",
+      "canonical_service": "s3",
+      "charge_type": "Standard storage",
+      "aws_unit": "GB-Mo",
+      "decision": "SKU",
+      "gcp_target": "Cloud Storage Standard",
+      "status": "active",
+      "reason": "Exact functional parity"
+    },
+    {
+      "service": "Amazon Simple Storage Service",
+      "canonical_service": "s3",
+      "charge_type": "Standard-IA / One Zone-IA",
+      "aws_unit": "GB-Mo",
+      "decision": "SKU",
+      "gcp_target": "Cloud Storage Nearline",
+      "status": "active",
+      "reason": "30-day access tier equivalence"
+    },
+    {
+      "service": "Amazon Simple Storage Service",
+      "canonical_service": "s3",
+      "charge_type": "Glacier Instant / Flexible",
+      "aws_unit": "GB-Mo",
+      "decision": "SKU",
+      "gcp_target": "Cloud Storage Coldline",
+      "status": "active",
+      "reason": "90-day cold archive equivalence"
+    },
+    {
+      "service": "Amazon Simple Storage Service",
+      "canonical_service": "s3",
+      "charge_type": "Glacier Deep Archive",
+      "aws_unit": "GB-Mo",
+      "decision": "SKU",
+      "gcp_target": "Cloud Storage Archive",
+      "status": "active",
+      "reason": "365-day archive equivalence"
+    },
+    {
+      "service": "Amazon Simple Storage Service",
+      "canonical_service": "s3",
+      "charge_type": "Requests (GET/PUT)",
+      "aws_unit": "Requests",
+      "decision": "PASS",
+      "gcp_target": "Cloud Storage Class A / Class B Operations",
+      "status": "active",
+      "reason": "Unit tiers incompatible ($/1k vs $/10k ops); safe passthrough"
+    },
+    {
+      "service": "Amazon Simple Storage Service",
+      "canonical_service": "s3",
+      "charge_type": "Intelligent-Tiering monitoring",
+      "aws_unit": "Objects",
+      "decision": "IGNORE",
+      "gcp_target": "$0",
+      "status": "active",
+      "reason": "Cloud Storage Autoclass has no object monitoring fee"
+    },
+    {
+      "service": "Amazon Elastic File System",
+      "canonical_service": "efs",
+      "charge_type": "Standard / IA",
+      "aws_unit": "GB-Mo",
+      "decision": "SKU",
+      "gcp_target": "Filestore Basic SSD / HDD",
+      "status": "active",
+      "reason": "NFS managed file share equivalence"
+    }
+  ],
+  "databases": [
+    {
+      "service": "Amazon Relational Database Service",
+      "canonical_service": "rds",
+      "charge_type": "Instance-hours",
+      "aws_unit": "Hrs",
+      "decision": "SKU",
+      "gcp_target": "Cloud SQL vCPU + RAM custom SKUs",
+      "status": "active",
+      "reason": "Cloud SQL mapped to vCPU and memory footprint"
+    },
+    {
+      "service": "Amazon Aurora",
+      "canonical_service": "rds",
+      "charge_type": "Serverless v2 ACU",
+      "aws_unit": "ACU-Hrs",
+      "decision": "FORMULA",
+      "gcp_target": "Cloud SQL custom (1 ACU = 2 vCPU + 4 GB RAM)",
+      "status": "active",
+      "reason": "Standard ACU resource decomposition"
+    },
+    {
+      "service": "Amazon Relational Database Service",
+      "canonical_service": "rds",
+      "charge_type": "Storage / backup",
+      "aws_unit": "GB-Mo",
+      "decision": "SKU",
+      "gcp_target": "Cloud SQL Storage SKU",
+      "status": "active",
+      "reason": "Block storage mapping for managed database"
+    },
+    {
+      "service": "Amazon Aurora",
+      "canonical_service": "rds",
+      "charge_type": "I/O requests",
+      "aws_unit": "IOs",
+      "decision": "PASS",
+      "gcp_target": "Cloud SQL (I/O included in storage)",
+      "status": "active",
+      "reason": "Cloud SQL does not charge per I/O; passthrough prevents inflation"
+    },
+    {
+      "service": "Amazon DynamoDB",
+      "canonical_service": "dynamodb",
+      "charge_type": "RCU / WCU / Storage",
+      "aws_unit": "various",
+      "decision": "PASS",
+      "gcp_target": "Firestore / Bigtable",
+      "status": "active",
+      "reason": "Workload access pattern dependent"
+    },
+    {
+      "service": "Amazon ElastiCache",
+      "canonical_service": "elasticache",
+      "charge_type": "Node-hours",
+      "aws_unit": "Hrs",
+      "decision": "FORMULA",
+      "gcp_target": "Memorystore for Redis / Memcached GiB-hours",
+      "status": "active",
+      "reason": "Decomposed into Memorystore capacity"
+    }
+  ],
+  "networking": [
+    {
+      "service": "Amazon Virtual Private Cloud",
+      "canonical_service": "vpc",
+      "charge_type": "NAT gateway-hours",
+      "aws_unit": "Hrs",
+      "decision": "SKU",
+      "gcp_target": "Cloud NAT Gateway-hours",
+      "status": "active",
+      "reason": "Cloud NAT hourly gateway charge"
+    },
+    {
+      "service": "Amazon Virtual Private Cloud",
+      "canonical_service": "vpc",
+      "charge_type": "NAT data processed",
+      "aws_unit": "GB",
+      "decision": "SKU",
+      "gcp_target": "Cloud NAT Data Processing $/GB",
+      "status": "active",
+      "reason": "Data volume mapped 1:1"
+    },
+    {
+      "service": "Elastic Load Balancing",
+      "canonical_service": "elb",
+      "charge_type": "ALB/NLB hours + LCU",
+      "aws_unit": "Hrs",
+      "decision": "SKU",
+      "gcp_target": "Cloud Load Balancing forwarding rules + data processing",
+      "status": "active",
+      "reason": "Direct forwarding rule and processing charge parity"
+    },
+    {
+      "service": "AWS Data Transfer",
+      "canonical_service": "transfer",
+      "charge_type": "Internet egress",
+      "aws_unit": "GB",
+      "decision": "SKU",
+      "gcp_target": "Compute Engine Premium Internet Egress by region",
+      "status": "active",
+      "reason": "Regional egress rate tables"
+    },
+    {
+      "service": "AWS Direct Connect",
+      "canonical_service": "directconnect",
+      "charge_type": "Port-hours",
+      "aws_unit": "Hrs",
+      "decision": "SKU",
+      "gcp_target": "Dedicated Interconnect port-hours",
+      "status": "active",
+      "reason": "Dedicated network interconnect equivalence"
+    },
+    {
+      "service": "Amazon Route 53",
+      "canonical_service": "route53",
+      "charge_type": "Hosted zones / queries",
+      "aws_unit": "Mo / queries",
+      "decision": "SKU",
+      "gcp_target": "Cloud DNS managed zones and queries",
+      "status": "active",
+      "reason": "Zone $0.50 vs $0.20/mo, queries $0.40/M parity"
+    }
+  ],
+  "ops_security": [
+    {
+      "service": "Amazon CloudWatch",
+      "canonical_service": "cloudwatch",
+      "charge_type": "Log ingest",
+      "aws_unit": "GB",
+      "decision": "SKU",
+      "gcp_target": "Cloud Logging Log Storage",
+      "status": "active",
+      "reason": "Exact functional parity for logging ingestion"
+    },
+    {
+      "service": "Amazon CloudWatch",
+      "canonical_service": "cloudwatch",
+      "charge_type": "DashboardHour",
+      "aws_unit": "Hrs",
+      "decision": "IGNORE",
+      "gcp_target": "$0",
+      "status": "active",
+      "reason": "Cloud Monitoring dashboards are free of charge on GCP"
+    },
+    {
+      "service": "Amazon CloudWatch",
+      "canonical_service": "cloudwatch",
+      "charge_type": "Alarms",
+      "aws_unit": "Count",
+      "decision": "IGNORE",
+      "gcp_target": "$0",
+      "status": "active",
+      "reason": "Alerting policies and metric threshold conditions are free on GCP"
+    },
+    {
+      "service": "AWS CloudTrail",
+      "canonical_service": "cloudtrail",
+      "charge_type": "Management events (free tier)",
+      "aws_unit": "Events",
+      "decision": "IGNORE",
+      "gcp_target": "$0",
+      "status": "active",
+      "reason": "Cloud Audit Logs admin activity logs are retained free of charge"
+    },
+    {
+      "service": "AWS Key Management Service",
+      "canonical_service": "kms",
+      "charge_type": "Key-months",
+      "aws_unit": "Keys",
+      "decision": "SKU",
+      "gcp_target": "Cloud KMS Active software symmetric key versions ($0.06/key-version/mo)",
+      "status": "active",
+      "reason": "AWS $1.00/key/mo vs GCP $0.06/mo software tier (GCP $1.00 is the HSM tier, used only for AWS custom key stores)"
+    },
+    {
+      "service": "AWS Key Management Service",
+      "canonical_service": "kms",
+      "charge_type": "Requests / Cryptographic operations",
+      "aws_unit": "Requests",
+      "decision": "SKU",
+      "gcp_target": "Cloud KMS Cryptographic operations ($0.03 / 10k ops)",
+      "status": "active",
+      "reason": "1:1 parity ($0.03 / 10,000 operations)"
+    },
+    {
+      "service": "AWS Secrets Manager",
+      "canonical_service": "secretsmanager",
+      "charge_type": "Secret-months",
+      "aws_unit": "Secrets",
+      "decision": "SKU",
+      "gcp_target": "Secret Manager Active secret version ($0.06/mo vs $0.40 AWS)",
+      "status": "active",
+      "reason": "Secret Manager version storage equivalence"
+    },
+    {
+      "service": "AWS Certificate Manager",
+      "canonical_service": "acm",
+      "charge_type": "Certificates",
+      "aws_unit": "Count",
+      "decision": "PASS",
+      "gcp_target": "Certificate Authority Service",
+      "status": "active",
+      "reason": "ACM public certs free on both clouds; Private CA $400/mo has GCP CAS equivalent (~$20-200/mo tier) — passthrough until CAS pricer exists"
+    }
+  ]
+}

@@ -64,7 +64,7 @@ export default function App() {
           <Route path="/admin/audit" element={user && isAdmin ? <AdminAudit user={user} /> : <Navigate to="/" />} />
           <Route path="/admin/analytics" element={user && isAdmin ? <AdminAnalytics user={user} /> : <Navigate to="/" />} />
           <Route path="/admin/notifications" element={user && isAdmin ? <AdminNotifications user={user} /> : <Navigate to="/" />} />
-          <Route path="/admin/tickets" element={user ? <Tickets user={user} /> : <Navigate to="/login" />} />
+          <Route path="/admin/tickets" element={user && isAdmin ? <Tickets user={user} /> : <Navigate to="/" />} />
         <Route path="/admin/bills" element={user && isAdmin ? <Bills user={user} /> : <Navigate to="/" />} />
         <Route path="/profile" element={user ? <Profile user={user} /> : <Navigate to="/login" />} />
           <Route path="/reports/:token" element={<SharedReport />} />

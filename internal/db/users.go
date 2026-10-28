@@ -251,11 +251,12 @@ func (d *DB) GetUserPreferences(email string) (*UserPreferences, error) {
 	}
 
 	var exportFmt sql.NullString
+	var userEngine sql.NullString
 	var emailNotif sql.NullInt64
 	err := d.conn.QueryRow(`
-		SELECT email_notifications, default_export_format
+		SELECT email_notifications, default_export_format, default_engine
 		FROM users WHERE email = ?
-	`, email).Scan(&emailNotif, &exportFmt)
+	`, email).Scan(&emailNotif, &exportFmt, &userEngine)
 	if err == sql.ErrNoRows {
 		return prefs, nil
 	}
@@ -269,28 +270,33 @@ func (d *DB) GetUserPreferences(email string) (*UserPreferences, error) {
 	if exportFmt.Valid && strings.TrimSpace(exportFmt.String) != "" {
 		prefs.DefaultExportFormat = strings.TrimSpace(exportFmt.String)
 	}
+	if userEngine.Valid && strings.TrimSpace(userEngine.String) != "" {
+		prefs.DefaultEngine = strings.TrimSpace(userEngine.String)
+	}
 	return prefs, nil
 }
 
 // UpdateUserPreferences updates the user preferences.
-func (d *DB) UpdateUserPreferences(email string, defaultExportFormat string, emailNotif bool) error {
+func (d *DB) UpdateUserPreferences(email string, defaultEngine, defaultExportFormat string, emailNotif bool) error {
 	exportFmt := strings.ToLower(strings.TrimSpace(defaultExportFormat))
 	if exportFmt == "" {
 		exportFmt = "html"
 	}
+	engineVal := strings.TrimSpace(defaultEngine)
 	notifVal := 0
 	if emailNotif {
 		notifVal = 1
 	}
 
 	_, err := d.conn.Exec(`
-		INSERT INTO users (email, default_export_format, email_notifications, updated_at)
-		VALUES (?, ?, ?, datetime('now'))
+		INSERT INTO users (email, default_engine, default_export_format, email_notifications, updated_at)
+		VALUES (?, ?, ?, ?, datetime('now'))
 		ON CONFLICT(email) DO UPDATE SET
+			default_engine = CASE WHEN excluded.default_engine != '' THEN excluded.default_engine ELSE users.default_engine END,
 			default_export_format = excluded.default_export_format,
 			email_notifications = excluded.email_notifications,
 			updated_at = datetime('now')
-	`, email, exportFmt, notifVal)
+	`, email, engineVal, exportFmt, notifVal)
 	return err
 }
 

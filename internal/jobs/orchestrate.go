@@ -805,9 +805,32 @@ def write_progress(num, name, activity):
     with open(os.path.join(JOB_DIR, "progress.json"), "w") as f:
         json.dump({"phase": num, "phase_name": name, "last_activity": activity}, f)
 
-def write_phase_checkpoint(num):
-    with open(os.path.join(JOB_DIR, "phase_checkpoint.json"), "w") as f:
-        json.dump({"last_completed": num, "ts": time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")}, f)
+def write_phase_checkpoint(num, duration=None, phase_name=None):
+    ckpt_file = os.path.join(JOB_DIR, "phase_checkpoint.json")
+    existing = {}
+    try:
+        if os.path.exists(ckpt_file):
+            existing = json.load(open(ckpt_file))
+    except Exception:
+        pass
+    phases_map = existing.get("phases", {})
+    if num is not None:
+        p_info = phases_map.get(str(num), {})
+        p_info["num"] = num
+        if phase_name:
+            p_info["name"] = phase_name
+        if duration is not None:
+            p_info["duration_seconds"] = duration
+        p_info["completed_at"] = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
+        phases_map[str(num)] = p_info
+
+    data = {
+        "last_completed": num,
+        "ts": time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S"),
+        "phases": phases_map
+    }
+    with open(ckpt_file, "w") as f:
+        json.dump(data, f)
 
 def _diag(level, code, source, message, rows=0, usd=0.0, phase=None):
     """Append a diagnostic record. Mirrors scripts/diagnostics.py's format.
@@ -1737,7 +1760,7 @@ def run_phase(ph):
             log("gate %%s PASS" %% ph.get("check_name","?"))
 
     # Record this phase as successfully completed so a retry can resume here.
-    write_phase_checkpoint(ph["num"])
+    write_phase_checkpoint(ph["num"], duration=phase_entry["duration_seconds"], phase_name=ph["name"])
 
 
 for ph in PHASES:

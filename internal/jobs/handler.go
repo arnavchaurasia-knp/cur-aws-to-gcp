@@ -175,6 +175,36 @@ func (h *Handler) validateEngine(requested string) (string, error) {
 	return "", fmt.Errorf("engine %q is not allowed; allowed engines: %s", req, strings.Join(allowed, ", "))
 }
 
+// checkUserQuota verifies that the user has not exceeded their daily job limit or concurrent job limit.
+// Admins are exempt from quota limits.
+func (h *Handler) checkUserQuota(sess *auth.Session) error {
+	if sess == nil {
+		return nil
+	}
+	if sess.IsAdmin(h.adminEmails) {
+		return nil
+	}
+
+	maxDaily, maxConcurrent, err := h.db.GetQuotaSettings()
+	if err != nil {
+		slog.Warn("failed to load quota settings, applying defaults", "err", err)
+		maxDaily = 20
+		maxConcurrent = 2
+	}
+
+	activeCount, err := h.db.CountUserActiveJobs(sess.Email)
+	if err == nil && activeCount >= maxConcurrent {
+		return fmt.Errorf("concurrent job limit reached (%d running/pending). Please wait for active jobs to finish", maxConcurrent)
+	}
+
+	dailyCount, err := h.db.CountUserJobsPastDay(sess.Email)
+	if err == nil && dailyCount >= maxDaily {
+		return fmt.Errorf("daily job quota exceeded (%d jobs in past 24h). Quota resets on a rolling 24-hour basis", maxDaily)
+	}
+
+	return nil
+}
+
 const maxUploadBytes = 512 << 20 // 512 MiB to support large raw CUR exports
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -195,6 +225,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	prospect := strings.TrimSpace(r.FormValue("prospect_name"))
 	if len(prospect) == 0 || len(prospect) > 500 {
 		http.Error(w, `{"error":"prospect_name must be 1-500 characters"}`, http.StatusBadRequest)
+		return
+	}
+	if err := h.checkUserQuota(sess); err != nil {
+		http.Error(w, `{"error":"`+jsonEscape(err.Error())+`"}`, http.StatusTooManyRequests)
 		return
 	}
 	engineChoice, err := h.validateEngine(r.FormValue("engine"))
@@ -334,6 +368,10 @@ func (h *Handler) CreateFromExistingBill(w http.ResponseWriter, r *http.Request)
 	prospect := strings.TrimSpace(req.ProspectName)
 	if len(prospect) == 0 || len(prospect) > 500 {
 		http.Error(w, `{"error":"prospect_name must be 1-500 characters"}`, http.StatusBadRequest)
+		return
+	}
+	if err := h.checkUserQuota(sess); err != nil {
+		http.Error(w, `{"error":"`+jsonEscape(err.Error())+`"}`, http.StatusTooManyRequests)
 		return
 	}
 	engineChoice, err := h.validateEngine(req.Engine)
@@ -494,6 +532,10 @@ func (h *Handler) CompleteChunkedUpload(w http.ResponseWriter, r *http.Request) 
 	prospect := strings.TrimSpace(req.ProspectName)
 	if len(prospect) == 0 || len(prospect) > 500 {
 		http.Error(w, `{"error":"prospect_name must be 1-500 characters"}`, http.StatusBadRequest)
+		return
+	}
+	if err := h.checkUserQuota(sess); err != nil {
+		http.Error(w, `{"error":"`+jsonEscape(err.Error())+`"}`, http.StatusTooManyRequests)
 		return
 	}
 	engineChoice, err := h.validateEngine(req.Engine)
@@ -992,6 +1034,8 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 		return r
 	}, job.Prospect)
 
+	level := r.URL.Query().Get("level")
+
 	switch format {
 	case "bill":
 		inputMatches, _ := filepath.Glob(filepath.Join(jobDir, "input.*"))
@@ -1007,8 +1051,8 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 		filename := fmt.Sprintf("%s-original-bill%s", safeProspect, ext)
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 		http.ServeFile(w, r, billPath)
-	case "xlsx", "csv":
-		h.downloadExport(w, r, jobDir, safeProspect, format)
+	case "xlsx", "csv", "json":
+		h.downloadExport(w, r, jobDir, safeProspect, format, level)
 	default:
 		// HTML download (original behaviour)
 		reportPath, runIDForFilename := resolveReportPath(jobDir, runIDParam)
@@ -1026,9 +1070,9 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// downloadExport generates an XLSX or CSV export from the job's DuckDB via the
+// downloadExport generates an XLSX, CSV, or JSON export from the job's DuckDB via the
 // export_report.py script and streams it back as an attachment.
-func (h *Handler) downloadExport(w http.ResponseWriter, r *http.Request, jobDir, safeProspect, format string) {
+func (h *Handler) downloadExport(w http.ResponseWriter, r *http.Request, jobDir, safeProspect, format, level string) {
 	ext := "." + format
 	tmpFile, err := os.CreateTemp("", "gcp-export-*"+ext)
 	if err != nil {
@@ -1041,7 +1085,11 @@ func (h *Handler) downloadExport(w http.ResponseWriter, r *http.Request, jobDir,
 
 	scriptPath := filepath.Join(skill.ResolveDir(), "scripts", "export_report.py")
 	dbPath := filepath.Join(jobDir, "projection-audit", "projection.duckdb")
-	cmd := exec.Command(pythonBin(), scriptPath, "--format", format, "--db", dbPath, "--out", tmpPath)
+	args := []string{scriptPath, "--format", format, "--db", dbPath, "--out", tmpPath}
+	if level != "" {
+		args = append(args, "--level", level)
+	}
+	cmd := exec.Command(pythonBin(), args...)
 	cmd.Dir = jobDir
 	scriptsDir := filepath.Join(skill.ResolveDir(), "scripts")
 	cmd.Env = append(os.Environ(), "PYTHONPATH="+scriptsDir)
@@ -1050,11 +1098,18 @@ func (h *Handler) downloadExport(w http.ResponseWriter, r *http.Request, jobDir,
 		return
 	}
 
-	filename := fmt.Sprintf("%s-gcp-estimate%s", safeProspect, ext)
+	suffix := ""
+	if level == "line-item" {
+		suffix = "-line-items"
+	}
+	filename := fmt.Sprintf("%s-gcp-estimate%s%s", safeProspect, suffix, ext)
 	var contentType string
-	if format == "xlsx" {
+	switch format {
+	case "xlsx":
 		contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-	} else {
+	case "json":
+		contentType = "application/json; charset=utf-8"
+	default:
 		contentType = "text/csv; charset=utf-8"
 	}
 	w.Header().Set("Content-Type", contentType)
@@ -1491,6 +1546,72 @@ func (h *Handler) UpdateUserNotificationSettings(w http.ResponseWriter, r *http.
 		"slack_webhook_url":    slackWebhookURL,
 		"slack_channel":        slackChannel,
 	})
+}
+
+// GetUserPreferences returns the current user's preferences.
+func (h *Handler) GetUserPreferences(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	prefs, err := h.db.GetUserPreferences(sess.Email)
+	if err != nil {
+		http.Error(w, `{"error":"failed to fetch preferences"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(prefs)
+}
+
+// UpdateUserPreferences updates the current user's preferences.
+func (h *Handler) UpdateUserPreferences(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	var req struct {
+		DefaultEngine       string `json:"default_engine"`
+		DefaultExportFormat string `json:"default_export_format"`
+		EmailNotifications  *bool  `json:"email_notifications"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request json"}`, http.StatusBadRequest)
+		return
+	}
+	current, err := h.db.GetUserPreferences(sess.Email)
+	if err != nil {
+		http.Error(w, `{"error":"failed to load current preferences"}`, http.StatusInternalServerError)
+		return
+	}
+
+	engineChoice := current.DefaultEngine
+	if req.DefaultEngine != "" {
+		validatedEngine, err := h.validateEngine(req.DefaultEngine)
+		if err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		engineChoice = validatedEngine
+	}
+	exportFmt := current.DefaultExportFormat
+	if req.DefaultExportFormat != "" {
+		exportFmt = strings.ToLower(strings.TrimSpace(req.DefaultExportFormat))
+	}
+	emailNotif := current.EmailNotifications
+	if req.EmailNotifications != nil {
+		emailNotif = *req.EmailNotifications
+	}
+
+	if err := h.db.UpdateUserPreferences(sess.Email, engineChoice, exportFmt, emailNotif); err != nil {
+		http.Error(w, `{"error":"failed to update preferences"}`, http.StatusInternalServerError)
+		return
+	}
+
+	updated, _ := h.db.GetUserPreferences(sess.Email)
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(updated)
 }
 
 // ─────────────────────────────────────────────────────────────────────────

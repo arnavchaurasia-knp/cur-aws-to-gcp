@@ -20,7 +20,6 @@ import { getMe } from './api/auth'
 import type { UserInfo } from './api/auth'
 import { Toaster } from 'sonner'
 import { ThemeProvider } from './lib/themeContext'
-import { PreferencesProvider } from './lib/preferencesContext'
 
 export default function App() {
   const [user, setUser] = useState<UserInfo | null | undefined>(undefined)
@@ -50,7 +49,6 @@ export default function App() {
 
   return (
     <ThemeProvider>
-      <PreferencesProvider>
         <BrowserRouter>
           <Toaster position="top-center" richColors closeButton theme="dark" duration={3500} toastOptions={{ duration: 3500 }} visibleToasts={3} />
         <Routes>
@@ -73,7 +71,6 @@ export default function App() {
           <Route path="*" element={<Navigate to={user ? "/" : "/login"} replace />} />
         </Routes>
       </BrowserRouter>
-    </PreferencesProvider>
   </ThemeProvider>
   )
 }

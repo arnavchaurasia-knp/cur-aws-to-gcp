@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Export projection data as XLSX or CSV."""
+"""Export projection data as XLSX, CSV, or JSON."""
 import csv
+import json
 import os
 import sys
 
 import duckdb
+from config_loader import load_report_settings
 from currency_utils import load_currency_info
 from license_split import get_aws_license_split
 
@@ -42,6 +44,86 @@ def _augment_aws_license_split(headers, rows, cur_sym):
 
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
+
+
+def _build_query_line_item(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=None):
+    cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
+    sku_name_col = "m.gcp_sku_id"
+    comp_col = "m.component"
+    machine_type_col = "NULL"
+    usage_type_col = "c.usage_type"
+    desc_col = "c.line_item_description"
+    if conn is not None:
+        try:
+            m_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+            if "gcp_sku_name" in m_cols:
+                sku_name_col = "COALESCE(NULLIF(m.gcp_sku_name, ''), m.gcp_sku_id)"
+            if "component" not in m_cols:
+                comp_col = "'default'"
+            if "gcp_machine_type" in m_cols:
+                machine_type_col = "m.gcp_machine_type"
+            c_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+            if "usage_type" not in c_cols:
+                usage_type_col = "''"
+            if "line_item_description" not in c_cols:
+                desc_col = "''"
+        except Exception:
+            pass
+
+    return f"""
+    SELECT
+        ROW_NUMBER() OVER (ORDER BY c.aws_amortized_cost DESC) AS "#",
+        c.aws_li_key                                         AS "AWS Key",
+        c.product                                             AS "AWS Service",
+        COALESCE({usage_type_col}, '')                        AS "Usage Type",
+        COALESCE(c.instance_type, '')                         AS "AWS Instance",
+        COALESCE(p.gcp_service, '')                           AS "GCP Service",
+        COALESCE({machine_type_col}, '')                      AS "GCP Mapping",
+        COALESCE({sku_name_col}, '')                          AS "GCP SKU",
+        COALESCE({comp_col}, 'default')                       AS "Component",
+        COALESCE(p.gcp_region, '')                            AS "Region",
+        ROUND(c.aws_amortized_cost * {aws_fx_rate}, 2)        AS "AWS Cost{cur_sym}",
+        ROUND(COALESCE(p.gcp_projected_cost * {fx_rate}, (CASE WHEN m.strategy = 'ignore' THEN 0.0 ELSE c.aws_amortized_cost * {aws_fx_rate} END)), 2) AS "GCP OD{cur_sym}",
+        ROUND(COALESCE(p.gcp_cost_1yr_cud * {fx_rate}, p.gcp_projected_cost * {fx_rate}, (CASE WHEN m.strategy = 'ignore' THEN 0.0 ELSE c.aws_amortized_cost * {aws_fx_rate} END)), 2) AS "GCP 1yr CUD{cur_sym}",
+        ROUND(COALESCE(p.gcp_cost_3yr_cud * {fx_rate}, p.gcp_projected_cost * {fx_rate}, (CASE WHEN m.strategy = 'ignore' THEN 0.0 ELSE c.aws_amortized_cost * {aws_fx_rate} END)), 2) AS "GCP 3yr CUD{cur_sym}",
+        COALESCE(m.strategy, '')                              AS "Strategy",
+        COALESCE(m.mapping_confidence, '')                    AS "Confidence",
+        COALESCE({desc_col}, '')                              AS "Description"
+    FROM aws_li_catalog c
+    LEFT JOIN aws_li_to_gcp_li m USING (aws_li_key)
+    LEFT JOIN gcp_projection p ON p.aws_li_key = m.aws_li_key AND p.component = m.component
+    ORDER BY c.aws_amortized_cost DESC
+    """
+
+
+def _filter_columns_by_settings(headers, rows, settings):
+    """Filter out columns toggled off in report_settings while keeping totals / values intact."""
+    if not settings:
+        return headers, rows
+
+    drop_indices = set()
+    for idx, h in enumerate(headers):
+        h_lower = h.lower()
+        if "1yr cud" in h_lower or "1-year cud" in h_lower:
+            if settings.get("col_gcp_cud_1yr", "true").lower() == "false":
+                drop_indices.add(idx)
+        elif "3yr cud" in h_lower or "3-year cud" in h_lower:
+            if settings.get("col_gcp_cud_3yr", "true").lower() == "false":
+                drop_indices.add(idx)
+        elif "diff" in h_lower:
+            if settings.get("col_diff", "true").lower() == "false":
+                drop_indices.add(idx)
+        elif "region" in h_lower and h_lower == "region":
+            if settings.get("col_region", "false").lower() == "false":
+                drop_indices.add(idx)
+
+    if not drop_indices:
+        return headers, rows
+
+    keep_indices = [i for i in range(len(headers)) if i not in drop_indices]
+    new_headers = [headers[i] for i in keep_indices]
+    new_rows = [[r[i] for i in keep_indices] for r in rows]
+    return new_headers, new_rows
 
 
 def _build_query(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=None):
@@ -303,17 +385,21 @@ def main():
     db_path = None
     by_instance = False
     by_discounts = False
+    level = "summary"
     args = sys.argv[1:]
     i = 0
     while i < len(args):
         if args[i] == "--format" and i + 1 < len(args):
-            fmt = args[i + 1]
+            fmt = args[i + 1].lower()
             i += 2
         elif args[i] == "--out" and i + 1 < len(args):
             out_path = args[i + 1]
             i += 2
         elif args[i] == "--db" and i + 1 < len(args):
             db_path = args[i + 1]
+            i += 2
+        elif args[i] == "--level" and i + 1 < len(args):
+            level = args[i + 1].lower()
             i += 2
         elif args[i] == "--by-instance":
             by_instance = True
@@ -326,7 +412,8 @@ def main():
 
     if not out_path:
         print(
-            "Usage: export_report.py --format [xlsx|csv] --out <path> [--db <duckdb_path>] [--by-instance] [--by-discounts]\n"
+            "Usage: export_report.py --format [xlsx|csv|json] --out <path> [--db <duckdb_path>] [--level summary|line-item] [--by-instance] [--by-discounts]\n"
+            "  --level          summary (default) or line-item\n"
             "  --by-instance    CSV: emit the per-instance-type rollup instead of raw line items.\n"
             "  --by-discounts   CSV: emit the discounts-by-service rollup instead of raw line items.\n"
             "                   XLSX: always included as an extra 'Discounts by Service' sheet.",
@@ -350,56 +437,81 @@ def main():
 
     conn = duckdb.connect(resolved_db_path, read_only=True)
     job_dir = JOB_DIR if os.path.exists(os.path.join(JOB_DIR, "projection-audit")) else os.path.dirname(os.path.dirname(os.path.abspath(resolved_db_path)))
+    settings = load_report_settings(job_dir)
     currency_info = load_currency_info(job_dir, conn)
     curr_code = currency_info.get("currency", "USD")
     fx_rate = float(currency_info.get("fx_rate", 1.0))
     aws_fx_rate = float(currency_info.get("aws_fx_rate", 1.0))
 
-    query = _build_query(fx_rate, curr_code, aws_fx_rate, conn=conn)
-    inst_query = _build_query_by_instance(fx_rate, curr_code, aws_fx_rate, conn=conn)
-    disc_query = _build_query_discounts(curr_code, aws_fx_rate)
-
     cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
 
-    result = conn.execute(query)
-    headers = [d[0] for d in result.description]
-    rows = result.fetchall()
-    headers, rows = _augment_aws_license_split(headers, rows, cur_sym)
+    if level == "line-item":
+        li_query = _build_query_line_item(fx_rate, curr_code, aws_fx_rate, conn=conn)
+        li_result = conn.execute(li_query)
+        headers = [d[0] for d in li_result.description]
+        rows = li_result.fetchall()
+        headers, rows = _filter_columns_by_settings(headers, rows, settings)
+    else:
+        query = _build_query(fx_rate, curr_code, aws_fx_rate, conn=conn)
+        inst_query = _build_query_by_instance(fx_rate, curr_code, aws_fx_rate, conn=conn)
+        disc_query = _build_query_discounts(curr_code, aws_fx_rate)
 
-    inst_result = conn.execute(inst_query)
-    inst_headers = [d[0] for d in inst_result.description]
-    inst_rows = inst_result.fetchall()
-    inst_headers, inst_rows = _augment_aws_license_split(inst_headers, inst_rows, cur_sym)
+        result = conn.execute(query)
+        headers = [d[0] for d in result.description]
+        rows = result.fetchall()
+        headers, rows = _augment_aws_license_split(headers, rows, cur_sym)
+        headers, rows = _filter_columns_by_settings(headers, rows, settings)
 
-    try:
-        disc_result = conn.execute(disc_query)
-        disc_headers = [d[0] for d in disc_result.description]
-        disc_rows = disc_result.fetchall()
-    except Exception:
-        cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
-        disc_headers = ["#", "AWS Service", "Discount Type", "Line Items", f"Discount Amount{cur_sym}"]
-        disc_rows = []
+        inst_result = conn.execute(inst_query)
+        inst_headers = [d[0] for d in inst_result.description]
+        inst_rows = inst_result.fetchall()
+        inst_headers, inst_rows = _augment_aws_license_split(inst_headers, inst_rows, cur_sym)
+        inst_headers, inst_rows = _filter_columns_by_settings(inst_headers, inst_rows, settings)
+
+        try:
+            disc_result = conn.execute(disc_query)
+            disc_headers = [d[0] for d in disc_result.description]
+            disc_rows = disc_result.fetchall()
+        except Exception:
+            disc_headers = ["#", "AWS Service", "Discount Type", "Line Items", f"Discount Amount{cur_sym}"]
+            disc_rows = []
+
     conn.close()
 
     if fmt == "csv":
-        if by_instance:
-            headers, rows = inst_headers, inst_rows
-        elif by_discounts:
-            headers, rows = disc_headers, disc_rows
+        if level != "line-item":
+            if by_instance:
+                headers, rows = inst_headers, inst_rows
+            elif by_discounts:
+                headers, rows = disc_headers, disc_rows
         with open(out_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(headers)
             w.writerows(rows)
+
+    elif fmt == "json":
+        items = [dict(zip(headers, r)) for r in rows]
+        payload = {
+            "level": level,
+            "currency": curr_code,
+            "rows_count": len(items),
+            "data": items,
+        }
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
 
     elif fmt == "xlsx":
         import openpyxl
 
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
-        _write_sheet(wb, "GCP Cost Analysis", headers, rows)
-        _write_sheet(wb, "Per-Instance Summary", inst_headers, inst_rows)
-        if disc_rows:
-            _write_sheet(wb, "Discounts by Service", disc_headers, disc_rows)
+        if level == "line-item":
+            _write_sheet(wb, "GCP Line Items", headers, rows)
+        else:
+            _write_sheet(wb, "GCP Cost Analysis", headers, rows)
+            _write_sheet(wb, "Per-Instance Summary", inst_headers, inst_rows)
+            if disc_rows:
+                _write_sheet(wb, "Discounts by Service", disc_headers, disc_rows)
         wb.save(out_path)
 
     else:

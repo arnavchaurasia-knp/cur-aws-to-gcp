@@ -13,11 +13,12 @@ import (
 // progress.json file the skill writes to the job directory at each phase
 // transition.
 type Progress struct {
-	Events       int    `json:"events"`        // deprecated: always 0, kept for API contract stability
-	Phase        string `json:"phase"`         // last-known phase name (debug)
-	PhaseNumber  int    `json:"phase_number"`  // 1-6, written by the skill
-	LastActivity string `json:"last_activity"`
-	TranscriptOK bool   `json:"transcript_ok"` // true when progress.json exists
+	Events         int                    `json:"events"`        // deprecated: always 0, kept for API contract stability
+	Phase          string                 `json:"phase"`         // last-known phase name (debug)
+	PhaseNumber    int                    `json:"phase_number"`  // 1-6, written by the skill
+	LastActivity   string                 `json:"last_activity"`
+	TranscriptOK   bool                   `json:"transcript_ok"` // true when progress.json exists
+	PhaseDurations map[string]interface{} `json:"phase_durations,omitempty"` // phase num/name -> details/duration
 }
 
 const totalPhases = config.TotalPhases
@@ -98,10 +99,21 @@ func ReadProgress(jobDir, _ string) (*Progress, error) {
 		}
 	}
 
+	var phaseDurations map[string]interface{}
+	if ckptData, err := os.ReadFile(filepath.Join(jobDir, "phase_checkpoint.json")); err == nil {
+		var ckptRaw map[string]interface{}
+		if err := json.Unmarshal(ckptData, &ckptRaw); err == nil {
+			if pMap, ok := ckptRaw["phases"].(map[string]interface{}); ok {
+				phaseDurations = pMap
+			}
+		}
+	}
+
 	return &Progress{
-		TranscriptOK: true,
-		Phase:        phaseName,
-		PhaseNumber:  phaseNum,
-		LastActivity: lastActivity,
+		TranscriptOK:   true,
+		Phase:          phaseName,
+		PhaseNumber:    phaseNum,
+		LastActivity:   lastActivity,
+		PhaseDurations: phaseDurations,
 	}, nil
 }

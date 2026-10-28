@@ -266,6 +266,56 @@ function PhaseProgress({ phase }: Readonly<{ phase: number }>) {
   )
 }
 
+function JobActivityCard({ job, progress }: Readonly<{ job: Job; progress: Progress | null }>) {
+  const durations = progress?.phase_durations
+  return (
+    <div className="bg-white/[0.02] border border-white/10 rounded-xl p-4 text-xs space-y-3 anim-fade-in">
+      <h3 className="font-semibold text-gray-300 uppercase tracking-wider text-[11px] flex items-center justify-between">
+        <span>Job Activity &amp; Provenance</span>
+        <span className="text-gray-500 font-mono text-[10px]">{job.id.slice(0, 8)}</span>
+      </h3>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-gray-400">
+        <div>
+          <span className="text-gray-500 block text-[10px] uppercase">Creator</span>
+          <span className="text-gray-200 truncate block font-medium" title={job.owner}>{job.owner}</span>
+        </div>
+        <div>
+          <span className="text-gray-500 block text-[10px] uppercase">Created</span>
+          <span className="text-gray-200 block font-mono">{new Date(job.created_at).toLocaleString()}</span>
+        </div>
+        <div>
+          <span className="text-gray-500 block text-[10px] uppercase">Engine</span>
+          <span className="text-[#00C2BB] block font-mono font-medium">{job.engine || 'gemini-3.8-flash'}{job.engine_version ? ` (${job.engine_version})` : ''}</span>
+        </div>
+        <div>
+          <span className="text-gray-500 block text-[10px] uppercase">Assumptions</span>
+          <span className="text-gray-200 block font-mono">{job.assumptions_version || 'v1-default'}</span>
+        </div>
+      </div>
+      {durations && Object.keys(durations).length > 0 && (
+        <div className="pt-2 border-t border-white/5 space-y-1.5">
+          <span className="text-gray-500 block text-[10px] uppercase font-semibold">Phase Durations</span>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {Object.entries(durations)
+              .sort(([a], [b]) => Number(a) - Number(b))
+              .map(([phaseNum, info]) => {
+                const p = info as { name?: string; duration_seconds?: number }
+                return (
+                  <div key={phaseNum} className="bg-white/[0.02] border border-white/5 rounded px-2 py-1.5 flex items-center justify-between">
+                    <span className="text-gray-400 truncate pr-1">P{phaseNum}: {p.name || PHASE_LABELS[Number(phaseNum)] || 'Phase'}</span>
+                    <span className="text-gray-200 font-mono text-[10px] shrink-0">
+                      {p.duration_seconds !== undefined ? `${p.duration_seconds}s` : '✓'}
+                    </span>
+                  </div>
+                )
+              })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -502,6 +552,8 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
             )}
           </div>
 
+          <JobActivityCard job={job} progress={progress} />
+
           {(job.status === 'pending' || job.status === 'running') && (
             <div className="bg-[#645DF6]/10 border border-[#645DF6]/30 rounded-lg p-4 text-sm anim-scale-in">
               <div className="flex items-center gap-2 mb-2">
@@ -552,12 +604,23 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                   <a href={downloadURL(job.id, undefined, 'xlsx')}
                     className="rounded-lg border border-white/10 hover:border-[#645DF6]/50 hover:bg-white/[0.04]
                       py-2.5 font-medium text-gray-300 hover:text-white text-center text-sm block transition-colors duration-150">
-                    ↓ Excel
+                    ↓ Excel (.xlsx)
                   </a>
                   <a href={downloadURL(job.id, undefined, 'csv')}
                     className="rounded-lg border border-white/10 hover:border-[#645DF6]/50 hover:bg-white/[0.04]
                       py-2.5 font-medium text-gray-300 hover:text-white text-center text-sm block transition-colors duration-150">
-                    ↓ CSV
+                    ↓ CSV (Summary)
+                  </a>
+                  <a href={downloadURL(job.id, undefined, 'csv', 'line-item')}
+                    className="rounded-lg border border-white/10 hover:border-[#645DF6]/50 hover:bg-white/[0.04]
+                      py-2.5 font-medium text-gray-300 hover:text-white text-center text-sm block transition-colors duration-150"
+                    title="Detailed per-line-item CSV mapping export">
+                    ↓ CSV (Line Items)
+                  </a>
+                  <a href={downloadURL(job.id, undefined, 'json')}
+                    className="rounded-lg border border-white/10 hover:border-[#645DF6]/50 hover:bg-white/[0.04]
+                      py-2.5 font-medium text-gray-300 hover:text-white text-center text-sm block transition-colors duration-150">
+                    ↓ JSON
                   </a>
                   <a href={downloadURL(job.id, undefined, 'bill')}
                     className="rounded-lg border border-[#00C2BB]/30 text-[#00C2BB] hover:bg-[#00C2BB]/10
@@ -631,7 +694,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                                 {comparison.run_b.aws_total != null ? formatMoney(comparison.run_b.aws_total * currency.aws_fx_rate, currency.symbol) : '—'}
                               </td>
                               <td className="py-2 text-right font-mono">
-                                {comparison.aws_delta >= 0 ? '+' : ''}{comparison.aws_delta?.toFixed(2)}
+                                {comparison.aws_delta >= 0 ? '+' : '-'}{formatMoney(Math.abs(comparison.aws_delta) * currency.aws_fx_rate, currency.symbol)}
                               </td>
                             </tr>
                             <tr className="border-b border-white/5">
@@ -643,7 +706,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                                 {comparison.run_b.gcp_od != null ? formatMoney(comparison.run_b.gcp_od * currency.fx_rate, currency.symbol) : '—'}
                               </td>
                               <td className="py-2 text-right font-mono">
-                                {comparison.gcp_od_delta >= 0 ? '+' : ''}${comparison.gcp_od_delta?.toFixed(2)}
+                                {comparison.gcp_od_delta >= 0 ? '+' : '-'}{formatMoney(Math.abs(comparison.gcp_od_delta) * currency.fx_rate, currency.symbol)}
                               </td>
                             </tr>
                             <tr className="border-b border-white/5">
@@ -655,7 +718,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                                 {comparison.run_b.gcp_1yr_cud != null ? formatMoney(comparison.run_b.gcp_1yr_cud * currency.fx_rate, currency.symbol) : '—'}
                               </td>
                               <td className="py-2 text-right font-mono">
-                                {comparison.gcp_1yr_cud_delta >= 0 ? '+' : ''}{comparison.gcp_1yr_cud_delta?.toFixed(2)}
+                                {comparison.gcp_1yr_cud_delta >= 0 ? '+' : '-'}{formatMoney(Math.abs(comparison.gcp_1yr_cud_delta) * currency.fx_rate, currency.symbol)}
                               </td>
                             </tr>
                             <tr>
@@ -667,7 +730,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                                 {comparison.run_b.gcp_3yr_cud != null ? formatMoney(comparison.run_b.gcp_3yr_cud * currency.fx_rate, currency.symbol) : '—'}
                               </td>
                               <td className="py-2 text-right font-mono">
-                                {comparison.gcp_3yr_cud_delta >= 0 ? '+' : ''}${comparison.gcp_3yr_cud_delta?.toFixed(2)}
+                                {comparison.gcp_3yr_cud_delta >= 0 ? '+' : '-'}{formatMoney(Math.abs(comparison.gcp_3yr_cud_delta) * currency.fx_rate, currency.symbol)}
                               </td>
                             </tr>
                           </tbody>

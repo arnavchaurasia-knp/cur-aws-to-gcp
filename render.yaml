@@ -49,4 +49,13 @@ services:
         sync: false
       - key: S3_REGION
         value: "auto"
+      # Antigravity (AGY) API Key for LLM classification & sizing
+      - key: ANTIGRAVITY_API_KEY
+        sync: false
+      - key: AGY_API_KEY
+        sync: false
+      - key: GOOGLE_CLOUD_PROJECT
+        value: "346097607523"
+      - key: GOOGLE_CLOUD_AVAILABILITY_PROJECT
+        value: "346097607523"
 

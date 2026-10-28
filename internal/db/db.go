@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at DATETIME DEFAULT (datetime('now')),
     email_notifications INTEGER NOT NULL DEFAULT 1,
     slack_notifications INTEGER NOT NULL DEFAULT 0,
-    default_export_format TEXT DEFAULT 'html'
+    default_export_format TEXT DEFAULT 'html',
+    default_engine TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS admin_audit (
@@ -249,6 +250,7 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 		`ALTER TABLE jobs ADD COLUMN gcp_od REAL`,
 		`ALTER TABLE deleted_jobs ADD COLUMN gcp_od REAL`,
 		`ALTER TABLE users ADD COLUMN default_export_format TEXT DEFAULT 'html'`,
+		`ALTER TABLE users ADD COLUMN default_engine TEXT DEFAULT ''`,
 		`CREATE TABLE IF NOT EXISTS uploaded_bills (
 			content_hash TEXT PRIMARY KEY,
 			input_ext    TEXT NOT NULL,

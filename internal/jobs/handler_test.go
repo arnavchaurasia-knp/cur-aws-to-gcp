@@ -176,7 +176,7 @@ func TestCancel_Owner(t *testing.T) {
 	assert.Equal(t, "cancelled", job.Status)
 }
 
-func TestCancel_NotOwnerForbidden(t *testing.T) {
+func TestCancel_NotOwnerNotFound(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	defer d.Close()
@@ -191,7 +191,9 @@ func TestCancel_NotOwnerForbidden(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.Cancel(w, req)
 
-	assert.Equal(t, http.StatusForbidden, w.Code)
+	// A job you do not own must be indistinguishable from one that does not
+	// exist: a 403 here would confirm the id is real.
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 func TestCancel_Idempotency(t *testing.T) {

@@ -252,6 +252,9 @@ func main() {
 		// User notification settings
 		r.Get("/api/user/notifications", jobHandler.GetUserNotificationSettings)
 		r.Put("/api/user/notifications", jobHandler.UpdateUserNotificationSettings)
+		// User preferences (default engine, default export format, email notifications)
+		r.Get("/api/user/preferences", jobHandler.GetUserPreferences)
+		r.Put("/api/user/preferences", jobHandler.UpdateUserPreferences)
 		// User API token
 		r.Get("/api/user/token", jobHandler.GetUserAPIToken)
 		r.Post("/api/user/token/regenerate", jobHandler.RegenerateUserAPIToken)

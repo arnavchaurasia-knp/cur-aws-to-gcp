@@ -633,3 +633,26 @@ func scanJob(s scanner) (*Job, error) {
 	j.UpdatedAt = updatedAt
 	return &j, nil
 }
+
+// CountUserJobsPastDay counts jobs submitted by owner in the past 24 hours.
+func (d *DB) CountUserJobsPastDay(owner string) (int, error) {
+	var count int
+	err := d.conn.QueryRow(`
+		SELECT COUNT(*)
+		FROM jobs
+		WHERE owner = ? AND created_at >= datetime('now', '-24 hours')
+	`, owner).Scan(&count)
+	return count, err
+}
+
+// CountUserActiveJobs counts pending or running jobs owned by owner.
+func (d *DB) CountUserActiveJobs(owner string) (int, error) {
+	var count int
+	err := d.conn.QueryRow(`
+		SELECT COUNT(*)
+		FROM jobs
+		WHERE owner = ? AND status IN ('pending', 'running')
+	`, owner).Scan(&count)
+	return count, err
+}
+

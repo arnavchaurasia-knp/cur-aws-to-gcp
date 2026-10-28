@@ -1,8 +1,31 @@
-// frontend/src/api/jobs.ts
 export interface Job {
   id: string; owner: string; prospect: string; status: string
   aws_spend: number | null; gcp_od?: number | null; error: string; created_at: string
-  engine?: string; engine_version?: string
+  engine?: string; engine_version?: string; assumptions_version?: string
+}
+
+export interface UserPreferences {
+  default_engine: string
+  default_export_format: string
+  email_notifications: boolean
+}
+
+export async function getUserPreferences(): Promise<UserPreferences> {
+  const res = await fetch('/api/user/preferences')
+  if (!res.ok) {
+    return { default_engine: 'gemini-3.8-flash', default_export_format: 'html', email_notifications: true }
+  }
+  return res.json()
+}
+
+export async function updateUserPreferences(prefs: Partial<UserPreferences>): Promise<UserPreferences> {
+  const res = await fetch('/api/user/preferences', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(prefs),
+  })
+  if (!res.ok) throw new Error('Failed to update preferences')
+  return res.json()
 }
 
 export interface EngineSettings {
@@ -194,10 +217,11 @@ export async function getJob(id: string): Promise<Job> {
   return res.json()
 }
 
-export function downloadURL(id: string, runId?: string, format?: string): string {
+export function downloadURL(id: string, runId?: string, format?: string, level?: string): string {
   const params = new URLSearchParams()
   if (runId) params.set('run_id', runId)
   if (format) params.set('format', format)
+  if (level) params.set('level', level)
   const qs = params.toString()
   return qs ? `/api/jobs/${id}/download?${qs}` : `/api/jobs/${id}/download`
 }
@@ -224,6 +248,7 @@ export interface Progress {
   phase_number: number
   last_activity: string
   transcript_ok: boolean
+  phase_durations?: Record<string, { num?: number; name?: string; duration_seconds?: number; completed_at?: string }>
 }
 
 export async function getProgress(id: string): Promise<Progress | null> {

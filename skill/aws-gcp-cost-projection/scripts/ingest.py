@@ -421,9 +421,14 @@ def _reject_non_aws(cols, conn):
 
 def _fail_direct(msg):
     """Write failure.txt and exit without attempting LLM fallback."""
-    with open(os.path.join(JOB_DIR, "failure.txt"), "w", encoding="utf-8") as f:
-        f.write(msg)
+    try:
+        with open(os.path.join(JOB_DIR, "failure.txt"), "w", encoding="utf-8") as f:
+            f.write(msg)
+    except Exception as fe:
+        sys.stderr.write(f"Failed to write failure.txt: {fe}\n")
     log.error(f"INGEST FAILURE: {msg}")
+    sys.stdout.flush()
+    sys.stderr.flush()
     sys.exit(1)
 
 
@@ -436,11 +441,18 @@ def _fail(msg):
         _try_llm_normalization(msg)
         if os.path.exists(normalized_path):
             log.info("LLM normalization succeeded — re-running ingest with normalized_bill.csv")
+            sys.stdout.flush()
+            sys.stderr.flush()
             os.execv(sys.executable, [sys.executable] + sys.argv)
             # execv replaces the process; line below never reached
-    with open(os.path.join(JOB_DIR, "failure.txt"), "w", encoding="utf-8") as f:
-        f.write(msg)
+    try:
+        with open(os.path.join(JOB_DIR, "failure.txt"), "w", encoding="utf-8") as f:
+            f.write(msg)
+    except Exception as fe:
+        sys.stderr.write(f"Failed to write failure.txt: {fe}\n")
     log.error(f"INGEST FAILURE: {msg}")
+    sys.stdout.flush()
+    sys.stderr.flush()
     sys.exit(1)
 
 
@@ -607,31 +619,48 @@ def _detect_unit_price_outliers(conn, col_map, job_dir=None):
         WHERE {meter_col} IS NOT NULL AND TRIM(CAST({meter_col} AS VARCHAR)) != ''
     """
     try:
-        raw_rows = conn.execute(q).fetchall()
+        cur = conn.cursor()
+        cur.execute(q)
     except Exception as e:
         log.debug(f"Outlier detection query failed: {e}")
         return
 
     by_meter = {}
-    for r in raw_rows:
-        src_row = r[0]
-        m = str(r[1] or '').strip()
-        c_val = r[2]
-        u_val = r[3]
-        res = r[4]
-        acct = r[5]
-        if not m or c_val is None or u_val is None:
-            continue
-        try:
-            c_float = float(c_val)
-            u_float = float(u_val)
-        except (ValueError, TypeError):
-            continue
+    CHUNK_SIZE = 5000
+    try:
+        while True:
+            chunk = cur.fetchmany(CHUNK_SIZE)
+            if not chunk:
+                break
+            for r in chunk:
+                src_row = r[0]
+                m = str(r[1] or '').strip()
+                c_val = r[2]
+                u_val = r[3]
+                res = r[4]
+                acct = r[5]
+                if not m or c_val is None or u_val is None:
+                    continue
+                try:
+                    c_float = float(c_val)
+                    u_float = float(u_val)
+                except (ValueError, TypeError):
+                    continue
 
-        # Guard 1: positive-cost only
-        if u_float > 0 and c_float > 0:
-            price = c_float / u_float
-            by_meter.setdefault(m, []).append((src_row, c_float, u_float, price, res, acct))
+                # Guard 1: positive-cost only
+                if u_float > 0 and c_float > 0:
+                    meter_list = by_meter.setdefault(m, [])
+                    # Bound memory per meter (keep up to 1000 sample rows)
+                    if len(meter_list) < 1000:
+                        price = c_float / u_float
+                        meter_list.append((src_row, c_float, u_float, price, res, acct))
+    except Exception as e:
+        log.debug(f"Outlier row streaming encountered error: {e}")
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
 
     flagged = []
     for m, rows in by_meter.items():
@@ -1207,11 +1236,16 @@ def main():
     conn = duckdb.connect(DB_PATH)
     # [TEMPORARY: Render 512MB Free Tier deployment constraint]
     # Bound DuckDB threads and memory aggressively so the container does not get killed by Linux OOM killer (exit code 137).
-    conn.execute("PRAGMA threads=1")
-    conn.execute("PRAGMA max_memory='220MB'")
-    temp_dir = os.path.join(JOB_DIR, "projection-audit", "duckdb_temp")
-    os.makedirs(temp_dir, exist_ok=True)
-    conn.execute(f"PRAGMA temp_directory='{temp_dir.replace('\\', '/')}'")
+    # preserve_insertion_order=false significantly cuts memory overhead during bulk table creations and aggregations.
+    try:
+        conn.execute("PRAGMA threads=1")
+        conn.execute("PRAGMA preserve_insertion_order=false")
+        conn.execute("PRAGMA max_memory='250MB'")
+        temp_dir = os.path.join(JOB_DIR, "projection-audit", "duckdb_temp")
+        os.makedirs(temp_dir, exist_ok=True)
+        conn.execute(f"PRAGMA temp_directory='{temp_dir.replace('\\', '/')}'")
+    except Exception as pragma_err:
+        log.warning(f"DuckDB memory pragma configuration warning: {pragma_err}")
     
     # 1. Inspect input
     # If an LLM-normalized fallback CSV exists (written by the Phase 1 retry
@@ -1721,9 +1755,10 @@ def main():
         elif c(['service']) == 'NULL':
             # Run the Python-based ingestion/mapping for the 4-column flat CSV
             import hashlib
-            raw_rows = conn.execute("SELECT * FROM aws_raw").fetchall()
+            cur_raw = conn.cursor()
+            cur_raw.execute("SELECT * FROM aws_raw")
             # Fetch column names
-            col_names = [col[0] for col in conn.description]
+            col_names = [col[0] for col in cur_raw.description]
             # Region is genuinely optional on this format — some AWS export
             # variants (e.g. a Cost Explorer summary grouped by charge
             # description only) never include a region column at all. Rows
@@ -1761,13 +1796,18 @@ def main():
 
             # Temporary storage to aggregate rows by the same key
             aggregated = {}
+            CHUNK_SIZE = 5000
 
-            for row in raw_rows:
-                desc = row[desc_idx]
-                region = row[region_idx] if region_idx is not None else ""
-                b_month = str(row[date_idx] or '')[:7] if date_idx is not None else ""
-                usage_str = row[usage_idx]
-                cost_str = row[cost_idx]
+            while True:
+                chunk = cur_raw.fetchmany(CHUNK_SIZE)
+                if not chunk:
+                    break
+                for row in chunk:
+                    desc = row[desc_idx]
+                    region = row[region_idx] if region_idx is not None else ""
+                    b_month = str(row[date_idx] or '')[:7] if date_idx is not None else ""
+                    usage_str = row[usage_idx]
+                    cost_str = row[cost_idx]
                 
                 if not desc or desc.lower() == 'total tax' or 'tax' in desc.lower():
                     continue
@@ -2009,23 +2049,22 @@ def main():
                 aggregated[group_key]["total_usage"] += total_usage
                 aggregated[group_key]["row_cost"] += row_cost
                 
-            # Insert aggregated rows
+            # Insert aggregated rows in batches
+            insert_rows = []
             for gk, val in aggregated.items():
                 prod, ut, op, aws_reg, pm, lit, is_wl, proj_note, p_unit, b_month = gk
-                # Must hash ALL fields of group_key, not a subset — otherwise two
-                # distinct aggregation buckets that differ only in a field left out
-                # here (e.g. projection_note or pricing_unit) collide onto the same
-                # aws_li_key and the INSERT below throws a primary-key violation.
                 key_str = f"{prod}{ut}{op}{aws_reg}{pm}{lit}{str(is_wl)}{proj_note}{p_unit}{b_month}"
                 aws_li_key = hashlib.md5(key_str.encode('utf-8')).hexdigest()
-                
-                conn.execute("""
+                insert_rows.append((aws_li_key, prod, ut, op, aws_reg, pm, lit, is_wl, val["total_usage"], val["row_cost"], proj_note, p_unit, b_month))
+
+            if insert_rows:
+                conn.executemany("""
                     INSERT INTO aws_li_catalog (
                         aws_li_key, product, usage_type, operation, aws_region, gcp_region, 
                         pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost,
                         projection_note, pricing_unit, billing_month
                     ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (aws_li_key, prod, ut, op, aws_reg, pm, lit, is_wl, val["total_usage"], val["row_cost"], proj_note, p_unit, b_month))
+                """, insert_rows)
         else:
             _inv_lit, _inv_is_wl = _sql_classify_charge(
                 _sql_num(cost_col),
@@ -2131,25 +2170,18 @@ def main():
 
     # 5. Map Regions
     catalog_rows = conn.execute("SELECT aws_li_key, aws_region, usage_type FROM aws_li_catalog").fetchall()
+    region_updates = []
     for row in catalog_rows:
         key = row[0]
         aws_r = row[1]
-        # Unknown regions fall back to 'global' so the gcp_projection VIEW's
-        # COALESCE(regional_rate, global_rate) always finds a rate.
         aws_r_clean = aws_r.strip().lower() if aws_r else ""
         gcp_r = REGION_MAP.get(aws_r_clean) or DESCRIPTIVE_REGION_MAP.get(aws_r_clean, "global")
-        # PDF/flat-CSV bills often omit a Region column entirely, leaving every
-        # row on "global" — but usage_type frequently embeds the real region as
-        # a prefix (e.g. "APS3-EBS:VolumeUsage.gp3"). Decoding this ONCE here,
-        # for every row regardless of which mapper it later routes through,
-        # replaces the previous per-mapper copy-pasted decode calls that only
-        # covered EBS/MSK/EC2 rows and silently left Lambda/S3/etc. on 'global'
-        # — which then breaks description-based SKU resolution downstream,
-        # since most GCP catalog descriptions embed a literal region name with
-        # no 'global' variant to fall back to.
         if gcp_r == "global":
             gcp_r = decode_region_prefix(row[2], gcp_r)
-        conn.execute("UPDATE aws_li_catalog SET gcp_region = ? WHERE aws_li_key = ?", (gcp_r, key))
+        region_updates.append((gcp_r, key))
+
+    if region_updates:
+        conn.executemany("UPDATE aws_li_catalog SET gcp_region = ? WHERE aws_li_key = ?", region_updates)
             
     # 6. Reconcile - let orchestrate.go verification gate handle failure, but check
     # In raw CUR, sometimes totals have slight float differences, we'll ignore for script unless it's huge
@@ -2180,6 +2212,7 @@ def main():
     b_days = infer_billing_days(all_cat)
     
     unresolved_specs = []
+    resolved_updates = []
 
     for r in all_cat:
         key, total_usage, product, operation, aws_cost, usage_type, lic, os_name, db_eng, deploy_opt, vol_t, p_unit = r
@@ -2349,8 +2382,7 @@ def main():
             spec = LEGACY_SPECS.get(itype) or LEGACY_SPECS.get(base_itype)
             
         if not spec:
-            conn.execute("UPDATE aws_li_catalog SET instance_type = ? WHERE aws_li_key = ?", (itype, key))
-            unresolved_specs.append((itype, float(aws_cost or 0.0)))
+            unresolved_specs.append((itype, float(aws_cost or 0.0), key))
             continue
             
         # Classify workload
@@ -2376,17 +2408,21 @@ def main():
             
         instance_count = round(total_usage / (b_days * 24), 4) if b_days else None
         rate = (aws_cost / total_usage) if (total_usage and total_usage > 0) else None
-        
-        conn.execute("""
+        resolved_updates.append((itype, spec.get("vcpus"), spec.get("ram_gb"), spec.get("arch"), b_days, instance_count, rate, w_class, key))
+
+    if unresolved_specs:
+        conn.executemany("UPDATE aws_li_catalog SET instance_type = ? WHERE aws_li_key = ?", [(t, k) for t, _, k in unresolved_specs])
+    if resolved_updates:
+        conn.executemany("""
             UPDATE aws_li_catalog 
             SET instance_type = ?, instance_vcpus = ?, instance_ram_gb = ?, instance_arch = ?,
                 billing_days = ?, instance_count = ?, aws_effective_unit_rate = ?, workload_class = ?
             WHERE aws_li_key = ?
-        """, (itype, spec.get("vcpus"), spec.get("ram_gb"), spec.get("arch"), b_days, instance_count, rate, w_class, key))
+        """, resolved_updates)
 
     if unresolved_specs:
-        unspec_usd = sum(cost for _, cost in unresolved_specs)
-        examples = sorted(list({t for t, _ in unresolved_specs}))[:20]
+        unspec_usd = sum(cost for _, cost, _ in unresolved_specs)
+        examples = sorted(list({t for t, _, _ in unresolved_specs}))[:20]
         diag(WARN, "instance_spec_unresolved", "ingest.py",
              f"{len(unresolved_specs)} row(s) had unresolved instance specs: {', '.join(examples)}",
              rows=len(unresolved_specs), usd=unspec_usd, phase=1,
@@ -2525,6 +2561,10 @@ def main():
         f"reconciles to extracted bill total ${_bill_reference_total:,.2f}"
     )
     log.info(f"Ingest complete. billing_format={fmt!r}")
+    try:
+        conn.close()
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     try:
@@ -2533,6 +2573,8 @@ if __name__ == "__main__":
         import traceback
         tb = traceback.format_exc()
         log.error(f"INGEST UNCAUGHT EXCEPTION: {tb}")
-        _fail_direct(f"Ingestion failed with exception: {e}\n\nTraceback:\n{tb[-600:]}")
+        sys.stderr.write(f"INGEST EXCEPTION: {tb}\n")
+        sys.stderr.flush()
+        _fail_direct(f"Ingestion failed with exception: {e}\n\nTraceback:\n{tb[-1200:]}")
 
 

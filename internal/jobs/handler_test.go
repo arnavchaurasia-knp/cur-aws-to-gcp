@@ -86,9 +86,15 @@ func TestRuns_EmptyForLegacyJob(t *testing.T) {
 	h.Runs(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	var result []interface{}
+	var result map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
-	assert.Len(t, result, 0)
+	runs, ok := result["runs"].([]interface{})
+	require.True(t, ok)
+	assert.Len(t, runs, 0)
+	currency, ok := result["currency"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "USD", currency["currency"])
+	assert.Equal(t, 1.0, currency["fx_rate"])
 }
 
 func TestRuns_NotOwner(t *testing.T) {

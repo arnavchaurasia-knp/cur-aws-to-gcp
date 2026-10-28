@@ -155,6 +155,26 @@ func (h *Handler) canAccess(sess *auth.Session, job *db.Job) bool {
 	return job.Owner == sess.Email || sess.IsAdmin(h.adminEmails)
 }
 
+// validateEngine checks whether the requested engine is allowed.
+// If requested is empty, default_engine is returned.
+// If requested is not in allowed_engines, an error is returned.
+func (h *Handler) validateEngine(requested string) (string, error) {
+	defaultEngine, allowed, err := h.db.GetEngineSettings()
+	if err != nil {
+		return "", fmt.Errorf("failed to load engine settings: %w", err)
+	}
+	req := strings.TrimSpace(requested)
+	if req == "" {
+		return defaultEngine, nil
+	}
+	for _, a := range allowed {
+		if strings.EqualFold(a, req) {
+			return a, nil
+		}
+	}
+	return "", fmt.Errorf("engine %q is not allowed; allowed engines: %s", req, strings.Join(allowed, ", "))
+}
+
 const maxUploadBytes = 512 << 20 // 512 MiB to support large raw CUR exports
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -175,6 +195,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	prospect := strings.TrimSpace(r.FormValue("prospect_name"))
 	if len(prospect) == 0 || len(prospect) > 500 {
 		http.Error(w, `{"error":"prospect_name must be 1-500 characters"}`, http.StatusBadRequest)
+		return
+	}
+	engineChoice, err := h.validateEngine(r.FormValue("engine"))
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 		return
 	}
 	file, header, err := r.FormFile("file")
@@ -236,15 +261,18 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
 		return
 	}
+	engineVer := h.spawner.EngineVersion()
+	_ = h.db.UpdateJobEngine(jobID, engineChoice, engineVer)
+
 	metrics.JobsSubmitted.Add(1)
-	slog.Info("job submitted", "job_id", jobID, "prospect", prospect, "user", sess.Email, "ext", ext, "sha256", hashHex)
+	slog.Info("job submitted", "job_id", jobID, "prospect", prospect, "user", sess.Email, "ext", ext, "sha256", hashHex, "engine", engineChoice)
 
 	go func() {
 		if err := notify.PostJobSubmitted(h.notify.SlackURL, prospect, sess.Email, jobID); err != nil {
 			slog.Warn("PostJobSubmitted failed", "job_id", jobID, "err", err)
 		}
 	}()
-	go h.runJob(jobID, jobDir, ext, sess)
+	go h.runJob(jobID, jobDir, ext, sess, engineChoice)
 
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	w.WriteHeader(http.StatusCreated)
@@ -296,6 +324,7 @@ func (h *Handler) CreateFromExistingBill(w http.ResponseWriter, r *http.Request)
 	var req struct {
 		ContentHash  string `json:"content_hash"`
 		ProspectName string `json:"prospect_name"`
+		Engine       string `json:"engine"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid json request"}`, http.StatusBadRequest)
@@ -305,6 +334,11 @@ func (h *Handler) CreateFromExistingBill(w http.ResponseWriter, r *http.Request)
 	prospect := strings.TrimSpace(req.ProspectName)
 	if len(prospect) == 0 || len(prospect) > 500 {
 		http.Error(w, `{"error":"prospect_name must be 1-500 characters"}`, http.StatusBadRequest)
+		return
+	}
+	engineChoice, err := h.validateEngine(req.Engine)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -354,15 +388,18 @@ func (h *Handler) CreateFromExistingBill(w http.ResponseWriter, r *http.Request)
 		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
 		return
 	}
+	engineVer := h.spawner.EngineVersion()
+	_ = h.db.UpdateJobEngine(jobID, engineChoice, engineVer)
+
 	metrics.JobsSubmitted.Add(1)
-	slog.Info("job created from cached bill", "job_id", jobID, "prospect", prospect, "user", sess.Email, "sha256", hash)
+	slog.Info("job created from cached bill", "job_id", jobID, "prospect", prospect, "user", sess.Email, "sha256", hash, "engine", engineChoice)
 
 	go func() {
 		if err := notify.PostJobSubmitted(h.notify.SlackURL, prospect, sess.Email, jobID); err != nil {
 			slog.Warn("PostJobSubmitted failed", "job_id", jobID, "err", err)
 		}
 	}()
-	go h.runJob(jobID, jobDir, resolvedExt, sess)
+	go h.runJob(jobID, jobDir, resolvedExt, sess, engineChoice)
 
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	w.WriteHeader(http.StatusCreated)
@@ -447,6 +484,7 @@ func (h *Handler) CompleteChunkedUpload(w http.ResponseWriter, r *http.Request) 
 		ProspectName string `json:"prospect_name"`
 		FileName     string `json:"file_name"`
 		TotalChunks  int    `json:"total_chunks"`
+		Engine       string `json:"engine"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request json"}`, http.StatusBadRequest)
@@ -456,6 +494,11 @@ func (h *Handler) CompleteChunkedUpload(w http.ResponseWriter, r *http.Request) 
 	prospect := strings.TrimSpace(req.ProspectName)
 	if len(prospect) == 0 || len(prospect) > 500 {
 		http.Error(w, `{"error":"prospect_name must be 1-500 characters"}`, http.StatusBadRequest)
+		return
+	}
+	engineChoice, err := h.validateEngine(req.Engine)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 		return
 	}
 	if !isValidJobID(req.UploadID) || req.TotalChunks <= 0 || req.TotalChunks > 2000 {
@@ -532,24 +575,27 @@ func (h *Handler) CompleteChunkedUpload(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"error":"storage error"}`, http.StatusInternalServerError)
 		return
 	}
+	engineVer := h.spawner.EngineVersion()
+	_ = h.db.UpdateJobEngine(jobID, engineChoice, engineVer)
+
 	metrics.JobsSubmitted.Add(1)
-	slog.Info("chunked job submitted", "job_id", jobID, "prospect", prospect, "user", sess.Email, "ext", ext, "chunks", req.TotalChunks)
+	slog.Info("chunked job submitted", "job_id", jobID, "prospect", prospect, "user", sess.Email, "ext", ext, "chunks", req.TotalChunks, "engine", engineChoice)
 
 	go func() {
 		if err := notify.PostJobSubmitted(h.notify.SlackURL, prospect, sess.Email, jobID); err != nil {
 			slog.Warn("PostJobSubmitted failed", "job_id", jobID, "err", err)
 		}
 	}()
-	go h.runJob(jobID, jobDir, ext, sess)
+	go h.runJob(jobID, jobDir, ext, sess, engineChoice)
 
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"id": jobID, "status": "pending"})
 }
 
-func (h *Handler) runJob(jobID, jobDir, ext string, sess *auth.Session) {
+func (h *Handler) runJob(jobID, jobDir, ext string, sess *auth.Session, engine ...string) {
 	h.db.UpdateJobRunning(jobID)
-	pid, assumptionsVersion, err := h.spawner.Start(jobDir, ext, jobID)
+	pid, assumptionsVersion, err := h.spawner.Start(jobDir, ext, jobID, engine...)
 	if err != nil {
 		h.db.UpdateJobFailed(jobID, "spawn failed: "+err.Error())
 		go func() {
@@ -568,7 +614,9 @@ func (h *Handler) runJob(jobID, jobDir, ext string, sess *auth.Session) {
 		_ = h.db.UpdateJobAssumptionsVersion(jobID, assumptionsVersion)
 	}
 	h.db.UpdateJobPID(jobID, pid)
-	h.watcher.Watch(jobID, pid)
+	if h.watcher != nil {
+		h.watcher.Watch(jobID, pid)
+	}
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
@@ -583,6 +631,19 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	json.NewEncoder(w).Encode(jobs)
+}
+
+func (h *Handler) GetEngineSettings(w http.ResponseWriter, r *http.Request) {
+	defaultEngine, allowed, err := h.db.GetEngineSettings()
+	if err != nil {
+		http.Error(w, `{"error":"failed to load engine settings"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"default_engine":  defaultEngine,
+		"allowed_engines": allowed,
+	})
 }
 
 func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
@@ -618,7 +679,7 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.canAccess(sess, job) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 	if job.Status != "failed" {
@@ -669,7 +730,7 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pid, assumptionsVersion, err := h.spawner.Start(jobDir, job.InputExt, newSession)
+	pid, assumptionsVersion, err := h.spawner.Start(jobDir, job.InputExt, newSession, job.Engine)
 	if err != nil {
 		h.db.UpdateJobFailed(id, "retry spawn failed: "+err.Error())
 		// Issue 2: err.Error() can contain quotes/newlines — don't embed in JSON string
@@ -705,7 +766,7 @@ func (h *Handler) RegenerateReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.canAccess(sess, job) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 	if job.Status != "done" {
@@ -826,7 +887,7 @@ func (h *Handler) Refine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.canAccess(sess, job) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 	if job.Status != "done" {
@@ -887,7 +948,7 @@ func (h *Handler) Progress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.canAccess(sess, job) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
@@ -910,7 +971,7 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.canAccess(sess, job) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 	if job.Status != "done" {
@@ -932,6 +993,20 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	}, job.Prospect)
 
 	switch format {
+	case "bill":
+		inputMatches, _ := filepath.Glob(filepath.Join(jobDir, "input.*"))
+		if len(inputMatches) == 0 {
+			http.Error(w, `{"error":"original bill file not found"}`, http.StatusNotFound)
+			return
+		}
+		billPath := inputMatches[0]
+		ext := filepath.Ext(billPath)
+		if strings.HasSuffix(billPath, ".csv.gz") {
+			ext = ".csv.gz"
+		}
+		filename := fmt.Sprintf("%s-original-bill%s", safeProspect, ext)
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+		http.ServeFile(w, r, billPath)
 	case "xlsx", "csv":
 		h.downloadExport(w, r, jobDir, safeProspect, format)
 	default:
@@ -1127,7 +1202,11 @@ func (h *Handler) Runs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
-	json.NewEncoder(w).Encode(runs)
+	cur, _ := QueryBillCurrency(dbPath) // best-effort; defaults to USD on error
+	json.NewEncoder(w).Encode(map[string]any{
+		"runs":     runs,
+		"currency": cur,
+	})
 }
 
 // Summary returns the markdown summary for a specific run (or the latest
@@ -1146,7 +1225,7 @@ func (h *Handler) Summary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.canAccess(sess, job) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
@@ -1222,7 +1301,7 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.canAccess(sess, job) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 
@@ -1264,7 +1343,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.canAccess(sess, job) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 
@@ -1352,7 +1431,8 @@ func (h *Handler) GetUserNotificationSettings(w http.ResponseWriter, r *http.Req
 	}
 	settings, err := h.db.GetNotificationSettings(sess.Email)
 	if err != nil {
-		http.Error(w, `{"error":"failed to get notification settings"}`, http.StatusInternalServerError)
+		slog.Error("failed to get notification settings", "email", sess.Email, "err", err)
+		http.Error(w, fmt.Sprintf(`{"error":"failed to get notification settings: %s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
@@ -1367,8 +1447,10 @@ func (h *Handler) UpdateUserNotificationSettings(w http.ResponseWriter, r *http.
 		return
 	}
 	var body struct {
-		EmailNotifications   *bool `json:"email_notifications"`
-		SlackNotifications   *bool `json:"slack_notifications"`
+		EmailNotifications *bool   `json:"email_notifications"`
+		SlackNotifications *bool   `json:"slack_notifications"`
+		SlackWebhookURL    *string `json:"slack_webhook_url"`
+		SlackChannel       *string `json:"slack_channel"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
@@ -1388,14 +1470,68 @@ func (h *Handler) UpdateUserNotificationSettings(w http.ResponseWriter, r *http.
 	if slackNotif == nil {
 		slackNotif = &current.SlackNotifications
 	}
-	if err := h.db.UpdateNotificationSettings(sess.Email, *emailNotif, *slackNotif); err != nil {
-		http.Error(w, `{"error":"failed to update notification settings"}`, http.StatusInternalServerError)
+	slackWebhookURL := current.SlackWebhookURL
+	if body.SlackWebhookURL != nil {
+		slackWebhookURL = strings.TrimSpace(*body.SlackWebhookURL)
+	}
+	slackChannel := current.SlackChannel
+	if body.SlackChannel != nil {
+		slackChannel = strings.TrimSpace(*body.SlackChannel)
+	}
+
+	if err := h.db.UpdateNotificationSettings(sess.Email, *emailNotif, *slackNotif, slackWebhookURL, slackChannel); err != nil {
+		slog.Error("failed to update notification settings", "email", sess.Email, "err", err)
+		http.Error(w, fmt.Sprintf(`{"error":"failed to update notification settings: %s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
-	json.NewEncoder(w).Encode(map[string]bool{
-		"email_notifications":  *emailNotif,
-		"slack_notifications":  *slackNotif,
+	json.NewEncoder(w).Encode(map[string]any{
+		"email_notifications": *emailNotif,
+		"slack_notifications": *slackNotif,
+		"slack_webhook_url":    slackWebhookURL,
+		"slack_channel":        slackChannel,
+	})
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// User API / MCP Access Token
+// ─────────────────────────────────────────────────────────────────────────
+
+// GetUserAPIToken returns the authenticated user's access token, generating one if not set.
+func (h *Handler) GetUserAPIToken(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	token, err := h.db.GetOrCreateAPIToken(sess.Email)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to get api token: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]string{
+		"token": token,
+		"email": sess.Email,
+	})
+}
+
+// RegenerateUserAPIToken regenerates and returns a fresh access token for the user.
+func (h *Handler) RegenerateUserAPIToken(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	token, err := h.db.RegenerateAPIToken(sess.Email)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to regenerate api token: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]string{
+		"token": token,
+		"email": sess.Email,
 	})
 }
 

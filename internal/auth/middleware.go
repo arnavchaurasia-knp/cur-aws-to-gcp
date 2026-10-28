@@ -9,10 +9,9 @@ import (
 type ExportedCtxKey struct{}
 
 // getRoleFunc looks up a user's current RBAC role from the durable users table.
-// It is used by Middleware to resolve role per-request so that role changes
-// (admin demotion/promotion) take effect on the next request without requiring
-// re-login. Returns ("", nil) when the user has no row (keep session value).
-type getRoleFunc func(email string) (string, error)
+// It can optionally return (role, adminGrantedBy, error) or (role, error).
+// We accept any function matching the lookup signature.
+type getRoleFunc any
 
 func Middleware(sm *SessionManager, getRole getRoleFunc, devBypass ...bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -24,11 +23,18 @@ func Middleware(sm *SessionManager, getRole getRoleFunc, devBypass ...bool) func
 			}
 			// Resolve role from the users table on every request so that role
 			// changes (admin demotion/promotion) take effect immediately without
-			// requiring the user to log out and back in. If the user has no DB
-			// row (ErrNoRows), keep the session's cached role.
+			// requiring the user to log out and back in.
 			if getRole != nil {
-				if role, err := getRole(sess.Email); err == nil && role != "" {
-					sess.Role = role
+				switch fn := getRole.(type) {
+				case func(email string) (string, string, error):
+					if role, grantedBy, err := fn(sess.Email); err == nil && role != "" {
+						sess.Role = role
+						sess.AdminGrantedBy = grantedBy
+					}
+				case func(email string) (string, error):
+					if role, err := fn(sess.Email); err == nil && role != "" {
+						sess.Role = role
+					}
 				}
 			}
 			ctx := context.WithValue(r.Context(), ExportedCtxKey{}, sess)

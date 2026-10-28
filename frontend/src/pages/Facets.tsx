@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Nav } from '../components/Nav'
+import { Layout } from '../components/Layout'
 import { Reveal } from '../components/Reveal'
 import { facetsListJobs, facetsGetLogs, facetsGeneratePortfolioSummary, facetsPortfolioSummaryHTMLURL } from '../api/facets'
 import type { PortfolioSummary } from '../api/facets'
@@ -308,12 +308,11 @@ export function Facets({ user }: Readonly<{ user: UserInfo }>) {
   useEffect(() => { facetsListJobs().then(setJobs) }, [])
 
   return (
-    <div className="min-h-screen text-white">
-      <Nav user={user} />
-      <div className="max-w-6xl mx-auto px-6 py-10">
-        <div className="mb-8 anim-fade-in-up">
-          <h1 className="text-2xl font-semibold">Facets internal tools</h1>
-          <p className="text-sm text-gray-500 mt-1">
+    <Layout user={user}>
+      <div className="max-w-6xl mx-auto px-6 py-8">
+        <div className="mb-6 anim-fade-in-up">
+          <h1 className="text-xl font-bold tracking-tight">Facets Internal Tools</h1>
+          <p className="text-xs text-gray-500 mt-1">
             Not linked anywhere else — visible only to @facets.cloud sessions.
           </p>
         </div>
@@ -323,8 +322,8 @@ export function Facets({ user }: Readonly<{ user: UserInfo }>) {
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors duration-150 ${
-                tab === t ? 'border-[#645DF6] text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
+              className={`px-4 py-2 text-xs font-semibold border-b-2 -mb-px transition-colors duration-150 cursor-pointer ${
+                tab === t ? 'border-[#00C2BB] text-[#00C2BB]' : 'border-transparent text-gray-500 hover:text-gray-300'
               }`}
             >
               {t === 'summary' ? 'Portfolio Summary' : 'Job Logs'}
@@ -336,6 +335,6 @@ export function Facets({ user }: Readonly<{ user: UserInfo }>) {
         {jobs !== null && tab === 'summary' && <SummaryBuilder jobs={jobs} />}
         {jobs !== null && tab === 'logs' && <LogsPanel jobs={jobs} />}
       </div>
-    </div>
+    </Layout>
   )
 }

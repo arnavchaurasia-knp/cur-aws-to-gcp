@@ -85,8 +85,9 @@ c.close()`
 // Used to distinguish "no run_results table yet" (legacy job) from a real
 // query error.
 var allowedTables = map[string]bool{
-	"run_results":   true,
-	"aws_li_catalog": true,
+	"run_results":      true,
+	"aws_li_catalog":   true,
+	"bill_currency":    true,
 }
 
 func tableExists(dbPath, table string) (bool, error) {
@@ -235,6 +236,98 @@ func nullableInt(v any) *int {
 		return &i
 	}
 	return nil
+}
+
+// BillCurrency mirrors the bill_currency table written by currency_utils.py.
+type BillCurrency struct {
+	Currency        string  `json:"currency"`         // e.g. "EUR"; "USD" default
+	Symbol          string  `json:"symbol"`           // e.g. "€"
+	FXRate          float64 `json:"fx_rate"`           // USD -> display currency (for GCP side)
+	AWSFXRate       float64 `json:"aws_fx_rate"`       // USD -> display currency (for AWS side)
+	AWSCostCurrency string  `json:"aws_cost_currency"` // currency the stored USD came from
+	Label           string  `json:"label"`
+	Source          string  `json:"source"`
+}
+
+// QueryBillCurrency reads the single bill_currency row. Returns a USD default
+// (fx 1.0) when the table or row is absent so callers never special-case nil.
+// Defensive: if the column list errors (e.g. old schema missing aws_fx_rate),
+// falls back to a minimal column set.
+func QueryBillCurrency(dbPath string) (BillCurrency, error) {
+	def := BillCurrency{Currency: "USD", Symbol: "$", FXRate: 1.0, AWSFXRate: 1.0, AWSCostCurrency: "USD", Label: "USD", Source: "default"}
+
+	var err error
+	var out []byte
+	out, err = runDuckDB(dbPath, "SELECT currency, symbol, fx_rate, aws_fx_rate, aws_cost_currency, label, source FROM bill_currency LIMIT 1")
+	if err != nil {
+		// If the column aws_fx_rate doesn't exist (old schema), retry without it.
+		if strings.Contains(err.Error(), "aws_fx_rate") {
+			out, err = runDuckDB(dbPath, "SELECT currency, symbol, fx_rate, label, source FROM bill_currency LIMIT 1")
+			if err != nil {
+				return def, nil
+			}
+			var rows []map[string]any
+			if err := json.Unmarshal(out, &rows); err != nil || len(rows) == 0 {
+				return def, nil
+			}
+			r := rows[0]
+			cur := strOrEmpty(r["currency"])
+			if cur == "" { cur = "USD" }
+			sym := strOrEmpty(r["symbol"])
+			if sym == "" { sym = "$" }
+			label := strOrEmpty(r["label"])
+			if label == "" { label = "USD" }
+			source := strOrEmpty(r["source"])
+			if source == "" { source = "default" }
+			fx := nullableFloatVal(r["fx_rate"])
+			if fx == 0 { fx = 1.0 }
+			return BillCurrency{
+				Currency:        cur,
+				Symbol:          sym,
+				FXRate:          fx,
+				AWSFXRate:       1.0,
+				AWSCostCurrency: cur,
+				Label:           label,
+				Source:          source,
+			}, nil
+		}
+		return def, err
+	}
+	if len(out) == 0 || strings.TrimSpace(string(out)) == "" {
+		return def, nil
+	}
+	var rows []BillCurrency
+	if err := json.Unmarshal(out, &rows); err != nil || len(rows) == 0 {
+		return def, nil
+	}
+	r := rows[0]
+	if r.FXRate == 0 { r.FXRate = 1.0 }
+	if r.AWSFXRate == 0 { r.AWSFXRate = 1.0 }
+	if r.Symbol == "" { r.Symbol = "$" }
+	if r.Currency == "" { r.Currency = "USD" }
+	return r, nil
+}
+
+// nullableFloatVal returns the float64 value or 0.
+func nullableFloatVal(v any) float64 {
+	if v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case json.Number:
+		f, err := n.Float64()
+		if err != nil {
+			return 0
+		}
+		return f
+	}
+	return 0
 }
 
 // QueryAWSSpend returns SUM(aws_amortized_cost) FROM aws_li_catalog over ALL

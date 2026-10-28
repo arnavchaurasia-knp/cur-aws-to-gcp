@@ -19,6 +19,8 @@ type Job struct {
 	SessionID   string     `json:"session_id"`
 	AgentPID    int        `json:"agent_pid"`
 	Attempts    int        `json:"attempts"`
+	Engine      string     `json:"engine,omitempty"`
+	EngineVersion string   `json:"engine_version,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 	CancelledAt *time.Time `json:"cancelled_at,omitempty"`
@@ -29,6 +31,14 @@ func (d *DB) CreateJob(id, owner, prospect, inputExt, sessionID string) error {
 	_, err := d.conn.Exec(
 		`INSERT INTO jobs (id, owner, prospect, input_ext, session_id) VALUES (?, ?, ?, ?, ?)`,
 		id, owner, prospect, inputExt, sessionID,
+	)
+	return err
+}
+
+func (d *DB) UpdateJobEngine(id, engine, engineVersion string) error {
+	_, err := d.conn.Exec(
+		`UPDATE jobs SET engine=?, engine_version=?, updated_at=datetime('now') WHERE id=?`,
+		engine, engineVersion, id,
 	)
 	return err
 }
@@ -117,7 +127,7 @@ func (d *DB) ResetJobForRetry(id, sessionID string) error {
 
 func (d *DB) ListNonTerminalJobs() ([]*Job, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, created_at, updated_at
+		`SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, COALESCE(engine, ''), COALESCE(engine_version, ''), created_at, updated_at
 		 FROM jobs WHERE status IN ('pending', 'running') ORDER BY created_at`,
 	)
 	if err != nil {
@@ -137,7 +147,7 @@ func (d *DB) ListNonTerminalJobs() ([]*Job, error) {
 
 func (d *DB) GetJob(id string) (*Job, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, created_at, updated_at
+		`SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, COALESCE(engine, ''), COALESCE(engine_version, ''), created_at, updated_at
 		 FROM jobs WHERE id = ?`, id,
 	)
 	return scanJob(row)
@@ -147,7 +157,7 @@ func (d *DB) GetJob(id string) (*Job, error) {
 // the handler wrapping this is responsible for the access check.
 func (d *DB) ListAllJobs() ([]*Job, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, created_at, updated_at
+		`SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, COALESCE(engine, ''), COALESCE(engine_version, ''), created_at, updated_at
 		 FROM jobs ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -167,7 +177,7 @@ func (d *DB) ListAllJobs() ([]*Job, error) {
 
 func (d *DB) ListJobsByOwner(owner string) ([]*Job, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, created_at, updated_at
+		`SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, COALESCE(engine, ''), COALESCE(engine_version, ''), created_at, updated_at
 		 FROM jobs WHERE owner = ? ORDER BY created_at DESC`, owner,
 	)
 	if err != nil {
@@ -183,6 +193,27 @@ func (d *DB) ListJobsByOwner(owner string) ([]*Job, error) {
 		jobs = append(jobs, j)
 	}
 	return jobs, nil
+}
+
+// GetUserQuotaUsage returns the number of jobs created by owner in the last 24 hours,
+// and the number of currently running/pending jobs for that owner.
+func (d *DB) GetUserQuotaUsage(owner string) (jobsLast24h int, concurrentJobs int, err error) {
+	err = d.conn.QueryRow(`
+		SELECT COUNT(*) FROM jobs
+		WHERE owner = ? AND created_at >= datetime('now', '-24 hours')
+	`, owner).Scan(&jobsLast24h)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	err = d.conn.QueryRow(`
+		SELECT COUNT(*) FROM jobs
+		WHERE owner = ? AND status IN ('running', 'pending')
+	`, owner).Scan(&concurrentJobs)
+	if err != nil {
+		return 0, 0, err
+	}
+	return jobsLast24h, concurrentJobs, nil
 }
 
 func (d *DB) UpdateJobRunning(id string) error {
@@ -312,7 +343,7 @@ func (d *DB) ListDeletedJobs(searchQuery ...string) ([]*DeletedJob, error) {
 // ListAllJobsFiltered supports the admin jobs page: pagination, server-side search (q),
 // sort/dir, and status/date-range filtering.
 func (d *DB) ListAllJobsFiltered(limit, offset int, status string, from, to *time.Time, searchQuery, sortBy, sortDir string) ([]*Job, error) {
-	q := `SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, created_at, updated_at
+	q := `SELECT id, owner, prospect, status, input_ext, aws_spend, gcp_od, error, session_id, agent_pid, attempts, COALESCE(engine, ''), COALESCE(engine_version, ''), created_at, updated_at
 	      FROM jobs WHERE 1=1`
 	var args []any
 	if status != "" {
@@ -543,11 +574,14 @@ func scanJob(s scanner) (*Job, error) {
 	var sessionID sql.NullString
 	var agentPID sql.NullInt64
 	var attempts sql.NullInt64
+	var engine sql.NullString
+	var engineVersion sql.NullString
 	var createdAtStr string
 	var updatedAtStr string
 
 	err := s.Scan(&j.ID, &j.Owner, &j.Prospect, &j.Status, &j.InputExt,
-		&spend, &gcpOD, &errStr, &sessionID, &agentPID, &attempts, &createdAtStr, &updatedAtStr)
+		&spend, &gcpOD, &errStr, &sessionID, &agentPID, &attempts,
+		&engine, &engineVersion, &createdAtStr, &updatedAtStr)
 	if err != nil {
 		return nil, err
 	}
@@ -588,6 +622,12 @@ func scanJob(s scanner) (*Job, error) {
 	}
 	if attempts.Valid {
 		j.Attempts = int(attempts.Int64)
+	}
+	if engine.Valid {
+		j.Engine = engine.String
+	}
+	if engineVersion.Valid {
+		j.EngineVersion = engineVersion.String
 	}
 	j.CreatedAt = createdAt
 	j.UpdatedAt = updatedAt

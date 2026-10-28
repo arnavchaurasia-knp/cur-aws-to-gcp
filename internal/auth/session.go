@@ -27,39 +27,33 @@ type Session struct {
 	// ("viewer", "admin", "facets"). May be empty for sessions issued before
 	// this field existed (decoded from an old cookie) — treat empty as
 	// "viewer" everywhere it's read.
-	Role     string `json:"role,omitempty"`
-	IssuedAt int64  `json:"iat,omitempty"`
+	Role           string `json:"role,omitempty"`
+	AdminGrantedBy string `json:"admin_granted_by,omitempty"`
+	IssuedAt       int64  `json:"iat,omitempty"`
 }
 
-// IsAdmin reports whether this session's email is in the admin allow-list OR
-// its resolved RBAC Role is "admin". adminEmails entries are expected to be
-// lowercased already (parseAdminEmails does that at startup). Comparison is
-// case-insensitive on the session side.
+// IsAdmin reports whether this session has admin permissions.
+// A user is an admin if:
+// 1. They are in the break-glass adminEmails list.
+// 2. OR they are a facets employee with role "admin".
+// 3. OR they are a non-facets user with role "admin" AND a non-empty AdminGrantedBy.
 func (s *Session) IsAdmin(adminEmails []string) bool {
 	if s == nil {
 		return false
 	}
-	// Admin is strictly restricted to @facets accounts.
-	if !s.IsFacetsEmployee() {
-		return false
-	}
-	// Break-glass: explicit admin email list takes precedence over the stored
-	// role, so an admin can demote themselves from "viewer" and still be an
-	// admin, and a demoted admin can be recovered via ADMIN_EMAILS.
 	email := strings.ToLower(s.Email)
 	for _, a := range adminEmails {
 		if a == email {
 			return true
 		}
 	}
-	if s.Role == "admin" {
-		return true
-	}
-	if s.Role == "viewer" {
+	if s.Role != "admin" {
 		return false
 	}
-	// All @facets accounts default to admin
-	return true
+	if s.IsFacetsEmployee() {
+		return true
+	}
+	return s.AdminGrantedBy != ""
 }
 
 // IsFacetsEmployee reports whether this session's email is on the

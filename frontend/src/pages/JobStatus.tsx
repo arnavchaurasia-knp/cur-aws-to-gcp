@@ -15,10 +15,8 @@ import { TOTAL_PHASES } from '../lib/phases'
 import { toast } from 'sonner'
 import { JobHealth } from '../components/JobHealth'
 import { ConfirmDialog } from '../components/ConfirmDialog'
-
-function formatDollars(n: number): string {
-  return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-}
+import { formatMoney } from '../lib/preferencesContext'
+import { JobLogsViewer } from '../components/JobLogsViewer'
 
 function pctVsAws(gcp: number, aws: number): { label: string; positive: boolean } | null {
   if (!aws || aws <= 0) return null
@@ -27,7 +25,10 @@ function pctVsAws(gcp: number, aws: number): { label: string; positive: boolean 
   return { label: `${sign}${Math.round(diff * 100)}%`, positive: diff < 0 }
 }
 
-function TotalsCard({ run, fallback }: Readonly<{ run: RunResult | null; fallback: number | null }>) {
+function TotalsCard({ run, fallback, currency }: Readonly<{ run: RunResult | null; fallback: number | null; currency: { symbol: string; aws_fx_rate: number; fx_rate: number } }>) {
+  const sym = currency.symbol || '$'
+  const awsFx = currency.aws_fx_rate || 1.0
+  const gcpFx = currency.fx_rate || 1.0
   if (!run) {
     return (
       <div className="bg-white/[0.02] border border-white/10 rounded-lg p-5 anim-fade-in-up">
@@ -37,7 +38,7 @@ function TotalsCard({ run, fallback }: Readonly<{ run: RunResult | null; fallbac
         <div className="flex justify-between items-center">
           <span className="text-gray-400">AWS Monthly Spend (pre-tax)</span>
           <span className="text-white font-semibold text-lg">
-            {fallback != null ? `$${fallback.toLocaleString()}` : '—'}
+            {fallback != null ? formatMoney(fallback * awsFx, sym) : '—'}
           </span>
         </div>
       </div>
@@ -60,6 +61,8 @@ function TotalsCard({ run, fallback }: Readonly<{ run: RunResult | null; fallbac
       <div className="divide-y divide-white/5">
         {rows.map((r, i) => {
           const pct = r.compare ? pctVsAws(r.value, run.aws_total) : null
+          const isAws = r.label === 'AWS Mapped Cost'
+          const fx = isAws ? awsFx : gcpFx
           return (
             <div key={r.label}
               className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-2.5 gap-1 anim-fade-in-up"
@@ -67,7 +70,7 @@ function TotalsCard({ run, fallback }: Readonly<{ run: RunResult | null; fallbac
               <span className="text-gray-400 text-sm">{r.label}</span>
               <div className="flex items-baseline gap-3">
                 <span className="font-semibold text-white tabular-nums">
-                  {formatDollars(r.value)}
+                  {formatMoney(r.value * fx, sym)}
                 </span>
                 {pct && (
                   <span className="text-xs font-medium px-1.5 py-0.5 rounded-full bg-white/5 text-gray-400">
@@ -271,6 +274,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
   const [progress, setProgress] = useState<Progress | null>(null)
   const [runs, setRuns] = useState<RunResult[]>([])
   const [summary, setSummary] = useState<string | null>(null)
+  const [currency, setCurrency] = useState<{ symbol: string; aws_fx_rate: number; fx_rate: number }>({ symbol: '$', aws_fx_rate: 1.0, fx_rate: 1.0 })
   const [refineOpen, setRefineOpen] = useState(false)
   const [instruction, setInstruction] = useState('')
   const [refining, setRefining] = useState(false)
@@ -441,7 +445,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
           setTimeout(poll, 5000)
         } else if (j.status === 'done' && prevStatus !== 'done') {
           // First time we see done — fetch runs + summary.
-          getRuns(id).then(r => { if (!cancelled) setRuns(r) })
+          getRuns(id).then(r => { if (!cancelled) { setRuns(r.runs); setCurrency({ symbol: r.currency.symbol, aws_fx_rate: r.currency.aws_fx_rate, fx_rate: r.currency.fx_rate }) } })
           getSummary(id).then(s => { if (!cancelled) setSummary(s) })
         }
         prevStatus = j.status
@@ -485,9 +489,18 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
     <Layout user={user}>
       <div className="max-w-5xl mx-auto px-6 py-10 grid gap-8 lg:grid-cols-[1fr_320px]">
         <main className="flex flex-col gap-6">
-          <h1 className="text-2xl font-semibold anim-fade-in-up">
-            Report for <span className="text-[#645DF6]">{job.prospect}</span>
-          </h1>
+          <div className="flex flex-wrap items-center justify-between gap-3 anim-fade-in-up">
+            <h1 className="text-2xl font-semibold">
+              Report for <span className="text-[#645DF6]">{job.prospect}</span>
+            </h1>
+            {job.engine && (
+              <span className="text-xs px-2.5 py-1 rounded-md bg-white/[0.04] border border-white/10 text-gray-300 font-mono flex items-center gap-1.5" title={`Engine: ${job.engine}${job.engine_version ? ` (${job.engine_version})` : ''}`}>
+                <span className="w-1.5 h-1.5 rounded-full bg-[#00C2BB]"></span>
+                <span>{job.engine}</span>
+                {job.engine_version && <span className="text-gray-500 text-[10px]">v{job.engine_version}</span>}
+              </span>
+            )}
+          </div>
 
           {(job.status === 'pending' || job.status === 'running') && (
             <div className="bg-[#645DF6]/10 border border-[#645DF6]/30 rounded-lg p-4 text-sm anim-scale-in">
@@ -516,7 +529,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
 
           {job.status === 'done' && (
             <>
-              <TotalsCard run={runs[0] ?? null} fallback={job.aws_spend} />
+              <TotalsCard run={runs[0] ?? null} fallback={job.aws_spend} currency={currency} />
 
               <p className="text-xs text-gray-500 leading-relaxed -mt-2 anim-fade-in">
                 AI-generated estimate — verify before sharing. If a mapping looks off,
@@ -530,11 +543,11 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
               )}
 
               <div className="flex flex-col gap-2 anim-fade-in-up delay-175">
-                <p className="text-xs uppercase tracking-wider text-gray-500">Download report</p>
-                <div className="grid grid-cols-3 gap-2">
+                <p className="text-xs uppercase tracking-wider text-gray-500">Download report &amp; Bill</p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   <a href={downloadURL(job.id)}
                     className="btn-shimmer py-2.5 rounded-lg font-medium text-white text-center text-sm block">
-                    ↓ HTML
+                    ↓ HTML Report
                   </a>
                   <a href={downloadURL(job.id, undefined, 'xlsx')}
                     className="rounded-lg border border-white/10 hover:border-[#645DF6]/50 hover:bg-white/[0.04]
@@ -545,6 +558,12 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                     className="rounded-lg border border-white/10 hover:border-[#645DF6]/50 hover:bg-white/[0.04]
                       py-2.5 font-medium text-gray-300 hover:text-white text-center text-sm block transition-colors duration-150">
                     ↓ CSV
+                  </a>
+                  <a href={downloadURL(job.id, undefined, 'bill')}
+                    className="rounded-lg border border-[#00C2BB]/30 text-[#00C2BB] hover:bg-[#00C2BB]/10
+                      py-2.5 font-medium text-center text-sm block transition-colors duration-150"
+                    title="Download original uploaded AWS Bill file">
+                    ↓ Original Bill
                   </a>
                 </div>
                 <div className="mt-2 flex items-center justify-between gap-3">
@@ -606,10 +625,10 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                             <tr className="border-b border-white/5">
                               <td className="py-2 text-gray-400">AWS Cost</td>
                               <td className="py-2 text-right font-mono">
-                                ${comparison.run_a.aws_total?.toFixed(2) ?? '—'}
+                                {comparison.run_a.aws_total != null ? formatMoney(comparison.run_a.aws_total * currency.aws_fx_rate, currency.symbol) : '—'}
                               </td>
                               <td className="py-2 text-right font-mono">
-                                ${comparison.run_b.aws_total?.toFixed(2) ?? '—'}
+                                {comparison.run_b.aws_total != null ? formatMoney(comparison.run_b.aws_total * currency.aws_fx_rate, currency.symbol) : '—'}
                               </td>
                               <td className="py-2 text-right font-mono">
                                 {comparison.aws_delta >= 0 ? '+' : ''}{comparison.aws_delta?.toFixed(2)}
@@ -618,10 +637,10 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                             <tr className="border-b border-white/5">
                               <td className="py-2 text-gray-400">GCP On-Demand</td>
                               <td className="py-2 text-right font-mono">
-                                ${comparison.run_a.gcp_od?.toFixed(2) ?? '—'}
+                                {comparison.run_a.gcp_od != null ? formatMoney(comparison.run_a.gcp_od * currency.fx_rate, currency.symbol) : '—'}
                               </td>
                               <td className="py-2 text-right font-mono">
-                                ${comparison.run_b.gcp_od?.toFixed(2) ?? '—'}
+                                {comparison.run_b.gcp_od != null ? formatMoney(comparison.run_b.gcp_od * currency.fx_rate, currency.symbol) : '—'}
                               </td>
                               <td className="py-2 text-right font-mono">
                                 {comparison.gcp_od_delta >= 0 ? '+' : ''}${comparison.gcp_od_delta?.toFixed(2)}
@@ -630,10 +649,10 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                             <tr className="border-b border-white/5">
                               <td className="py-2 text-gray-400">GCP 1-Yr CUD</td>
                               <td className="py-2 text-right font-mono">
-                                ${comparison.run_a.gcp_1yr_cud?.toFixed(2) ?? '—'}
+                                {comparison.run_a.gcp_1yr_cud != null ? formatMoney(comparison.run_a.gcp_1yr_cud * currency.fx_rate, currency.symbol) : '—'}
                               </td>
                               <td className="py-2 text-right font-mono">
-                                ${comparison.run_b.gcp_1yr_cud?.toFixed(2) ?? '—'}
+                                {comparison.run_b.gcp_1yr_cud != null ? formatMoney(comparison.run_b.gcp_1yr_cud * currency.fx_rate, currency.symbol) : '—'}
                               </td>
                               <td className="py-2 text-right font-mono">
                                 {comparison.gcp_1yr_cud_delta >= 0 ? '+' : ''}{comparison.gcp_1yr_cud_delta?.toFixed(2)}
@@ -642,10 +661,10 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                             <tr>
                               <td className="py-2 text-gray-400">GCP 3-Yr CUD</td>
                               <td className="py-2 text-right font-mono">
-                                ${comparison.run_a.gcp_3yr_cud?.toFixed(2) ?? '—'}
+                                {comparison.run_a.gcp_3yr_cud != null ? formatMoney(comparison.run_a.gcp_3yr_cud * currency.fx_rate, currency.symbol) : '—'}
                               </td>
                               <td className="py-2 text-right font-mono">
-                                ${comparison.run_b.gcp_3yr_cud?.toFixed(2) ?? '—'}
+                                {comparison.run_b.gcp_3yr_cud != null ? formatMoney(comparison.run_b.gcp_3yr_cud * currency.fx_rate, currency.symbol) : '—'}
                               </td>
                               <td className="py-2 text-right font-mono">
                                 {comparison.gcp_3yr_cud_delta >= 0 ? '+' : ''}${comparison.gcp_3yr_cud_delta?.toFixed(2)}
@@ -737,7 +756,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                 <div>
                   <strong className="text-orange-400">Report generation failed</strong>
                   {job.error && (
-                    <p className="text-gray-400 text-xs mt-1 font-mono break-words">{job.error}</p>
+                    <pre className="text-gray-400 text-xs mt-1 font-mono whitespace-pre-wrap break-words max-h-80 overflow-auto">{job.error}</pre>
                   )}
                 </div>
                 {retryError && <p className="text-xs text-orange-400">{retryError}</p>}
@@ -764,6 +783,13 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
               </p>
             </div>
           )}
+
+          <Reveal delay={150}>
+            <div>
+              <p className="text-xs uppercase tracking-wider text-gray-500 mb-2">Execution Logs</p>
+              <JobLogsViewer jobId={job.id} isRunning={job.status === 'running' || job.status === 'pending'} />
+            </div>
+          </Reveal>
 
           <div className="flex items-center justify-between pt-2 border-t border-white/5">
             <Link to="/" className="nav-link text-xs text-[#645DF6]">← New Estimation</Link>

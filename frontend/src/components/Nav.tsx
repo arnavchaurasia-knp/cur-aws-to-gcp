@@ -1,7 +1,9 @@
 import facetsFIcon from '../assets/facets-logo-f.svg'
 import type { UserInfo } from '../api/auth'
+import { getUserToken, regenerateUserToken } from '../api/auth'
 import { Link, useLocation } from 'react-router-dom'
 import { useState, useRef, useEffect } from 'react'
+import { toast } from 'sonner'
 
 export function Nav({ user }: Readonly<{ user: UserInfo }>) {
   const location = useLocation()
@@ -229,7 +231,7 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
   )
 }
 
-function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
+export function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const initial = (user.name || user.email || '?').trim().charAt(0).toUpperCase()
@@ -248,6 +250,45 @@ function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
       document.removeEventListener('touchstart', handleClickOutside)
     }
   }, [open])
+
+  const [apiToken, setApiToken] = useState<string>('')
+  const [tokenLoading, setTokenLoading] = useState(false)
+  const [showToken, setShowToken] = useState(false)
+
+  // Fetch API token when menu opens
+  useEffect(() => {
+    if (open && !apiToken && !tokenLoading) {
+      setTokenLoading(true)
+      getUserToken()
+        .then(res => setApiToken(res.token))
+        .catch(() => setApiToken(''))
+        .finally(() => setTokenLoading(false))
+    }
+  }, [open, apiToken, tokenLoading])
+
+  const handleCopyToken = () => {
+    if (!apiToken) return
+    navigator.clipboard.writeText(apiToken)
+    toast.success('MCP Access Token copied to clipboard! Ready for Claude Desktop & Praxis.', {
+      description: `Bearer token: ${apiToken.slice(0, 10)}...${apiToken.slice(-4)}`,
+    })
+  }
+
+  const handleRegenerateToken = async () => {
+    if (!window.confirm('Regenerate access token? Existing integrations will need to be updated with the new token.')) {
+      return
+    }
+    setTokenLoading(true)
+    try {
+      const res = await regenerateUserToken()
+      setApiToken(res.token)
+      toast.success('New Access Token generated successfully!')
+    } catch {
+      toast.error('Failed to regenerate token')
+    } finally {
+      setTokenLoading(false)
+    }
+  }
 
   return (
     <div className="relative" ref={menuRef}>
@@ -278,7 +319,7 @@ function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-64 z-50 rounded-lg border border-white/10 bg-[#13131a] shadow-2xl overflow-hidden anim-scale-in">
+        <div className="absolute right-0 mt-2 w-72 z-50 rounded-lg border border-white/10 bg-[#13131a] shadow-2xl overflow-hidden anim-scale-in">
           <div className="px-4 py-3 border-b border-white/10">
             <p className="text-sm font-medium text-white truncate">{user.name || 'Signed in'}</p>
             <p className="text-xs text-gray-400 truncate">{user.email}</p>
@@ -288,6 +329,69 @@ function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
               </span>
             )}
           </div>
+
+          {/* 1. Profile first */}
+          <div className="py-1 border-b border-white/10">
+            <Link
+              to="/profile"
+              onClick={() => setOpen(false)}
+              className="w-full text-left px-4 py-2 text-xs text-gray-300 hover:bg-white/5 hover:text-white transition-colors flex items-center justify-between"
+            >
+              <span className="flex items-center gap-2">
+                <span>👤</span>
+                <span className="font-medium text-white">Profile &amp; Settings</span>
+              </span>
+              <span className="text-[10px] text-gray-500">Edit</span>
+            </Link>
+          </div>
+
+          {/* 2. Access Token for MCP / Claude / Praxis */}
+          <div className="py-2.5 px-4 border-b border-white/10 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+                <span>🔑</span> Access Token (MCP / Claude)
+              </span>
+              <button
+                onClick={handleRegenerateToken}
+                disabled={tokenLoading}
+                className="text-[10px] text-gray-500 hover:text-gray-300 underline cursor-pointer disabled:opacity-40"
+                title="Regenerate token"
+              >
+                Reset
+              </button>
+            </div>
+            <p className="text-[10px] text-gray-500 leading-tight">
+              Bearer token to connect Praxis &amp; Claude directly to the Cost Engine.
+            </p>
+            <div className="flex items-center gap-1.5 pt-1">
+              <div className="relative flex-1">
+                <input
+                  type={showToken ? 'text' : 'password'}
+                  readOnly
+                  value={tokenLoading ? 'Loading token...' : apiToken || 'Generating...'}
+                  className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 pr-7 text-[11px] font-mono text-gray-300 select-all outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowToken(v => !v)}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-200 text-[10px]"
+                  title={showToken ? 'Hide token' : 'Show token'}
+                >
+                  {showToken ? '🙈' : '👁️'}
+                </button>
+              </div>
+              <button
+                onClick={handleCopyToken}
+                disabled={!apiToken || tokenLoading}
+                className="shrink-0 text-[10px] px-2.5 py-1 rounded bg-[#645DF6]/20 hover:bg-[#645DF6]/40 text-[#645DF6] border border-[#645DF6]/30 font-medium cursor-pointer transition-colors disabled:opacity-40"
+                title="Copy MCP API Token"
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+
+          {/* 3. Currency Preferences Route Link */}
 
           {user.is_facets_employee && (
             <div className="py-1 border-b border-white/10 text-xs">
@@ -302,25 +406,18 @@ function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
             </div>
           )}
 
-          <button
-            onClick={async () => {
-              setOpen(false)
-              await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
-              window.location.replace('/login')
-            }}
-            className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-white/5 hover:text-white transition-colors duration-150 cursor-pointer"
-          >
-            Sign Out
-          </button>
-
-          <div className="pt-3 border-t border-white/10">
-            <Link
-              to="/profile"
-              onClick={() => setOpen(false)}
-              className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-white/5 hover:text-white transition-colors duration-150 cursor-pointer flex items-center justify-between"
+          {/* Sign out */}
+          <div className="py-1">
+            <button
+              onClick={async () => {
+                setOpen(false)
+                await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+                window.location.replace('/login')
+              }}
+              className="w-full text-left px-4 py-2 text-xs text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
             >
-              <span>👤 Profile</span>
-            </Link>
+              Sign Out
+            </button>
           </div>
         </div>
       )}

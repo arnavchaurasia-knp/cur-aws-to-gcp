@@ -90,10 +90,10 @@ func TestAdminEmailsOverridesStoredViewerRole(t *testing.T) {
 	assert.True(t, sess.IsAdmin(adminEmails), "ADMIN_EMAILS must act as break-glass even when stored role is viewer")
 }
 
-// 4. A non-Facets address is not an admin regardless of role or ADMIN_EMAILS.
-func TestNonFacetsNeverAdminEvenWithAdminRoleOrAdminEmails(t *testing.T) {
+// 4. A non-Facets address can be granted admin and revoked back to viewer.
+func TestNonFacetsAdminGrantAndRevoke(t *testing.T) {
 	d := newTestDB(t)
-	email := "attacker@gmail.com"
+	email := "external-partner@gmail.com"
 
 	err := d.SetUserRole(email, "admin")
 	require.NoError(t, err)
@@ -102,12 +102,21 @@ func TestNonFacetsNeverAdminEvenWithAdminRoleOrAdminEmails(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "admin", role)
 
-	sess := &auth.Session{Email: email, Role: role}
-	adminEmails := []string{"attacker@gmail.com"}
-	assert.False(t, sess.IsAdmin(adminEmails), "Non-Facets address must never be admin even if in adminEmails")
+	sess := &auth.Session{Email: email, Role: role, AdminGrantedBy: "boss@facets.cloud"}
+	assert.True(t, sess.IsAdmin(nil), "Non-Facets address granted admin role must be admin")
 
-	sessNoList := &auth.Session{Email: email, Role: "admin"}
-	assert.False(t, sessNoList.IsAdmin(nil), "Non-Facets address must never be admin even with role=admin")
+	// Revoke admin access
+	err = d.SetUserRole(email, "viewer")
+	require.NoError(t, err)
+	roleRevoked, err := d.GetUserRole(email)
+	require.NoError(t, err)
+	assert.Equal(t, "viewer", roleRevoked)
+
+	sessRevoked := &auth.Session{Email: email, Role: roleRevoked}
+	assert.False(t, sessRevoked.IsAdmin(nil), "Non-Facets address revoked to viewer must not be admin")
+
+	// Break-glass adminEmails grants admin even if viewer
+	assert.True(t, sessRevoked.IsAdmin([]string{"external-partner@gmail.com"}), "Non-facets address in adminEmails must be admin")
 }
 
 // 5. Test that demotion of a Facets user survives restarts (A-3 one-shot schema migration).

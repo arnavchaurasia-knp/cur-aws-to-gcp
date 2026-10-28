@@ -9,15 +9,18 @@ import { AdminAssumptions } from './pages/AdminAssumptions'
 import { AdminReportSettings } from './pages/AdminReportSettings'
 import { AdminAudit } from './pages/AdminAudit'
 import { AdminAnalytics } from './pages/AdminAnalytics'
+import { AdminNotifications } from './pages/AdminNotifications'
 import { SharedReport } from './pages/SharedReport'
 import { Tickets } from './pages/Tickets'
 import { Profile } from './pages/Profile'
 import { Bills } from './pages/Bills'
+import { ReleaseDashboard } from './pages/ReleaseDashboard'
 import { useEffect, useState } from 'react'
 import { getMe } from './api/auth'
 import type { UserInfo } from './api/auth'
 import { Toaster } from 'sonner'
 import { ThemeProvider } from './lib/themeContext'
+import { PreferencesProvider } from './lib/preferencesContext'
 
 export default function App() {
   const [user, setUser] = useState<UserInfo | null | undefined>(undefined)
@@ -47,11 +50,13 @@ export default function App() {
 
   return (
     <ThemeProvider>
-      <BrowserRouter>
-        <Toaster position="top-center" richColors closeButton theme="dark" duration={3500} toastOptions={{ duration: 3500 }} visibleToasts={3} />
+      <PreferencesProvider>
+        <BrowserRouter>
+          <Toaster position="top-center" richColors closeButton theme="dark" duration={3500} toastOptions={{ duration: 3500 }} visibleToasts={3} />
         <Routes>
           <Route path="/login" element={user ? <Navigate to="/" /> : <Login />} />
           <Route path="/" element={user ? <Upload user={user} /> : <Navigate to="/login" />} />
+          <Route path="/releases" element={user ? <ReleaseDashboard user={user} /> : <Navigate to="/login" />} />
           <Route path="/jobs/:id" element={user ? <JobStatus user={user} /> : <Navigate to="/login" />} />
           <Route path="/admin" element={user && isAdmin ? <AdminJobs user={user} /> : <Navigate to="/" />} />
           <Route path="/admin/users" element={user && isAdmin ? <AdminUsers user={user} /> : <Navigate to="/" />} />
@@ -60,6 +65,7 @@ export default function App() {
           <Route path="/admin/report-settings" element={user && isAdmin ? <AdminReportSettings user={user} /> : <Navigate to="/" />} />
           <Route path="/admin/audit" element={user && isAdmin ? <AdminAudit user={user} /> : <Navigate to="/" />} />
           <Route path="/admin/analytics" element={user && isAdmin ? <AdminAnalytics user={user} /> : <Navigate to="/" />} />
+          <Route path="/admin/notifications" element={user && isAdmin ? <AdminNotifications user={user} /> : <Navigate to="/" />} />
           <Route path="/admin/tickets" element={user ? <Tickets user={user} /> : <Navigate to="/login" />} />
         <Route path="/admin/bills" element={user && isAdmin ? <Bills user={user} /> : <Navigate to="/" />} />
         <Route path="/profile" element={user ? <Profile user={user} /> : <Navigate to="/login" />} />
@@ -67,6 +73,7 @@ export default function App() {
           <Route path="*" element={<Navigate to={user ? "/" : "/login"} replace />} />
         </Routes>
       </BrowserRouter>
-    </ThemeProvider>
+    </PreferencesProvider>
+  </ThemeProvider>
   )
 }

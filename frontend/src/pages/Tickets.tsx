@@ -172,11 +172,11 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
               <select
                 value={newPriority}
                 onChange={e => setNewPriority(e.target.value)}
-                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-[#645DF6] transition-colors"
+                className="w-full bg-[#0e0e14] border border-white/20 rounded-lg px-3 py-2 text-sm text-white focus:border-[#645DF6] transition-colors cursor-pointer"
               >
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
+                <option value="low" className="bg-[#0e0e14] text-white">Low</option>
+                <option value="medium" className="bg-[#0e0e14] text-white">Medium</option>
+                <option value="high" className="bg-[#0e0e14] text-white">High</option>
               </select>
             </div>
             <div>
@@ -184,12 +184,12 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
               <select
                 value={newCategory}
                 onChange={e => setNewCategory(e.target.value)}
-                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-[#645DF6] transition-colors"
+                className="w-full bg-[#0e0e14] border border-white/20 rounded-lg px-3 py-2 text-sm text-white focus:border-[#645DF6] transition-colors cursor-pointer"
               >
-                <option value="general">General</option>
-                <option value="billing">Billing</option>
-                <option value="technical">Technical</option>
-                <option value="feature">Feature Request</option>
+                <option value="general" className="bg-[#0e0e14] text-white">General</option>
+                <option value="billing" className="bg-[#0e0e14] text-white">Billing</option>
+                <option value="technical" className="bg-[#0e0e14] text-white">Technical</option>
+                <option value="feature" className="bg-[#0e0e14] text-white">Feature Request</option>
               </select>
             </div>
             <div className="col-span-full sm:col-span-2 lg:col-span-2">
@@ -323,12 +323,12 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
                       value={editStatus}
                       onChange={e => setEditStatus(e.target.value)}
                       disabled={!isAdmin}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-[#645DF6] transition-colors disabled:opacity-50"
+                      className="w-full bg-[#0e0e14] border border-white/20 rounded-lg px-3 py-2 text-sm text-white focus:border-[#645DF6] transition-colors disabled:opacity-50 cursor-pointer"
                     >
-                      <option value="open">Open</option>
-                      <option value="in_progress">In Progress</option>
-                      <option value="resolved">Resolved</option>
-                      <option value="closed">Closed</option>
+                      <option value="open" className="bg-[#0e0e14] text-white">Open</option>
+                      <option value="in_progress" className="bg-[#0e0e14] text-white">In Progress</option>
+                      <option value="resolved" className="bg-[#0e0e14] text-white">Resolved</option>
+                      <option value="closed" className="bg-[#0e0e14] text-white">Closed</option>
                     </select>
                   </div>
                   <div>
@@ -336,11 +336,11 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
                     <select
                       value={editPriority}
                       onChange={e => setEditPriority(e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-[#645DF6] transition-colors"
+                      className="w-full bg-[#0e0e14] border border-white/20 rounded-lg px-3 py-2 text-sm text-white focus:border-[#645DF6] transition-colors cursor-pointer"
                     >
-                      <option value="low">Low</option>
-                      <option value="medium">Medium</option>
-                      <option value="high">High</option>
+                      <option value="low" className="bg-[#0e0e14] text-white">Low</option>
+                      <option value="medium" className="bg-[#0e0e14] text-white">Medium</option>
+                      <option value="high" className="bg-[#0e0e14] text-white">High</option>
                     </select>
                   </div>
                   <div>
@@ -348,12 +348,12 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
                     <select
                       value={editCategory}
                       onChange={e => setEditCategory(e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-[#645DF6] transition-colors"
+                      className="w-full bg-[#0e0e14] border border-white/20 rounded-lg px-3 py-2 text-sm text-white focus:border-[#645DF6] transition-colors cursor-pointer"
                     >
-                      <option value="general">General</option>
-                      <option value="billing">Billing</option>
-                      <option value="technical">Technical</option>
-                      <option value="feature">Feature Request</option>
+                      <option value="general" className="bg-[#0e0e14] text-white">General</option>
+                      <option value="billing" className="bg-[#0e0e14] text-white">Billing</option>
+                      <option value="technical" className="bg-[#0e0e14] text-white">Technical</option>
+                      <option value="feature" className="bg-[#0e0e14] text-white">Feature Request</option>
                     </select>
                   </div>
                 </div>

@@ -1,28 +1,221 @@
 @import "tailwindcss";
 
 :root {
+  /* Facets Brand & Theme Palette */
   --facets-purple: #645DF6;
+  --facets-purple-hover: #5046e5;
   --facets-teal: #00C2BB;
+  --facets-teal-hover: #00a8a2;
+  --facets-blue: #2563EB;
+  --facets-pink: #db2777;
+
+  /* Dark Theme Tokens (Default Facets Control Plane) */
+  --fcp-bg-base: #0c0d14;
+  --fcp-bg-surface: #12131d;
+  --fcp-bg-raised: #181926;
+  --fcp-bg-subtle: rgba(255, 255, 255, 0.03);
+  --fcp-bg-hover: rgba(255, 255, 255, 0.06);
+  --fcp-text-primary: #f8fafc;
+  --fcp-text-secondary: #94a3b8;
+  --fcp-text-tertiary: #64748b;
+  --fcp-border-subtle: rgba(255, 255, 255, 0.12);
+  --fcp-border-strong: rgba(255, 255, 255, 0.22);
+  --fcp-table-header-bg: #151622;
+  --fcp-table-border: rgba(255, 255, 255, 0.12);
+  --fcp-table-row-hover: rgba(255, 255, 255, 0.04);
+  --fcp-input-bg: #090a10;
+  --fcp-input-border: rgba(255, 255, 255, 0.16);
+  --fcp-card-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.45);
 }
 
-/* ── Global page base & high refresh rate (120Hz/144Hz+) ─────── */
+/* Light Theme Tokens (Refined Facets Enterprise IDP style) */
+html:not(.dark) {
+  --fcp-bg-base: #f8fafc;
+  --fcp-bg-surface: #ffffff;
+  --fcp-bg-raised: #f1f5f9;
+  --fcp-bg-subtle: #f8fafc;
+  --fcp-bg-hover: #f1f5f9;
+  --fcp-text-primary: #0f172a;
+  --fcp-text-secondary: #475569;
+  --fcp-text-tertiary: #64748b;
+  --fcp-border-subtle: #e2e8f0;
+  --fcp-border-strong: #cbd5e1;
+  --fcp-table-header-bg: #f1f5f9;
+  --fcp-table-border: #e2e8f0;
+  --fcp-table-row-hover: #f8fafc;
+  --fcp-input-bg: #ffffff;
+  --fcp-input-border: #cbd5e1;
+  --fcp-card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.07), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+}
+
+/* ── Global page base & high refresh rate ──────────────────────── */
 html {
   scroll-behavior: smooth;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Plus Jakarta Sans', Inter, Oxygen, Ubuntu, Cantarell, sans-serif;
 }
 
 body {
-  background-color: #0a0a0f;
-  /* subtle dot grid */
-  background-image: radial-gradient(rgba(255,255,255,0.032) 1px, transparent 1px);
-  background-size: 22px 22px;
+  background-color: var(--fcp-bg-base);
+  color: var(--fcp-text-primary);
+  background-image: radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 24px 24px;
   overflow-x: hidden;
-  /* GPU layer promotion for jitter-free 120Hz/144Hz rendering */
-  transform: translate3d(0, 0, 0);
-  backface-visibility: hidden;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* ── LIGHT MODE OVERRIDES & ELEVATION ──────────────────────────── */
+html:not(.dark) body {
+  background-color: #f8fafc;
+  color: #0f172a;
+  background-image: radial-gradient(#cbd5e1 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Surfaces: Top Header & Left Sidebar in Light Mode */
+html:not(.dark) header,
+html:not(.dark) aside {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  color: #0f172a !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05) !important;
+}
+
+html:not(.dark) .bg-\[\#0a0a0f\],
+html:not(.dark) .bg-\[\#0c0d14\],
+html:not(.dark) .bg-\[\#0e0e14\],
+html:not(.dark) .bg-black\/30 {
+  background-color: #ffffff !important;
+}
+
+html:not(.dark) .bg-\[\#13131a\],
+html:not(.dark) .bg-\[\#12121a\],
+html:not(.dark) .bg-\[\#090a0f\] {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.08) !important;
+}
+
+/* Typography contrast in Light Mode */
+html:not(.dark) .text-white,
+html:not(.dark) .text-gray-100,
+html:not(.dark) .text-gray-200 {
+  color: #0f172a !important;
+}
+
+html:not(.dark) .text-gray-300,
+html:not(.dark) .text-gray-400 {
+  color: #475569 !important;
+}
+
+html:not(.dark) .text-gray-500 {
+  color: #64748b !important;
+}
+
+/* Crisp, visible table borders in Light Mode */
+html:not(.dark) table {
+  color: #0f172a !important;
+  border-collapse: collapse;
+}
+
+html:not(.dark) thead,
+html:not(.dark) th {
+  background-color: #f1f5f9 !important;
+  color: #475569 !important;
+  font-weight: 600 !important;
+  border-bottom: 1px solid #cbd5e1 !important;
+  border-top: 1px solid #e2e8f0 !important;
+}
+
+html:not(.dark) td {
+  color: #1e293b !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+}
+
+html:not(.dark) tbody tr:hover {
+  background-color: #f8fafc !important;
+}
+
+html:not(.dark) .border-white\/5,
+html:not(.dark) .border-white\/10,
+html:not(.dark) .border-white\/15,
+html:not(.dark) .border-white\/20,
+html:not(.dark) .divide-white\/5,
+html:not(.dark) .divide-white\/10 {
+  border-color: #e2e8f0 !important;
+}
+
+html:not(.dark) .bg-white\/\[0\.02\],
+html:not(.dark) .bg-white\/\[0\.03\],
+html:not(.dark) .bg-white\/\[0\.04\] {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05) !important;
+}
+
+html:not(.dark) .bg-white\/5 {
+  background-color: #f1f5f9 !important;
+  border-color: #e2e8f0 !important;
+}
+
+html:not(.dark) .bg-white\/10 {
+  background-color: #e2e8f0 !important;
+  border-color: #cbd5e1 !important;
+}
+
+/* Inputs & Form Controls in Light Mode */
+html:not(.dark) input,
+html:not(.dark) textarea,
+html:not(.dark) select {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+html:not(.dark) input:focus,
+html:not(.dark) textarea:focus,
+html:not(.dark) select:focus {
+  border-color: #645DF6 !important;
+  box-shadow: 0 0 0 3px rgba(100, 93, 246, 0.15) !important;
+}
+
+html:not(.dark) input::placeholder,
+html:not(.dark) textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+html:not(.dark) select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* ── DARK THEME REFINEMENTS (Visible borders & elevated depth) ──── */
+html.dark table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+html.dark th {
+  background-color: rgba(255, 255, 255, 0.02) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: #94a3b8 !important;
+}
+
+html.dark td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07) !important;
+}
+
+html.dark tr:hover td {
+  background-color: rgba(255, 255, 255, 0.03) !important;
+}
+
+html.dark select,
+html.dark select option {
+  background-color: #0e0f17 !important;
+  color: #f8fafc !important;
 }
 
 /* ── Custom scrollbar ───────────────────────────────────────── */

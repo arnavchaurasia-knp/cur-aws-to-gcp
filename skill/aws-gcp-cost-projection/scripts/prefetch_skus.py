@@ -45,7 +45,15 @@ _gcp_model_config = _load_json(os.path.join(DATA_DIR, "gcp-model-config.json"))
 CORE_GCP_SERVICES = _gcp_model_config.get("prefetch_core_gcp_services", [
     "Compute Engine", "Cloud SQL", "Cloud Storage", "Networking",
     "Cloud Memorystore for Memcached", "Cloud Memorystore for Redis",
-    "Cloud Memorystore", "Artifact Registry",
+    "Cloud Memorystore",
+    # Fargate maps to GKE Autopilot pod CPU/memory SKUs ("Autopilot Pod mCPU
+    # Requests" and the matching memory SKUs, ~800 of them in the catalog).
+    # Without Kubernetes Engine here those rates were never warmed, which is
+    # why Fargate rows carried a NULL gcp cost — the mapper was right and the
+    # rate simply was not fetched. Keep in sync with
+    # data/gcp-model-config.json: the file wins when present.
+    "Kubernetes Engine",
+    "Artifact Registry",
 ])
 
 # AWS Pricing API base — publicly accessible, no credentials required

@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     agent_pid INTEGER DEFAULT 0,
     attempts   INTEGER DEFAULT 1,
     gcp_od     REAL,
+    engine     TEXT,
+    engine_version TEXT,
     created_at DATETIME DEFAULT (datetime('now')),
     updated_at DATETIME DEFAULT (datetime('now')),
     cancelled_at DATETIME
@@ -36,10 +38,13 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE TABLE IF NOT EXISTS users (
     email      TEXT PRIMARY KEY,
     role       TEXT NOT NULL DEFAULT 'viewer',
+    admin_granted_by TEXT,
+    admin_granted_at DATETIME,
     created_at DATETIME DEFAULT (datetime('now')),
     updated_at DATETIME DEFAULT (datetime('now')),
     email_notifications INTEGER NOT NULL DEFAULT 1,
-    slack_notifications INTEGER NOT NULL DEFAULT 0
+    slack_notifications INTEGER NOT NULL DEFAULT 0,
+    default_export_format TEXT DEFAULT 'html'
 );
 
 CREATE TABLE IF NOT EXISTS admin_audit (
@@ -145,6 +150,17 @@ CREATE TABLE IF NOT EXISTS job_diagnostics (
     PRIMARY KEY (job_id, run_id)
 );
 
+CREATE TABLE IF NOT EXISTS job_log_digest (
+    job_id        TEXT NOT NULL,
+    run_id        TEXT NOT NULL,
+    error_count   INTEGER NOT NULL DEFAULT 0,
+    warn_count    INTEGER NOT NULL DEFAULT 0,
+    first_error   TEXT,
+    last_lines    TEXT,
+    recorded_at   DATETIME DEFAULT (datetime('now')),
+    PRIMARY KEY (job_id, run_id)
+);
+
 CREATE TABLE IF NOT EXISTS uploaded_bills (
     content_hash TEXT PRIMARY KEY,
     input_ext    TEXT NOT NULL,
@@ -220,15 +236,35 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 		`ALTER TABLE jobs ADD COLUMN attempts INTEGER DEFAULT 1`,
 		`ALTER TABLE jobs ADD COLUMN cancelled_at DATETIME`,
 		`ALTER TABLE users ADD COLUMN password_hash TEXT`,
+		`ALTER TABLE users ADD COLUMN email_notifications INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE users ADD COLUMN slack_notifications INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE users ADD COLUMN slack_webhook_url TEXT DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN slack_channel TEXT DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN api_token TEXT DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN admin_granted_by TEXT`,
+		`ALTER TABLE users ADD COLUMN admin_granted_at DATETIME`,
 		`ALTER TABLE jobs ADD COLUMN assumptions_version TEXT`,
+		`ALTER TABLE jobs ADD COLUMN engine TEXT`,
+		`ALTER TABLE jobs ADD COLUMN engine_version TEXT`,
 		`ALTER TABLE jobs ADD COLUMN gcp_od REAL`,
 		`ALTER TABLE deleted_jobs ADD COLUMN gcp_od REAL`,
+		`ALTER TABLE users ADD COLUMN default_export_format TEXT DEFAULT 'html'`,
 		`CREATE TABLE IF NOT EXISTS uploaded_bills (
 			content_hash TEXT PRIMARY KEY,
 			input_ext    TEXT NOT NULL,
 			file_size    INTEGER NOT NULL,
 			file_name    TEXT,
 			created_at   DATETIME DEFAULT (datetime('now'))
+		)`,
+		`CREATE TABLE IF NOT EXISTS job_log_digest (
+			job_id        TEXT NOT NULL,
+			run_id        TEXT NOT NULL,
+			error_count   INTEGER NOT NULL DEFAULT 0,
+			warn_count    INTEGER NOT NULL DEFAULT 0,
+			first_error   TEXT,
+			last_lines    TEXT,
+			recorded_at   DATETIME DEFAULT (datetime('now')),
+			PRIMARY KEY (job_id, run_id)
 		)`,
 	} {
 		if _, err := conn.Exec(ddl); err != nil {
@@ -307,7 +343,13 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 			('section_data_gaps', 'false', 'bool', 'false', NULL, NULL, 'Data gaps', 'Rows that could not be fully priced', 'sections', 4),
 			('section_coverage', 'true', 'bool', 'true', NULL, NULL, 'Coverage statement', 'Customer-facing line stating what share of workload spend was priced against a specific GCP SKU', 'sections', 5),
 			-- group 'rows' (number)
-			('row_min_cost_usd', '0', 'number', '0', 0.0, 1000000.0, 'Hide rows below this cost', 'Rows cheaper than this are not listed. Totals still include them.', 'rows', 1)
+			('row_min_cost_usd', '0', 'number', '0', 0.0, 1000000.0, 'Hide rows below this cost', 'Rows cheaper than this are not listed. Totals still include them.', 'rows', 1),
+			-- group 'engine' (enum/string)
+			('default_engine', 'gemini-3.8-flash', 'string', 'gemini-3.8-flash', NULL, NULL, 'Default Engine', 'The model used when the user does not choose', 'engine', 1),
+			('allowed_engines', 'gemini-3.8-flash,gemini-2.5-pro,gemini-2.5-flash', 'string', 'gemini-3.8-flash,gemini-2.5-pro,gemini-2.5-flash', NULL, NULL, 'Allowed Engines', 'Comma-separated list of engines the user may pick from', 'engine', 2),
+			-- group 'quotas' (number)
+			('max_jobs_per_day', '20', 'number', '20', 1.0, 10000.0, 'Max Jobs Per Day', 'Maximum jobs a non-admin user may submit in a rolling 24-hour window', 'quotas', 1),
+			('max_concurrent_jobs', '2', 'number', '2', 1.0, 100.0, 'Max Concurrent Jobs', 'Maximum concurrent running jobs for a non-admin user', 'quotas', 2)
 	`); err != nil {
 		return nil, fmt.Errorf("seed report_settings: %w", err)
 	}

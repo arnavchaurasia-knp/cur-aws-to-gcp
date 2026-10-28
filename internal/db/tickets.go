@@ -199,34 +199,55 @@ func (d *DB) SaveUserProfile(p *UserProfile) error {
 
 // NotificationSettings represents a user's email/slack notification preferences.
 type NotificationSettings struct {
-	EmailNotifications   bool `json:"email_notifications"`
-	SlackNotifications   bool `json:"slack_notifications"`
+	EmailNotifications bool   `json:"email_notifications"`
+	SlackNotifications bool   `json:"slack_notifications"`
+	SlackWebhookURL    string `json:"slack_webhook_url"`
+	SlackChannel       string `json:"slack_channel"`
 }
 
 // GetNotificationSettings returns a user's notification preferences.
 func (d *DB) GetNotificationSettings(email string) (*NotificationSettings, error) {
 	var emailNotif, slackNotif int
+	var webhookURL, channel sql.NullString
 	err := d.conn.QueryRow(`
-		SELECT email_notifications, slack_notifications
+		SELECT email_notifications, slack_notifications,
+		       COALESCE(slack_webhook_url, ''), COALESCE(slack_channel, '')
 		FROM users
 		WHERE email = ?
-	`, email).Scan(&emailNotif, &slackNotif)
+	`, email).Scan(&emailNotif, &slackNotif, &webhookURL, &channel)
+	if err == sql.ErrNoRows {
+		// Default settings for user not yet in users table
+		return &NotificationSettings{
+			EmailNotifications: true,
+			SlackNotifications: false,
+			SlackWebhookURL:    "",
+			SlackChannel:       "",
+		}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 	return &NotificationSettings{
 		EmailNotifications: emailNotif == 1,
 		SlackNotifications: slackNotif == 1,
+		SlackWebhookURL:    webhookURL.String,
+		SlackChannel:       channel.String,
 	}, nil
 }
 
 // UpdateNotificationSettings updates a user's notification preferences.
-func (d *DB) UpdateNotificationSettings(email string, emailNotif, slackNotif bool) error {
+func (d *DB) UpdateNotificationSettings(email string, emailNotif, slackNotif bool, slackWebhookURL, slackChannel string) error {
+	// Upsert into users table so users logging in via bypass or first-time session exist
 	_, err := d.conn.Exec(`
-		UPDATE users
-		SET email_notifications = ?, slack_notifications = ?, updated_at = datetime('now')
-		WHERE email = ?
-	`, boolToInt(emailNotif), boolToInt(slackNotif), email)
+		INSERT INTO users (email, email_notifications, slack_notifications, slack_webhook_url, slack_channel, updated_at)
+		VALUES (?, ?, ?, ?, ?, datetime('now'))
+		ON CONFLICT(email) DO UPDATE SET
+			email_notifications = excluded.email_notifications,
+			slack_notifications = excluded.slack_notifications,
+			slack_webhook_url   = excluded.slack_webhook_url,
+			slack_channel       = excluded.slack_channel,
+			updated_at          = excluded.updated_at
+	`, email, boolToInt(emailNotif), boolToInt(slackNotif), slackWebhookURL, slackChannel)
 	return err
 }
 

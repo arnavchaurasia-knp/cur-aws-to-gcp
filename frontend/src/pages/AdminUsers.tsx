@@ -82,41 +82,50 @@ export function AdminUsers({ user }: Readonly<{ user: UserInfo }>) {
               </thead>
               <tbody className="divide-y divide-white/5">
                 {filteredUsers.map(u => {
-                  const canSetAdmin = Boolean(user?.is_facets_employee)
-                  const isStoredAdminNonFacets = u.role === 'admin' && !canSetAdmin
+                  const lowerEmail = u.email.toLowerCase()
+                  const isFacets = lowerEmail.endsWith('@facets.cloud') || lowerEmail.endsWith('@facets.io') || lowerEmail.includes('@facets.')
 
                   return (
                     <tr key={u.email} className="hover:bg-white/[0.02] transition-colors">
                       <td className="px-5 py-3 text-gray-200 font-mono text-xs">
                         <div className="flex items-center gap-2">
                           <span>{u.email}</span>
-                          {isStoredAdminNonFacets && (
+                          {isFacets && (
                             <span
-                              title="Stored as admin, not effective (restricted to @facets accounts)"
-                              className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                              title="@facets accounts are permanently admin"
+                              className="px-1.5 py-0.5 rounded text-[10px] bg-[#645DF6]/15 text-[#8680FF] border border-[#645DF6]/30 font-sans"
                             >
-                              ineffective admin
+                              facets core
                             </span>
                           )}
                         </div>
                       </td>
                       <td className="px-5 py-3">
-                        <select
-                          value={u.role}
-                          disabled={busy.has(u.email)}
-                          onChange={e => handleChange(u.email, e.target.value)}
-                          className="bg-white/5 border border-white/10 rounded-lg px-2.5 py-1 text-xs text-gray-200 disabled:opacity-40 focus:outline-none focus:border-[#645DF6]"
-                        >
-                          <option value="viewer" className="bg-gray-900 text-white">viewer</option>
-                          <option
-                            value="admin"
-                            disabled={!canSetAdmin}
-                            title={!canSetAdmin ? "Admin access is restricted to @facets accounts" : undefined}
-                            className="bg-gray-900 text-white disabled:text-gray-500"
-                          >
-                            admin {!canSetAdmin ? "(@facets only)" : ""}
-                          </option>
-                        </select>
+                        {isFacets ? (
+                          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-gray-300">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                            <span className="font-medium text-emerald-400">admin</span>
+                            <span className="text-[10px] text-gray-500 ml-1">(locked)</span>
+                          </div>
+                        ) : (
+                          <div className="space-y-1">
+                            <select
+                              value={u.role}
+                              disabled={busy.has(u.email)}
+                              onChange={e => handleChange(u.email, e.target.value)}
+                              className="bg-white/5 border border-white/10 rounded-lg px-2.5 py-1 text-xs text-gray-200 disabled:opacity-40 focus:outline-none focus:border-[#645DF6] cursor-pointer"
+                            >
+                              <option value="viewer" className="bg-gray-900 text-white">viewer</option>
+                              <option value="admin" className="bg-gray-900 text-white">admin</option>
+                            </select>
+                            {u.role === 'admin' && u.admin_granted_by && (
+                              <p className="text-[11px] text-gray-400 font-sans">
+                                admin (granted by <span className="text-[#00C2BB] font-mono">{u.admin_granted_by}</span>
+                                {u.admin_granted_at ? `, ${u.admin_granted_at.slice(0, 10)}` : ''})
+                              </p>
+                            )}
+                          </div>
+                        )}
                         {error[u.email] && <p className="text-xs text-orange-400 mt-1">{error[u.email]}</p>}
                       </td>
                       <td className="px-5 py-3 text-gray-400 text-xs">{new Date(u.updated_at).toLocaleString()}</td>

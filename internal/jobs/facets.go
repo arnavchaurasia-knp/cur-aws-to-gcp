@@ -24,7 +24,6 @@ import (
 
 	"github.com/facets/cur-web/internal/auth"
 	"github.com/facets/cur-web/internal/skill"
-	"github.com/go-chi/chi/v5"
 )
 
 // portfolioSummaryCooldown throttles FacetsPortfolioSummary per session —
@@ -85,29 +84,10 @@ func (h *Handler) FacetsListJobs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(jobs)
 }
 
-// FacetsLogs returns the tail of one job's orchestrator log (agy.log) — the
-// same file the terminal orchestrator writes phase-by-phase progress and
-// script stdout/stderr to. `lines` query param caps how many trailing lines
-// are returned (default 200, capped at 2000 to keep the response bounded).
+// FacetsLogs is a backward-compatible alias for JobLogs, kept for one release.
+// TODO(cleanup): remove once frontend routes point exclusively to /api/jobs/{id}/logs.
 func (h *Handler) FacetsLogs(w http.ResponseWriter, r *http.Request) {
-	if !requireFacetsEmployee(w, r) {
-		return
-	}
-	id := chi.URLParam(r, "id")
-	if !isValidJobID(id) {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		return
-	}
-	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
-	if !strings.HasPrefix(jobDir, filepath.Clean(h.jobsDir)+string(filepath.Separator)) {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		return
-	}
-	logPath := filepath.Join(jobDir, "agy.log")
-	lines := tailLines(logPath, 200, 2000)
-
-	w.Header().Set(contentTypeHeader, contentTypeJSON)
-	json.NewEncoder(w).Encode(map[string]any{"job_id": id, "lines": lines})
+	h.JobLogs(w, r)
 }
 
 // tailLines returns up to `want` trailing lines of path (capped at `max`),

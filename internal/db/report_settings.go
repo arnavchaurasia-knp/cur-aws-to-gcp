@@ -131,8 +131,45 @@ func (d *DB) UpdateReportSetting(key, value, changedBy string) (string, error) {
 		if maxV.Valid && fv > maxV.Float64 {
 			return "", fmt.Errorf("value %g out of range [max=%g]", fv, maxV.Float64)
 		}
+	} else if valueType == "string" {
+		// Validated below for engine settings
 	} else {
 		return "", fmt.Errorf("unknown value_type %q for setting %s", valueType, key)
+	}
+
+	// Phase 2: Engine settings cross-validation
+	if key == "default_engine" {
+		var allowedStr string
+		_ = d.conn.QueryRow(`SELECT value FROM report_settings WHERE key = 'allowed_engines'`).Scan(&allowedStr)
+		if allowedStr != "" {
+			allowedList := strings.Split(allowedStr, ",")
+			found := false
+			for _, e := range allowedList {
+				if strings.TrimSpace(e) == strings.TrimSpace(value) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return "", fmt.Errorf("default_engine %q is not in allowed_engines (%s)", value, allowedStr)
+			}
+		}
+	} else if key == "allowed_engines" {
+		var currentDefault string
+		_ = d.conn.QueryRow(`SELECT value FROM report_settings WHERE key = 'default_engine'`).Scan(&currentDefault)
+		if currentDefault != "" {
+			allowedList := strings.Split(value, ",")
+			found := false
+			for _, e := range allowedList {
+				if strings.TrimSpace(e) == strings.TrimSpace(currentDefault) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return "", fmt.Errorf("allowed_engines must include the current default_engine %q", currentDefault)
+			}
+		}
 	}
 
 	tx, err := d.conn.Begin()
@@ -221,4 +258,69 @@ func (d *DB) ReportSettingsVersionHash() (string, error) {
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, ";")))
 	return hex.EncodeToString(sum[:])[:12], nil
+}
+
+// GetEngineSettings returns default_engine and allowed_engines slice from the database.
+func (d *DB) GetEngineSettings() (defaultEngine string, allowedEngines []string, err error) {
+	rows, err := d.conn.Query(`SELECT key, value FROM report_settings WHERE key IN ('default_engine', 'allowed_engines')`)
+	if err != nil {
+		return "", nil, err
+	}
+	defer rows.Close()
+
+	var allowedStr string
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return "", nil, err
+		}
+		if k == "default_engine" {
+			defaultEngine = strings.TrimSpace(v)
+		} else if k == "allowed_engines" {
+			allowedStr = v
+		}
+	}
+	if defaultEngine == "" {
+		defaultEngine = "gemini-3.8-flash"
+	}
+	if allowedStr != "" {
+		for _, item := range strings.Split(allowedStr, ",") {
+			trimmed := strings.TrimSpace(item)
+			if trimmed != "" {
+				allowedEngines = append(allowedEngines, trimmed)
+			}
+		}
+	}
+	if len(allowedEngines) == 0 {
+		allowedEngines = []string{defaultEngine}
+	}
+	return defaultEngine, allowedEngines, nil
+}
+
+// GetQuotaSettings returns max_jobs_per_day and max_concurrent_jobs.
+func (d *DB) GetQuotaSettings() (maxJobsPerDay int, maxConcurrentJobs int, err error) {
+	maxJobsPerDay = 20
+	maxConcurrentJobs = 2
+
+	rows, err := d.conn.Query(`SELECT key, value FROM report_settings WHERE key IN ('max_jobs_per_day', 'max_concurrent_jobs')`)
+	if err != nil {
+		return maxJobsPerDay, maxConcurrentJobs, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return maxJobsPerDay, maxConcurrentJobs, err
+		}
+		var n int
+		if _, err := fmt.Sscanf(strings.TrimSpace(v), "%d", &n); err == nil && n > 0 {
+			if k == "max_jobs_per_day" {
+				maxJobsPerDay = n
+			} else if k == "max_concurrent_jobs" {
+				maxConcurrentJobs = n
+			}
+		}
+	}
+	return maxJobsPerDay, maxConcurrentJobs, nil
 }

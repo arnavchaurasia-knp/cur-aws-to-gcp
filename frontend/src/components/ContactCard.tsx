@@ -13,10 +13,14 @@ export function ContactCard() {
   }, [open])
 
   const submit = () => {
-    const subject = encodeURIComponent("Contact Request from Facets Cost Projection")
-    const body = encodeURIComponent(message.trim())
-    const mailtoUrl = `mailto:arnav.chaurasia@facets.cloud?subject=${subject}&body=${body}`
-    window.location.href = mailtoUrl
+    const to = 'arnav.chaurasia@facets.cloud'
+    const subject = 'Contact Request from Facets Cost Projection'
+    const bodyText = message.trim() || 'Hello Facets Team,\n\nI would like more information on the infrastructure cost projection.'
+
+    // Directly open Gmail compose URL in a new tab with to, subject, and message body prefilled
+    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyText)}`
+    window.open(gmailUrl, '_blank', 'noopener,noreferrer')
+
     setSent(true)
     setOpen(false)
   }
@@ -24,11 +28,17 @@ export function ContactCard() {
   if (sent) {
     return (
       <div className="bg-white/[0.02] border border-[#00C2BB]/30 rounded-lg p-4 anim-scale-in">
-        <p className="text-xs uppercase tracking-wider text-[#00C2BB] mb-1">Email client opened</p>
+        <p className="text-xs uppercase tracking-wider text-[#00C2BB] mb-1 font-semibold">Gmail Opened</p>
         <p className="text-xs text-gray-400 leading-relaxed">
-          Your default email client should have opened with a message addressed to
-          <strong>arnav.chaurasia@facets.cloud</strong>. Send it to submit your request.
+          Gmail compose has opened in a new tab addressed to{' '}
+          <strong className="text-white">arnav.chaurasia@facets.cloud</strong> with your subject and message prefilled.
         </p>
+        <button
+          onClick={() => { setSent(false); setMessage('') }}
+          className="mt-2.5 text-[11px] text-[#00C2BB] hover:underline cursor-pointer"
+        >
+          Send another message
+        </button>
       </div>
     )
   }

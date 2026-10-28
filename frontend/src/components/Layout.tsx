@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Navigate } from 'react-router-dom'
-import { Nav } from './Nav'
 import { Sidebar } from './Sidebar'
 import { ThemeToggle } from './ThemeToggle'
-import facetsFIcon from '../assets/facets-logo-f.svg'
+import { UserMenu } from './Nav'
+import { NotificationDropdown } from './NotificationDropdown'
 import type { UserInfo } from '../api/auth'
 
 interface LayoutProps {
@@ -13,97 +13,61 @@ interface LayoutProps {
 
 export function Layout({ user, children }: LayoutProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [currency, setCurrency] = useState('USD')
-  const [language, setLanguage] = useState('en')
-
-  // Load preferences from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('cur-web-currency')
-    if (saved) setCurrency(saved as 'USD' | 'EUR' | 'GBP' | 'INR' | 'JPY' | 'SGD')
-    const savedLang = localStorage.getItem('cur-web-language')
-    if (savedLang) setLanguage(savedLang)
-  }, [])
-
-  const handleCurrencyChange = (val: string) => {
-    setCurrency(val)
-    localStorage.setItem('cur-web-currency', val)
-  }
-
-  const handleLanguageChange = (val: string) => {
-    setLanguage(val)
-    localStorage.setItem('cur-web-language', val)
-  }
 
   // Redirect unauthenticated users
   if (!user) return <Navigate to="/login" replace />
 
-  return (
-    <div className="min-h-screen bg-[#0a0a0f] text-white">
-      {/* Top Navbar */}
-      <header className="fixed top-0 left-0 right-0 h-16 z-50 border-b border-white/10 bg-[#0a0a0f]/80 backdrop-blur-md">
-        <div className="flex items-center justify-between px-6 h-full">
-          {/* Left: Logo + currency/language selector */}
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 hidden md:flex">
-              <img src={facetsFIcon} alt="Facets" className="w-5 h-5" />
-              <span className="text-xs font-bold tracking-tight text-[#00C2BB] uppercase">facets</span>
-              <span className="text-xs font-bold tracking-tight text-white">.cloud</span>
-            </div>
+  // Only show menu bar (Sidebar) for admins
+  const isAdmin = Boolean(user?.is_admin)
 
-            {/* Global Currency & Language */}
-            <div className="hidden md:flex items-center gap-6 border-l border-white/10 pl-6">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-400">Currency</span>
-                <select
-                  value={currency}
-                  onChange={e => handleCurrencyChange(e.target.value)}
-                  className="bg-white/[0.03] border border-white/10 rounded px-2 py-1 text-xs text-white focus:border-[#645DF6] outline-none"
-                >
-                  <option value="USD">USD $</option>
-                  <option value="EUR">EUR €</option>
-                  <option value="GBP">GBP £</option>
-                  <option value="INR">INR ₹</option>
-                  <option value="JPY">JPY ¥</option>
-                  <option value="SGD">SGD S$</option>
-                </select>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-400">Language</span>
-                <select
-                  value={language}
-                  onChange={e => handleLanguageChange(e.target.value)}
-                  className="bg-white/[0.03] border border-white/10 rounded px-2 py-1 text-xs text-white focus:border-[#645DF6] outline-none"
-                >
-                  <option value="en">English</option>
-                  <option value="es">Español</option>
-                  <option value="fr">Français</option>
-                  <option value="de">Deutsch</option>
-                  <option value="ja">日本語</option>
-                  <option value="hi">हिन्दी</option>
-                </select>
-              </div>
-            </div>
+  return (
+    <div className="min-h-screen bg-[var(--fcp-bg-base)] text-[var(--fcp-text-primary)] transition-colors duration-200">
+      {/* Top Navbar */}
+      <header
+        className={`fixed top-0 right-0 h-16 z-30 border-b border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-base)]/90 backdrop-blur-md transition-all duration-300 ${
+          !isAdmin ? 'left-0' : sidebarCollapsed ? 'left-16' : 'left-64'
+        }`}
+      >
+        <div className="flex items-center justify-between px-6 h-full">
+          {/* Left: AWS → GCP Cost Projection */}
+          <div className="flex items-center">
+            <span className="text-sm font-semibold tracking-wide">
+              AWS → GCP Cost Projection
+            </span>
           </div>
 
-          {/* Right: Theme toggle + User dropdown */}
-          <div className="flex items-center gap-3">
+          {/* Right: Notification Dropdown (for admins) + Theme Toggle + User Dropdown */}
+          <div className="flex items-center gap-2.5">
+            {/* Admin Interactive Notification Bell with Dropdown */}
+            {isAdmin && <NotificationDropdown />}
+
+            {/* Round Favicon Theme Toggle */}
             <ThemeToggle />
-            <Nav user={user} />
+
+            {/* Separator */}
+            <div className="h-5 w-px bg-white/10" />
+
+            {/* Round User Dropdown Thing */}
+            <UserMenu user={user} />
           </div>
         </div>
       </header>
 
-      {/* Main content area */}
-      <div className={`flex ${sidebarCollapsed ? 'pl-16' : 'pl-64'}`}>
-        {/* Sidebar */}
-        <Sidebar
-          user={user}
-          collapsed={sidebarCollapsed}
-          onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
+      {/* Main content layout */}
+      <div className={`flex transition-all duration-300 ${!isAdmin ? 'pl-0' : sidebarCollapsed ? 'pl-16' : 'pl-64'}`}>
+        {/* Sidebar matching Facets Control Plane specifications (Admins only) */}
+        {isAdmin && (
+          <Sidebar
+            user={user}
+            collapsed={sidebarCollapsed}
+            onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+          />
+        )}
 
-        {/* Page Content */}
-        <main className="flex-1 pt-16 pb-8">{children}</main>
+        {/* Page Content: occupies full page smoothly */}
+        <main className="flex-1 pt-16 min-h-screen overflow-x-hidden">
+          {children}
+        </main>
       </div>
     </div>
   )

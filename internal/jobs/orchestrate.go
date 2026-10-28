@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/facets/cur-web/internal/config"
 )
@@ -564,7 +565,8 @@ func RenderOrchestratorForTest(inputExt string) (string, error) {
 // StartOrchestrated writes run_all.py into jobDir and spawns it detached. The
 // orchestrator drives the six phases; the watcher polls the returned PID and
 // finalizes when the report appears (same contract as the old single-agy Start).
-func (s *Spawner) StartOrchestrated(jobDir, inputExt string) (int, string, error) {
+// Accepts optional engine parameter to override default engine model.
+func (s *Spawner) StartOrchestrated(jobDir, inputExt string, engine ...string) (int, string, error) {
 	// Refuse to start if global STOP_ALL sentinel is set.
 	// STOP_ALL lives in DataDir; jobDir is DataDir/jobs/<id>, so go two levels up.
 	if IsStopAllActive(filepath.Dir(filepath.Dir(filepath.Clean(jobDir)))) {
@@ -590,6 +592,11 @@ func (s *Spawner) StartOrchestrated(jobDir, inputExt string) (int, string, error
 		slog.Warn("assumptions snapshot skipped", "err", serr)
 	}
 
+	selectedModel := s.geminiModel()
+	if len(engine) > 0 && strings.TrimSpace(engine[0]) != "" {
+		selectedModel = strings.TrimSpace(engine[0])
+	}
+
 	pyBin := pythonBin()
 	cmd := exec.Command(pyBin, "run_all.py")
 	cmd.Dir = jobDir
@@ -598,7 +605,7 @@ func (s *Spawner) StartOrchestrated(jobDir, inputExt string) (int, string, error
 	// gates never silently skip just because the detached process has a thin PATH.
 	env := append(s.skillEnv(),
 		"AGY_BIN="+s.agyBin(),
-		"AGY_MODEL="+s.geminiModel(),
+		"AGY_MODEL="+selectedModel,
 		"DUCKDB_BIN="+duckdbBin(),
 		"PYTHON_BIN="+pyBin,
 		"PRINT_TIMEOUT="+config.AGYPrintTimeout(),
@@ -1439,16 +1446,53 @@ def run_phase(ph):
         soft_script = script.startswith("?")
         script_path = script[1:] if soft_script else script
         log("Running script: " + ("(soft) " if soft_script else "") + script_path)
-        # [TEMPORARY: Render 512MB deployment constraint]
-        # On Render's 512MB container, capture stderr so if Python is OOM-killed (exit 137)
-        # or hits an unhandled exception, the exact error is recorded in failure.txt instead
-        # of being masked by a generic message.
+        # [Render 512MB / free-tier deployment constraint]
+        # Capture the script's stderr so an unhandled traceback or an OOM kill
+        # (exit 137) is PERSISTED into failure.txt instead of being masked by a
+        # generic message. On Render's free tier there is no persistent disk, so
+        # agy.log is wiped when the container spins down — the only durable copy
+        # of the error is the reason we fold into failure.txt, which the watcher
+        # stores in the application DB and shows on the job page.
+        _r = None
+        _stderr_tail = ""
         try:
-            subprocess.run([PYTHON, os.path.join(SKILL_DIR, script_path)], cwd=JOB_DIR, check=True)
+            _r = subprocess.run([PYTHON, os.path.join(SKILL_DIR, script_path)],
+                                cwd=JOB_DIR, stderr=subprocess.PIPE, text=True)
+            # Tee captured stderr back into agy.log so the live log view (and the
+            # facets log tail) still shows it exactly as before.
+            if _r.stderr:
+                try:
+                    with open(os.path.join(JOB_DIR, "agy.log"), "a", encoding="utf-8") as _lf:
+                        _lf.write(_r.stderr)
+                except Exception:
+                    pass
+            if _r.returncode != 0:
+                raise subprocess.CalledProcessError(_r.returncode, script_path)
         except subprocess.CalledProcessError as e:
             oom_hint = " (likely Out Of Memory / killed by host)" if e.returncode in (137, -9) else ""
-            msg = ("script " + script_path + " exited with code " + str(e.returncode) + oom_hint
-                   + " during Phase " + str(ph["num"]) + " (" + ph["name"] + "). Check agy.log for details.")
+            try:
+                _err = (_r.stderr if _r is not None else "") or ""
+                _lines = [ln for ln in _err.splitlines() if ln.strip()]
+                _stderr_tail = "\n".join(_lines[-40:])
+            except Exception:
+                _stderr_tail = ""
+            fail_file = os.path.join(JOB_DIR, "failure.txt")
+            detailed_reason = ""
+            if os.path.exists(fail_file):
+                try:
+                    with open(fail_file, "r", encoding="utf-8") as _f:
+                        detailed_reason = _f.read().strip()
+                except Exception:
+                    pass
+            if not detailed_reason:
+                msg = ("script " + script_path + " exited with code " + str(e.returncode) + oom_hint
+                       + " during Phase " + str(ph["num"]) + " (" + ph["name"] + ").")
+                if _stderr_tail:
+                    msg = msg + "\n\n--- error output (agy.log tail) ---\n" + _stderr_tail
+                else:
+                    msg = msg + " Check agy.log for details."
+            else:
+                msg = detailed_reason
             log("ERROR: " + msg)
             on_failure_prompt = ph.get("on_failure_prompt")
             if soft_script:
@@ -1481,15 +1525,46 @@ def run_phase(ph):
                         fallback_ok = False
                 if fallback_ok:
                     log("retrying script after LLM fallback: " + script_path)
+                    _r3 = None
                     try:
-                        subprocess.run([PYTHON, os.path.join(SKILL_DIR, script_path)],
-                                        cwd=JOB_DIR, check=True)
+                        _r3 = subprocess.run([PYTHON, os.path.join(SKILL_DIR, script_path)],
+                                        cwd=JOB_DIR, stderr=subprocess.PIPE, text=True)
+                        if _r3.stderr:
+                            try:
+                                with open(os.path.join(JOB_DIR, "agy.log"), "a", encoding="utf-8") as _lf:
+                                    _lf.write(_r3.stderr)
+                            except Exception:
+                                pass
+                        if _r3.returncode != 0:
+                            raise subprocess.CalledProcessError(_r3.returncode, script_path)
                         log("LLM fallback succeeded — Phase " + str(ph["num"]) + " recovered")
                     except subprocess.CalledProcessError as e3:
                         oom_hint3 = " (likely Out Of Memory / killed by host)" if e3.returncode in (137, -9) else ""
-                        msg = ("script " + script_path + " exited with code " + str(e3.returncode) + oom_hint3
-                               + " during Phase " + str(ph["num"]) + " (" + ph["name"]
-                               + ") — LLM fallback did not resolve it. Check agy.log for details.")
+                        _tail3 = ""
+                        try:
+                            _err3 = (_r3.stderr if _r3 is not None else "") or ""
+                            _l3 = [ln for ln in _err3.splitlines() if ln.strip()]
+                            _tail3 = "\n".join(_l3[-40:])
+                        except Exception:
+                            _tail3 = ""
+                        fail_file = os.path.join(JOB_DIR, "failure.txt")
+                        detailed_reason3 = ""
+                        if os.path.exists(fail_file):
+                            try:
+                                with open(fail_file, "r", encoding="utf-8") as _f:
+                                    detailed_reason3 = _f.read().strip()
+                            except Exception:
+                                pass
+                        if not detailed_reason3:
+                            msg = ("script " + script_path + " exited with code " + str(e3.returncode) + oom_hint3
+                                   + " during Phase " + str(ph["num"]) + " (" + ph["name"]
+                                   + ") — LLM fallback did not resolve it.")
+                            if _tail3:
+                                msg = msg + "\n\n--- error output (agy.log tail) ---\n" + _tail3
+                            else:
+                                msg = msg + " Check agy.log for details."
+                        else:
+                            msg = detailed_reason3
                         log("ERROR: " + msg)
                         _record_script_failure(msg)
                         measure_metrics(phase_runs)

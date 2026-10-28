@@ -226,7 +226,7 @@ func main() {
 		// Resolve role per-request from the users table so role changes
 		// (admin demotion/promotion) take effect on the next request without
 		// requiring re-login (WORKORDER §1.1).
-		r.Use(auth.Middleware(sm, database.GetUserRole, cfg.DevAuthBypass))
+		r.Use(auth.Middleware(sm, database.GetUserRoleAndGrant, cfg.DevAuthBypass))
 		r.Get("/api/auth/me", oauthH.Me)
 		r.Post("/api/jobs", uploadLimiter(jobHandler.Create))
 		r.Get("/api/bills/check", jobHandler.CheckBill)
@@ -234,6 +234,7 @@ func main() {
 		r.Post("/api/jobs/chunk", jobHandler.UploadChunk)
 		r.Post("/api/jobs/complete-chunked", uploadLimiter(jobHandler.CompleteChunkedUpload))
 		r.Get("/api/jobs", jobHandler.List)
+		r.Get("/api/engine-settings", jobHandler.GetEngineSettings)
 		r.Get("/api/jobs/{id}", jobHandler.GetByID)
 		r.Get("/api/jobs/{id}/summary", jobHandler.Summary)
 		r.Get("/api/jobs/{id}/progress", jobHandler.Progress)
@@ -241,6 +242,7 @@ func main() {
 		r.Post("/api/jobs/{id}/retry", jobHandler.Retry)
 		r.Post("/api/jobs/{id}/refine", jobHandler.Refine)
 		r.Get("/api/jobs/{id}/download", jobHandler.Download)
+		r.Get("/api/jobs/{id}/logs", jobHandler.JobLogs)
 		r.Get("/api/jobs/{id}/runs", jobHandler.Runs)
 		r.Post("/api/jobs/{id}/share", jobHandler.ShareJob)
 		r.Delete("/api/jobs/{id}", jobHandler.Delete)
@@ -250,6 +252,9 @@ func main() {
 		// User notification settings
 		r.Get("/api/user/notifications", jobHandler.GetUserNotificationSettings)
 		r.Put("/api/user/notifications", jobHandler.UpdateUserNotificationSettings)
+		// User API token
+		r.Get("/api/user/token", jobHandler.GetUserAPIToken)
+		r.Post("/api/user/token/regenerate", jobHandler.RegenerateUserAPIToken)
 
 		// Admin-only routes, gated by auth.RequireAdmin in addition to the
 		// session check already applied by this group.
@@ -288,8 +293,13 @@ func main() {
 			r.Get("/api/admin/tickets", jobHandler.AdminListTickets)
 			r.Get("/api/admin/tickets/{id}", jobHandler.AdminGetTicket)
 			r.Put("/api/admin/tickets/{id}", jobHandler.AdminUpdateTicket)
-			// Uploaded bills listing (admin only)
+			// Admin notifications feed (job completions + raised tickets)
+			r.Get("/api/admin/notifications", jobHandler.AdminNotifications)
+			// Uploaded bills listing and inspection (admin only)
 			r.Get("/api/admin/bills", jobHandler.ListUploadedBills)
+			r.Get("/api/admin/bills/{hash}/download", jobHandler.AdminDownloadUploadedBill)
+			r.Get("/api/admin/bills/{hash}/view", jobHandler.AdminViewUploadedBill)
+			r.Get("/api/admin/bills/{hash}/preview", jobHandler.AdminPreviewUploadedBill)
 		})
 		// @facets.cloud-only internal panel: recent job logs + a manually
 		// selected multi-job portfolio summary. Each handler re-checks

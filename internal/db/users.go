@@ -94,40 +94,83 @@ func (d *DB) UpsertUserSeen(email, role string) error {
 	return err
 }
 
+// UserRoleInfo holds role and granter metadata for session resolution.
+type UserRoleInfo struct {
+	Role           string
+	AdminGrantedBy string
+}
+
 // GetUserRole returns the role stored for email, or ("", nil) if no row
 // exists yet (caller should fall back to the admin-email-list bootstrap).
 func (d *DB) GetUserRole(email string) (string, error) {
-	var role string
-	err := d.conn.QueryRow(`SELECT role FROM users WHERE email = ?`, email).Scan(&role)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
+	info, err := d.GetUserRoleInfo(email)
 	if err != nil {
 		return "", err
 	}
-	return role, nil
+	return info.Role, nil
+}
+
+// GetUserRoleInfo returns both the role and admin_granted_by stored for email.
+func (d *DB) GetUserRoleInfo(email string) (UserRoleInfo, error) {
+	var role string
+	var grantedBy sql.NullString
+	err := d.conn.QueryRow(`SELECT role, admin_granted_by FROM users WHERE email = ?`, email).Scan(&role, &grantedBy)
+	if err == sql.ErrNoRows {
+		return UserRoleInfo{}, nil
+	}
+	if err != nil {
+		return UserRoleInfo{}, err
+	}
+	return UserRoleInfo{
+		Role:           role,
+		AdminGrantedBy: grantedBy.String,
+	}, nil
+}
+
+// GetUserRoleAndGrant returns role and admin_granted_by stored for email.
+func (d *DB) GetUserRoleAndGrant(email string) (string, string, error) {
+	info, err := d.GetUserRoleInfo(email)
+	if err != nil {
+		return "", "", err
+	}
+	return info.Role, info.AdminGrantedBy, nil
 }
 
 // SetUserRole creates or updates the role for email.
 func (d *DB) SetUserRole(email, role string) error {
-	_, err := d.conn.Exec(
-		`INSERT INTO users (email, role) VALUES (?, ?)
-		 ON CONFLICT(email) DO UPDATE SET role=excluded.role, updated_at=datetime('now')`,
-		email, role,
-	)
+	return d.SetUserRoleWithGrant(email, role, "")
+}
+
+// SetUserRoleWithGrant creates or updates the role for email.
+// When granting admin to a non-facets user, granterEmail is recorded.
+// When revoking admin or changing to non-admin, admin_granted_by and admin_granted_at are cleared.
+func (d *DB) SetUserRoleWithGrant(email, role, granterEmail string) error {
+	if role == "admin" && granterEmail != "" {
+		_, err := d.conn.Exec(`
+			INSERT INTO users (email, role, admin_granted_by, admin_granted_at) VALUES (?, ?, ?, datetime('now'))
+			ON CONFLICT(email) DO UPDATE SET role=excluded.role, admin_granted_by=excluded.admin_granted_by, admin_granted_at=datetime('now'), updated_at=datetime('now')
+		`, email, role, granterEmail)
+		return err
+	}
+	_, err := d.conn.Exec(`
+		INSERT INTO users (email, role, admin_granted_by, admin_granted_at) VALUES (?, ?, NULL, NULL)
+		ON CONFLICT(email) DO UPDATE SET role=excluded.role, admin_granted_by=NULL, admin_granted_at=NULL, updated_at=datetime('now')
+	`, email, role)
 	return err
 }
 
 type User struct {
-	Email     string `json:"email"`
-	Role      string `json:"role"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	Email          string  `json:"email"`
+	Role           string  `json:"role"`
+	AdminGrantedBy *string `json:"admin_granted_by,omitempty"`
+	AdminGrantedAt *string `json:"admin_granted_at,omitempty"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
 }
 
 // ListUsers returns every known user, newest-seen first.
 func (d *DB) ListUsers() ([]*User, error) {
-	rows, err := d.conn.Query(`SELECT email, role, created_at, updated_at FROM users ORDER BY updated_at DESC`)
+	rows, err := d.conn.Query(`SELECT email, role, admin_granted_by, admin_granted_at, created_at, updated_at FROM users ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -135,10 +178,119 @@ func (d *DB) ListUsers() ([]*User, error) {
 	var users []*User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.Email, &u.Role, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		var grantedBy, grantedAt sql.NullString
+		if err := rows.Scan(&u.Email, &u.Role, &grantedBy, &grantedAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if grantedBy.Valid && grantedBy.String != "" {
+			u.AdminGrantedBy = &grantedBy.String
+		}
+		if grantedAt.Valid && grantedAt.String != "" {
+			u.AdminGrantedAt = &grantedAt.String
 		}
 		users = append(users, &u)
 	}
 	return users, nil
 }
+
+// generateToken returns a secure random bearer token prefix with fct_live_
+func generateToken() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return "fct_live_" + hex.EncodeToString(b)
+}
+
+// GetOrCreateAPIToken returns the persistent API token for a user, generating one if not present.
+func (d *DB) GetOrCreateAPIToken(email string) (string, error) {
+	var token sql.NullString
+	err := d.conn.QueryRow(`SELECT api_token FROM users WHERE email = ?`, email).Scan(&token)
+	if err == nil && token.Valid && token.String != "" {
+		return token.String, nil
+	}
+	newToken := generateToken()
+	_, err = d.conn.Exec(`
+		INSERT INTO users (email, api_token, updated_at) VALUES (?, ?, datetime('now'))
+		ON CONFLICT(email) DO UPDATE SET api_token = excluded.api_token, updated_at = datetime('now')
+	`, email, newToken)
+	if err != nil {
+		return "", err
+	}
+	return newToken, nil
+}
+
+// RegenerateAPIToken generates and returns a new API token for a user.
+func (d *DB) RegenerateAPIToken(email string) (string, error) {
+	newToken := generateToken()
+	_, err := d.conn.Exec(`
+		INSERT INTO users (email, api_token, updated_at) VALUES (?, ?, datetime('now'))
+		ON CONFLICT(email) DO UPDATE SET api_token = excluded.api_token, updated_at = datetime('now')
+	`, email, newToken)
+	if err != nil {
+		return "", err
+	}
+	return newToken, nil
+}
+
+// UserPreferences stores per-user preferences: default engine, export format, email notifications.
+type UserPreferences struct {
+	DefaultEngine       string `json:"default_engine"`
+	DefaultExportFormat string `json:"default_export_format"`
+	EmailNotifications  bool   `json:"email_notifications"`
+}
+
+// GetUserPreferences returns the user preferences, falling back to global defaults when unset.
+func (d *DB) GetUserPreferences(email string) (*UserPreferences, error) {
+	globalEngine, _, _ := d.GetEngineSettings()
+	if globalEngine == "" {
+		globalEngine = "gemini-3.8-flash"
+	}
+	prefs := &UserPreferences{
+		DefaultEngine:       globalEngine,
+		DefaultExportFormat: "html",
+		EmailNotifications:  true,
+	}
+
+	var exportFmt sql.NullString
+	var emailNotif sql.NullInt64
+	err := d.conn.QueryRow(`
+		SELECT email_notifications, default_export_format
+		FROM users WHERE email = ?
+	`, email).Scan(&emailNotif, &exportFmt)
+	if err == sql.ErrNoRows {
+		return prefs, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if emailNotif.Valid {
+		prefs.EmailNotifications = (emailNotif.Int64 == 1)
+	}
+	if exportFmt.Valid && strings.TrimSpace(exportFmt.String) != "" {
+		prefs.DefaultExportFormat = strings.TrimSpace(exportFmt.String)
+	}
+	return prefs, nil
+}
+
+// UpdateUserPreferences updates the user preferences.
+func (d *DB) UpdateUserPreferences(email string, defaultExportFormat string, emailNotif bool) error {
+	exportFmt := strings.ToLower(strings.TrimSpace(defaultExportFormat))
+	if exportFmt == "" {
+		exportFmt = "html"
+	}
+	notifVal := 0
+	if emailNotif {
+		notifVal = 1
+	}
+
+	_, err := d.conn.Exec(`
+		INSERT INTO users (email, default_export_format, email_notifications, updated_at)
+		VALUES (?, ?, ?, datetime('now'))
+		ON CONFLICT(email) DO UPDATE SET
+			default_export_format = excluded.default_export_format,
+			email_notifications = excluded.email_notifications,
+			updated_at = datetime('now')
+	`, email, exportFmt, notifVal)
+	return err
+}
+

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/facets/cur-web/internal/config"
@@ -121,8 +122,8 @@ func (s *Spawner) RunWithSession(jobDir, inputExt, _ string) SpawnResult {
 // orchestrate.go. The watcher polls the returned PID (the orchestrator) and
 // finalizes when the report appears — same contract as before.
 // Returns (pid, assumptionsVersion, error).
-func (s *Spawner) Start(jobDir, inputExt, _ string) (int, string, error) {
-	return s.StartOrchestrated(jobDir, inputExt)
+func (s *Spawner) Start(jobDir, inputExt string, sessionID string, engine ...string) (int, string, error) {
+	return s.StartOrchestrated(jobDir, inputExt, engine...)
 }
 
 // StartRefine resumes the job's most recent agy session via --continue so the
@@ -219,6 +220,16 @@ func (s *Spawner) agyBin() string {
 		return s.cfg.AGYPath
 	}
 	return "agy"
+}
+
+// EngineVersion returns the agy binary version string (or empty if unable to determine).
+func (s *Spawner) EngineVersion() string {
+	bin := s.agyBin()
+	out, err := exec.Command(bin, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func (s *Spawner) resolveSkillDir() string {

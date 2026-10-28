@@ -5,7 +5,7 @@ import { DropZone } from '../components/DropZone'
 import { JobList } from '../components/JobList'
 import { ContactCard } from '../components/ContactCard'
 import { Reveal } from '../components/Reveal'
-import { createJob, listJobs } from '../api/jobs'
+import { createJob, listJobs, getEngineSettings } from '../api/jobs'
 import type { Job } from '../api/jobs'
 import type { UserInfo } from '../api/auth'
 import { PHASES, TOTAL_PHASES } from '../lib/phases'
@@ -19,11 +19,21 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [uploadProgress, setUploadProgress] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [allowedEngines, setAllowedEngines] = useState<string[]>(['gemini-3.8-flash'])
+  const [selectedEngine, setSelectedEngine] = useState<string>('gemini-3.8-flash')
   const nav = useNavigate()
 
   const [uploadStatus, setUploadStatus] = useState<string>('Uploading…')
 
-  useEffect(() => { listJobs().then(setJobs) }, [])
+  useEffect(() => {
+    listJobs().then(setJobs)
+    getEngineSettings().then(cfg => {
+      if (cfg.allowed_engines && cfg.allowed_engines.length > 0) {
+        setAllowedEngines(cfg.allowed_engines)
+        setSelectedEngine(cfg.default_engine || cfg.allowed_engines[0])
+      }
+    }).catch(() => {})
+  }, [])
 
   const submit = async () => {
     if (submitting) return
@@ -45,7 +55,7 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
       const { id } = await createJob(file, prospect.trim(), (pct, text) => {
         setUploadProgress(pct)
         if (text) setUploadStatus(text)
-      })
+      }, selectedEngine)
       nav(`/jobs/${id}`)
     } catch (err: any) {
       setError(err?.message || 'Upload failed')
@@ -74,6 +84,21 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
               placeholder="e.g. Acme Corp"
               className="bg-white/5 border border-white/20 rounded-lg px-4 py-2 text-sm outline-none
                 focus:border-[#645DF6] transition-colors duration-150" />
+          </div>
+          <div className="flex flex-col gap-2 anim-fade-in-up delay-150">
+            <label htmlFor="engine-select" className="text-xs uppercase tracking-wider text-gray-400">Analysis Engine</label>
+            <select
+              id="engine-select"
+              value={selectedEngine}
+              onChange={e => setSelectedEngine(e.target.value)}
+              className="bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-sm outline-none focus:border-[#645DF6] transition-colors duration-150 text-gray-200 cursor-pointer"
+            >
+              {allowedEngines.map(eng => (
+                <option key={eng} value={eng} className="bg-[#12131a] text-white">
+                  {eng}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="flex flex-col gap-2 anim-fade-in-up delay-175">
             <label htmlFor="bill-upload" className="text-xs uppercase tracking-wider text-gray-400">AWS bill — CUR export, Cost Explorer CSV, Parquet, ZIP, or console PDF</label>

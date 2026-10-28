@@ -1467,18 +1467,39 @@ def main():
                 aws_sub_cell = f'<span class="plus-sign">+</span>{fmt(a_lic)}'
                 aws_ratio_note = '<div style="font-size:9px;color:#80868B;font-style:italic">AWS license split estimated from AWS Price List Windows/Linux OD ratio.</div>'
 
+            sub_cells = ""
+            for _, label, _ in active_columns:
+                if label == "#":
+                    sub_cells += "<td></td>"
+                elif label == "AWS Service → GCP Service":
+                    sub_cells += f'<td><span class="plus-sign">+</span> {_html.escape(str(lic_name))}{aws_ratio_note}</td>'
+                elif label == "AWS Instance":
+                    sub_cells += "<td></td>"
+                elif label == "GCP Mapping":
+                    sub_cells += "<td></td>"
+                elif label == "Region":
+                    sub_cells += f'<td style="color:#5F6368">{region_str}</td>'
+                elif label == "AWS":
+                    sub_cells += f'<td class="num">{aws_sub_cell}</td>'
+                elif label == "GCP OD":
+                    sub_cells += f'<td class="num"><span class="plus-sign">+</span>{fmt(gcp_lic_od)}</td>'
+                elif label in ("GCP 1yr CUD", "GCP 3yr CUD"):
+                    sub_cells += '<td class="num"></td>'
+                elif label == "Diff":
+                    sub_cells += '<td class="num"></td>'
+                elif label == "GCP as % of AWS":
+                    sub_cells += '<td class="num"></td>'
+                elif label == "Line items":
+                    sub_cells += '<td class="num"></td>'
+                elif label == "AWS Region":
+                    sub_cells += f'<td style="color:#5F6368">{region_str}</td>'
+                else:
+                    sub_cells += "<td></td>"
+            sub_cells += '<td class="extra-col"></td>'
+
             sub_row_html = (
                 f'<tr class="row-license-sub">'
-                f'<td></td>'
-                f'<td colspan="2"><span class="plus-sign">+</span> {_html.escape(str(lic_name))}{aws_ratio_note}</td>'
-                f'<td style="color:#5F6368">{region_str}</td>'
-                f'<td></td>'
-                f'<td class="num">{aws_sub_cell}</td>'
-                f'<td class="num"><span class="plus-sign">+</span>{fmt(gcp_lic_od)}</td>'
-                f'<td class="num extra-col"></td>'
-                f'<td class="num extra-col"></td>'
-                f'<td></td>'
-                f'<td class="extra-col"></td>'
+                f'{sub_cells}'
                 f'</tr>\n'
             )
 
@@ -1513,18 +1534,58 @@ def main():
     diff_sec_a_class = "green" if diff_sec_a > 0 else "red" if diff_sec_a < 0 else ""
     diff_sec_a_str = ("—" if abs(diff_sec_a) < 0.005
                       else (f"+{fmt(diff_sec_a)}" if diff_sec_a > 0 else f"−{fmt(abs(diff_sec_a))}"))
-    pct_sec_a = f" ({((sec_a_gcp_od - sec_a_aws) / sec_a_aws * 100):+.1f}%)" if sec_a_aws > 0 else ""
+    def _render_summary_row(row_class, label_text, aws_val, od_val, c1_val, c3_val, diff_str, diff_cls, pct_str):
+        # Count leading non-numeric columns to span with label_text
+        leading_cols = 0
+        for _, col_label, _ in _ACTIVE_COLUMNS:
+            if col_label in ("#", "AWS Service → GCP Service", "AWS Instance", "GCP Mapping", "Region"):
+                leading_cols += 1
+            else:
+                break
+        leading_cols = max(1, leading_cols)
 
-    subtotal_a_html = (
-        f'<tr class="subtotal-row">'
-        f'<td colspan="5" style="font-weight:600">SUBTOTAL SECTION A (MAPPED WORKLOAD){pct_sec_a}</td>'
-        f'<td class="num">{fmt(sec_a_aws)}</td>'
-        f'<td class="num">{fmt(sec_a_gcp_od)}</td>'
-        f'<td class="num extra-col">{fmt(sec_a_gcp_1yr)}</td>'
-        f'<td class="num extra-col">{fmt(sec_a_gcp_3yr)}</td>'
-        f'<td class="num {diff_sec_a_class}" style="font-weight:600">{diff_sec_a_str}</td>'
-        f'<td class="extra-col"></td>'
-        f'</tr>\n'
+        row_html = f'<tr class="{row_class}">'
+        row_html += f'<td colspan="{leading_cols}" style="font-weight:600">{label_text}</td>'
+
+        # Render remaining columns
+        for _, col_label, _ in _ACTIVE_COLUMNS[leading_cols:]:
+            if col_label == "AWS":
+                row_html += f'<td class="num">{fmt(aws_val)}</td>'
+            elif col_label == "GCP OD":
+                row_html += f'<td class="num">{fmt(od_val)}</td>'
+            elif col_label == "GCP 1yr CUD":
+                row_html += f'<td class="num">{fmt(c1_val)}</td>'
+            elif col_label == "GCP 3yr CUD":
+                row_html += f'<td class="num">{fmt(c3_val)}</td>'
+            elif col_label == "Diff":
+                cls_attr = f' class="num {diff_cls}"' if diff_cls else ' class="num"'
+                row_html += f'<td{cls_attr} style="font-weight:600">{diff_str}</td>'
+            elif col_label == "GCP as % of AWS":
+                row_html += f'<td class="num" style="font-weight:600">{pct_str}</td>'
+            elif col_label == "Line items":
+                row_html += '<td class="num"></td>'
+            elif col_label == "AWS Region":
+                row_html += '<td></td>'
+            else:
+                row_html += '<td></td>'
+
+        row_html += '<td class="extra-col"></td>'
+        row_html += '</tr>\n'
+        return row_html
+
+    pct_sec_a_badge = f" ({((sec_a_gcp_od - sec_a_aws) / sec_a_aws * 100):+.1f}%)" if sec_a_aws > 0 else ""
+    pct_sec_a_cell = f"{((sec_a_gcp_od / sec_a_aws * 100)):.0f}%" if sec_a_aws > 0 else "—"
+
+    subtotal_a_html = _render_summary_row(
+        row_class="subtotal-row",
+        label_text=f"SUBTOTAL SECTION A (MAPPED WORKLOAD){pct_sec_a_badge}",
+        aws_val=sec_a_aws,
+        od_val=sec_a_gcp_od,
+        c1_val=sec_a_gcp_1yr,
+        c3_val=sec_a_gcp_3yr,
+        diff_str=diff_sec_a_str,
+        diff_cls=diff_sec_a_class,
+        pct_str=pct_sec_a_cell,
     )
 
     # ── Render Section B Rows & Subtotal ──────────────────────────────────────
@@ -1543,16 +1604,16 @@ def main():
         sec_b_html += _render_row(r, idx, force_pt=True, active_columns=_ACTIVE_COLUMNS)
         idx += 1
 
-    subtotal_b_html = (
-        f'<tr class="subtotal-row">'
-        f'<td colspan="5" style="font-weight:600">SUBTOTAL SECTION B (PASSTHROUGH / NON-WORKLOAD / UNPRICED)</td>'
-        f'<td class="num">{fmt(sec_b_aws)}</td>'
-        f'<td class="num">{fmt(sec_b_gcp_od)}</td>'
-        f'<td class="num extra-col">{fmt(sec_b_gcp_1yr)}</td>'
-        f'<td class="num extra-col">{fmt(sec_b_gcp_3yr)}</td>'
-        f'<td class="num" style="font-weight:600">$0.00</td>'
-        f'<td class="extra-col"></td>'
-        f'</tr>\n'
+    subtotal_b_html = _render_summary_row(
+        row_class="subtotal-row",
+        label_text="SUBTOTAL SECTION B (PASSTHROUGH / NON-WORKLOAD / UNPRICED)",
+        aws_val=sec_b_aws,
+        od_val=sec_b_gcp_od,
+        c1_val=sec_b_gcp_1yr,
+        c3_val=sec_b_gcp_3yr,
+        diff_str="$0.00",
+        diff_cls="",
+        pct_str="100%" if sec_b_aws > 0 else "—",
     )
 
     # ── Grand Totals (Section A + Section B strictly footing) ─────────────────
@@ -1565,17 +1626,18 @@ def main():
     diff_tot_class = "green" if diff_tot > 0 else "red" if diff_tot < 0 else ""
     diff_tot_str = ("—" if abs(diff_tot) < 0.005
                     else (f"+{fmt(diff_tot)}" if diff_tot > 0 else f"−{fmt(abs(diff_tot))}"))
+    pct_grand = f"{((gcp_grand_od / aws_gross * 100)):.0f}%" if aws_gross > 0 else "—"
 
-    grand_total_row_html = (
-        f'<tr class="total-row">'
-        f'<td colspan="5" style="font-weight:600">GRAND TOTAL (LIST PRICES)</td>'
-        f'<td class="num">{fmt(aws_gross)}</td>'
-        f'<td class="num">{fmt(gcp_grand_od)}</td>'
-        f'<td class="num extra-col">{fmt(gcp_grand_1yr)}</td>'
-        f'<td class="num extra-col">{fmt(gcp_grand_3yr)}</td>'
-        f'<td class="num {diff_tot_class}" style="font-weight:600">{diff_tot_str}</td>'
-        f'<td class="extra-col"></td>'
-        f'</tr>\n'
+    grand_total_row_html = _render_summary_row(
+        row_class="total-row",
+        label_text="GRAND TOTAL (LIST PRICES)",
+        aws_val=aws_gross,
+        od_val=gcp_grand_od,
+        c1_val=gcp_grand_1yr,
+        c3_val=gcp_grand_3yr,
+        diff_str=diff_tot_str,
+        diff_cls=diff_tot_class,
+        pct_str=pct_grand,
     )
 
     detail_rows_html = (
@@ -2133,6 +2195,7 @@ def main():
   </a>
   <span class="fc-footer-note">
     Report generated {now.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC &nbsp;·&nbsp;
+    engine: {_html.escape(os.environ.get("AGY_MODEL") or _RS.get("default_engine") or "gemini-3.8-flash")} &nbsp;·&nbsp;
     settings v: {_rs_version} &nbsp;·&nbsp; Prices are estimates — verify with GCP Pricing Calculator before committing.
   </span>
 </footer>

@@ -45,6 +45,8 @@ export async function saveUserProfile(profile: UserProfile): Promise<UserProfile
 export interface NotificationSettings {
   email_notifications: boolean
   slack_notifications: boolean
+  slack_webhook_url?: string
+  slack_channel?: string
 }
 
 export async function getNotificationSettings(): Promise<NotificationSettings> {
@@ -60,6 +62,26 @@ export async function updateNotificationSettings(settings: Partial<NotificationS
   if (!res.ok) {
     const text = await res.text()
     throw new Error(text || `update notifications failed (${res.status})`)
+  }
+  return res.json()
+}
+
+export interface UserTokenResponse {
+  token: string
+  email: string
+}
+
+export async function getUserToken(): Promise<UserTokenResponse> {
+  return getJSON<UserTokenResponse>('/api/user/token')
+}
+
+export async function regenerateUserToken(): Promise<UserTokenResponse> {
+  const res = await fetch('/api/user/token/regenerate', {
+    method: 'POST',
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `regenerate token failed (${res.status})`)
   }
   return res.json()
 }

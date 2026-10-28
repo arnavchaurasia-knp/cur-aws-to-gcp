@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -235,15 +236,39 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		} else {
 			log.Printf("watcher %s: run_diagnostics.json not present, skipping diagnostics persist", jobID)
 		}
+		w.recordJobLogDigest(jobID, "initial", jobDir)
 		w.syncRemote(jobID, jobDir)
 		go func() {
-			if err := notify.SendJobReady(w.notify.Email, job.Owner, job.Owner, job.Prospect, jobID, spend); err != nil {
-				slog.Info("email notification status", "job_id", jobID, "detail", err.Error())
+			userSettings, err := w.db.GetNotificationSettings(job.Owner)
+			emailEnabled := true
+			slackEnabled := false
+			slackURL := w.notify.SlackURL
+			slackChannel := ""
+			if err == nil && userSettings != nil {
+				emailEnabled = userSettings.EmailNotifications
+				slackEnabled = userSettings.SlackNotifications
+				if userSettings.SlackWebhookURL != "" {
+					slackURL = userSettings.SlackWebhookURL
+				}
+				slackChannel = userSettings.SlackChannel
 			}
-		}()
-		go func() {
-			if err := notify.PostJobSuccess(w.notify.SlackURL, job.Prospect, job.Owner, jobID, spend); err != nil {
-				slog.Warn("PostJobSuccess failed", "job_id", jobID, "err", err)
+
+			// Send email if user has email notifications on (default true)
+			if emailEnabled {
+				if err := notify.SendJobReady(w.notify.Email, job.Owner, job.Owner, job.Prospect, jobID, spend); err != nil {
+					slog.Info("email notification status", "job_id", jobID, "detail", err.Error())
+				}
+			}
+
+			// Send Slack notification if enabled and webhook exists
+			if (slackEnabled || w.notify.SlackURL != "") && slackURL != "" {
+				prefix := ""
+				if slackChannel != "" {
+					prefix = fmt.Sprintf("[%s] ", slackChannel)
+				}
+				if err := notify.PostJobSuccess(slackURL, prefix+job.Prospect, job.Owner, jobID, spend); err != nil {
+					slog.Warn("PostJobSuccess failed", "job_id", jobID, "err", err)
+				}
 			}
 		}()
 		return
@@ -260,6 +285,7 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		}
 		metrics.JobsFailed.Add(1)
 		slog.Error("job failed", "job_id", jobID, "prospect", job.Prospect, "reason", reason, "attempts", job.Attempts)
+		w.recordJobLogDigest(jobID, "initial", jobDir)
 		w.syncRemote(jobID, jobDir)
 		go func() {
 			if err := notify.SendJobFailed(w.notify.Email, job.Owner, job.Owner, job.Prospect); err != nil {
@@ -312,6 +338,7 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		}
 		metrics.JobsFailed.Add(1)
 		slog.Error("job failed", "job_id", jobID, "prospect", job.Prospect, "reason", errMsg, "attempts", job.Attempts)
+		w.recordJobLogDigest(jobID, "initial", jobDir)
 		w.syncRemote(jobID, jobDir)
 		go func() {
 			if err := notify.SendJobFailed(w.notify.Email, job.Owner, job.Owner, job.Prospect); err != nil {
@@ -337,7 +364,7 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 
 	_ = os.Remove(filepath.Join(jobDir, "orchestrator.lock"))
 
-	pid, assumptionsVersion, err := w.spawner.Start(jobDir, job.InputExt, "")
+	pid, assumptionsVersion, err := w.spawner.Start(jobDir, job.InputExt, "", job.Engine)
 	if err != nil {
 		w.db.UpdateJobFailed(jobID, "retry spawn failed: "+err.Error())
 		return
@@ -360,8 +387,12 @@ func readFailureReason(jobDir string) string {
 		return ""
 	}
 	s := strings.TrimSpace(string(data))
-	if runes := []rune(s); len(runes) > 1000 {
-		s = string(runes[:1000]) + "…"
+	// Keep enough room for a captured Python traceback tail (folded into
+	// failure.txt by the orchestrator) so the real error survives in the DB —
+	// on Render's free tier agy.log is wiped on spin-down, so this persisted
+	// reason is the only durable copy.
+	if runes := []rune(s); len(runes) > 6000 {
+		s = string(runes[:6000]) + "…"
 	}
 	return s
 }
@@ -569,5 +600,68 @@ func (w *Watcher) recordEquivalenceUsage(jobID, jobDir string) {
 		slog.Error("failed to record equivalence usage to db", "job_id", jobID, "err", err)
 	} else {
 		slog.Info("recorded equivalence usage to db", "job_id", jobID, "count", len(records))
+	}
+}
+
+func (w *Watcher) recordJobLogDigest(jobID, runID, jobDir string) {
+	if w.db == nil {
+		return
+	}
+	logPath := filepath.Join(jobDir, "projection-audit", "debug.log")
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		logPath = filepath.Join(jobDir, "agy.log")
+		if _, err := os.Stat(logPath); os.IsNotExist(err) {
+			slog.Debug("watcher: no log file for digest", "job_id", jobID)
+			return
+		}
+	}
+
+	f, err := os.Open(logPath)
+	if err != nil {
+		slog.Debug("watcher: open log file for digest failed", "job_id", jobID, "err", err)
+		return
+	}
+	defer f.Close()
+
+	var allLines []string
+	var errCount, warnCount int
+	var firstError string
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		text := sc.Text()
+		allLines = append(allLines, text)
+		upper := strings.ToUpper(text)
+		if strings.Contains(upper, " ERROR ") || strings.Contains(upper, "CRITICAL") || strings.HasPrefix(upper, "ERROR:") {
+			errCount++
+			if firstError == "" {
+				firstError = text
+			}
+		} else if strings.Contains(upper, " WARN ") || strings.Contains(upper, "WARNING") {
+			warnCount++
+		}
+	}
+
+	lastLines := ""
+	if len(allLines) > 50 {
+		lastLines = strings.Join(allLines[len(allLines)-50:], "\n")
+	} else {
+		lastLines = strings.Join(allLines, "\n")
+	}
+
+	digest := db.JobLogDigest{
+		JobID:      jobID,
+		RunID:      runID,
+		ErrorCount: errCount,
+		WarnCount:  warnCount,
+		FirstError: firstError,
+		LastLines:  lastLines,
+	}
+
+	if err := w.db.SaveJobLogDigest(digest); err != nil {
+		slog.Warn("watcher: SaveJobLogDigest failed", "job_id", jobID, "err", err)
+	} else {
+		slog.Info("saved job log digest", "job_id", jobID, "errors", errCount, "warns", warnCount)
 	}
 }

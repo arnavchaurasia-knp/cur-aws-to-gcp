@@ -2,6 +2,20 @@
 export interface Job {
   id: string; owner: string; prospect: string; status: string
   aws_spend: number | null; gcp_od?: number | null; error: string; created_at: string
+  engine?: string; engine_version?: string
+}
+
+export interface EngineSettings {
+  default_engine: string
+  allowed_engines: string[]
+}
+
+export async function getEngineSettings(): Promise<EngineSettings> {
+  const res = await fetch('/api/engine-settings')
+  if (!res.ok) {
+    return { default_engine: 'gemini-3.8-flash', allowed_engines: ['gemini-3.8-flash'] }
+  }
+  return res.json()
 }
 
 export interface RunResult {
@@ -21,6 +35,21 @@ export interface RunResult {
   confidence: string | null
 }
 
+export interface BillCurrency {
+  currency: string
+  symbol: string
+  fx_rate: number
+  aws_fx_rate: number
+  aws_cost_currency: string
+  label: string
+  source: string
+}
+
+export interface RunsResponse {
+  runs: RunResult[]
+  currency: BillCurrency
+}
+
 async function computeFileSHA256(file: File): Promise<string> {
   const buffer = await file.arrayBuffer()
   const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
@@ -31,7 +60,8 @@ async function computeFileSHA256(file: File): Promise<string> {
 export async function createJob(
   file: File,
   prospect: string,
-  onProgress?: (percent: number, statusText?: string) => void
+  onProgress?: (percent: number, statusText?: string) => void,
+  engine?: string
 ): Promise<{ id: string }> {
   // 1. Check if identical bill is already saved on server (deduplication)
   try {
@@ -42,10 +72,12 @@ export async function createJob(
       const info = await checkRes.json()
       if (info?.exists) {
         onProgress?.(100, 'Identical bill found! Starting pipeline…')
+        const payload: Record<string, string> = { content_hash: hash, prospect_name: prospect }
+        if (engine) payload.engine = engine
         const reuseRes = await fetch('/api/jobs/existing-bill', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content_hash: hash, prospect_name: prospect }),
+          body: JSON.stringify(payload),
         })
         if (reuseRes.ok) {
           return reuseRes.json()
@@ -64,6 +96,7 @@ export async function createJob(
     const form = new FormData()
     form.append('file', file)
     form.append('prospect_name', prospect)
+    if (engine) form.append('engine', engine)
 
     let res: Response
     try {
@@ -119,15 +152,17 @@ export async function createJob(
   // All chunks uploaded: tell backend to reassemble and start the pipeline
   let completeRes: Response
   try {
+    const completePayload: Record<string, any> = {
+      upload_id: uploadId,
+      prospect_name: prospect,
+      file_name: file.name,
+      total_chunks: totalChunks,
+    }
+    if (engine) completePayload.engine = engine
     completeRes = await fetch('/api/jobs/complete-chunked', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        upload_id: uploadId,
-        prospect_name: prospect,
-        file_name: file.name,
-        total_chunks: totalChunks,
-      }),
+      body: JSON.stringify(completePayload),
     })
   } catch {
     throw new Error('Connection lost while assembling bill on server. Please try again.')
@@ -167,9 +202,9 @@ export function downloadURL(id: string, runId?: string, format?: string): string
   return qs ? `/api/jobs/${id}/download?${qs}` : `/api/jobs/${id}/download`
 }
 
-export async function getRuns(id: string): Promise<RunResult[]> {
+export async function getRuns(id: string): Promise<RunsResponse> {
   const res = await fetch(`/api/jobs/${id}/runs`)
-  if (!res.ok) return []
+  if (!res.ok) return { runs: [], currency: { currency: 'USD', symbol: '$', fx_rate: 1.0, aws_fx_rate: 1.0, aws_cost_currency: 'USD', label: 'USD', source: 'default' } }
   return res.json()
 }
 

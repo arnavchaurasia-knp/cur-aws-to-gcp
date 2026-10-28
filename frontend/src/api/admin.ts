@@ -86,6 +86,8 @@ export async function deleteJob(id: string): Promise<void> {
 export interface AdminUser {
   email: string
   role: string
+  admin_granted_by?: string
+  admin_granted_at?: string
   created_at: string
   updated_at: string
 }
@@ -453,12 +455,26 @@ export interface UploadedBill {
   created_at: string
 }
 
+export interface BillPreviewResponse {
+  file_name: string
+  content_hash: string
+  input_ext: string
+  file_size: number
+  lines: string[]
+  total_lines_read: number
+  is_truncated: boolean
+}
+
 export interface UploadedBillsResponse {
   bills: UploadedBill[]
 }
 
 export async function listUploadedBills(): Promise<UploadedBillsResponse> {
   return getJSON<UploadedBillsResponse>('/api/admin/bills')
+}
+
+export async function previewUploadedBill(hash: string): Promise<BillPreviewResponse> {
+  return getJSON<BillPreviewResponse>(`/api/admin/bills/${encodeURIComponent(hash)}/preview`)
 }
 
 export interface Ticket {
@@ -526,4 +542,40 @@ export async function updateTicket(id: string, body: UpdateTicketBody): Promise<
     throw new Error(text || `update ticket failed (${res.status})`)
   }
   return res.json()
+}
+
+export interface AdminJobNotif {
+  id: string
+  prospect: string
+  owner: string
+  status: string
+  error: string
+  aws_spend: number | null
+  gcp_od: number | null
+  created_at: string
+}
+
+export interface NotificationItem {
+  id: string
+  type: 'job_failed' | 'job_completed' | 'ticket_raised' | 'assumption_changed' | 'setting_changed' | string
+  title: string
+  message: string
+  severity: 'critical' | 'warning' | 'info' | 'success' | string
+  actor: string
+  link: string
+  timestamp: string
+}
+
+export interface AdminNotificationsResponse {
+  admin_email: string
+  feed: NotificationItem[]
+  my_jobs: AdminJobNotif[]
+  failed_jobs: AdminJobNotif[]
+  tickets: Ticket[]
+  assumption_changes?: any[]
+  setting_changes?: any[]
+}
+
+export async function getAdminNotifications(): Promise<AdminNotificationsResponse> {
+  return getJSON<AdminNotificationsResponse>('/api/admin/notifications')
 }

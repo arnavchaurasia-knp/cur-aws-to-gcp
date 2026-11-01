@@ -33,6 +33,25 @@ from config_loader import load_data_config as _cfg
 # engines can never drift on hourly-unit / accelerator / exclusion semantics.
 import classify_mechanics as _cm
 from aws_normalizer import canonical_service as _canonical_service
+try:
+    from usage_type_parser import parse_with_unit as _parse_usage
+except (ImportError, ModuleNotFoundError):  # pragma: no cover
+    def _parse_usage(*_a, **_k):
+        return {"region": "", "family": "", "sub_type": "", "unit": "", "class": ""}
+
+
+def _parsed(row: dict) -> dict:
+    """Typed usage_type parse for this row (Part B), computed once and cached on
+    the row. Predicates read parsed fields instead of raw substrings."""
+    p = row.get("_parsed")
+    if p is None:
+        p = _parse_usage(row.get("usage_type"), row.get("operation"),
+                         row.get("product"), row.get("unit") or row.get("pricing_unit"))
+        try:
+            row["_parsed"] = p
+        except Exception:
+            pass
+    return p
 
 # ---------------------------------------------------------------------------
 # Spec registry
@@ -118,6 +137,19 @@ def _eval_block(block: dict, row: dict) -> bool:
         elif key == "is_accelerator":
             if _cm._is_accelerator(row) != bool(val):
                 return False
+        # --- Part B: typed usage_type parser predicates (read parsed fields) ---
+        elif key == "family_in":
+            if _parsed(row).get("family") not in [str(x).lower() for x in val]:
+                return False
+        elif key == "sub_type_in":
+            if _parsed(row).get("sub_type") not in [str(x).lower() for x in val]:
+                return False
+        elif key == "class_in":
+            if _parsed(row).get("class") not in [str(x).lower() for x in val]:
+                return False
+        elif key == "parsed_unit_in":
+            if _parsed(row).get("unit") not in [str(x).lower() for x in val]:
+                return False
         else:
             # Unknown predicate — fail closed and surface it.
             print(f"spec_dispatch: WARNING unknown predicate '{key}' — failing match closed",
@@ -140,6 +172,11 @@ def _charge_type_matches(ct: dict, row: dict) -> bool:
         return True
     fb = ct.get("fallback_match")
     if fb and _eval_block(fb, row):
+        return True
+    # parsed_match = additive OR branch on typed parser fields (Part B). It can
+    # only ADD coverage (another way to match), never remove an existing match.
+    pm = ct.get("parsed_match")
+    if pm and _eval_block(pm, row):
         return True
     lit_list = ct.get("also_match_line_item_type_in")
     if lit_list and row.get("line_item_type") in lit_list:
@@ -203,7 +240,7 @@ def is_default_charge_type(ct: dict) -> bool:
     by design, not ambiguity. `exclude_when` is still allowed (a guarded
     default)."""
     return not (ct.get("match") or ct.get("any_of") or ct.get("fallback_match")
-                or ct.get("also_match_line_item_type_in"))
+                or ct.get("also_match_line_item_type_in") or ct.get("parsed_match"))
 
 
 def dispatch(row: dict) -> dict | None:

@@ -615,3 +615,26 @@ def _run_cli() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_run_cli())
+
+
+def test_parser_wired_parsed_match_additive_coverage():
+    """Part B wiring: the usage_type parser is live in spec_dispatch. A NAT row
+    whose spelling the regex misses ('NAT-Gateway-Hours' with hyphens) is caught
+    via the additive parsed_match (parser sub_type=gateway_hours) -> flat_hourly,
+    while the sibling TransitGateway row is NOT caught (no ambiguity introduced)."""
+    import spec_dispatch as sd
+
+    nat = {"product": "Amazon Virtual Private Cloud", "product_code": "AmazonVPC",
+           "usage_type": "APS3-NAT-Gateway-Hours", "operation": "", "unit": "Hrs",
+           "canonical": "vpc", "aws_amortized_cost": 50.0}
+    d = sd.dispatch(nat)
+    assert d is not None and d["charge_type"] == "vpc_nat_hours" and d["mechanic"] == "flat_hourly"
+
+    nat_matches = [c for c in sd.matching_charge_types("vpc", nat) if c != "vpc_other"]
+    assert nat_matches == ["vpc_nat_hours"], f"unexpected NAT matches: {nat_matches}"
+
+    tgw = {"product": "Amazon Virtual Private Cloud", "product_code": "AmazonVPC",
+           "usage_type": "APS3-TransitGateway-Hours", "operation": "", "unit": "Hrs",
+           "canonical": "vpc", "aws_amortized_cost": 50.0}
+    tgw_matches = [c for c in sd.matching_charge_types("vpc", tgw) if c != "vpc_other"]
+    assert "vpc_nat_hours" not in tgw_matches, f"TGW wrongly matched NAT: {tgw_matches}"

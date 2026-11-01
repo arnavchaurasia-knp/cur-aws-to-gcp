@@ -3003,9 +3003,13 @@
         "fallback_match": {
           "operation_re": "NatGateway|NAT Gateway"
         },
+        "parsed_match": {
+          "sub_type_in": ["gateway_hours"],
+          "exclude_any_field_re": "transitgateway|transit gateway|vpn|loadbalancer|elb"
+        },
         "mechanic": "flat_hourly",
         "fields": [],
-        "source_rule": "flat_hourly (NatGateway-Hours branch)",
+        "source_rule": "flat_hourly (NatGateway-Hours branch; parser sub_type=gateway_hours additive)",
         "notes": "Added after the cutover review: VpcUsage:NatGateway-Hours under the VPC product fell through to vpc_other -> misc while the legacy chain classified it flat_hourly. Same deterministic class as vpc_public_ipv4/vpc_vpn_hours."
       },
       {

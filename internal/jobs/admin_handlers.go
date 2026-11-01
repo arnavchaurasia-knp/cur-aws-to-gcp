@@ -1789,7 +1789,8 @@ func (h *Handler) AdminListFindings(w http.ResponseWriter, r *http.Request) {
 }
 
 // AdminActionFinding updates a finding status: accept | reject | defer.
-// On 'accept', it promotes the fact into the refresh store (data/refresh_store.json).
+// On 'accept', it promotes the fact into the writable refresh store (per-user
+// state dir, ~/.cur-web/refresh_store.json by default — NOT the shared data/ seed).
 func (h *Handler) AdminActionFinding(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
 	findingID := chi.URLParam(r, "id")

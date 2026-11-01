@@ -592,3 +592,81 @@ export interface AdminNotificationsResponse {
 export async function getAdminNotifications(): Promise<AdminNotificationsResponse> {
   return getJSON<AdminNotificationsResponse>('/api/admin/notifications')
 }
+
+// ─── Review findings triage (self-healing refresh loop) ───
+
+export interface ReviewFinding {
+  id: string
+  job_id: string
+  aws_li_key: string
+  canonical_service: string
+  charge_type: string
+  finding_type: string
+  severity: 'HIGH' | 'MEDIUM' | 'LOW' | string
+  aws_od: number
+  gcp_od: number
+  ratio: number
+  evidence: Record<string, any>
+  suggested_action: string
+  status: 'pending' | 'accepted' | 'rejected' | 'deferred'
+  action_note?: string
+  resolved_by?: string
+  resolved_at?: string
+  created_at: string
+}
+
+export interface ListFindingsParams {
+  job_id?: string
+  service?: string
+  severity?: string
+  status?: string
+  limit?: number
+  offset?: number
+}
+
+export interface ActionFindingBody {
+  action: 'accept' | 'reject' | 'defer'
+  note?: string
+  gcp_service?: string
+  gcp_sku_name?: string
+  gcp_sku_id?: string
+  strategy?: string
+  unit_multiplier?: number
+}
+
+export interface ActionFindingResponse {
+  id: string
+  status: string
+  action: string
+}
+
+export async function listFindings(params: ListFindingsParams = {}): Promise<{ findings: ReviewFinding[]; total: number; limit: number; offset: number }> {
+  const qs = new URLSearchParams()
+  if (params.job_id) qs.set('job_id', params.job_id)
+  if (params.service) qs.set('service', params.service)
+  if (params.severity) qs.set('severity', params.severity)
+  if (params.status) qs.set('status', params.status)
+  if (params.limit != null) qs.set('limit', String(params.limit))
+  if (params.offset != null) qs.set('offset', String(params.offset))
+  const queryStr = qs.toString() ? `?${qs.toString()}` : ''
+  return getJSON<{ findings: ReviewFinding[]; total: number; limit: number; offset: number }>(`/api/admin/findings${queryStr}`)
+}
+
+export async function actionFinding(id: string, body: ActionFindingBody): Promise<ActionFindingResponse> {
+  const res = await fetch(`/api/admin/findings/${encodeURIComponent(id)}/action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    try {
+      const data = JSON.parse(text)
+      if (data && data.error) throw new Error(data.error)
+    } catch {
+      if (!(text.includes('JSON') || text.includes('json'))) throw new Error(text)
+    }
+    throw new Error(text || `action failed (${res.status})`)
+  }
+  return res.json() as Promise<ActionFindingResponse>
+}

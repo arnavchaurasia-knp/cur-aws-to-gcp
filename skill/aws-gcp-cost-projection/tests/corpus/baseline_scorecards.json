@@ -1,0 +1,679 @@
+{
+  "portfolio": {
+    "portfolio": true,
+    "jobs_count": 3,
+    "status": "ok",
+    "headline": {
+      "workload_rows": 17,
+      "aws_amortized_cost": 3932.24,
+      "aws_od_cost": 4238.04,
+      "gcp_projected_cost": 3979.05,
+      "overall_ratio": 0.939
+    },
+    "coverage_mix": {
+      "deterministic": {
+        "aws_amortized": 3927.24,
+        "aws_od": 4233.04,
+        "gcp_projected": 3979.05,
+        "rows": 16,
+        "pct_of_spend": 99.88
+      },
+      "llm": {
+        "aws_amortized": 0.0,
+        "aws_od": 0.0,
+        "gcp_projected": 0.0,
+        "rows": 0,
+        "pct_of_spend": 0.0
+      },
+      "passthrough": {
+        "aws_amortized": 0.0,
+        "aws_od": 0.0,
+        "gcp_projected": 0.0,
+        "rows": 0,
+        "pct_of_spend": 0.0
+      },
+      "ignored": {
+        "aws_amortized": 5.0,
+        "aws_od": 5.0,
+        "gcp_projected": 0.0,
+        "rows": 1,
+        "pct_of_spend": 0.12
+      },
+      "unmapped": {
+        "aws_amortized": 0.0,
+        "aws_od": 0.0,
+        "gcp_projected": 0.0,
+        "rows": 0,
+        "pct_of_spend": 0.0
+      }
+    },
+    "determinism_holes": {
+      "spec_gap": {
+        "total_usd": 0.0,
+        "total_rows": 0,
+        "by_service": []
+      },
+      "misc": {
+        "total_usd": 0.0,
+        "total_rows": 0,
+        "by_service": []
+      },
+      "llm_routed": {
+        "total_usd": 0.0,
+        "total_rows": 0
+      }
+    },
+    "od_basis_mix": {
+      "public_od": {
+        "usd": 4233.04,
+        "rows": 16,
+        "pct_of_spend": 99.88
+      },
+      "reconstructed_default": {
+        "usd": 5.0,
+        "rows": 1,
+        "pct_of_spend": 0.12
+      },
+      "amortized_fallback": {
+        "usd": 0.0,
+        "rows": 0,
+        "pct_of_spend": 0.0
+      }
+    },
+    "ratio_distribution": {
+      "over_3x": {
+        "rows": 0,
+        "usd_aws_od": 0.0,
+        "usd_gcp": 0.0,
+        "max_ratio": 0.0,
+        "top_services": []
+      },
+      "over_10x": {
+        "rows": 0,
+        "usd_aws_od": 0.0,
+        "usd_gcp": 0.0,
+        "max_ratio": 0.0,
+        "top_services": []
+      },
+      "under_0_2x": {
+        "rows": 1,
+        "usd_aws_od": 5.0,
+        "usd_gcp": 0.0,
+        "min_ratio": 0.0
+      },
+      "max_outlier": {
+        "aws_li_key": "ec2_spot_1",
+        "product": "Amazon Elastic Compute Cloud",
+        "usage_type": "BoxUsage:t3.large",
+        "aws_od": 60.0,
+        "gcp_projected": 56.4,
+        "ratio": 0.94
+      }
+    },
+    "guard_events": {
+      "unit_mismatch": {
+        "events": 0,
+        "rows": 0,
+        "usd": 0.0
+      },
+      "unit_unknown": {
+        "events": 0,
+        "rows": 0,
+        "usd": 0.0
+      },
+      "echo": {
+        "events": 0,
+        "rows": 0,
+        "usd": 0.0
+      },
+      "allowed_target": {
+        "events": 0,
+        "rows": 0,
+        "usd": 0.0
+      },
+      "outlier_clamped": {
+        "events": 0,
+        "rows": 0,
+        "usd": 0.0
+      },
+      "error_count": 0,
+      "warn_count": 0,
+      "total_diag_usd": 0.0
+    }
+  },
+  "jobs": {
+    "enterprise_high_sp": {
+      "job": "enterprise_high_sp",
+      "db_path": "C:\\Users\\arnav\\Downloads\\cur-web-AGY\\skill\\aws-gcp-cost-projection\\tests\\corpus\\enterprise_high_sp\\projection-audit\\projection.duckdb",
+      "job_dir": "C:\\Users\\arnav\\Downloads\\cur-web-AGY\\skill\\aws-gcp-cost-projection\\tests\\corpus\\enterprise_high_sp",
+      "status": "ok",
+      "headline": {
+        "workload_rows": 5,
+        "aws_amortized_cost": 1202.0,
+        "aws_od_cost": 1507.8,
+        "gcp_projected_cost": 1417.33,
+        "overall_ratio": 0.94
+      },
+      "coverage_mix": {
+        "deterministic": {
+          "aws_amortized": 1202.0,
+          "aws_od": 1507.8,
+          "gcp_projected": 1417.33,
+          "rows": 5,
+          "pct_of_spend": 100.0
+        },
+        "llm": {
+          "aws_amortized": 0.0,
+          "aws_od": 0.0,
+          "gcp_projected": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        },
+        "passthrough": {
+          "aws_amortized": 0.0,
+          "aws_od": 0.0,
+          "gcp_projected": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        },
+        "ignored": {
+          "aws_amortized": 0.0,
+          "aws_od": 0.0,
+          "gcp_projected": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        },
+        "unmapped": {
+          "aws_amortized": 0.0,
+          "aws_od": 0.0,
+          "gcp_projected": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        }
+      },
+      "determinism_holes": {
+        "spec_gap": {
+          "total_usd": 0.0,
+          "total_rows": 0,
+          "by_service": []
+        },
+        "misc": {
+          "total_usd": 0.0,
+          "total_rows": 0,
+          "by_service": []
+        },
+        "llm_routed": {
+          "total_usd": 0.0,
+          "total_rows": 0
+        }
+      },
+      "od_basis_mix": {
+        "public_od": {
+          "usd": 1507.8,
+          "rows": 5,
+          "pct_of_spend": 100.0
+        },
+        "reconstructed_default": {
+          "usd": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        },
+        "amortized_fallback": {
+          "usd": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        }
+      },
+      "ratio_distribution": {
+        "over_3x": {
+          "rows": 0,
+          "usd_aws_od": 0.0,
+          "usd_gcp": 0.0,
+          "max_ratio": 0.0,
+          "top_services": []
+        },
+        "over_10x": {
+          "rows": 0,
+          "usd_aws_od": 0.0,
+          "usd_gcp": 0.0,
+          "max_ratio": 0.0,
+          "top_services": []
+        },
+        "under_0_2x": {
+          "rows": 0,
+          "usd_aws_od": 0.0,
+          "usd_gcp": 0.0,
+          "min_ratio": 0.0
+        },
+        "max_outlier": {
+          "aws_li_key": "ec2_spot_1",
+          "product": "Amazon Elastic Compute Cloud",
+          "usage_type": "BoxUsage:t3.large",
+          "aws_od": 60.0,
+          "gcp_projected": 56.4,
+          "ratio": 0.94
+        }
+      },
+      "guard_events": {
+        "unit_mismatch": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "unit_unknown": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "echo": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "allowed_target": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "outlier_clamped": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "error_count": 0,
+        "warn_count": 0,
+        "total_diag_usd": 0.0
+      },
+      "service_groups": {
+        "Amazon Elastic Compute Cloud": {
+          "rows": 3,
+          "aws_od_cost": 857.8,
+          "gcp_projected_cost": 806.33,
+          "ratio": 0.94,
+          "strategies": "map"
+        },
+        "AWS Data Transfer": {
+          "rows": 1,
+          "aws_od_cost": 450.0,
+          "gcp_projected_cost": 423.0,
+          "ratio": 0.94,
+          "strategies": "map"
+        },
+        "Amazon Elastic Block Store": {
+          "rows": 1,
+          "aws_od_cost": 200.0,
+          "gcp_projected_cost": 188.0,
+          "ratio": 0.94,
+          "strategies": "map"
+        }
+      }
+    },
+    "standard_workload": {
+      "job": "standard_workload",
+      "db_path": "C:\\Users\\arnav\\Downloads\\cur-web-AGY\\skill\\aws-gcp-cost-projection\\tests\\corpus\\standard_workload\\projection-audit\\projection.duckdb",
+      "job_dir": "C:\\Users\\arnav\\Downloads\\cur-web-AGY\\skill\\aws-gcp-cost-projection\\tests\\corpus\\standard_workload",
+      "status": "ok",
+      "headline": {
+        "workload_rows": 6,
+        "aws_amortized_cost": 1610.11,
+        "aws_od_cost": 1610.11,
+        "gcp_projected_cost": 1508.8,
+        "overall_ratio": 0.937
+      },
+      "coverage_mix": {
+        "deterministic": {
+          "aws_amortized": 1605.11,
+          "aws_od": 1605.11,
+          "gcp_projected": 1508.8,
+          "rows": 5,
+          "pct_of_spend": 99.69
+        },
+        "llm": {
+          "aws_amortized": 0.0,
+          "aws_od": 0.0,
+          "gcp_projected": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        },
+        "passthrough": {
+          "aws_amortized": 0.0,
+          "aws_od": 0.0,
+          "gcp_projected": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        },
+        "ignored": {
+          "aws_amortized": 5.0,
+          "aws_od": 5.0,
+          "gcp_projected": 0.0,
+          "rows": 1,
+          "pct_of_spend": 0.31
+        },
+        "unmapped": {
+          "aws_amortized": 0.0,
+          "aws_od": 0.0,
+          "gcp_projected": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        }
+      },
+      "determinism_holes": {
+        "spec_gap": {
+          "total_usd": 0.0,
+          "total_rows": 0,
+          "by_service": []
+        },
+        "misc": {
+          "total_usd": 0.0,
+          "total_rows": 0,
+          "by_service": []
+        },
+        "llm_routed": {
+          "total_usd": 0.0,
+          "total_rows": 0
+        }
+      },
+      "od_basis_mix": {
+        "public_od": {
+          "usd": 1605.11,
+          "rows": 5,
+          "pct_of_spend": 99.69
+        },
+        "reconstructed_default": {
+          "usd": 5.0,
+          "rows": 1,
+          "pct_of_spend": 0.31
+        },
+        "amortized_fallback": {
+          "usd": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        }
+      },
+      "ratio_distribution": {
+        "over_3x": {
+          "rows": 0,
+          "usd_aws_od": 0.0,
+          "usd_gcp": 0.0,
+          "max_ratio": 0.0,
+          "top_services": []
+        },
+        "over_10x": {
+          "rows": 0,
+          "usd_aws_od": 0.0,
+          "usd_gcp": 0.0,
+          "max_ratio": 0.0,
+          "top_services": []
+        },
+        "under_0_2x": {
+          "rows": 1,
+          "usd_aws_od": 5.0,
+          "usd_gcp": 0.0,
+          "min_ratio": 0.0
+        },
+        "max_outlier": {
+          "aws_li_key": "ec2_m5_od",
+          "product": "Amazon Elastic Compute Cloud",
+          "usage_type": "BoxUsage:m5.large",
+          "aws_od": 69.12,
+          "gcp_projected": 64.97,
+          "ratio": 0.94
+        }
+      },
+      "guard_events": {
+        "unit_mismatch": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "unit_unknown": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "echo": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "allowed_target": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "outlier_clamped": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "error_count": 0,
+        "warn_count": 0,
+        "total_diag_usd": 0.0
+      },
+      "service_groups": {
+        "Amazon Simple Storage Service": {
+          "rows": 1,
+          "aws_od_cost": 1150.0,
+          "gcp_projected_cost": 1081.0,
+          "ratio": 0.94,
+          "strategies": "map"
+        },
+        "Amazon Relational Database Service": {
+          "rows": 1,
+          "aws_od_cost": 345.6,
+          "gcp_projected_cost": 324.86,
+          "ratio": 0.94,
+          "strategies": "map"
+        },
+        "Amazon Elastic Compute Cloud": {
+          "rows": 2,
+          "aws_od_cost": 93.31,
+          "gcp_projected_cost": 87.71,
+          "ratio": 0.94,
+          "strategies": "map"
+        },
+        "Elastic Load Balancing": {
+          "rows": 1,
+          "aws_od_cost": 16.2,
+          "gcp_projected_cost": 15.23,
+          "ratio": 0.94,
+          "strategies": "map"
+        },
+        "AmazonCloudWatch": {
+          "rows": 1,
+          "aws_od_cost": 5.0,
+          "gcp_projected_cost": 0.0,
+          "ratio": 0.0,
+          "strategies": "ignore"
+        }
+      }
+    },
+    "modern_serverless": {
+      "job": "modern_serverless",
+      "db_path": "C:\\Users\\arnav\\Downloads\\cur-web-AGY\\skill\\aws-gcp-cost-projection\\tests\\corpus\\modern_serverless\\projection-audit\\projection.duckdb",
+      "job_dir": "C:\\Users\\arnav\\Downloads\\cur-web-AGY\\skill\\aws-gcp-cost-projection\\tests\\corpus\\modern_serverless",
+      "status": "ok",
+      "headline": {
+        "workload_rows": 6,
+        "aws_amortized_cost": 1120.13,
+        "aws_od_cost": 1120.13,
+        "gcp_projected_cost": 1052.92,
+        "overall_ratio": 0.94
+      },
+      "coverage_mix": {
+        "deterministic": {
+          "aws_amortized": 1120.13,
+          "aws_od": 1120.13,
+          "gcp_projected": 1052.92,
+          "rows": 6,
+          "pct_of_spend": 100.0
+        },
+        "llm": {
+          "aws_amortized": 0.0,
+          "aws_od": 0.0,
+          "gcp_projected": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        },
+        "passthrough": {
+          "aws_amortized": 0.0,
+          "aws_od": 0.0,
+          "gcp_projected": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        },
+        "ignored": {
+          "aws_amortized": 0.0,
+          "aws_od": 0.0,
+          "gcp_projected": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        },
+        "unmapped": {
+          "aws_amortized": 0.0,
+          "aws_od": 0.0,
+          "gcp_projected": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        }
+      },
+      "determinism_holes": {
+        "spec_gap": {
+          "total_usd": 0.0,
+          "total_rows": 0,
+          "by_service": []
+        },
+        "misc": {
+          "total_usd": 0.0,
+          "total_rows": 0,
+          "by_service": []
+        },
+        "llm_routed": {
+          "total_usd": 0.0,
+          "total_rows": 0
+        }
+      },
+      "od_basis_mix": {
+        "public_od": {
+          "usd": 1120.13,
+          "rows": 6,
+          "pct_of_spend": 100.0
+        },
+        "reconstructed_default": {
+          "usd": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        },
+        "amortized_fallback": {
+          "usd": 0.0,
+          "rows": 0,
+          "pct_of_spend": 0.0
+        }
+      },
+      "ratio_distribution": {
+        "over_3x": {
+          "rows": 0,
+          "usd_aws_od": 0.0,
+          "usd_gcp": 0.0,
+          "max_ratio": 0.0,
+          "top_services": []
+        },
+        "over_10x": {
+          "rows": 0,
+          "usd_aws_od": 0.0,
+          "usd_gcp": 0.0,
+          "max_ratio": 0.0,
+          "top_services": []
+        },
+        "under_0_2x": {
+          "rows": 0,
+          "usd_aws_od": 0.0,
+          "usd_gcp": 0.0,
+          "min_ratio": 0.0
+        },
+        "max_outlier": {
+          "aws_li_key": "dynamodb_req",
+          "product": "Amazon DynamoDB",
+          "usage_type": "PayPerRequestThroughput",
+          "aws_od": 62.5,
+          "gcp_projected": 58.75,
+          "ratio": 0.94
+        }
+      },
+      "guard_events": {
+        "unit_mismatch": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "unit_unknown": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "echo": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "allowed_target": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "outlier_clamped": {
+          "events": 0,
+          "rows": 0,
+          "usd": 0.0
+        },
+        "error_count": 0,
+        "warn_count": 0,
+        "total_diag_usd": 0.0
+      },
+      "service_groups": {
+        "AmazonCloudWatch": {
+          "rows": 1,
+          "aws_od_cost": 500.0,
+          "gcp_projected_cost": 470.0,
+          "ratio": 0.94,
+          "strategies": "map"
+        },
+        "Amazon Relational Database Service": {
+          "rows": 1,
+          "aws_od_cost": 300.0,
+          "gcp_projected_cost": 282.0,
+          "ratio": 0.94,
+          "strategies": "break_down"
+        },
+        "AWS Lambda": {
+          "rows": 1,
+          "aws_od_cost": 166.67,
+          "gcp_projected_cost": 156.67,
+          "ratio": 0.94,
+          "strategies": "map"
+        },
+        "Amazon Elastic Container Service": {
+          "rows": 1,
+          "aws_od_cost": 80.96,
+          "gcp_projected_cost": 76.1,
+          "ratio": 0.94,
+          "strategies": "map"
+        },
+        "Amazon DynamoDB": {
+          "rows": 1,
+          "aws_od_cost": 62.5,
+          "gcp_projected_cost": 58.75,
+          "ratio": 0.94,
+          "strategies": "map"
+        },
+        "AWS Key Management Service": {
+          "rows": 1,
+          "aws_od_cost": 10.0,
+          "gcp_projected_cost": 9.4,
+          "ratio": 0.94,
+          "strategies": "map"
+        }
+      }
+    }
+  }
+}

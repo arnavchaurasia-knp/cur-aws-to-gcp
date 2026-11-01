@@ -56,18 +56,21 @@ def _od_divisor(disc: float) -> float:
 
 def apply_od_basis(conn, assumptions: dict | None = None) -> None:
     """Stamp aws_od_cost, sp_ri_discount_pct, od_basis on every aws_li_catalog row
-    (WORKORDER_od_vs_od_sp_ri). Single source of truth for the SP/RI/Spot discount
-    rates: the SAME assumptions projection_view reads (config_loader.load_assumptions),
-    so an operator override is honoured here instead of being silently overridden by
-    a hardcoded default that then wins the view's COALESCE(aws_od_cost, ...).
+    (WORKORDER_od_vs_od_sp_ri, WORKORDER_real_discount_resolution).
+    Single source of truth for the SP/RI/Spot discount rates.
+    Resolves the REAL per-commitment and per-row discount from the bill instead
+    of jumping directly to portfolio-default rates.
 
-    Basis vocabulary:
-      public_od            - real publicOnDemandCost, or genuine on-demand usage.
-      reconstructed_default- no public OD; reconstructed from a PORTFOLIO-DEFAULT
-                             rate (not a per-SP/RI resolved rate). An estimate, and
-                             labelled so it is distinguishable and countable.
-      amortized_fallback   - no public OD and no applicable rate; aws_od_cost is the
-                             billed amortized cost, untouched. No rate invented.
+    Precedence Hierarchy:
+      1. public_od            - real publicOnDemandCost on row, or genuine on-demand usage.
+      2. reconstructed_resolved- row itself carries rate equivalents (public_on_demand_rate vs
+                               effective/savings_plan_rate), or is covered by a commitment
+                               (SavingsPlanARN / ReservationARN) whose effective discount was
+                               derived from covered-usage vs public-OD totals.
+      3. reconstructed_default - no public OD or resolvable commitment rate; reconstructed
+                               from PORTFOLIO-DEFAULT assumptions (aws_ri_1yr/3yr/sp/spot_discount_pct).
+      4. amortized_fallback    - no rate derivable or applicable; aws_od_cost is billed
+                               amortized cost. No rate invented.
     """
     a = assumptions or _load_assumptions() or {}
     spot_div = _od_divisor(float(a.get("aws_spot_discount_pct", 0.70)))
@@ -76,6 +79,36 @@ def apply_od_basis(conn, assumptions: dict | None = None) -> None:
     spot_pct = float(a.get("aws_spot_discount_pct", 0.70))
     ri1_pct = float(a.get("aws_ri_1yr_discount_pct", 0.38))
     ri3_pct = float(a.get("aws_ri_3yr_discount_pct", 0.52))
+
+    # Ensure required columns exist on aws_li_catalog defensively
+    for col_ddl in [
+        "aws_od_cost DOUBLE",
+        "sp_ri_discount_pct DOUBLE",
+        "od_basis VARCHAR",
+        "commitment_arn VARCHAR",
+        "public_on_demand_cost DOUBLE",
+        "public_on_demand_rate DOUBLE",
+        "savings_plan_rate DOUBLE",
+        "total_usage DOUBLE",
+        "pricing_model VARCHAR",
+        "line_item_type VARCHAR",
+        "operation VARCHAR",
+        "usage_type VARCHAR",
+        "product VARCHAR",
+        "aws_effective_unit_rate DOUBLE",
+    ]:
+        conn.execute(f"ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS {col_ddl}")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS commitment_arn VARCHAR")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS public_on_demand_rate DOUBLE")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS savings_plan_rate DOUBLE")
+
+    # Reset od_basis fields so reruns are idempotent
+    conn.execute("""
+        UPDATE aws_li_catalog
+        SET aws_od_cost = NULL,
+            sp_ri_discount_pct = NULL,
+            od_basis = NULL
+    """)
 
     _commit_match = (
         "LOWER(COALESCE(pricing_model, '')) IN ('committed', 'reserved')\n"
@@ -94,14 +127,218 @@ def apply_od_basis(conn, assumptions: dict | None = None) -> None:
     _is_3yr = ("REGEXP_MATCHES(LOWER(COALESCE(usage_type, '') || ' ' || COALESCE(operation, '')), "
                "'\\b(3-year|36\\s*mo|36\\s*month)\\b|3\\s+yr|3\\s+year|3yr')")
 
+    # Precedence 1: True public OD on row or plain OnDemand usage
+    conn.execute("""
+        UPDATE aws_li_catalog
+        SET aws_od_cost = public_on_demand_cost,
+            sp_ri_discount_pct = CASE
+                WHEN public_on_demand_cost > aws_amortized_cost AND public_on_demand_cost > 0
+                    THEN (public_on_demand_cost - aws_amortized_cost) / public_on_demand_cost
+                ELSE 0.0
+            END,
+            od_basis = 'public_od'
+        WHERE public_on_demand_cost IS NOT NULL AND public_on_demand_cost > 0
+    """)
+    conn.execute("""
+        UPDATE aws_li_catalog
+        SET aws_od_cost = aws_amortized_cost,
+            sp_ri_discount_pct = 0.0,
+            od_basis = 'public_od'
+        WHERE od_basis IS NULL
+          AND LOWER(COALESCE(pricing_model, '')) = 'ondemand'
+          AND LOWER(COALESCE(line_item_type, '')) = 'usage'
+    """)
+
+    # Precedence 2: Effective rate from row itself
+    # 2a. Row carries public_on_demand_rate and total_usage
+    conn.execute("""
+        UPDATE aws_li_catalog
+        SET aws_od_cost = total_usage * public_on_demand_rate,
+            sp_ri_discount_pct = CASE
+                WHEN (total_usage * public_on_demand_rate) > aws_amortized_cost AND (total_usage * public_on_demand_rate) > 0
+                    THEN ((total_usage * public_on_demand_rate) - aws_amortized_cost) / (total_usage * public_on_demand_rate)
+                ELSE 0.0
+            END,
+            od_basis = 'reconstructed_resolved'
+        WHERE od_basis IS NULL
+          AND public_on_demand_rate IS NOT NULL AND public_on_demand_rate > 0
+          AND total_usage IS NOT NULL AND total_usage > 0
+    """)
+
+    # 2b. Row carries public_on_demand_rate and savings_plan_rate
+    conn.execute("""
+        UPDATE aws_li_catalog
+        SET aws_od_cost = CASE
+                WHEN public_on_demand_rate > savings_plan_rate AND aws_amortized_cost > 0
+                    THEN aws_amortized_cost / (1.0 - ((public_on_demand_rate - savings_plan_rate) / public_on_demand_rate))
+                ELSE aws_amortized_cost
+            END,
+            sp_ri_discount_pct = CASE
+                WHEN public_on_demand_rate > savings_plan_rate
+                    THEN (public_on_demand_rate - savings_plan_rate) / public_on_demand_rate
+                ELSE 0.0
+            END,
+            od_basis = 'reconstructed_resolved'
+        WHERE od_basis IS NULL
+          AND public_on_demand_rate IS NOT NULL AND public_on_demand_rate > 0
+          AND savings_plan_rate IS NOT NULL AND savings_plan_rate > 0
+    """)
+
+    # 2c. Row carries public_on_demand_rate and aws_effective_unit_rate
+    conn.execute("""
+        UPDATE aws_li_catalog
+        SET aws_od_cost = CASE
+                WHEN public_on_demand_rate > aws_effective_unit_rate AND aws_amortized_cost > 0
+                    THEN aws_amortized_cost / (1.0 - ((public_on_demand_rate - aws_effective_unit_rate) / public_on_demand_rate))
+                ELSE aws_amortized_cost
+            END,
+            sp_ri_discount_pct = CASE
+                WHEN public_on_demand_rate > aws_effective_unit_rate
+                    THEN (public_on_demand_rate - aws_effective_unit_rate) / public_on_demand_rate
+                ELSE 0.0
+            END,
+            od_basis = 'reconstructed_resolved'
+        WHERE od_basis IS NULL
+          AND public_on_demand_rate IS NOT NULL AND public_on_demand_rate > 0
+          AND aws_effective_unit_rate IS NOT NULL AND aws_effective_unit_rate > 0
+    """)
+
+    # Precedence 3: Per-commitment effective rate
+    # Group covered usage by commitment ARN (SavingsPlanARN / ReservationARN)
+    commitment_discounts: dict[str, float] = {}
+
+    # 3a. Derive from aws_raw if available
+    tables = {t[0].lower() for t in conn.execute("SHOW TABLES").fetchall()}
+    if "aws_raw" in tables:
+        raw_cols = {c[1].lower(): c[1] for c in conn.execute("PRAGMA table_info('aws_raw')").fetchall()}
+
+        def _find_rc(names):
+            for n in names:
+                clean = n.lower().replace("/", "_").replace(" ", "_")
+                if clean in raw_cols:
+                    return f'"{raw_cols[clean]}"'
+            return None
+
+        sp_arn_c = _find_rc(['savingsplan/savingsplanarn', 'savings_plan_savings_plan_a_r_n', 'savings_plan_arn'])
+        ri_arn_c = _find_rc(['reservation/reservationarn', 'reservation_reservation_a_r_n', 'reservation_arn'])
+        pub_cost_c = _find_rc(['pricing/publicondemandcost', 'pricing_public_on_demand_cost', 'publicondemandcost'])
+        pub_rate_c = _find_rc(['pricing/publicondemandrate', 'pricing_public_on_demand_rate', 'publicondemandrate'])
+        usage_c = _find_rc(['lineitem/usageamount', 'line_item_usage_amount', 'usageamount'])
+        cost_c = _find_rc(['lineitem/unblendedcost', 'line_item_unblended_cost', 'unblendedcost', 'lineitem/blendedcost'])
+        eff_cost_c = _find_rc(['savingsplan/savingsplaneffectivecost', 'savings_plan_savings_plan_effective_cost', 'savings_plan_effective_cost', 'reservation/effectivecost', 'reservation_effective_cost'])
+
+        if (sp_arn_c or ri_arn_c) and (pub_cost_c or (pub_rate_c and usage_c)):
+            od_val_expr = (
+                f"CASE WHEN {pub_cost_c} IS NOT NULL AND TRY_CAST({pub_cost_c} AS DOUBLE) > 0 THEN TRY_CAST({pub_cost_c} AS DOUBLE) "
+                f"     WHEN {pub_rate_c} IS NOT NULL AND {usage_c} IS NOT NULL AND TRY_CAST({pub_rate_c} AS DOUBLE) > 0 AND TRY_CAST({usage_c} AS DOUBLE) > 0 THEN TRY_CAST({pub_rate_c} AS DOUBLE) * TRY_CAST({usage_c} AS DOUBLE) "
+                f"     ELSE NULL END"
+            ) if (pub_cost_c and pub_rate_c and usage_c) else (
+                f"NULLIF(TRY_CAST({pub_cost_c} AS DOUBLE), 0.0)" if pub_cost_c else
+                f"CASE WHEN {pub_rate_c} IS NOT NULL AND {usage_c} IS NOT NULL AND TRY_CAST({pub_rate_c} AS DOUBLE) > 0 AND TRY_CAST({usage_c} AS DOUBLE) > 0 THEN TRY_CAST({pub_rate_c} AS DOUBLE) * TRY_CAST({usage_c} AS DOUBLE) ELSE NULL END"
+            )
+            cost_val_expr = f"COALESCE(TRY_CAST({eff_cost_c or cost_c} AS DOUBLE), TRY_CAST({cost_c} AS DOUBLE), 0.0)"
+            arn_val_expr = f"COALESCE(NULLIF({sp_arn_c or 'NULL'}, ''), NULLIF({ri_arn_c or 'NULL'}, ''))"
+
+            try:
+                raw_arn_rows = conn.execute(f"""
+                    WITH covered_paired AS (
+                        SELECT {arn_val_expr} as arn,
+                               {od_val_expr} as row_od,
+                               {cost_val_expr} as row_amortized
+                        FROM aws_raw
+                        WHERE (({sp_arn_c or 'FALSE'} IS NOT NULL AND {sp_arn_c or "''"} != '')
+                            OR ({ri_arn_c or 'FALSE'} IS NOT NULL AND {ri_arn_c or "''"} != ''))
+                    )
+                    SELECT arn,
+                           SUM(row_od) as tot_od,
+                           SUM(row_amortized) as tot_amortized
+                    FROM covered_paired
+                    WHERE arn IS NOT NULL AND arn != ''
+                      AND row_od IS NOT NULL AND row_od > 0
+                      AND row_amortized IS NOT NULL AND row_amortized > 0
+                    GROUP BY arn
+                    HAVING tot_od > 0 AND tot_amortized > 0
+                """).fetchall()
+                for arn, tot_od, tot_amortized in raw_arn_rows:
+                    if arn and tot_od and tot_amortized and tot_od > tot_amortized:
+                        disc = (tot_od - tot_amortized) / tot_od
+                        if 0.01 <= disc < 0.99:
+                            commitment_discounts[str(arn)] = float(disc)
+            except Exception as e:
+                log.debug(f"Per-commitment resolution from aws_raw skipped: {e}")
+
+    # 3b. Derive from aws_li_catalog commitment_arn (symmetric pair over rows where OD is known)
+    try:
+        cat_arn_rows = conn.execute("""
+            WITH cat_paired AS (
+                SELECT commitment_arn as arn,
+                       aws_amortized_cost as row_amortized,
+                       CASE
+                           WHEN public_on_demand_cost IS NOT NULL AND public_on_demand_cost > 0
+                               THEN public_on_demand_cost
+                           WHEN public_on_demand_rate IS NOT NULL AND total_usage IS NOT NULL
+                                AND public_on_demand_rate > 0 AND total_usage > 0
+                               THEN public_on_demand_rate * total_usage
+                           ELSE NULL
+                       END as row_od
+                FROM aws_li_catalog
+                WHERE commitment_arn IS NOT NULL AND commitment_arn != ''
+                  AND aws_amortized_cost > 0
+            )
+            SELECT arn,
+                   SUM(row_od) as tot_od,
+                   SUM(row_amortized) as tot_amortized
+            FROM cat_paired
+            WHERE row_od IS NOT NULL AND row_od > 0
+            GROUP BY arn
+            HAVING tot_od > 0 AND tot_amortized > 0
+        """).fetchall()
+        for arn, tot_od, tot_amortized in cat_arn_rows:
+            if arn and tot_od and tot_amortized and tot_od > tot_amortized:
+                disc = (tot_od - tot_amortized) / tot_od
+                if 0.01 <= disc < 0.99 and str(arn) not in commitment_discounts:
+                    commitment_discounts[str(arn)] = float(disc)
+    except Exception as e:
+        log.debug(f"Per-commitment resolution from aws_li_catalog skipped: {e}")
+
+    # Apply resolved commitment discounts to matching rows
+    for arn, disc in commitment_discounts.items():
+        conn.execute("""
+            UPDATE aws_li_catalog
+            SET aws_od_cost = CASE WHEN aws_amortized_cost > 0 THEN aws_amortized_cost / (1.0 - ?) ELSE aws_amortized_cost END,
+                sp_ri_discount_pct = ?,
+                od_basis = 'reconstructed_resolved'
+            WHERE od_basis IS NULL
+              AND (
+                  commitment_arn = ?
+                  OR operation LIKE '%' || ? || '%'
+                  OR usage_type LIKE '%' || ? || '%'
+              )
+        """, [disc, disc, arn, arn, arn])
+
+    # Commitment fees guard: fee rows (not covered usage) must never be grossed up
+    conn.execute("""
+        UPDATE aws_li_catalog
+        SET aws_od_cost = aws_amortized_cost,
+            sp_ri_discount_pct = 0.0,
+            od_basis = 'amortized_fallback'
+        WHERE od_basis IS NULL AND (
+            LOWER(COALESCE(line_item_type, '')) IN ('rifee', 'savingsplanrecurringfee')
+            OR LOWER(COALESCE(operation, '')) ILIKE '%hourly commitment%'
+            OR LOWER(COALESCE(usage_type, '')) ILIKE '%hourly commitment%'
+            OR LOWER(COALESCE(operation, '')) ILIKE '%recurring fee%'
+            OR LOWER(COALESCE(usage_type, '')) ILIKE '%recurring fee%'
+            OR LOWER(COALESCE(operation, '')) ILIKE '%reserved instance fee%'
+            OR LOWER(COALESCE(usage_type, '')) ILIKE '%reserved instance fee%'
+            OR (LOWER(COALESCE(product, '')) ILIKE '%savings plan%' AND LOWER(COALESCE(operation, '')) ILIKE '%hourly commitment%')
+        )
+    """)
+
+    # Precedence 4: Portfolio default rate (estimate when real discount is absent)
     conn.execute(f"""
         UPDATE aws_li_catalog
         SET
             aws_od_cost = CASE
-                WHEN public_on_demand_cost IS NOT NULL AND public_on_demand_cost > 0
-                    THEN public_on_demand_cost
-                WHEN LOWER(COALESCE(pricing_model, '')) = 'ondemand' AND LOWER(COALESCE(line_item_type, '')) = 'usage'
-                    THEN aws_amortized_cost
                 WHEN {_spot_match}
                     THEN CASE WHEN aws_amortized_cost > 0 THEN aws_amortized_cost / {spot_div} ELSE aws_amortized_cost END
                 WHEN {_commit_match}
@@ -111,10 +348,6 @@ def apply_od_basis(conn, assumptions: dict | None = None) -> None:
                 ELSE aws_amortized_cost
             END,
             sp_ri_discount_pct = CASE
-                WHEN public_on_demand_cost IS NOT NULL AND public_on_demand_cost > aws_amortized_cost AND public_on_demand_cost > 0
-                    THEN (public_on_demand_cost - aws_amortized_cost) / public_on_demand_cost
-                WHEN LOWER(COALESCE(pricing_model, '')) = 'ondemand' AND LOWER(COALESCE(line_item_type, '')) = 'usage'
-                    THEN 0.0
                 WHEN {_spot_match}
                     THEN {spot_pct}
                 WHEN {_commit_match}
@@ -122,17 +355,38 @@ def apply_od_basis(conn, assumptions: dict | None = None) -> None:
                 ELSE 0.0
             END,
             od_basis = CASE
-                WHEN public_on_demand_cost IS NOT NULL AND public_on_demand_cost > 0
-                    THEN 'public_od'
-                WHEN LOWER(COALESCE(pricing_model, '')) = 'ondemand' AND LOWER(COALESCE(line_item_type, '')) = 'usage'
-                    THEN 'public_od'
                 WHEN {_spot_match}
                     THEN 'reconstructed_default'
                 WHEN {_commit_match}
                     THEN 'reconstructed_default'
                 ELSE 'amortized_fallback'
             END
+        WHERE od_basis IS NULL
     """)
+
+    # Precedence 5: Amortized fallback
+    conn.execute("""
+        UPDATE aws_li_catalog
+        SET aws_od_cost = aws_amortized_cost,
+            sp_ri_discount_pct = 0.0,
+            od_basis = 'amortized_fallback'
+        WHERE od_basis IS NULL
+    """)
+
+    try:
+        summary_rows = conn.execute("""
+            SELECT od_basis, COUNT(*), SUM(aws_od_cost), SUM(aws_amortized_cost)
+            FROM aws_li_catalog
+            GROUP BY od_basis
+            ORDER BY od_basis
+        """).fetchall()
+        summary_map = {
+            r[0]: {"rows": r[1], "od_usd": round(r[2] or 0.0, 2), "amortized_usd": round(r[3] or 0.0, 2)}
+            for r in summary_rows
+        }
+        log.info(f"OD-basis distribution (WORKORDER_real_discount_resolution): {summary_map}")
+    except Exception:
+        pass
 try:
     from diagnostics import diag, WARN
 except ImportError:
@@ -1402,6 +1656,17 @@ def main():
             "product_deployment_option":  "product_deploymentoption",
             "product_volume_type":        "product_volumetype",
             "line_item_usage_account_id": "lineitem_usageaccountid",
+            "savings_plan_savings_plan_a_r_n": "savingsplan_savingsplanarn",
+            "savings_plan_arn":           "savingsplan_savingsplanarn",
+            "savings_plan_savings_plan_rate": "savingsplan_savingsplanrate",
+            "savings_plan_rate":          "savingsplan_savingsplanrate",
+            "savings_plan_effective_cost": "savingsplan_savingsplaneffectivecost",
+            "savings_plan_savings_plan_effective_cost": "savingsplan_savingsplaneffectivecost",
+            "reservation_reservation_a_r_n": "reservation_reservationarn",
+            "reservation_arn":            "reservation_reservationarn",
+            "reservation_effective_cost": "reservation_effectivecost",
+            "reservation_net_effective_cost": "reservation_effectivecost",
+            "pricing_public_on_demand_rate": "pricing_publicondemandrate",
         }
         for underscore_key, slash_alias in _UNDERSCORE_TO_SLASH.items():
             normalized_key = underscore_key.lower().replace("/", "_").replace(" ", "_")
@@ -1476,6 +1741,9 @@ def main():
     conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS aws_od_cost DOUBLE")
     conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS sp_ri_discount_pct DOUBLE")
     conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS od_basis VARCHAR")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS commitment_arn VARCHAR")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS public_on_demand_rate DOUBLE")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS savings_plan_rate DOUBLE")
 
     # Reconcile sum helper
     if is_raw_cur:
@@ -1595,7 +1863,20 @@ def main():
                         LEFT(CAST({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS VARCHAR), 7),
                         LEFT(CAST({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS VARCHAR), 7),
                         ''
-                    ) as billing_month
+                    ) as billing_month,
+                    COALESCE(
+                        NULLIF({c(['savingsplan/savingsplanarn', 'savingsplan_savingsplanarn', 'savings_plan_savings_plan_a_r_n', 'savings_plan_arn'])}, ''),
+                        NULLIF({c(['reservation/reservationarn', 'reservation_reservationarn', 'reservation_reservation_a_r_n', 'reservation_arn'])}, ''),
+                        ''
+                    ) as commitment_arn,
+                    CASE WHEN {c(['pricing/publicondemandrate', 'pricing_publicondemandrate', 'pricing_public_on_demand_rate', 'publicondemandrate'])} != 'NULL'
+                         THEN {_sql_num(c(['pricing/publicondemandrate', 'pricing_publicondemandrate', 'pricing_public_on_demand_rate', 'publicondemandrate']))}
+                         ELSE NULL
+                    END as row_public_od_rate,
+                    CASE WHEN {c(['savingsplan/savingsplanrate', 'savingsplan_savingsplanrate', 'savings_plan_savings_plan_rate', 'savings_plan_rate'])} != 'NULL'
+                         THEN {_sql_num(c(['savingsplan/savingsplanrate', 'savingsplan_savingsplanrate', 'savings_plan_savings_plan_rate', 'savings_plan_rate']))}
+                         ELSE NULL
+                    END as row_sp_rate
                 FROM aws_raw
                 WHERE {c(['lineitem/lineitemtype', 'lineitemtype'])} != 'Tax'
             )
@@ -1604,7 +1885,8 @@ def main():
                 pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost,
                 public_on_demand_cost,
                 license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,
-                product_code, billing_month
+                product_code, billing_month,
+                commitment_arn, public_on_demand_rate, savings_plan_rate
             )
             SELECT
                 md5(product || usage_type || operation || aws_region || pricing_model || line_item_type || CAST(is_workload AS VARCHAR) || license_model || operating_system || database_engine || deployment_option || volume_type || pricing_unit || billing_month) as key,
@@ -1617,7 +1899,10 @@ def main():
                 -- 1:1 with product); carried via max() so it is NOT part of the md5
                 -- dedup key (the md5 dedup key includes billing_month to keep months distinct).
                 max(product_code) as product_code,
-                billing_month
+                billing_month,
+                max(commitment_arn) as commitment_arn,
+                max(row_public_od_rate) as public_on_demand_rate,
+                max(row_sp_rate) as savings_plan_rate
             FROM _raw_flat
             GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload,
                      license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,

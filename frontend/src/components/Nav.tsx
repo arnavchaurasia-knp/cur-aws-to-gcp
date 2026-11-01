@@ -127,6 +127,14 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
                       <span>Audit</span>
                     </Link>
                     <Link
+                      to="/admin/findings"
+                      onClick={() => setSettingsOpen(false)}
+                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                    >
+                      <span>🔍</span>
+                      <span>Review Findings</span>
+                    </Link>
+                    <Link
                       to="/admin/assumptions"
                       onClick={() => setSettingsOpen(false)}
                       className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"

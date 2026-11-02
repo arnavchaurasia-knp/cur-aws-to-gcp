@@ -20,7 +20,7 @@ function statusBadge(status: string) {
 }
 
 export function ReleaseDashboard({ user }: Readonly<{ user: UserInfo }>) {
-  useTitle('Release Dashboard')
+  useTitle('Projection Dashboard')
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
@@ -44,7 +44,7 @@ export function ReleaseDashboard({ user }: Readonly<{ user: UserInfo }>) {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Release Dashboard</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Projection Dashboard</h1>
             <p className="text-xs text-gray-400 mt-1">
               Active and completed cost projection releases across all your cloud customer pipelines.
             </p>

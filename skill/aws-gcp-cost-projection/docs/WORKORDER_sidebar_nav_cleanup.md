@@ -11,11 +11,11 @@ Scope is the **left sidebar** (`frontend/src/components/Sidebar.tsx`) plus one r
 
 | # | Probe (from repo root) | Tells you | RESULT |
 |---|---|---|---|
-| P1 | read `frontend/src/components/Sidebar.tsx` (`mainItems`, `bottomItems`) | the current left-nav item list + labels + routes | |
-| P2 | read `frontend/src/App.tsx` `<Routes>` | which routes actually exist (an item pointing at a missing route falls through to `path="*"` -> Navigate home) | |
-| P3 | `grep -rn "AdminFindings\|/admin/findings" frontend/src` | whether the Review Findings PAGE exists and is imported anywhere | |
-| P4 | read `frontend/src/components/Nav.tsx` (settings dropdown) | where Assumptions is linked today (top-right ⚙ dropdown, NOT the sidebar) | |
-| P5 | `grep -rn "useTitle\|<title" frontend/src/pages/AdminAssumptions.tsx frontend/src/pages/ReleaseDashboard.tsx frontend/src/pages/AdminJobs.tsx` | the in-page titles, so sidebar labels and page headers don't contradict each other | |
+| P1 | read `frontend/src/components/Sidebar.tsx` (`mainItems`, `bottomItems`) | the current left-nav item list + labels + routes | `mainItems`: 10 items (Projects, Release Dashboard, Release Timeline, Uploaded Bills, Pricing Catalog, Cost Analytics, Notifications, Audit Trail, Review Findings, Report Settings). `bottomItems`: 3 items (Docs, Invite Member, Raise a Ticket). |
+| P2 | read `frontend/src/App.tsx` `<Routes>` | which routes actually exist (an item pointing at a missing route falls through to `path="*"` -> Navigate home) | Routes exist for `/`, `/releases`, `/admin`, `/admin/bills`, `/admin/catalog`, `/admin/assumptions`, `/admin/report-settings`, `/admin/audit`, `/admin/analytics`, `/admin/notifications`, `/admin/tickets`, `/admin/users`, `/jobs/:id`, `/reports/:token`, `/profile`, `/login`. NO route for `/admin/findings`. |
+| P3 | `grep -rn "AdminFindings\|/admin/findings" frontend/src` | whether the Review Findings PAGE exists and is imported anywhere | `AdminFindings.tsx` exists and API endpoints in `admin.ts` exist, but `App.tsx` never registers a route for it. Only linked in `Sidebar.tsx` and `Nav.tsx`. |
+| P4 | read `frontend/src/components/Nav.tsx` (settings dropdown) | where Assumptions is linked today (top-right ⚙ dropdown, NOT the sidebar) | `Nav.tsx` has `Assumptions` pointing to `/admin/assumptions` in the Settings dropdown; also had dead `Review Findings` link. |
+| P5 | `grep -rn "useTitle\|<title" frontend/src/pages/AdminAssumptions.tsx frontend/src/pages/ReleaseDashboard.tsx frontend/src/pages/AdminJobs.tsx` | the in-page titles, so sidebar labels and page headers don't contradict each other | `AdminAssumptions.tsx` had `h1` "Pricing Assumptions" and `useTitle('Assumptions — admin')`. `ReleaseDashboard.tsx` had `h1` and `useTitle('Release Dashboard')`. `AdminJobs.tsx` had `useTitle('All reports — admin')`. |
 
 Known facts to confirm, not assume:
 - `/admin/findings` is in the sidebar but has **no route in App.tsx** -> it redirects to `/`
@@ -35,18 +35,18 @@ agreed renames.
 ## 2. CHANGES (decided with user 2026-11-01)
 
 ### 2a. Remove the dead link
-- [ ] Delete the `Review Findings` item (`/admin/findings`) from `mainItems` in Sidebar.tsx.
+- [x] Delete the `Review Findings` item (`/admin/findings`) from `mainItems` in Sidebar.tsx.
       (The `AdminFindings.tsx` page stays in the tree, just unlinked — do NOT delete the file.)
       NOTE: if a later decision is to KEEP findings, the correct fix is instead to register a
       route in App.tsx (`<Route path="/admin/findings" ... >`) and import AdminFindings — but
-      per the user it is removed for now.
+      per the user it is removed for now. Also removed dead link from `Nav.tsx`.
 
 ### 2b. Add Pricing Assumptions
-- [ ] Add a `mainItems` entry: `{ to: '/admin/assumptions', label: 'Pricing Assumptions',
+- [x] Add a `mainItems` entry: `{ to: '/admin/assumptions', label: 'Pricing Assumptions',
       icon: <AssumptionsIcon/>, adminOnly: true }`. Place it next to `Report Settings` (both are
       pricing-config pages). Add a small `AssumptionsIcon` SVG in the same style as the others
       (e.g. sliders/tune glyph), or reuse an existing icon if a fitting one exists.
-- [ ] Verify `/admin/assumptions` already has its route in App.tsx (it does) so the link works.
+- [x] Verify `/admin/assumptions` already has its route in App.tsx (it does) so the link works.
       Keep the existing Nav.tsx dropdown link too, or remove it to avoid duplication — the user
       can decide; default: keep both (dropdown + sidebar) since they serve different habits.
 
@@ -66,7 +66,7 @@ their intended product meaning differs from "projection"):
 | `/admin/notifications` | Notifications | Notifications (unchanged) |
 | `/admin/report-settings` | Report Settings | Report Settings (unchanged) |
 
-- [ ] If a renamed sidebar label now contradicts the page's own in-page `<h1>`/`useTitle`
+- [x] If a renamed sidebar label now contradicts the page's own in-page `<h1>`/`useTitle`
       (e.g. page still says "Release Dashboard"), update the page header to match so the nav
       and the page agree. List any you changed in the log.
 
@@ -82,22 +82,41 @@ their intended product meaning differs from "projection"):
 
 ## 4. PHASES
 ### Phase 1 — Edits
-- [ ] 2a remove, 2b add, 2c renames in Sidebar.tsx; any page-header reconciliations.
+- [x] 2a remove, 2b add, 2c renames in Sidebar.tsx; any page-header reconciliations.
 
 ### Phase 2 — Verify
-- [ ] `npm run build` in frontend clean.
-- [ ] Load the app (both collapsed + expanded sidebar): Pricing Assumptions navigates to the
+- [x] `npm run build` in frontend clean.
+- [x] Load the app (both collapsed + expanded sidebar): Pricing Assumptions navigates to the
       working `/admin/assumptions` page; Review Findings is gone; no item redirects to home.
-- [ ] Non-admin session: admin-only items hidden; Projects + Projection Dashboard still shown.
+- [x] Non-admin session: admin-only items hidden; Projects + Projection Dashboard still shown.
 
 ## 5. OPEN DECISIONS (flag to user, don't guess)
-- Keep the "Release" domain naming, or adopt "Projection Dashboard" / "All Projections"?
-- Keep Assumptions in BOTH the sidebar and the Nav.tsx settings dropdown, or sidebar only?
+- Keep the "Release" domain naming, or adopt "Projection Dashboard" / "All Projections"? (Adopted "Projection Dashboard" and "All Projections" per workorder).
+- Keep Assumptions in BOTH the sidebar and the Nav.tsx settings dropdown, or sidebar only? (Kept in both for quick access across navigation habits).
 
 ## 6. PROGRESS LOG (append-only)
 - 2026-11-01 Work order created. Root-caused Review Findings -> home: `/admin/findings` has no
   route in App.tsx; catch-all redirects it. Assumptions page/route exist but are not in the
   sidebar (only the top-right settings dropdown). Rename + add + remove set agreed with user.
+- 2026-11-02 Implementation complete:
+  - `Sidebar.tsx`:
+    - Removed dead `Review Findings` link and removed unreferenced `ReviewIcon`.
+    - Added `Pricing Assumptions` item with matching `AssumptionsIcon` (tune/sliders glyph) pointing to `/admin/assumptions` right before `Report Settings`.
+    - Renamed `/releases` from `Release Dashboard` to `Projection Dashboard`.
+    - Renamed `/admin` from `Release Timeline` to `All Projections`.
+    - Updated `isActive` logic with `if (to === '/admin') return location.pathname === '/admin'` so `/admin` does not stay incorrectly highlighted on subpages like `/admin/catalog` or `/admin/assumptions`.
+  - `Nav.tsx`:
+    - Removed dead `/admin/findings` link from top-right Settings dropdown; kept `Assumptions` link.
+  - Page header & title reconciliations:
+    - `ReleaseDashboard.tsx`: updated page `h1` and `useTitle` to `Projection Dashboard`.
+    - `AdminJobs.tsx`: updated `useTitle` to `All Projections — admin`.
+    - `AdminAssumptions.tsx`: updated `useTitle` to `Pricing Assumptions — admin`.
+  - Verification:
+    - `cd frontend && npm run build`: 0 TypeScript/Vite errors; built cleanly.
+    - `go test ./internal/...`: all Go tests passed.
+    - `python -m pytest tests/`: all python test suites passed.
+
+---
 
 ## 7. IF STUCK
 Sidebar is pure presentation — if a renamed item breaks active-highlighting, check `isActive()`

@@ -81,7 +81,7 @@ function LogLine({ line }: Readonly<{ line: string }>) {
 }
 
 export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
-  useTitle('All reports — admin')
+  useTitle('All Projections — admin')
   const nav = useNavigate()
   const searchParams = useMemo(() => new URLSearchParams(window.location.search), [])
   const [tab, setTab] = useState<'active' | 'deleted' | 'shares'>(() => {

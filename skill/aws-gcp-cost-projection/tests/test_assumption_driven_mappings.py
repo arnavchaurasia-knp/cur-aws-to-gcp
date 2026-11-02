@@ -60,7 +60,7 @@ def test_r1_nat_gateway_assumption(monkeypatch):
         "total_usage": 100.0,
     }
 
-    # At default 32.0
+    # At default 32.0 (matches 32-VM cap parity 0.044 / 0.0014)
     monkeypatch.setitem(asm._ASSUMPTIONS, "nat_vms_per_gateway", 32.0)
     out = asm.map_flat_hourly([row])
     assert len(out) == 1

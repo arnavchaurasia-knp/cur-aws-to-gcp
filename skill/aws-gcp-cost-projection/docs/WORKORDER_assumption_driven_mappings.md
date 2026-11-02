@@ -70,7 +70,7 @@ is answered by data, not by reading code.
   used, so the report can show "mapped via assumption X=N" and `explain_row` can surface it.
 - Assumptions only ever make a row mappable; if the assumption is at a "safe" value the
   result must not be worse than today's honest passthrough. Where unsure, keep passthrough
-  as the fallback (a NULL/zero assumption ⇒ passthrough, not a broken $0).
+  as the fallback (a NULL/զero assumption ⇒ passthrough, not a broken $0).
 - Reset-to-default restores the committed default (fallback file is the source of truth).
 - NO calibration/auto-tuning here (deferred).
 
@@ -79,41 +79,41 @@ is answered by data, not by reading code.
 ## 4. PHASES
 
 ### Phase 1 — Assumption→SKU impact registry (answers user item #2)
-- [x] `data/assumption_impact.json`: map each assumption key → {services, charge_types,
+- [ ] `data/assumption_impact.json`: map each assumption key → {services, charge_types,
       mapper, decision_it_changes}. Seed it with the 10 existing keys + the R-rows below.
-- [x] A tiny loader + a `--list` in `job_inspect.py` (or a new `assumptions_impact.py`)
+- [ ] A tiny loader + a `--list` in `job_inspect.py` (or a new `assumptions_impact.py`)
       that prints, for a key, every SKU/service it controls. This is the discoverability
       the user asked for.
 
 ### Phase 2 — Node-based cache mappers (R2, R3) — lowest risk, copy ElastiCache
-- [x] Add `dax_node_gib`, `memorydb_node_gib` keys (defaults + schema).
-- [x] Extend the ElastiCache FORMULA path (P4) to handle DAX + MemoryDB node→Memorystore
+- [ ] Add `dax_node_gib`, `memorydb_node_gib` keys (defaults + schema).
+- [ ] Extend the ElastiCache FORMULA path (P4) to handle DAX + MemoryDB node→Memorystore
       GiB-hours. Verify $ changes vs passthrough on a bill with these rows.
 
 ### Phase 3 — NAT per-VM rescue (R1) — user's headline
-- [x] Add `nat_vms_per_gateway` (default 32, range 1–200, category networking).
-- [x] In the NAT gateway-hours pricer, multiply the Cloud NAT per-VM-hour rate by the
+- [ ] Add `nat_vms_per_gateway` (default 32, range 1–200, category networking).
+- [ ] In the NAT gateway-hours pricer, multiply the Cloud NAT per-VM-hour rate by the
       assumption instead of charging one gateway. Stamp the row.
-- [x] Confirm NAT hourly projection moves from ~$3 toward the AWS ballpark at the default.
+- [ ] Confirm NAT hourly projection moves from ~$3 toward the AWS ballpark at the default.
 
 ### Phase 4 — Glue wiring (R6) — keys already exist
-- [x] Consume `glue_dpu_vcpu` / `glue_dpu_ram_gib` in a Dataflow worker formula; flip Glue
+- [ ] Consume `glue_dpu_vcpu` / `glue_dpu_ram_gib` in a Dataflow worker formula; flip Glue
       from mode:review passthrough to a computed mapping.
 
 ### Phase 5 — DynamoDB + Inferentia/Trainium (R5, R4) — declared-assumption mappings
-- [x] Add the keys; implement as *labeled* assumption mappings (explicitly "assumption-based,
+- [ ] Add the keys; implement as *labeled* assumption mappings (explicitly "assumption-based,
       verify") so they're honest. These carry the most workload uncertainty — keep passthrough
       as the fallback when the target/assumption is unset.
 
 ### Phase 6 — RDS IOPS choice (R7)
-- [x] Add `rds_iops_included_in_storage`; make the io-optimized IGNORE-vs-SKU decision read it.
+- [ ] Add `rds_iops_included_in_storage`; make the io-optimized IGNORE-vs-SKU decision read it.
 
 ### Phase 7 — Tests + wiring
-- [x] Per R-row: a test that the assumption at default reproduces (or safely improves on)
+- [ ] Per R-row: a test that the assumption at default reproduces (or safely improves on)
       today's $, and that changing it moves the row's GCP $.
-- [x] Impact-registry test: every assumption key in defaults appears in
+- [ ] Impact-registry test: every assumption key in defaults appears in
       `assumption_impact.json` (no orphan knobs).
-- [x] Full suites: `python3 -m pytest tests/`, `go build ./...`, `npm run build`. Record
+- [ ] Full suites: `python3 -m pytest tests/`, `go build ./...`, `npm run build`. Record
       real counts.
 
 ---
@@ -130,26 +130,6 @@ is answered by data, not by reading code.
   not-rescuable list. Calibration solver DEFERRED per user. Depends on per-job override
   plumbing in WORKORDER_per_job_assumption_overrides.md (new keys surface in that panel
   automatically because it is schema-driven).
-- 2026-11-01 Phase 0 & Phase 1 complete:
-  - Added `data/assumption_impact.json` registering all 18 assumption keys.
-  - Added CLI tool `scripts/assumptions_impact.py` with `--list` and `--key <key> [--json]`.
-  - Registered 8 new assumption keys in `data/assumption-defaults.json` and DB seed schema in `internal/db/db.go`.
-- 2026-11-01 Phases 2–6 complete:
-  - R1: NAT Gateway mapped via `nat_vms_per_gateway` with assumption stamp.
-  - R2 & R3: DAX & MemoryDB node-hours classified to `elasticache` mechanic group, mapped to Memorystore for Redis capacity GiB-hours via `dax_node_gib` / `memorydb_node_gib`.
-  - R4: EC2 Inferentia & Trainium instances mapped to Cloud TPU v5e chip-hours scaled by `inferentia_chip_to_tpu` / `trainium_chip_to_tpu`.
-  - R5: DynamoDB RCU/WCU throughput rows mapped to Cloud Firestore Read Ops / Entity Writes via `dynamodb_rcu_to_reads_sec` / `dynamodb_wcu_to_writes_sec`.
-  - R6: AWS Glue DPU-hours mapped to Dataflow vCPU and RAM worker-hours via `glue_dpu_vcpu` and `glue_dpu_ram_gib`.
-  - R7: RDS provisioned IOPS mapped via `rds_iops_included_in_storage` (1.0 -> ignore/included, 0.0 -> passthrough).
-  - Updated `data/service_map.json` and `data/pricing_matrix.json`.
-- 2026-11-01 Phase 7 verification complete:
-  - Added `tests/test_assumption_driven_mappings.py` covering impact registry ratchet, CLI, and R1–R7 cost scaling.
-  - Full Python pytest suite: 1196 passed in 92.05s.
-  - Full Go tests: `go test ./internal/...` all passed.
-  - Go build: `go build ./...` passed.
-  - Frontend build: `npm run build` passed cleanly.
-
----
 
 ## 7. IF STUCK
 Start with R2/R3 (pure copy of the working ElastiCache formula) to prove the

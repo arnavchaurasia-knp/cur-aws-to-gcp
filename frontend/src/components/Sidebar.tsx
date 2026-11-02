@@ -25,14 +25,14 @@ export function Sidebar({ user, collapsed, onToggle }: SidebarProps) {
   // Main Control Plane Navigation Items:
   const mainItems: SidebarItem[] = [
     { to: '/', label: 'Projects', icon: <ProjectsIcon /> },
-    { to: '/releases', label: 'Release Dashboard', icon: <ReleaseDashboardIcon /> },
-    { to: '/admin', label: 'Release Timeline', icon: <ReleaseTimelineIcon />, adminOnly: true },
+    { to: '/releases', label: 'Projection Dashboard', icon: <ReleaseDashboardIcon /> },
+    { to: '/admin', label: 'All Projections', icon: <ReleaseTimelineIcon />, adminOnly: true },
     { to: '/admin/bills', label: 'Uploaded Bills', icon: <ModuleRegistryIcon />, adminOnly: true },
     { to: '/admin/catalog', label: 'Pricing Catalog', icon: <ProjectTypeIcon />, adminOnly: true },
     { to: '/admin/analytics', label: 'Cost Analytics', icon: <IntelligenceIcon />, adminOnly: true },
     { to: '/admin/notifications', label: 'Notifications', icon: <BellIcon />, adminOnly: true },
     { to: '/admin/audit', label: 'Audit Trail', icon: <AuditLogsIcon />, adminOnly: true },
-    { to: '/admin/findings', label: 'Review Findings', icon: <ReviewIcon />, adminOnly: true },
+    { to: '/admin/assumptions', label: 'Pricing Assumptions', icon: <AssumptionsIcon />, adminOnly: true },
     { to: '/admin/report-settings', label: 'Report Settings', icon: <SettingsIcon />, adminOnly: true },
   ]
 
@@ -51,6 +51,7 @@ export function Sidebar({ user, collapsed, onToggle }: SidebarProps) {
     if (to.startsWith('http')) return false
     if (to === '/') return location.pathname === '/'
     if (to === '/releases') return location.pathname === '/releases'
+    if (to === '/admin') return location.pathname === '/admin'
     return location.pathname === to || location.pathname.startsWith(to + '/')
   }
 
@@ -173,13 +174,6 @@ function AuditLogsIcon() {
   )
 }
 
-function ReviewIcon() {
-  return (
-    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-    </svg>
-  )
-}
 
 function ProjectTypeIcon() {
   return (
@@ -217,6 +211,14 @@ function ReleaseTimelineIcon() {
   return (
     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
+    </svg>
+  )
+}
+
+function AssumptionsIcon() {
+  return (
+    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4 6h16M4 12h16M4 18h16M8 4v4M16 10v4M10 16v4" />
     </svg>
   )
 }

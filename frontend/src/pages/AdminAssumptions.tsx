@@ -13,7 +13,7 @@ import { toast } from 'sonner'
 import { CATEGORY_ORDER, CATEGORY_META } from '../lib/assumptionsConstants'
 
 export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
-  useTitle('Assumptions — admin')
+  useTitle('Pricing Assumptions — admin')
   const [data, setData] = useState<AssumptionsResponse | null>(null)
   const [history, setHistory] = useState<AssumptionHistory[]>([])
   const [loading, setLoading] = useState(true)

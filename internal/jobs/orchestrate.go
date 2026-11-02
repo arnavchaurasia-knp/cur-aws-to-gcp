@@ -390,13 +390,14 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// falls back to cached resolved_skus.json entries (99% hit rate after warmup).
 			// A crash here should not prevent report generation.
 			PreLLMScripts: []string{"?scripts/ensure_catalog_coverage.py"},
-			Script:        "?scripts/apply_rates.py",
+			Script:        "scripts/apply_rates.py",
 			// After rates load, run the deterministic autofixer (regional-SKU
 			// repair, CUD synthesis, per-N clamping, illegal-passthrough repair)
 			// BEFORE the gate evaluates. Previously this only ran read-only in
 			// the watcher, so its repairs never applied in-pipeline (D4).
 			PostLLMScripts: []string{
 				"?scripts/validate_fix.py $JOBDIR",
+				"?scripts/assert_pricing_matrix.py ",
 				"?scripts/render_notes.py $DB",
 			},
 			CheckName:      "no_null_projected_cost",
@@ -421,7 +422,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 		{
 			Num: 5, Name: "Outlier Triage", Activity: "Running outlier queries",
 			// detect_outliers.py: splits output into structural_outliers.md + pricing_outliers.md,
-			// writes outliers_data.json, and fails hard if total rows > 20 (systematic mapper bug).
+			// writes outliers_data.json, advisory reporting on outliers.
 			// auto_triage.py: pure suggestion engine — reads outliers_data.json, computes
 			// candidates for structural rows (D/E/G/B/C/H/I), enriches pricing rows (A1/A2/F)
 			// with context only (no candidate — word-overlap re-resolution caused Glacier 120x).
@@ -437,7 +438,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// (LLM output) + triage_candidates.json, applies confirm/override/veto with
 			// schema validation. LLM never touches the DB directly.
 			// incremental_rerate.py after LLM: fills rates for new SKU IDs introduced by fixes.
-			// outlier_gate.py: hard gate unchanged.
+			// outlier_gate.py: advisory outlier checks (prefixed with ?; Go CheckSQL enforces hard threshold).
 			PostLLMScripts: []string{
 				"?scripts/apply_outlier_fixes.py",
 				"?scripts/incremental_rerate.py",
@@ -565,6 +566,49 @@ func RenderOrchestratorForTest(inputExt string) (string, error) {
 	return renderOrchestrator(inputExt)
 }
 
+// KillProcessTreeForTest exports killGroup for test cleanup on Windows.
+func KillProcessTreeForTest(pid int) {
+	killGroup(pid)
+}
+
+// ValidatePhaseScripts verifies that every script referenced in phaseSpecs exists on disk under skillDir.
+func ValidatePhaseScripts(skillDir, inputExt string) error {
+	if strings.TrimSpace(skillDir) == "" {
+		return fmt.Errorf("skillDir is empty")
+	}
+	specs := phaseSpecs(inputExt)
+	var missing []string
+	checkScript := func(s string) {
+		s = strings.TrimPrefix(s, "?")
+		parts := strings.Fields(s)
+		if len(parts) == 0 {
+			return
+		}
+		scriptRel := parts[0]
+		target := filepath.Join(skillDir, filepath.FromSlash(scriptRel))
+		if _, err := os.Stat(target); os.IsNotExist(err) {
+			missing = append(missing, scriptRel)
+		}
+	}
+
+	for _, spec := range specs {
+		if spec.Script != "" {
+			checkScript(spec.Script)
+		}
+		for _, s := range spec.PreLLMScripts {
+			checkScript(s)
+		}
+		for _, s := range spec.PostLLMScripts {
+			checkScript(s)
+		}
+	}
+
+	if len(missing) > 0 {
+		return fmt.Errorf("referenced phase scripts missing from skillDir (%s): %s", skillDir, strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 // StartOrchestrated writes run_all.py into jobDir and spawns it detached. The
 // orchestrator drives the six phases; the watcher polls the returned PID and
 // finalizes when the report appears (same contract as the old single-agy Start).
@@ -574,6 +618,12 @@ func (s *Spawner) StartOrchestrated(jobDir, inputExt string, engine ...string) (
 	// STOP_ALL lives in DataDir; jobDir is DataDir/jobs/<id>, so go two levels up.
 	if IsStopAllActive(filepath.Dir(filepath.Dir(filepath.Clean(jobDir)))) {
 		return 0, "", fmt.Errorf("orchestration halted: STOP_ALL is active")
+	}
+
+	skillDir := s.resolveSkillDir()
+	if err := ValidatePhaseScripts(skillDir, inputExt); err != nil {
+		slog.Error("orchestrator phase script validation failed", "err", err)
+		return 0, "", fmt.Errorf("validate phase scripts: %w", err)
 	}
 
 	cleanJobDir := filepath.Clean(jobDir)
@@ -866,6 +916,13 @@ def run_script(script_cmd):
     cmd = script_cmd.replace("$DB", DB).replace("$JOBDIR", JOB_DIR)
     parts = cmd.split()
     script_path = os.path.join(SKILL_DIR, parts[0])
+    if not os.path.exists(script_path):
+        msg = "Referenced script does not exist on disk: " + script_path
+        log("[SCRIPT] FATAL: " + msg)
+        _diag("error", "script_not_found", "orchestrator", msg)
+        with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
+            _f.write(msg)
+        sys.exit(1)
     full = [PYTHON, script_path] + parts[1:]
     log("[SCRIPT] " + ("(soft) " if soft else "") + " ".join(full))
     result = subprocess.run(full, cwd=JOB_DIR)

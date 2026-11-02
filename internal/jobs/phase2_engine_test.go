@@ -1,6 +1,7 @@
 package jobs_test
 
 import (
+	"time"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -23,8 +24,25 @@ func TestPhase2_EngineSettingsAndJobExecution(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	defer d.Close()
+	var defaultJobID, customJobID string
+	defer func() {
+		for _, id := range []string{defaultJobID, customJobID} {
+			if id != "" {
+				for i := 0; i < 50; i++ {
+					job, _ := d.GetJob(id)
+					if job != nil && job.AgentPID > 0 {
+						jobs.KillProcessTreeForTest(job.AgentPID)
+						break
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}()
 
 	jobsDir := t.TempDir()
+
 	adminEmails := []string{"admin@facets.cloud"}
 	spawner := jobs.NewSpawner(jobs.SpawnerConfig{})
 	spawner.SetDB(d)
@@ -63,8 +81,7 @@ func TestPhase2_EngineSettingsAndJobExecution(t *testing.T) {
 	}
 
 	// Test 5: An upload with no engine uses default_engine
-	var defaultJobID string
-	{
+		{
 		var body bytes.Buffer
 		writer := multipart.NewWriter(&body)
 		require.NoError(t, writer.WriteField("prospect_name", "DefaultCorp"))
@@ -92,8 +109,7 @@ func TestPhase2_EngineSettingsAndJobExecution(t *testing.T) {
 	}
 
 	// Test 6: Two jobs run with different engines record different values
-	var customJobID string
-	{
+		{
 		var body bytes.Buffer
 		writer := multipart.NewWriter(&body)
 		require.NoError(t, writer.WriteField("prospect_name", "CustomCorp"))

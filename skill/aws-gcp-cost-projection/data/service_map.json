@@ -414,9 +414,9 @@
       "match": "secrets manager",
       "category": "Security",
       "gcp_service": "Secret Manager",
-      "mode": "review",
+      "mode": "keep",
       "confidence": 88,
-      "reason": "-> Secret Manager (per secret-version + access)."
+      "reason": "Secrets Manager -> Secret Manager (active secret versions .06/mo vs .40 AWS; access ops .03/10k)."
     },
     {
       "match": "guardduty",
@@ -502,17 +502,17 @@
       "match": "route 53",
       "category": "Networking",
       "gcp_service": "Cloud DNS",
-      "mode": "review",
+      "mode": "keep",
       "confidence": 85,
-      "reason": "Route 53 hosted zones ($0.50/zone/mo -> $0.20/zone/mo) and queries ($0.40/M ~ $0.40/M) -> Cloud DNS. Near-parity; passthrough baseline. Ordered AFTER resolver rules so resolver endpoints keep their specific target."
+      "reason": "Route 53 hosted zones (.50/zone/mo -> .20/zone/mo) and queries (.40/M ~ .40/M) -> Cloud DNS (ManagedZone + DNS Query). Pinned parity SKUs."
     },
     {
       "match": "route53",
       "category": "Networking",
       "gcp_service": "Cloud DNS",
-      "mode": "review",
+      "mode": "keep",
       "confidence": 85,
-      "reason": "Route 53 (compact product alias) -> Cloud DNS."
+      "reason": "Route 53 (compact product alias) -> Cloud DNS. Pinned parity SKUs."
     },
     {
       "match": "public ipv4",

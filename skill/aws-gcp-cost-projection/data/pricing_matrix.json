@@ -65,10 +65,10 @@
       "canonical_service": "ec2",
       "charge_type": "Public IPv4",
       "aws_unit": "Hrs",
-      "decision": "SKU",
+      "decision": "PASS",
       "gcp_target": "Compute Engine Static/In-use External IP Charge",
-      "status": "active",
-      "reason": "Mapped via resolve_sku Static Ip Charge"
+      "status": "rejected",
+      "reason": "PASS parity retained; SKU upgrade rejected per skeptical review"
     },
     {
       "service": "Amazon Elastic Block Store",
@@ -147,10 +147,10 @@
       "canonical_service": "eks",
       "charge_type": "EKS cluster-hours",
       "aws_unit": "Hrs",
-      "decision": "SKU",
+      "decision": "PASS",
       "gcp_target": "GKE Standard cluster management fee ($0.10/hr)",
-      "status": "active",
-      "reason": "1:1 parity ($0.10/hr = ~$73/mo per cluster)"
+      "status": "rejected",
+      "reason": "PASS parity retained; SKU upgrade rejected per skeptical review"
     },
     {
       "service": "AWS Lambda",
@@ -159,8 +159,8 @@
       "aws_unit": "Lambda-GB-Second",
       "decision": "FORMULA",
       "gcp_target": "Cloud Run Memory GiB-sec + CPU-sec (1 vCPU : 2 GiB ratio)",
-      "status": "active",
-      "reason": "Cloud Run serverless execution pricing formula"
+      "status": "declared_not_implemented",
+      "reason": "Cloud Run execution formula requires GB-sec split; carried to future roadmap"
     },
     {
       "service": "AWS Lambda",
@@ -169,8 +169,8 @@
       "aws_unit": "Requests",
       "decision": "SKU",
       "gcp_target": "Cloud Run Requests ($0.40 / million)",
-      "status": "active",
-      "reason": "Cloud Run request invocations SKU"
+      "status": "declared_not_implemented",
+      "reason": "Cloud Run invocation SKU requires request tiering; carried to future roadmap"
     }
   ],
   "storage": [
@@ -335,8 +335,8 @@
       "aws_unit": "Hrs",
       "decision": "SKU",
       "gcp_target": "Cloud NAT Gateway-hours",
-      "status": "active",
-      "reason": "Cloud NAT hourly gateway charge"
+      "status": "declared_not_implemented",
+      "reason": "Requires per-VM-hour modeling decision; carried to Stage 5"
     },
     {
       "service": "Amazon Virtual Private Cloud",
@@ -381,12 +381,24 @@
     {
       "service": "Amazon Route 53",
       "canonical_service": "route53",
-      "charge_type": "Hosted zones / queries",
-      "aws_unit": "Mo / queries",
+      "charge_type": "Hosted zones",
+      "aws_unit": "Mo",
       "decision": "SKU",
-      "gcp_target": "Cloud DNS managed zones and queries",
+      "gcp_sku_id": "8C22-6FC3-D478",
+      "gcp_target": "Cloud DNS ManagedZone (.20/zone/mo vs AWS .50)",
       "status": "active",
-      "reason": "Zone $0.50 vs $0.20/mo, queries $0.40/M parity"
+      "reason": "Zone .50 vs .20/mo pinned SKU 8C22-6FC3-D478"
+    },
+    {
+      "service": "Amazon Route 53",
+      "canonical_service": "route53",
+      "charge_type": "DNS queries",
+      "aws_unit": "Requests",
+      "decision": "SKU",
+      "gcp_sku_id": "6DFF-5025-A128",
+      "gcp_target": "Cloud DNS DNS Query (port 53) (.40/M parity)",
+      "status": "active",
+      "reason": "Queries .40/M parity pinned SKU 6DFF-5025-A128"
     }
   ],
   "ops_security": [
@@ -438,7 +450,8 @@
       "decision": "SKU",
       "gcp_target": "Cloud KMS Active software symmetric key versions ($0.06/key-version/mo)",
       "status": "active",
-      "reason": "AWS $1.00/key/mo vs GCP $0.06/mo software tier (GCP $1.00 is the HSM tier, used only for AWS custom key stores)"
+      "reason": "AWS .00/key/mo vs GCP .06/mo software tier pinned SKU E09C-32B3-9AC7",
+      "gcp_sku_id": "E09C-32B3-9AC7"
     },
     {
       "service": "AWS Key Management Service",
@@ -448,7 +461,8 @@
       "decision": "SKU",
       "gcp_target": "Cloud KMS Cryptographic operations ($0.03 / 10k ops)",
       "status": "active",
-      "reason": "1:1 parity ($0.03 / 10,000 operations)"
+      "reason": "1:1 parity (.03 / 10,000 operations) pinned SKU 3BDA-77FB-678B",
+      "gcp_sku_id": "3BDA-77FB-678B"
     },
     {
       "service": "AWS Secrets Manager",
@@ -458,7 +472,19 @@
       "decision": "SKU",
       "gcp_target": "Secret Manager Active secret version ($0.06/mo vs $0.40 AWS)",
       "status": "active",
-      "reason": "Secret Manager version storage equivalence"
+      "reason": "Secret Manager version storage equivalence pinned SKU 7756-ADEF-84F4",
+      "gcp_sku_id": "7756-ADEF-84F4"
+    },
+    {
+      "service": "AWS Secrets Manager",
+      "canonical_service": "secretsmanager",
+      "charge_type": "Secret access operations",
+      "aws_unit": "Requests",
+      "decision": "SKU",
+      "gcp_sku_id": "EBA7-264F-2D2C",
+      "gcp_target": "Secret Manager Secret access operations (.03 / 10k ops)",
+      "status": "active",
+      "reason": "Secret Manager access operations pinned SKU EBA7-264F-2D2C"
     },
     {
       "service": "AWS Certificate Manager",

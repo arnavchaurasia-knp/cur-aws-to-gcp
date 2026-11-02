@@ -373,7 +373,7 @@ Want me to fold these into the existing plan document as the final work order fo
 | C-3: Transfer Family | "transfer family" → Manual Review passthrough | `data/service_map.json` |
 | C-5: Route 53 core | "route 53"/"route53" → Cloud DNS (review), ordered AFTER resolver rules | `data/service_map.json` |
 | C-6: MemoryDB | "memorydb" → Memorystore (review) — was misrouting to Cloud SQL | `data/service_map.json` |
-| C-7/C-8: storage misroutes | Lambda / Virtual Private Cloud / SageMaker excluded from block_storage generic "Storage" regex (Lambda 61x inflation class) | `scripts/classify_mechanics.py` |
+| C-7/C-8: storage misroutes | misroute now prevented by identity-first dispatch; the old block_storage cross-service exclusions were deleted — do not re-add them. | `scripts/classify_mechanics.py` |
 | C-9: commitment rows | VERIFIED: apply_commitment_ignores.py sets strategy='ignore' → null_gcp_service gate (which excludes ignore) is safe | no change needed |
 | Stale tests | MOCK_SKU now a SKUMeta (resolve_sku returns SKUMeta, not str); _with_sku unpacks (mapped, llm_rows) tuples; "Cloud Dataproc"→"Dataproc" | `tests/test_static_mappers.py` |
 
@@ -387,7 +387,8 @@ Want me to fold these into the existing plan document as the final work order fo
 
 ## Deferred (needs design or user decision) ⏸
 
-1. **OS license component (Windows/RHEL/Ubuntu Pro)** — license SKUs confirmed present in catalog.duckdb ("Licensing Fee for Windows Server ... (CPU cost)", RHEL vCPU tiers). BUT: blindly rerouting these rows to compute_breakdown WITHOUT a license component makes accuracy WORSE than today's honest LLM passthrough (maps license-inclusive AWS price to Linux-only GCP SKUs). Needs family_mapper design: third `license` component keyed by OS + vCPU tier.
+1. **OS license modelling** — DONE both sides (GCP core+ram+license components + AWS display split). Remaining: ~65 instance types lack `license_fraction`; ratio-bounds safety (see WORKORDER_licensing_and_safe_ratios.md Item 4).
+2. **Service specs** — spec-dispatch OWNS classification (`spec_dispatch.OWNS_CLASSIFICATION=True`); 54 services specced; legacy RULES retained only as long-tail fallback for unspecced services.
 2. **SP/RI netting policy** — dominant error source on large enterprise bills ($4.8M job: 454 rows >3x). USER DECISION REQUIRED: compare GCP OD vs AWS list, or net SP into both sides.
 3. **NAT gateway-hours** — Cloud NAT bills per-VM-hour, not per-gateway; needs VM-count assumption. USER DECISION REQUIRED.
 4. **classify_mechanics consumes canonical_service** — Layer 1 column is stamped (aws_normalizer.py, hooked as Phase-1 post-script) but classifier rules still use per-rule _ilike. Right long-term refactor; too invasive for a patch pass.

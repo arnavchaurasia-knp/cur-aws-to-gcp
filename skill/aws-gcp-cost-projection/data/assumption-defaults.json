@@ -1,7 +1,7 @@
 {
   "_meta": {
     "description": "Committed default values for pricing assumptions. Used as fallback when no per-job assumptions.json snapshot exists (local runs, older jobs). Values match the code's original hardcoded constants so projections are byte-identical before and after this work order.",
-    "maintained_by": "LLM agent — update here when an assumption's default changes; the admin UI can override per-job via assumptions.json"
+    "maintained_by": "LLM agent \u2014 update here when an assumption's default changes; the admin UI can override per-job via assumptions.json"
   },
   "values": {
     "glue_dpu_vcpu": 4.0,
@@ -12,8 +12,8 @@
     "lambda_mb_per_vcpu": 1769.0,
     "aws_ri_1yr_discount_pct": 0.38,
     "aws_ri_3yr_discount_pct": 0.52,
-    "aws_sp_discount_pct": 0.30,
-    "aws_spot_discount_pct": 0.70,
+    "aws_sp_discount_pct": 0.3,
+    "aws_spot_discount_pct": 0.7,
     "nat_vms_per_gateway": 32.0,
     "dax_node_gib": 16.0,
     "memorydb_node_gib": 16.0,
@@ -21,7 +21,8 @@
     "trainium_chip_to_tpu": 1.0,
     "dynamodb_rcu_to_reads_sec": 1.0,
     "dynamodb_wcu_to_writes_sec": 1.0,
-    "rds_iops_included_in_storage": 1.0
+    "rds_iops_included_in_storage": 1.0,
+    "fx_max_staleness_days": 7.0
   },
   "categories": {
     "glue_dpu_vcpu": "compute_sizing",
@@ -41,6 +42,7 @@
     "trainium_chip_to_tpu": "compute_sizing",
     "dynamodb_rcu_to_reads_sec": "storage",
     "dynamodb_wcu_to_writes_sec": "storage",
-    "rds_iops_included_in_storage": "storage"
+    "rds_iops_included_in_storage": "storage",
+    "fx_max_staleness_days": "currency"
   }
 }

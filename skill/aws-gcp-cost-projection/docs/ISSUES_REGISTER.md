@@ -124,7 +124,7 @@ start there when there is data to justify it.
 
 ---
 
-## OPEN-4 — Ingest ignores spec columns the bill provides  **DESIGNED**
+## OPEN-4 — Ingest ignores spec columns the bill provides  **DEFERRED**
 
 **164 rows / $182,665 on one customer bill.
 Design: `DESIGN_field_registry_and_schema_mapping.md`, migration M1–M6.**

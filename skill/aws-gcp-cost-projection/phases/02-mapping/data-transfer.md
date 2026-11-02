@@ -1,6 +1,6 @@
 # Phase 2 — Data transfer / egress mapping
 
-Handles `mechanic_group = 'data_transfer'` (unclassified rows after `classify_transfer.py`). Read `_shared.md` first.
+Handles `mechanic_group = 'data_transfer'` (unclassified rows after `apply_static_mappings.py:map_data_transfer`). Read `_shared.md` first.
 
 ---
 

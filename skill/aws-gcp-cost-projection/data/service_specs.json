@@ -452,7 +452,7 @@
             "required": false
           }
         ],
-        "source_rule": "data_transfer (EC2/Bandwidth branch); direction derived by classify_transfer.py from usage_type"
+        "source_rule": "data_transfer (EC2/Bandwidth branch); direction derived by apply_static_mappings.py:map_data_transfer from usage_type"
       },
       {
         "id": "nat_and_flat_hourly",
@@ -882,7 +882,7 @@
             "required": false
           }
         ],
-        "source_rule": "data_transfer (product DataTransfer branch); direction via classify_transfer.py"
+        "source_rule": "data_transfer (product DataTransfer branch); direction via apply_static_mappings.py:map_data_transfer"
       }
     ]
   },

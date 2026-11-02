@@ -157,9 +157,46 @@ def main():
         ORDER BY c.aws_amortized_cost DESC
     """.format(threshold=_PASSTHROUGH_MATERIALITY_USD)).fetchall()
 
-    conn.close()
+    # ------------------------------------------------------------------ #
+    # 4b. Check for unsupported features via assumptions.py             #
+    # ------------------------------------------------------------------ #
+    from assumptions import emit_assumptions
+
+    unsupported_feature_rows = []
+    cat_cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+    if "instance_type" in cat_cols:
+        u_rows = conn.execute("""
+            SELECT m.aws_li_key, c.product, c.usage_type, c.instance_type,
+                   c.aws_amortized_cost, m.strategy, m.gcp_service, m.mapping_confidence
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog c USING (aws_li_key)
+            WHERE c.instance_type IS NOT NULL AND TRIM(c.instance_type) != ''
+        """).fetchall()
+        for r in u_rows:
+            key, prod, ut, itype, cost, strat, gcp_svc, curr_conf = r
+            profile = {
+                "instance_type": itype.strip().lower(),
+                "bare_metal": "metal" in itype.lower(),
+            }
+            assump_res = emit_assumptions(profile)
+            if assump_res.get("unsupported_features"):
+                penalty = assump_res.get("total_confidence_penalty_from_features", 0.0)
+                feat_names = [f["feature"] for f in assump_res["unsupported_features"]]
+                note = f"[Unsupported features: {', '.join(feat_names)} — confidence penalty -{penalty}]"
+                unsupported_feature_rows.append({
+                    "aws_li_key": key,
+                    "instance_type": itype,
+                    "features": feat_names,
+                    "penalty": penalty,
+                    "cost": cost,
+                    "current_confidence": curr_conf,
+                    "note": note,
+                })
+
 
     # ------------------------------------------------------------------ #
+    conn.close()
+
     # 5. Compute candidates                                                #
     # ------------------------------------------------------------------ #
 
@@ -244,6 +281,21 @@ def main():
                 "candidate": None,
             }
 
+    # Unsupported features candidates
+    for uf in unsupported_feature_rows:
+        key = uf["aws_li_key"]
+        if key not in candidates:
+            candidates[key] = {
+                "type": "unsupported_feature",
+                "action": "penalize_confidence",
+                "confidence": "HIGH",
+                "candidate": {
+                    "action": "penalize_confidence",
+                    "penalty": uf["penalty"],
+                    "note": uf["note"],
+                }
+            }
+
     # ------------------------------------------------------------------ #
     # 4. Write review_candidates.json                                      #
     # ------------------------------------------------------------------ #
@@ -255,7 +307,7 @@ def main():
     # 5. Write review_flags.md                                             #
     # ------------------------------------------------------------------ #
 
-    total_flags = len(illegal_rows) + len(spec_violations) + len(no_sku_rows) + len(zero_mult_rows)
+    total_flags = len(illegal_rows) + len(spec_violations) + len(no_sku_rows) + len(zero_mult_rows) + len(unsupported_feature_rows)
 
     with open(FLAGS_FILE, "w", encoding="utf-8") as f:
         f.write("# Phase 3 Review Flags\n\n")

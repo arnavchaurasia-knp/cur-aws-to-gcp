@@ -19,16 +19,24 @@ const Name = RepoDirName + "-gemini"
 
 // ResolveDir returns the skill directory, checking in priority order:
 //  1. $SKILL_DIR env var  — explicit override for CI / alternate installs
-//  2. ./skill/aws-gcp-cost-projection relative to cwd — dev / monorepo layout
+//  2. ./skill/aws-gcp-cost-projection relative to cwd or ancestors — dev / monorepo layout
 //  3. ~/.gemini/antigravity-cli/skills/<Name> — standard install path
 func ResolveDir() string {
 	if envDir := os.Getenv("SKILL_DIR"); envDir != "" {
 		return envDir
 	}
 	if cwd, err := os.Getwd(); err == nil {
-		local := filepath.Join(cwd, "skill", RepoDirName)
-		if stat, err := os.Stat(local); err == nil && stat.IsDir() {
-			return local
+		dir := cwd
+		for i := 0; i < 5; i++ {
+			local := filepath.Join(dir, "skill", RepoDirName)
+			if stat, err := os.Stat(local); err == nil && stat.IsDir() {
+				return local
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
 		}
 	}
 	home, _ := os.UserHomeDir()

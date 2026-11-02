@@ -48,9 +48,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from diagnostics import diag, ERROR, WARN
 except ImportError:
+    print("WARNING: diagnostics disabled: import failed — structured records will be lost", file=sys.stderr)
     def diag(*a, **k): pass
     ERROR = "error"
     WARN = "warn"
+
+try:
+    from log_utils import get_logger
+    log = get_logger("validate_fix")
+except Exception:
+    import logging
+    log = logging.getLogger("validate_fix")
 from apply_static_mappings import (
     intentional_passthrough_exclude_clause,
     CUD_PCT_FALLBACK as _CUD_PCT_FALLBACK,
@@ -2019,6 +2027,7 @@ def main():
     counts = {k: len(v[k]) for k in v}
     n_hard = sum(counts.values())
 
+    log.info("== validate_fix.py" + (" (check-only)" if check_only else "") + " ==")
     print("== validate_fix.py" + (" (check-only)" if check_only else "") + " ==")
     if not check_only:
         print(f"  autofix: clamped {len(clamped)} per-N multiplier(s); "

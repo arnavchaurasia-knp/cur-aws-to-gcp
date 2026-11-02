@@ -20,6 +20,12 @@ import json
 import os
 import sys
 from collections import defaultdict
+try:
+    from log_utils import get_logger
+    log = get_logger("merge_mappings")
+except Exception:
+    import logging
+    log = logging.getLogger("merge_mappings")
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -506,6 +512,7 @@ def main() -> None:
         print(f"WARNING: render_notes_for_db in merge_mappings failed: {e}", file=sys.stderr)
 
     con.close()
+    log.info(f"Merge complete: {len(records)} rows inserted into aws_li_to_gcp_li")
     print(f"\nMerge complete. {len(records)} rows inserted into aws_li_to_gcp_li.")
     sys.exit(0)
 

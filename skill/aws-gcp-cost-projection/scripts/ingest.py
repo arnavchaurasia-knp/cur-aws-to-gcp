@@ -76,9 +76,11 @@ def apply_od_basis(conn, assumptions: dict | None = None) -> None:
     spot_div = _od_divisor(float(a.get("aws_spot_discount_pct", 0.70)))
     ri1_div = _od_divisor(float(a.get("aws_ri_1yr_discount_pct", 0.38)))
     ri3_div = _od_divisor(float(a.get("aws_ri_3yr_discount_pct", 0.52)))
+    sp_div = _od_divisor(float(a.get("aws_sp_discount_pct", 0.30)))
     spot_pct = float(a.get("aws_spot_discount_pct", 0.70))
     ri1_pct = float(a.get("aws_ri_1yr_discount_pct", 0.38))
     ri3_pct = float(a.get("aws_ri_3yr_discount_pct", 0.52))
+    sp_pct = float(a.get("aws_sp_discount_pct", 0.30))
 
     # Ensure required columns exist on aws_li_catalog defensively
     for col_ddl in [
@@ -110,15 +112,18 @@ def apply_od_basis(conn, assumptions: dict | None = None) -> None:
             od_basis = NULL
     """)
 
-    _commit_match = (
-        "LOWER(COALESCE(pricing_model, '')) IN ('committed', 'reserved')\n"
-        "             OR LOWER(COALESCE(line_item_type, '')) = 'discountedusage'\n"
-        "             OR LOWER(COALESCE(line_item_type, '')) = 'savingsplancoveredusage'\n"
-        "             OR COALESCE(usage_type, '') ILIKE '%reserved%'\n"
-        "             OR COALESCE(operation, '') ILIKE '%reserved%'\n"
+    _sp_match = (
+        "LOWER(COALESCE(line_item_type, '')) = 'savingsplancoveredusage'\n"
         "             OR COALESCE(usage_type, '') ILIKE '%savings%plan%'\n"
         "             OR COALESCE(operation, '') ILIKE '%savings%plan%'"
     )
+    _ri_match = (
+        "LOWER(COALESCE(pricing_model, '')) IN ('committed', 'reserved')\n"
+        "             OR LOWER(COALESCE(line_item_type, '')) = 'discountedusage'\n"
+        "             OR COALESCE(usage_type, '') ILIKE '%reserved%'\n"
+        "             OR COALESCE(operation, '') ILIKE '%reserved%'"
+    )
+    _commit_match = f"({_sp_match}) OR ({_ri_match})"
     _spot_match = (
         "LOWER(COALESCE(pricing_model, '')) = 'spot'\n"
         "             OR COALESCE(usage_type, '') ILIKE '%spot%'\n"
@@ -341,7 +346,9 @@ def apply_od_basis(conn, assumptions: dict | None = None) -> None:
             aws_od_cost = CASE
                 WHEN {_spot_match}
                     THEN CASE WHEN aws_amortized_cost > 0 THEN aws_amortized_cost / {spot_div} ELSE aws_amortized_cost END
-                WHEN {_commit_match}
+                WHEN {_sp_match}
+                    THEN CASE WHEN aws_amortized_cost > 0 THEN aws_amortized_cost / {sp_div} ELSE aws_amortized_cost END
+                WHEN {_ri_match}
                     THEN CASE WHEN aws_amortized_cost > 0
                               THEN aws_amortized_cost / CASE WHEN {_is_3yr} THEN {ri3_div} ELSE {ri1_div} END
                               ELSE aws_amortized_cost END
@@ -350,14 +357,16 @@ def apply_od_basis(conn, assumptions: dict | None = None) -> None:
             sp_ri_discount_pct = CASE
                 WHEN {_spot_match}
                     THEN {spot_pct}
-                WHEN {_commit_match}
+                WHEN {_sp_match}
+                    THEN {sp_pct}
+                WHEN {_ri_match}
                     THEN CASE WHEN {_is_3yr} THEN {ri3_pct} ELSE {ri1_pct} END
                 ELSE 0.0
             END,
             od_basis = CASE
                 WHEN {_spot_match}
                     THEN 'reconstructed_default'
-                WHEN {_commit_match}
+                WHEN ({_sp_match}) OR ({_ri_match})
                     THEN 'reconstructed_default'
                 ELSE 'amortized_fallback'
             END
@@ -684,15 +693,25 @@ def _detect_foreign_currency(cols, conn):
             except Exception:
                 pass
 
-    codes = {c for c in col_vals if c not in ("USD", "US DOLLAR")}
-    if len(codes) > 1:
-        # Mixed foreign currencies — can't convert sensibly; refuse.
+    def _norm_c(c):
+        val = str(c or "").strip().upper()
+        if val in ("USD", "US DOLLAR", "US$"): return "USD"
+        if val in ("RMB", "CNY"): return "CNY"
+        return val
+
+    distinct_codes = {_norm_c(c) for c in col_vals if c not in (None, "")}
+    if len(distinct_codes) > 1:
+        # Mixed currencies — can't convert sensibly; refuse.
         _drop_raw(conn)
         _fail_direct(
-            f"This bill mixes multiple non-USD currencies ({', '.join(sorted(codes))}). "
+            f"This bill mixes multiple currencies ({', '.join(sorted(distinct_codes))}). "
             "Please upload a single-currency bill.")
 
-    return detect_currency_and_rate(raw_text=sample_text, column_values=col_vals)
+    try:
+        return detect_currency_and_rate(raw_text=sample_text, column_values=col_vals)
+    except ValueError as e:
+        _drop_raw(conn)
+        _fail_direct(str(e))
 
 
 def _reject_non_aws(cols, conn):

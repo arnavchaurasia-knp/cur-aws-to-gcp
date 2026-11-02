@@ -262,23 +262,36 @@ def test_discounted_usage_still_grossed_up(base_db):
     conn = base_db
     conn.execute("""
         INSERT INTO aws_li_catalog VALUES
-            ('k_sp_usage', 'Amazon EC2', 'us-east-1', 'us-east1', 'Usage', 'Committed', 'USE1-BoxUsage:c5.xlarge', 'RunInstances covered by Compute Savings Plans', true, 100, 70.0);
+            ('k_sp_usage', 'Amazon EC2', 'us-east-1', 'us-east1', 'Usage', 'Committed', 'USE1-BoxUsage:c5.xlarge', 'RunInstances covered by Compute Savings Plans', true, 100, 70.0),
+            ('k_ri_usage', 'Amazon EC2', 'us-east-1', 'us-east1', 'DiscountedUsage', 'Committed', 'USE1-BoxUsage:c5.xlarge', 'RunInstances', true, 100, 62.0);
         INSERT INTO aws_li_to_gcp_li (aws_li_key, strategy, gcp_service, gcp_sku_id, component, unit_multiplier, projection_note) VALUES
-            ('k_sp_usage', 'passthrough', 'Compute Engine', NULL, NULL, 1.0, NULL);
+            ('k_sp_usage', 'passthrough', 'Compute Engine', NULL, NULL, 1.0, NULL),
+            ('k_ri_usage', 'passthrough', 'Compute Engine', NULL, NULL, 1.0, NULL);
     """)
     create_projection_view(conn)
-    row = conn.execute("""
+    row_sp = conn.execute("""
         SELECT commitment_basis, aws_amortized_cost, aws_cost_od_est, projection_note
         FROM gcp_projection
         WHERE aws_li_key = 'k_sp_usage'
     """).fetchone()
 
     # Still classified as committed (defaults to 1yr since no 3yr term in usage text)
-    assert row[0] == "committed_1yr"
+    assert row_sp[0] == "committed_1yr"
+    # Grossed up with Savings Plan default (0.30)
+    assert row_sp[2] == pytest.approx(70.0 / (1.0 - 0.30))
+    assert row_sp[2] > 70.0
+    assert "30% Savings Plan discount" in row_sp[3]
+
+    row_ri = conn.execute("""
+        SELECT commitment_basis, aws_amortized_cost, aws_cost_od_est, projection_note
+        FROM gcp_projection
+        WHERE aws_li_key = 'k_ri_usage'
+    """).fetchone()
+    assert row_ri[0] == "committed_1yr"
     # Grossed up with 1yr RI default (0.38)
-    assert row[2] == pytest.approx(70.0 / (1.0 - 0.38))
-    assert row[2] > 70.0
-    assert "38% 1-year RI discount" in row[3]
+    assert row_ri[2] == pytest.approx(62.0 / (1.0 - 0.38))
+    assert row_ri[2] > 62.0
+    assert "38% 1-year RI discount" in row_ri[3]
 
 
 def test_no_basis_bucket_has_zero_gcp(base_db):

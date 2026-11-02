@@ -23,11 +23,18 @@ _SKILL_DIR = os.environ.get("SKILL_DIR") or os.path.dirname(_HERE)
 sys.path.insert(0, _SKILL_DIR)
 sys.path.insert(0, os.path.join(_SKILL_DIR, "scripts"))
 
-from scripts.equivalences import (  # noqa: E402
-    DEFAULT_EQUIVALENCES_PATH,
-    VALID_DEGREES,
-    load_equivalences,
-)
+try:
+    from equivalences import (  # sibling import
+        DEFAULT_EQUIVALENCES_PATH,
+        VALID_DEGREES,
+        load_equivalences,
+    )
+except ImportError:
+    from scripts.equivalences import (  # noqa: E402
+        DEFAULT_EQUIVALENCES_PATH,
+        VALID_DEGREES,
+        load_equivalences,
+    )
 
 
 def promote_claim(

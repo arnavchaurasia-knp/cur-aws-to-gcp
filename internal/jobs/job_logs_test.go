@@ -2,6 +2,8 @@ package jobs_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -180,5 +182,129 @@ func TestPhase1_JobLogs_AudienceAndStreams(t *testing.T) {
 		assert.True(t, resp.Truncated)
 		assert.Equal(t, 2, resp.Total)
 		assert.Equal(t, []string{"Last line 1", "Last line 2"}, resp.Lines)
+	}
+}
+
+
+func TestWatcher_RecordJobLogDigest_DualStream(t *testing.T) {
+	d, err := db.Open(":memory:")
+	require.NoError(t, err)
+	defer d.Close()
+
+	w := jobs.NewWatcher(d, nil, t.TempDir(), jobs.NotifyConfig{})
+	jobID := "00000000-0000-0000-0000-000000000099"
+	err = d.CreateJob(jobID, "alice@company.com", "Acme", ".csv", "")
+	require.NoError(t, err)
+
+	jobDir := t.TempDir()
+
+	auditDir := filepath.Join(jobDir, "projection-audit")
+	require.NoError(t, os.MkdirAll(auditDir, 0755))
+
+	// 1. Write diagnostics.jsonl with 1 error and 1 warning
+	diagContent := `{"ts":"2026-10-28T10:00:00","level":"error","code":"mapper_error","source":"apply_static_mappings.py","message":"mapper crashed"}
+{"ts":"2026-10-28T10:00:01","level":"warn","code":"unmapped_misc","source":"classify_mechanics.py","message":"misc spend high"}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(auditDir, "diagnostics.jsonl"), []byte(diagContent), 0644))
+
+	// 2. Write debug.log with 1 warning and 1 info
+	debugContent := `2026-10-28T10:00:02  INFO      ingest.py  Processing started
+2026-10-28T10:00:03  WARNING   apply_static_mappings.py  SKU not found in cache
+`
+	require.NoError(t, os.WriteFile(filepath.Join(auditDir, "debug.log"), []byte(debugContent), 0644))
+
+	// 3. Write agy.log with an unhandled fatal error and orchestrator output
+	agyContent := `[orchestrator] starting phase 1
+2026-10-28T10:00:02  INFO      ingest.py  Processing started
+2026-10-28T10:00:03  WARNING   apply_static_mappings.py  SKU not found in cache
+[diag] error mapper_error src=apply_static_mappings.py rows=1 usd=$10.00 :: mapper crashed
+[SCRIPT] FATAL: Script failed (exit 1): python3 fail.py
+`
+	require.NoError(t, os.WriteFile(filepath.Join(jobDir, "agy.log"), []byte(agyContent), 0644))
+
+	w.RecordJobLogDigest(jobID, "initial", jobDir)
+
+	digest, err := d.GetJobLogDigest(jobID, "initial")
+	require.NoError(t, err)
+	require.NotNil(t, digest)
+
+	// Errors: 1 from diagnostics.jsonl + 1 from agy.log ([SCRIPT] FATAL) = 2
+	assert.Equal(t, 2, digest.ErrorCount)
+	// Warnings: 1 from diagnostics.jsonl + 1 from debug.log = 2
+	assert.Equal(t, 2, digest.WarnCount)
+	// First error should be captured from diagnostics (earliest structured record)
+	assert.Contains(t, digest.FirstError, "mapper crashed")
+	// Last lines should be from the tail of agy.log
+	assert.Contains(t, digest.LastLines, "[SCRIPT] FATAL")
+}
+
+
+func TestJobLogs_TailPaginationAndDownload(t *testing.T) {
+	d, err := db.Open(":memory:")
+	require.NoError(t, err)
+	defer d.Close()
+
+	jobsDir := t.TempDir()
+	adminEmails := []string{"admin@facets.cloud"}
+	h := jobs.NewHandler(d, jobsDir, nil, nil, jobs.NotifyConfig{}, adminEmails)
+
+	jobID := "00000000-0000-0000-0000-000000000002"
+	err = d.CreateJob(jobID, "alice@company.com", "Acme", ".csv", "")
+	require.NoError(t, err)
+
+	jobDir := filepath.Join(jobsDir, jobID)
+	require.NoError(t, os.MkdirAll(filepath.Join(jobDir, "projection-audit"), 0755))
+
+	// Write 100 log lines to agy.log
+	var engineLines []string
+	for i := 1; i <= 100; i++ {
+		engineLines = append(engineLines, fmt.Sprintf("Engine log line %03d", i))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(jobDir, "agy.log"), []byte(strings.Join(engineLines, "\n")), 0644))
+
+	// 1. Test tail=true (limit 10): should return the last 10 lines (91-100), offset = 90, total = 100
+	{
+		req, _ := http.NewRequestWithContext(ctxWithSession("alice@company.com", "Alice"), "GET", "/api/jobs/"+jobID+"/logs?stream=engine&limit=10&tail=true", nil)
+		req = req.WithContext(withChiID(req.Context(), jobID))
+		w := httptest.NewRecorder()
+		h.JobLogs(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var resp jobs.LogResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, 100, resp.Total)
+		assert.Equal(t, 90, resp.Offset)
+		assert.Equal(t, 10, len(resp.Lines))
+		assert.Equal(t, "Engine log line 091", resp.Lines[0])
+		assert.Equal(t, "Engine log line 100", resp.Lines[9])
+	}
+
+	// 2. Test pagination with explicit offset=20&limit=10
+	{
+		req, _ := http.NewRequestWithContext(ctxWithSession("alice@company.com", "Alice"), "GET", "/api/jobs/"+jobID+"/logs?stream=engine&limit=10&offset=20", nil)
+		req = req.WithContext(withChiID(req.Context(), jobID))
+		w := httptest.NewRecorder()
+		h.JobLogs(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var resp jobs.LogResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, 100, resp.Total)
+		assert.Equal(t, 20, resp.Offset)
+		assert.Equal(t, 10, len(resp.Lines))
+		assert.Equal(t, "Engine log line 021", resp.Lines[0])
+	}
+
+	// 3. Test download=true streams the raw file with Content-Disposition
+	{
+		req, _ := http.NewRequestWithContext(ctxWithSession("alice@company.com", "Alice"), "GET", "/api/jobs/"+jobID+"/logs?stream=engine&download=true", nil)
+		req = req.WithContext(withChiID(req.Context(), jobID))
+		w := httptest.NewRecorder()
+		h.JobLogs(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Header().Get("Content-Disposition"), "attachment; filename=\"job-00000000-0000-0000-0000-000000000002-engine.log\"")
+		assert.Equal(t, "text/plain; charset=utf-8", w.Header().Get("Content-Type"))
+		assert.Contains(t, w.Body.String(), "Engine log line 001")
+		assert.Contains(t, w.Body.String(), "Engine log line 100")
 	}
 }

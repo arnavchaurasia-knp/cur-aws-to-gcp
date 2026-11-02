@@ -1297,5 +1297,15 @@
     "unit": "GiBy"
   },
   "Networking|^Networking Cloud Armor Policy$|global": "4B13-E64F-4A2B",
-  "Networking|^Networking Cloud Armor Rule$|global": "A321-89BD-F5BC"
+  "Networking|^Networking Cloud Armor Rule$|global": "A321-89BD-F5BC",
+  "Secret Manager|Active secret version|global": {
+    "resource_group": "SecretManager",
+    "sku_id": "7756-ADEF-84F4",
+    "unit": "mo"
+  },
+  "Secret Manager|Secret access operations|global": {
+    "resource_group": "SecretManager",
+    "sku_id": "EBA7-264F-2D2C",
+    "unit": "count"
+  }
 }

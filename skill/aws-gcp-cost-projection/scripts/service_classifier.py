@@ -44,6 +44,13 @@ except Exception as e:  # pragma: no cover
     sys.stderr.write(f"service_classifier: duckdb import failed ({e}); skipping\n")
     sys.exit(0)
 
+try:
+    from log_utils import get_logger
+    log = get_logger("service_classifier")
+except Exception:
+    import logging
+    log = logging.getLogger("service_classifier")
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from aws_normalizer import canonical_service
@@ -90,23 +97,29 @@ def _norm(product):
 
 
 def _rule_matches(rule, product, usage_type, cs_product, cs_rule_cache):
-    """A rule matches a row if its `match` fragment appears in the product name
-    (legacy behaviour), OR in usage_type (catches services like NAT Gateway whose
-    identifying signal lives in usage_type, not product, on raw-CUR bills), OR the
-    row's canonical_service (Layer 1, aws_normalizer.py) equals the rule's own
-    canonical_service — this catches product-name variants ("AWSKMS") that don't
-    literally contain the rule's match text ("key management") but are recognized
-    as the same service by the shared alias table."""
+    """S5-2: Match by authoritative canonical_service equality first.
+    If both the row and the rule have an identified canonical_service:
+      - equality -> MATCH
+      - inequality -> NO MATCH (prevents substring false-matches on different services)
+    Only if the row or rule lacks a canonical_service do we fall back to substring
+    matching on product name or usage_type."""
     match_l = rule["match"].lower()
+    if rule["match"] not in cs_rule_cache:
+        cs_rule_cache[rule["match"]] = canonical_service(rule["match"])
+    cs_rule = cs_rule_cache[rule["match"]]
+
+    # 1. Authoritative canonical_service check (Layer 1)
+    if cs_rule and cs_product:
+        return cs_rule == cs_product
+
+    # 2. Fallback substring matching for uncanonicalized / long-tail rows
     norm = _norm(product)
     if match_l in norm:
         return True
     if usage_type and match_l in usage_type.lower():
         return True
-    if rule["match"] not in cs_rule_cache:
-        cs_rule_cache[rule["match"]] = canonical_service(rule["match"])
-    cs_rule = cs_rule_cache[rule["match"]]
-    return bool(cs_rule and cs_product and cs_rule == cs_product)
+
+    return False
 
 
 def main():
@@ -124,15 +137,15 @@ def main():
         sys.exit(0)
 
     con = duckdb.connect(db)
-    # product_code (authoritative CUR lineItem/ProductCode) lets canonical_service
-    # key on the stable code first; COALESCE guards DBs created before the column.
-    has_code = any(
-        r[1].lower() == "product_code"
+    # product_code and canonical_service let us consume Layer 1 directly
+    cols = {
+        r[1].lower()
         for r in con.execute("PRAGMA table_info('aws_li_catalog')").fetchall()
-    )
-    code_expr = "c.product_code" if has_code else "NULL"
+    }
+    code_expr = "c.product_code" if "product_code" in cols else "NULL"
+    cs_expr = "c.canonical_service" if "canonical_service" in cols else "NULL"
     rows = con.execute(
-        f"SELECT DISTINCT c.product, {code_expr} AS product_code, c.usage_type, "
+        f"SELECT DISTINCT c.product, {code_expr} AS product_code, c.usage_type, {cs_expr} AS canonical_service, "
         "       BOOL_OR(c.mechanic_group IN ("
         + ",".join("?" for _ in DEDICATED_DETERMINISTIC_GROUPS) +
         "       )) OVER (PARTITION BY c.product, c.usage_type) AS is_deterministic "
@@ -146,8 +159,8 @@ def main():
     cs_rule_cache = {}
     review_updates, keep_updates, ignore_updates = [], [], []
     stats = {"review": 0, "keep": 0, "ignore": 0, "unmatched": 0, "protected": 0}
-    for (product, product_code, usage_type, is_deterministic) in rows:
-        cs_product = canonical_service(product, product_code)
+    for (product, product_code, usage_type, stored_cs, is_deterministic) in rows:
+        cs_product = stored_cs if stored_cs else canonical_service(product, product_code)
         rule = next(
             (r for r in rules if _rule_matches(r, product, usage_type, cs_product, cs_rule_cache)),
             None,
@@ -267,6 +280,8 @@ def main():
             keep_updates,
         )
 
+    log.info(f"service_classifier: {stats['review']} review-routed, {stats['ignore']} ignored ($0), "
+             f"{stats['keep']} kept, {stats['protected']} protected, {stats['unmatched']} unmatched")
     print(f"service_classifier: {stats['review']} review-routed, {stats['ignore']} ignored ($0), "
           f"{stats['keep']} kept, {stats['protected']} protected (deterministic mapper — rule skipped entirely), "
           f"{stats['unmatched']} unmatched product(s)")

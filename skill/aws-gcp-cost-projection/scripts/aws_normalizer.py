@@ -30,6 +30,17 @@ import re, sys, os, collections
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config_loader import load_data_config as _cfg
 try:
+    from log_utils import get_logger
+    log = get_logger("aws_normalizer")
+except Exception:
+    import logging
+    log = logging.getLogger("aws_normalizer")
+try:
+    from diagnostics import diag, WARN
+except Exception:
+    def diag(*a, **k): pass
+    WARN = "warn" 
+try:
     import duckdb
 except Exception as e:
     print(f"aws_normalizer: duckdb not available ({e}); skipping", file=sys.stderr)
@@ -175,6 +186,7 @@ def main():
 
     updates: list[tuple[str | None, str]] = []
     unrecognized: dict[str, float] = collections.defaultdict(float)
+    unrecognized_rows: dict[str, int] = collections.defaultdict(int)
     resolved_by_code = 0
 
     for key, product, product_code, cost in rows:
@@ -183,7 +195,9 @@ def main():
         if cs is not None and canonical_from_code(product_code) is not None:
             resolved_by_code += 1
         if cs is None and (cost or 0) > 0:
-            unrecognized[product or ""] += cost or 0
+            p_name = product or ""
+            unrecognized[p_name] += cost or 0
+            unrecognized_rows[p_name] += 1
 
     con.executemany(
         "UPDATE aws_li_catalog SET canonical_service = ? WHERE aws_li_key = ?",
@@ -192,16 +206,30 @@ def main():
     con.commit()
 
     recognized = sum(1 for _, k in updates if _ is not None)
-    print(f"aws_normalizer: stamped canonical_service on {len(updates)} rows "
-          f"({recognized} recognized, {len(updates)-recognized} unknown; "
-          f"{resolved_by_code} via authoritative product_code)")
+    log.info(
+        f"aws_normalizer: stamped canonical_service on {len(updates)} rows "
+        f"({recognized} recognized, {len(updates)-recognized} unknown; "
+        f"{resolved_by_code} via authoritative product_code)"
+    )
 
     if unrecognized:
-        print("\nUNRECOGNIZED PRODUCT NAMES (no product_code match; add a curated "
-              "override to data/aws-aliases.json or check the row's product name):")
-        print(f"  {'spend':>10}  product")
-        for prod, spend in sorted(unrecognized.items(), key=lambda kv: -kv[1])[:20]:
-            print(f"  ${spend:>9,.2f}  {prod[:80]}")
+        log.warning(
+            "UNRECOGNIZED PRODUCT NAMES (no product_code match; add a curated "
+            "override to data/aws-aliases.json or check the row's product name):"
+        )
+        log.warning(f"  {'spend':>10}  rows  product")
+        for prod, spend in sorted(unrecognized.items(), key=lambda kv: -kv[1]):
+            r_cnt = unrecognized_rows.get(prod, 0)
+            log.warning(f"  ${spend:>9,.2f}  {r_cnt:>4}  {prod[:80]}")
+            diag(
+                WARN,
+                "unrecognized_product",
+                "aws_normalizer.py",
+                f"Unrecognized product: {prod} (${spend:,.2f}, {r_cnt} rows)",
+                rows=r_cnt,
+                usd=spend,
+                detail={"product": prod, "spend": spend, "rows": r_cnt},
+            )
 
     con.close()
     sys.exit(0)

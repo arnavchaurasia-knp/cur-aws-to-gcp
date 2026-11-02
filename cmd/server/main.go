@@ -249,6 +249,10 @@ func main() {
 		// (admin demotion/promotion) take effect on the next request without
 		// requiring re-login (WORKORDER §1.1).
 		r.Use(auth.Middleware(sm, database.GetUserRoleAndGrant, cfg.DevAuthBypass))
+		// Token-authenticated API calls are rate limited per key id (600/min)
+		// so one runaway script can't lock a user out of their other
+		// integrations. Cookie-authenticated requests pass through.
+		r.Use(auth.TokenRateLimitMiddleware)
 		r.Get("/api/auth/me", oauthH.Me)
 		r.Post("/api/jobs", auth.RequireScope(db.ScopeJobsWrite)(uploadLimiter(http.HandlerFunc(jobHandler.Create))))
 		r.Get("/api/bills/check", jobHandler.CheckBill)
@@ -311,11 +315,6 @@ func main() {
 			})
 		}
 
-		// Token-authenticated API calls are rate limited per key id (600/min)
-		// so one runaway script can't lock a user out of their other
-		// integrations. Cookie-authenticated requests pass through.
-		r.Use(auth.TokenRateLimitMiddleware)
-
 		// Admin-only routes, gated by auth.RequireAdmin in addition to the
 		// session check already applied by this group.
 		r.Group(func(r chi.Router) {
@@ -331,6 +330,7 @@ func main() {
 			r.Get("/api/admin/deleted-jobs", jobHandler.AdminListDeletedJobs)
 			r.Get("/api/admin/users", jobHandler.AdminListUsers)
 			r.Post("/api/admin/users/{email}/role", jobHandler.AdminSetUserRole)
+			r.Delete("/api/admin/users/{email}", jobHandler.AdminDeleteUser)
 			r.Get("/api/admin/catalog/status", jobHandler.AdminCatalogStatus)
 			r.Post("/api/admin/catalog/refresh", jobHandler.AdminCatalogRefresh)
 			r.Get("/api/admin/audit", jobHandler.AdminAuditLog)
@@ -359,6 +359,7 @@ func main() {
 			r.Get("/api/admin/tickets", jobHandler.AdminListTickets)
 			r.Get("/api/admin/tickets/{id}", jobHandler.AdminGetTicket)
 			r.Put("/api/admin/tickets/{id}", jobHandler.AdminUpdateTicket)
+			r.Delete("/api/admin/tickets/{id}", jobHandler.AdminDeleteTicket)
 			// Admin notifications feed (job completions + raised tickets)
 			r.Get("/api/admin/notifications", jobHandler.AdminNotifications)
 			// Review findings triage & self-healing refresh loop

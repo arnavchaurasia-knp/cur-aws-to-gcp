@@ -25,6 +25,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from egress_rates import EGRESS_SKUS, cdn_egress_rate, interzone_sku_for_region
 from config_loader import load_data_config as _cfg, load_assumptions
 try:
+    from log_utils import get_logger
+    log = get_logger("apply_static_mappings")
+except Exception:
+    import logging
+    log = logging.getLogger("apply_static_mappings")
+try:
     from aws_normalizer import canonical_service
 except Exception:  # pragma: no cover
     canonical_service = lambda _p: None
@@ -2986,6 +2992,53 @@ def map_per_request(rows):
                     entry["gcp_sku_unit"] = sku.unit
                 out.append(entry)
                 continue
+
+        # ---- AWS Secrets Manager ------------------------------------------
+        # AWS Secrets Manager has two primary billing dimensions:
+        #   * Secret storage: AWS .40/secret/mo. GCP Secret Manager charges
+        #     .06/active secret version/mo (pinned SKU: 7756-ADEF-84F4).
+        #   * API access operations: AWS .05/10k API requests. GCP Secret
+        #     Manager charges .03/10k secret access operations (pinned SKU: EBA7-264F-2D2C).
+        _secrets_row = ("secrets manager" in product or "secretsmanager" in product
+                        or canonical_service(r.get("product"), r.get("product_code")) in ("secretsmanager", "secrets_manager"))
+        if _secrets_row:
+            _sec_blob = f"{product} {ut_raw} {(r.get('operation') or '').lower()}"
+            _unit = (r.get("unit") or "").lower()
+            _is_requests = ("request" in ut_raw or "operation" in _sec_blob
+                            or "api" in _sec_blob or "request" in _unit or "count" in _unit)
+            if _is_requests:
+                desc = "Secret access operations"
+                pinned_sku = "EBA7-264F-2D2C"
+                component = "requests"
+                note = "Secrets Manager API requests → Secret Manager access operations (.03/10k vs AWS .05/10k — parity)"
+            else:
+                desc = "Active secret version"
+                pinned_sku = "7756-ADEF-84F4"
+                component = "secrets"
+                note = "Secrets Manager secret-months → Secret Manager active secret version (.06/mo vs AWS .40)"
+
+            sku = resolve_sku("Secret Manager", desc, gcp_region or "global")
+            sku_id = sku if sku else pinned_sku
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Secret Manager",
+                "gcp_sku_id":         sku_id,
+                "gcp_sku_name":       desc,
+                "component":          component,
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    note + _no_rate_suffix(sku, gcp_region),
+                "mapping_confidence": 0.90,
+            }
+            if hasattr(sku, "unit") and sku.unit:
+                entry["gcp_sku_unit"] = sku.unit
+            elif not _is_requests:
+                entry["gcp_sku_unit"] = "mo"
+            else:
+                entry["gcp_sku_unit"] = "count"
+            out.append(entry)
+            continue
 
         # AWS Backup per-resource backup-CREATION fee (e.g. "$0.11 per Namespace
         # for Backup-Creation-EKS-Namespace") — a control-plane/orchestration fee
@@ -9010,6 +9063,7 @@ def main():
     GCP_LOOKER_STUDIO_PRO_RATE = _ASSUMPTIONS.get("looker_studio_pro_seat_usd", 9.0)
     _LAMBDA_MB_PER_VCPU = _ASSUMPTIONS.get("lambda_mb_per_vcpu", 1769.0)
 
+    log.info(f"SKU cache: {RESOLVED_SKUS_FILE}")
     print(f"SKU cache: {RESOLVED_SKUS_FILE}")
     con = duckdb.connect(db_path)
 
@@ -9143,6 +9197,7 @@ def main():
         with open(path, "w", encoding="utf-8") as f:
             json.dump(mappings, f, indent=2)
         llm_note = f" (+{len(llm_rows)} → LLM)" if isinstance(result, tuple) and llm_rows else ""
+        log.info(f"{group}: {len(mappings)} rows -> {path}{llm_note}")
         print(f"{group}: {len(mappings)} rows → {path}{llm_note}")
 
     # Persist resolved instance types back onto aws_li_catalog

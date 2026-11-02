@@ -19,6 +19,12 @@ import duckdb
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from synthetic_skus import SYNTHETIC_SKU_IDS
+try:
+    from log_utils import get_logger
+    log = get_logger("resolve_sku")
+except Exception:
+    import logging
+    log = logging.getLogger("resolve_sku")
 from unit_equivalence import unit_class, compatible, unit_dims
 
 try:

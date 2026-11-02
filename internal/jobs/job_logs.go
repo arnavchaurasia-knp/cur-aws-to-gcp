@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"bufio"
+	"fmt"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -126,13 +127,16 @@ func (h *Handler) JobLogs(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	if limit > 2000 {
-		limit = 2000
+	// Allow large limits up to 100,000 for full inspection
+	if limit > 100000 {
+		limit = 100000
 	}
 
+	isTail := r.URL.Query().Get("tail") == "true" || r.URL.Query().Get("tail") == "1"
+	hasOffset := r.URL.Query().Has("offset")
 	offset := 0
-	if o := r.URL.Query().Get("offset"); o != "" {
-		if n, err := strconv.Atoi(o); err == nil && n >= 0 {
+	if hasOffset {
+		if n, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && n >= 0 {
 			offset = n
 		}
 	}
@@ -173,6 +177,31 @@ func (h *Handler) JobLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Direct file streaming for download
+	if r.URL.Query().Get("download") == "true" {
+		var fPath string
+		switch stream {
+		case "engine":
+			fPath = filepath.Join(jobDir, "agy.log")
+		case "diagnostics":
+			fPath = filepath.Join(jobDir, "projection-audit", "diagnostics.jsonl")
+		default:
+			fPath = filepath.Join(jobDir, "projection-audit", "debug.log")
+			if _, err := os.Stat(fPath); os.IsNotExist(err) {
+				fPath = filepath.Join(jobDir, "agy.log")
+			}
+		}
+		data, err := os.ReadFile(fPath)
+		if err != nil {
+			http.Error(w, `{"error":"log file not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"job-%s-%s.log\"", id, stream))
+		w.Write(data)
+		return
+	}
+
 	switch stream {
 	case "engine":
 		filePath := filepath.Join(jobDir, "agy.log")
@@ -187,14 +216,21 @@ func (h *Handler) JobLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		lines := readLines(filePath)
 		total := len(lines)
-		sliced := sliceItems(lines, offset, limit)
+		curOffset := offset
+		if isTail && !hasOffset {
+			curOffset = total - limit
+			if curOffset < 0 {
+				curOffset = 0
+			}
+		}
+		sliced := sliceItems(lines, curOffset, limit)
 		json.NewEncoder(w).Encode(LogResponse{
 			JobID:     id,
 			Stream:    stream,
 			Available: true,
 			Source:    "live",
 			Total:     total,
-			Offset:    offset,
+			Offset:    curOffset,
 			Limit:     limit,
 			Lines:     sliced,
 		})
@@ -212,14 +248,21 @@ func (h *Handler) JobLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		records := readJSONL(filePath)
 		total := len(records)
-		sliced := sliceItems(records, offset, limit)
+		curOffset := offset
+		if isTail && !hasOffset {
+			curOffset = total - limit
+			if curOffset < 0 {
+				curOffset = 0
+			}
+		}
+		sliced := sliceItems(records, curOffset, limit)
 		json.NewEncoder(w).Encode(LogResponse{
 			JobID:     id,
 			Stream:    stream,
 			Available: true,
 			Source:    "live",
 			Total:     total,
-			Offset:    offset,
+			Offset:    curOffset,
 			Limit:     limit,
 			Records:   sliced,
 		})
@@ -262,14 +305,21 @@ func (h *Handler) JobLogs(w http.ResponseWriter, r *http.Request) {
 		}
 
 		total := len(filtered)
-		sliced := sliceItems(filtered, offset, limit)
+		curOffset := offset
+		if isTail && !hasOffset {
+			curOffset = total - limit
+			if curOffset < 0 {
+				curOffset = 0
+			}
+		}
+		sliced := sliceItems(filtered, curOffset, limit)
 		json.NewEncoder(w).Encode(LogResponse{
 			JobID:     id,
 			Stream:    stream,
 			Available: true,
 			Source:    "live",
 			Total:     total,
-			Offset:    offset,
+			Offset:    curOffset,
 			Limit:     limit,
 			Entries:   sliced,
 		})

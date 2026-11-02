@@ -24,12 +24,20 @@ _SKILL_DIR = os.environ.get("SKILL_DIR") or os.path.dirname(_HERE)
 sys.path.insert(0, _SKILL_DIR)
 sys.path.insert(0, os.path.join(_SKILL_DIR, "scripts"))
 
-from scripts.equivalences import (  # noqa: E402
-    all_claims,
-    is_provisional,
-    load_equivalences,
-    lookup,
-)
+try:
+    from equivalences import (  # sibling import
+        all_claims,
+        is_provisional,
+        load_equivalences,
+        lookup,
+    )
+except ImportError:
+    from scripts.equivalences import (  # noqa: E402
+        all_claims,
+        is_provisional,
+        load_equivalences,
+        lookup,
+    )
 
 
 def _connect_db(db_path: str | None = None, db_url: str | None = None):

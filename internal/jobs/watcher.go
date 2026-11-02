@@ -691,47 +691,112 @@ func (w *Watcher) recordJobLogDigest(jobID, runID, jobDir string) {
 	if w.db == nil {
 		return
 	}
-	logPath := filepath.Join(jobDir, "projection-audit", "debug.log")
-	if _, err := os.Stat(logPath); os.IsNotExist(err) {
-		logPath = filepath.Join(jobDir, "agy.log")
-		if _, err := os.Stat(logPath); os.IsNotExist(err) {
-			slog.Debug("watcher: no log file for digest", "job_id", jobID)
-			return
-		}
-	}
 
-	f, err := os.Open(logPath)
-	if err != nil {
-		slog.Debug("watcher: open log file for digest failed", "job_id", jobID, "err", err)
-		return
-	}
-	defer f.Close()
-
-	var allLines []string
+	var debugLines, agyLines []string
 	var errCount, warnCount int
 	var firstError string
 
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		text := sc.Text()
-		allLines = append(allLines, text)
-		upper := strings.ToUpper(text)
-		if strings.Contains(upper, " ERROR ") || strings.Contains(upper, "CRITICAL") || strings.HasPrefix(upper, "ERROR:") {
-			errCount++
-			if firstError == "" {
-				firstError = text
+	// 1. Scan diagnostics.jsonl first (structured, authoritative)
+	diagPath := filepath.Join(jobDir, "projection-audit", "diagnostics.jsonl")
+	if f, err := os.Open(diagPath); err == nil {
+		defer f.Close()
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
 			}
-		} else if strings.Contains(upper, " WARN ") || strings.Contains(upper, "WARNING") {
-			warnCount++
+			var rec struct {
+				Level   string `json:"level"`
+				Code    string `json:"code"`
+				Source  string `json:"source"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal([]byte(line), &rec); err == nil {
+				lvl := strings.ToLower(rec.Level)
+				if lvl == "error" || lvl == "critical" {
+					errCount++
+					if firstError == "" {
+						firstError = fmt.Sprintf("[%s] %s: %s", rec.Source, rec.Code, rec.Message)
+					}
+				} else if lvl == "warn" || lvl == "warning" {
+					warnCount++
+				}
+			}
 		}
 	}
 
+	// 2. Scan debug.log (pipeline stream from log_utils)
+	debugPath := filepath.Join(jobDir, "projection-audit", "debug.log")
+	if f, err := os.Open(debugPath); err == nil {
+		defer f.Close()
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			text := sc.Text()
+			debugLines = append(debugLines, text)
+			entry := parseLogLine(text)
+			if entry.Level == "error" || entry.Level == "critical" {
+				errCount++
+				if firstError == "" {
+					firstError = text
+				}
+			} else if entry.Level == "warning" || entry.Level == "warn" {
+				warnCount++
+			}
+		}
+	}
+
+	// 3. Scan agy.log (engine stream, stdout/stderr of orchestrator & scripts)
+	agyPath := filepath.Join(jobDir, "agy.log")
+	if f, err := os.Open(agyPath); err == nil {
+		defer f.Close()
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			text := sc.Text()
+			agyLines = append(agyLines, text)
+
+			// Skip if this line came from log_utils (already scanned in debug.log)
+			if logLineRegex.MatchString(text) {
+				continue
+			}
+			// Skip if this line is a [diag] print (already counted via diagnostics.jsonl)
+			upper := strings.ToUpper(text)
+			if strings.Contains(upper, "[DIAG]") {
+				continue
+			}
+
+			if strings.Contains(upper, " ERROR ") || strings.Contains(upper, "CRITICAL") ||
+				strings.HasPrefix(upper, "ERROR:") || strings.Contains(upper, "[SCRIPT] FATAL") ||
+				strings.Contains(upper, "FATAL:") || strings.Contains(upper, "TRACEBACK (MOST RECENT CALL LAST)") {
+				errCount++
+				if firstError == "" {
+					firstError = text
+				}
+			} else if strings.Contains(upper, " WARN ") || strings.Contains(upper, "WARNING:") ||
+				strings.HasPrefix(upper, "WARNING") {
+				warnCount++
+			}
+		}
+	}
+
+	if len(debugLines) == 0 && len(agyLines) == 0 && errCount == 0 && warnCount == 0 {
+		slog.Debug("watcher: no log entries found for digest", "job_id", jobID)
+		return
+	}
+
+	// Tail lines from agy.log (or debug.log if agy.log is empty)
+	tailSource := agyLines
+	if len(tailSource) == 0 {
+		tailSource = debugLines
+	}
 	lastLines := ""
-	if len(allLines) > 50 {
-		lastLines = strings.Join(allLines[len(allLines)-50:], "\n")
+	if len(tailSource) > 50 {
+		lastLines = strings.Join(tailSource[len(tailSource)-50:], "\n")
 	} else {
-		lastLines = strings.Join(allLines, "\n")
+		lastLines = strings.Join(tailSource, "\n")
 	}
 
 	digest := db.JobLogDigest{
@@ -748,4 +813,9 @@ func (w *Watcher) recordJobLogDigest(jobID, runID, jobDir string) {
 	} else {
 		slog.Info("saved job log digest", "job_id", jobID, "errors", errCount, "warns", warnCount)
 	}
+}
+
+// RecordJobLogDigest writes a job log digest for the given run and job directory.
+func (w *Watcher) RecordJobLogDigest(jobID, runID, jobDir string) {
+	w.recordJobLogDigest(jobID, runID, jobDir)
 }

@@ -31,6 +31,12 @@ import duckdb
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config_loader import load_data_config as _cfg
 try:
+    from log_utils import get_logger
+    log = get_logger("classify_mechanics")
+except Exception:
+    import logging
+    log = logging.getLogger("classify_mechanics")
+try:
     from aws_normalizer import canonical_service
 except (ImportError, ModuleNotFoundError):  # pragma: no cover
     canonical_service = lambda *_a: None
@@ -595,7 +601,16 @@ RULES = [
             (_ilike(r["product"], "Elastic Block")
              and not _re(r["operation"], r"Infrequent Access|Glacier|Intelligent-Tiering|Deep Archive"))
             or _re(r["usage_type"], r"EBS:Volume|EBS:Snapshot|gp2|gp3|io1|io2|sc1|st1")
-            or _re(r["usage_type"], r"Storage")
+            or (
+                _re(r["usage_type"], r"Storage")
+                and (
+                    r.get("canonical") in ("ec2", "ebs", "rds", "aurora", "documentdb", "neptune", "backup")
+                    or any(_ilike(r.get("product", ""), p) for p in (
+                        "Elastic Block", "EBS", "EC2", "Compute Cloud", "RDS",
+                        "Relational Database", "Aurora", "DocumentDB", "Neptune", "Backup"
+                    ))
+                )
+            )
             or _re(r["operation"], r"GP3-Storage|Provisioned GP3 storage")
             # PDF-flat-bill EBS rows: product is genuinely "Elastic Compute Cloud"
             # (not "Elastic Block [Store]") and usage_type is a bare "EBS" with no
@@ -1145,6 +1160,17 @@ RULES = [
         ),
     ),
     (
+        # AWS Secrets Manager. Without this rule Secrets Manager rows fall through to misc
+        # and are priced by the LLM or passthrough.
+        # map_per_request() handles secret-months (.06/version-month vs AWS .40/secret)
+        # and secret API operations (.03/10k ops vs AWS .05/10k ops).
+        "per_request",
+        lambda r: (
+            _re(r.get("product", ""), r"Secrets Manager|\bSecretsManager\b")
+            or r.get("canonical") in ("secretsmanager", "secrets_manager")
+        ),
+    ),
+    (
         # AWS WAF per-request charges (standard WAF, BotControl, AntiDDoS-Request,
         # BotControl-Targeted-Request). PDF bills leave unit=None so we can't
         # rely on unit="Requests" — catch by product name before misc fallback.
@@ -1628,6 +1654,7 @@ def main():
     # columns were added — fall back to NULL so classification still runs.
     bf_expr = "billing_format" if "billing_format" in existing_cols else "NULL AS billing_format"
     pc_expr = "product_code" if "product_code" in existing_cols else "NULL AS product_code"
+    cs_col_expr = "canonical_service" if "canonical_service" in existing_cols else "NULL AS canonical_service"
     rows = con.execute(
         f"""
         SELECT
@@ -1644,7 +1671,8 @@ def main():
             instance_ram_gb,
             instance_count,
             {bf_expr},
-            {pc_expr}
+            {pc_expr},
+            {cs_col_expr}
         FROM aws_li_catalog
         """
     ).fetchall()
@@ -1653,7 +1681,7 @@ def main():
         "aws_li_key", "product", "usage_type", "operation",
         "unit", "line_item_type", "pricing_model", "aws_amortized_cost",
         "instance_type", "instance_vcpus", "instance_ram_gb", "instance_count",
-        "billing_format", "product_code",
+        "billing_format", "product_code", "canonical_service",
     ]
 
     # --- Determine once, bill-wide, whether ignoring RIFee/SavingsPlanRecurringFee/
@@ -1682,10 +1710,11 @@ def main():
     for raw in rows:
         row = dict(zip(col_names, raw))
         row["_bill_has_discounted_usage"] = bill_has_discounted
-        # Authoritative service identity (product_code-first, name fallback),
-        # consumed by the rules below instead of each rule re-sniffing the
-        # free-text product name. Identity is resolved once, here.
-        row["canonical"] = canonical_service(row.get("product"), row.get("product_code"))
+        # Authoritative service identity: consume the stamped canonical_service
+        # column from Layer 1 (aws_normalizer), falling back to in-memory resolution
+        # only if NULL.
+        stored_cs = row.get("canonical_service")
+        row["canonical"] = stored_cs if stored_cs else canonical_service(row.get("product"), row.get("product_code"))
         group, rule_label = classify_with_trace(row)
         updates.append((group, rule_label, row["aws_li_key"]))
         if group == "misc":
@@ -1732,6 +1761,7 @@ def main():
     total_spend = sum(r[2] for r in stats)
     total_rows = sum(r[1] for r in stats)
 
+    log.info(f"Classified {total_rows} rows across {len(stats)} groups (total spend ${total_spend:,.2f})")
     print(f"\n{'mechanic_group':<25} {'rows':>8}  {'% rows':>8}  {'spend_usd':>14}  {'% spend':>8}")
     print("-" * 70)
     misc_spend = 0.0
@@ -1962,6 +1992,7 @@ def main():
     os.makedirs(os.path.join(os.path.dirname(db_path), "mappings"), exist_ok=True)
     with open(manifest_path, "w", encoding="utf-8") as fh:
         json.dump(manifest_out, fh, indent=2, default=str)
+    log.info(f"Wrote {manifest_path} ({len(manifest_out)} groups)")
     print(f"\nWrote {manifest_path}  ({len(manifest_out)} groups)")
 
     con.close()

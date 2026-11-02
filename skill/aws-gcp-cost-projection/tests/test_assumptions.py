@@ -196,3 +196,141 @@ def test_ratio_registry_matches_candidate_pool():
         "ratio_registry.json is stale; run python scripts/gen_ratio_registry.py"
     )
     assert registry["ratio_groups"], "registry must declare at least one ratio group"
+
+
+def test_aws_sp_discount_pct_changes_dollars():
+    """S3-1: Changing aws_sp_discount_pct provably changes projected dollars on SP rows."""
+    import duckdb
+    from ingest import apply_od_basis
+
+    conn1 = duckdb.connect(":memory:")
+    conn1.execute("CREATE TABLE aws_li_catalog (aws_li_key VARCHAR, product VARCHAR, pricing_model VARCHAR, line_item_type VARCHAR, aws_amortized_cost DOUBLE, pricing_unit VARCHAR)")
+    conn1.execute("INSERT INTO aws_li_catalog VALUES ('sp1', 'AmazonEC2', 'OnDemand', 'SavingsPlanCoveredUsage', 70.0, 'Hrs')")
+    
+    # Baseline with 30% SP discount (divisor 0.70 ->  / 0.7 = )
+    a1 = dict(load_assumptions(None))
+    a1["aws_sp_discount_pct"] = 0.30
+    apply_od_basis(conn1, assumptions=a1)
+    cost1 = conn1.execute("SELECT aws_od_cost FROM aws_li_catalog WHERE aws_li_key='sp1'").fetchone()[0]
+
+    # Overridden with 50% SP discount (divisor 0.50 ->  / 0.5 = )
+    conn2 = duckdb.connect(":memory:")
+    conn2.execute("CREATE TABLE aws_li_catalog (aws_li_key VARCHAR, product VARCHAR, pricing_model VARCHAR, line_item_type VARCHAR, aws_amortized_cost DOUBLE, pricing_unit VARCHAR)")
+    conn2.execute("INSERT INTO aws_li_catalog VALUES ('sp1', 'AmazonEC2', 'OnDemand', 'SavingsPlanCoveredUsage', 70.0, 'Hrs')")
+    a2 = dict(load_assumptions(None))
+    a2["aws_sp_discount_pct"] = 0.50
+    apply_od_basis(conn2, assumptions=a2)
+    cost2 = conn2.execute("SELECT aws_od_cost FROM aws_li_catalog WHERE aws_li_key='sp1'").fetchone()[0]
+
+    assert round(cost1, 2) == 100.00
+    assert round(cost2, 2) == 140.00
+    assert cost1 != cost2, "aws_sp_discount_pct must change output dollars"
+
+
+def test_unsupported_features_confidence_penalty_wired(tmp_path, monkeypatch):
+    """S3-3: Unsupported features (e.g. Inferentia, Mac, Bare Metal) penalize confidence."""
+    import duckdb
+    import auto_review
+    import apply_review_fixes
+
+    audit_dir = tmp_path / "projection-audit"
+    audit_dir.mkdir(parents=True)
+    db_file = audit_dir / "projection.duckdb"
+    conn = duckdb.connect(str(db_file))
+    conn.execute("""
+        CREATE TABLE aws_li_catalog (
+            aws_li_key VARCHAR PRIMARY KEY,
+            product VARCHAR,
+            usage_type VARCHAR,
+            operation VARCHAR,
+            instance_type VARCHAR,
+            aws_amortized_cost DOUBLE,
+            is_workload BOOLEAN,
+            gcp_region VARCHAR
+        );
+        CREATE TABLE aws_li_to_gcp_li (
+            aws_li_key VARCHAR PRIMARY KEY,
+            strategy VARCHAR,
+            passthrough_reason VARCHAR,
+            gcp_service VARCHAR,
+            gcp_sku_id VARCHAR,
+            gcp_sku_name VARCHAR,
+            component VARCHAR,
+            unit_multiplier DOUBLE,
+            projection_note VARCHAR,
+            mapping_confidence DOUBLE
+        );
+    """)
+    conn.execute("""
+        INSERT INTO aws_li_catalog VALUES
+        ('inf_row', 'Amazon Elastic Compute Cloud', 'USE1-BoxUsage:inf1.xlarge', 'RunInstances', 'inf1.xlarge', 150.0, true, 'us-east4');
+        INSERT INTO aws_li_to_gcp_li VALUES
+        ('inf_row', 'map', NULL, 'Compute Engine', 'fake-sku', 'fake-name', 'core', 1.0, '', 0.85);
+    """)
+    conn.close()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(auto_review, "DB_PATH", str(db_file))
+    monkeypatch.setattr(auto_review, "CANDIDATES_FILE", str(tmp_path / "review_candidates.json"))
+    monkeypatch.setattr(auto_review, "FLAGS_FILE", str(tmp_path / "review_flags.md"))
+
+    monkeypatch.setattr(apply_review_fixes, "DB_PATH", str(db_file))
+    monkeypatch.setattr(apply_review_fixes, "CANDIDATES_FILE", str(tmp_path / "review_candidates.json"))
+    monkeypatch.setattr(apply_review_fixes, "FIXES_FILE", str(tmp_path / "review_fixes.json"))
+    monkeypatch.setattr(apply_review_fixes, "NOTES_FILE", str(tmp_path / "mapping-notes.md"))
+
+    # 1. auto_review detects inferentia unsupported feature
+    auto_review.main()
+
+    # 2. apply_review_fixes applies the candidate penalty
+    apply_review_fixes.main()
+
+    # Verify confidence was penalized from 0.85 by 0.15 to 0.70
+    conn = duckdb.connect(str(db_file))
+    row = conn.execute("SELECT mapping_confidence, projection_note FROM aws_li_to_gcp_li WHERE aws_li_key='inf_row'").fetchone()
+    conn.close()
+
+    conf, note = row
+    assert round(conf, 2) == 0.65
+    assert "Inferentia" in note
+
+
+def test_assumptions_ratchet_perturbation():
+    """S3-2: Ratchet asserting each assumption key actively influences pipeline logic."""
+    import duckdb
+    from ingest import apply_od_basis
+    from apply_static_mappings import map_tpu_row
+
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+    with open(os.path.join(data_dir, "assumption-defaults.json"), encoding="utf-8") as f:
+        defaults = json.load(f)["values"]
+
+    # 1. Commitment keys test
+    commit_keys = ["aws_spot_discount_pct", "aws_sp_discount_pct", "aws_ri_1yr_discount_pct", "aws_ri_3yr_discount_pct"]
+    for k in commit_keys:
+        a1 = dict(defaults)
+        a2 = dict(defaults)
+        a2[k] = 0.10 if defaults[k] != 0.10 else 0.80
+
+        conn = duckdb.connect(":memory:")
+        conn.execute("CREATE TABLE aws_li_catalog (aws_li_key VARCHAR, product VARCHAR, pricing_model VARCHAR, line_item_type VARCHAR, usage_type VARCHAR, operation VARCHAR, aws_amortized_cost DOUBLE, pricing_unit VARCHAR)")
+        
+        if k == "aws_spot_discount_pct":
+            conn.execute("INSERT INTO aws_li_catalog VALUES ('r', 'AmazonEC2', 'Spot', 'Usage', 'spot', '', 50.0, 'Hrs')")
+        elif k == "aws_sp_discount_pct":
+            conn.execute("INSERT INTO aws_li_catalog VALUES ('r', 'AmazonEC2', 'OnDemand', 'SavingsPlanCoveredUsage', 'sp', '', 50.0, 'Hrs')")
+        elif k == "aws_ri_1yr_discount_pct":
+            conn.execute("INSERT INTO aws_li_catalog VALUES ('r', 'AmazonEC2', 'committed', 'discountedusage', '1yr', '', 50.0, 'Hrs')")
+        else: # ri_3yr
+            conn.execute("INSERT INTO aws_li_catalog VALUES ('r', 'AmazonEC2', 'committed', 'discountedusage', '3yr', '3-year commitment', 50.0, 'Hrs')")
+
+        apply_od_basis(conn, assumptions=a1)
+        c1 = conn.execute("SELECT aws_od_cost FROM aws_li_catalog WHERE aws_li_key='r'").fetchone()[0]
+
+        # Reset
+        conn.execute("UPDATE aws_li_catalog SET aws_od_cost = NULL, od_basis = NULL")
+        apply_od_basis(conn, assumptions=a2)
+        c2 = conn.execute("SELECT aws_od_cost FROM aws_li_catalog WHERE aws_li_key='r'").fetchone()[0]
+        conn.close()
+
+        assert c1 != c2, f"Perturbation of {k} did not change reconstructed cost (c1={c1}, c2={c2})"

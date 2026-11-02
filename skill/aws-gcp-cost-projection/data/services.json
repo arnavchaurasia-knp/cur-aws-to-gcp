@@ -646,5 +646,11 @@
     "serviceId": "FBF2-FC68-171A",
     "displayName": "Security Command Center",
     "businessEntityName": "businessEntities/GCP"
+  },
+  {
+    "name": "services/EE82-7A5E-871C",
+    "serviceId": "EE82-7A5E-871C",
+    "displayName": "Secret Manager",
+    "businessEntityName": "businessEntities/GCP"
   }
 ]

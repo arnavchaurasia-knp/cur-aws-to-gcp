@@ -30,8 +30,27 @@ func TestPhase4_IsolationAndPreferencesAndQuotas(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	defer d.Close()
+	defer func() {
+		for i := 0; i < 50; i++ {
+			jobList, _ := d.ListAllJobs()
+			hasRunning := false
+			for _, j := range jobList {
+				if j.AgentPID > 0 {
+					jobs.KillProcessTreeForTest(j.AgentPID)
+				} else if j.Status == "pending" || j.Status == "running" {
+					hasRunning = true
+				}
+			}
+			if !hasRunning {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}()
 
 	jobsDir := t.TempDir()
+
 	adminEmails := []string{"admin@facets.cloud"}
 	spawner := jobs.NewSpawner(jobs.SpawnerConfig{})
 	spawner.SetDB(d)

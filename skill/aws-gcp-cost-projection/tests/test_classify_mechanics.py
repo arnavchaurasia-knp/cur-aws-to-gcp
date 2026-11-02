@@ -485,3 +485,15 @@ def test_s3_requests_tier_routes_before_generic_per_request():
     assert res == "per_request"
 
 
+
+
+def test_foocloud_storage_processing_not_block_storage():
+    """S5-1: A synthetic unspecced service 'FooCloud Storage Processing' must not route to block_storage."""
+    r = row(
+        product="FooCloud Storage Processing",
+        usage_type="FooStorageProcessing-ByteHrs",
+        operation="StorageProcessing",
+        unit="GB-Mo",
+    )
+    group = classify(r)
+    assert group != "block_storage", f"Expected not block_storage, got {group}"

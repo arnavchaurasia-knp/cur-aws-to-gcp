@@ -72,6 +72,16 @@ def apply_candidate(conn, key: str, cand: dict, notes: list):
             """, [cand["ram_multiplier"], key])
         notes.append(f"- `{key}`: confirmed spec fix — "
                      f"core={cand.get('core_multiplier')}, ram={cand.get('ram_multiplier')}")
+    elif action == "penalize_confidence":
+        penalty = float(cand.get("penalty", 0.0))
+        note = cand.get("note", "")
+        conn.execute("""
+            UPDATE aws_li_to_gcp_li
+            SET mapping_confidence = GREATEST(0.1, COALESCE(mapping_confidence, 0.8) - ?),
+                projection_note = COALESCE(projection_note, '') || ' ' || ?
+            WHERE aws_li_key = ?
+        """, [penalty, note, key])
+        notes.append(f"- {key}: penalized confidence by {penalty} due to unsupported feature")
     else:
         notes.append(f"- `{key}`: unknown candidate action '{action}' — skipped")
 
@@ -115,21 +125,6 @@ def apply_override(conn, key: str, fix: dict, notes: list):
 
 
 def main():
-    if not os.path.exists(FIXES_FILE):
-        print("review_fixes.json not found — LLM may not have written it (possibly 0 flags). Skipping.")
-        sys.exit(0)
-
-    try:
-        with open(FIXES_FILE) as f:
-            fixes = json.load(f)
-    except Exception as e:
-        print(f"WARNING: Could not parse review_fixes.json: {e} — skipping review fixes.", file=sys.stderr)
-        sys.exit(0)
-
-    if not isinstance(fixes, list):
-        print("WARNING: review_fixes.json must be a JSON array — skipping review fixes.", file=sys.stderr)
-        sys.exit(0)
-
     candidates = {}
     if os.path.exists(CANDIDATES_FILE):
         try:
@@ -138,9 +133,31 @@ def main():
         except Exception:
             pass
 
+    fixes = []
+    if os.path.exists(FIXES_FILE):
+        try:
+            with open(FIXES_FILE) as f:
+                fixes = json.load(f)
+        except Exception as e:
+            print(f"WARNING: Could not parse review_fixes.json: {e} — skipping review fixes.", file=sys.stderr)
+
+    if not isinstance(fixes, list):
+        fixes = []
+
+    if not fixes and not candidates:
+        print("review_fixes.json and candidates empty — skipping review fixes.")
+        sys.exit(0)
+
     conn = duckdb.connect(DB_PATH)
     notes = []
     applied = vetoed = errors = 0
+
+    # Auto-apply deterministic confidence penalties from candidates
+    for key, cinfo in candidates.items():
+        cand = cinfo.get("candidate")
+        if isinstance(cand, dict) and cand.get("action") == "penalize_confidence":
+            apply_candidate(conn, key, cand, notes)
+            applied += 1
 
     for fix in fixes:
         key      = fix.get("aws_li_key")

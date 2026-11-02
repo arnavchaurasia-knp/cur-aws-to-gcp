@@ -137,13 +137,15 @@ def _build_projection_view_sql(dominant_region: str, assumptions: dict | None = 
             OR {ut_expr} ILIKE '%spot%'
             OR {op_expr} ILIKE '%spot%'
             THEN c.aws_amortized_cost / {spot_div}
+          WHEN LOWER(COALESCE(c.line_item_type, '')) = 'savingsplancoveredusage'
+            OR {ut_expr} ILIKE '%savings%plan%'
+            OR {op_expr} ILIKE '%savings%plan%'
+            THEN c.aws_amortized_cost / {sp_div}
           WHEN LOWER(COALESCE(c.pricing_model, '')) = 'committed'
             OR LOWER(COALESCE(c.pricing_model, '')) = 'reserved'
             OR LOWER(COALESCE(c.line_item_type, '')) = 'discountedusage'
             OR {ut_expr} ILIKE '%reserved%'
             OR {op_expr} ILIKE '%reserved%'
-            OR {ut_expr} ILIKE '%savings%plan%'
-            OR {op_expr} ILIKE '%savings%plan%'
             THEN
               CASE
                 WHEN REGEXP_MATCHES({text_expr}, '\\b(3-year|36\\s*mo|36\\s*month)\\b|3\\s+yr|3\\s+year|3yr')
@@ -356,6 +358,11 @@ SELECT  c.aws_li_key, c.product, c.aws_region, c.gcp_region,
             OR {op_expr} ILIKE '%savings%plan%'
             THEN
               CASE
+                WHEN {ut_expr} ILIKE '%savings%plan%' OR {op_expr} ILIKE '%savings%plan%'
+                THEN CONCAT(
+                       NULLIF(m.projection_note || '; ', '; '),
+                       'AWS list price estimated from the billed Savings Plan rate using an assumed ' || CAST(ROUND({sp_disc} * 100) AS INTEGER) || '% Savings Plan discount.'
+                     )
                 WHEN REGEXP_MATCHES({text_expr}, '\\b(3-year|36\\s*mo|36\\s*month)\\b|3\\s+yr|3\\s+year|3yr')
                 THEN CONCAT(
                        NULLIF(m.projection_note || '; ', '; '),

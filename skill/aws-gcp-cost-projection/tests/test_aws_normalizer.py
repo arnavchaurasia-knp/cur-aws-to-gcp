@@ -181,3 +181,100 @@ def test_rds_mysql_community_edition_rule_does_not_zero_generic_rds_rows():
         specific_cs,
         {},
     )
+
+
+def test_unrecognized_products_uncapped_and_diagnostics(tmp_path, monkeypatch):
+    import duckdb
+    from aws_normalizer import main
+    from diagnostics import read_all
+
+    db_path = str(tmp_path / "projection.duckdb")
+    con = duckdb.connect(db_path)
+    con.execute("""
+        CREATE TABLE aws_li_catalog (
+            aws_li_key VARCHAR,
+            product VARCHAR,
+            product_code VARCHAR,
+            aws_amortized_cost DOUBLE
+        )
+    """)
+    for i in range(25):
+        con.execute(
+            "INSERT INTO aws_li_catalog VALUES (?, ?, NULL, ?)",
+            [f"key_{i:02d}", f"UnrecognizedCustomService_{i:02d}", 10.0 + i],
+        )
+    con.close()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["aws_normalizer.py", db_path])
+
+    try:
+        main()
+    except SystemExit as e:
+        assert e.code == 0
+
+    records = read_all(str(tmp_path))
+    unrec_records = [r for r in records if r.get("code") == "unrecognized_product"]
+    assert len(unrec_records) == 25, f"Expected 25 diagnostic records, got {len(unrec_records)}"
+
+    logged_prods = {r.get("detail", {}).get("product") for r in unrec_records}
+    for i in range(25):
+        assert f"UnrecognizedCustomService_{i:02d}" in logged_prods
+
+
+def test_service_classifier_id_first_rejects_substring_false_match():
+    """S5-2: A row whose name contains a rule's substring but whose canonical differs is NOT force-targeted."""
+    # Find an ec2 rule
+    ec2_rule = next((r for r in _rules() if r.get("match") == "ec2"), None)
+    if not ec2_rule:
+        ec2_rule = {"match": "ec2", "gcp_service": "Compute Engine", "category": "compute", "mode": "keep", "reason": "test"}
+    # Product contains 'ec2' but its canonical service is 'ecr' (Elastic Container Registry)
+    assert not _rule_matches(ec2_rule, "Amazon EC2 Container Registry", "Eps-Bytes", "ecr", {})
+
+
+def test_canonical_service_consumed_from_catalog(tmp_path, monkeypatch):
+    """S5-4: classify_mechanics and service_classifier consume the stored canonical_service column."""
+    import duckdb
+    from classify_mechanics import main as cm_main
+
+    db_path = str(tmp_path / "projection.duckdb")
+    con = duckdb.connect(db_path)
+    con.execute("""
+        CREATE TABLE aws_li_catalog (
+            aws_li_key VARCHAR,
+            product VARCHAR,
+            usage_type VARCHAR,
+            operation VARCHAR,
+            pricing_unit VARCHAR,
+            line_item_type VARCHAR,
+            pricing_model VARCHAR,
+            aws_amortized_cost DOUBLE,
+            instance_type VARCHAR,
+            instance_vcpus DOUBLE,
+            instance_ram_gb DOUBLE,
+            instance_count INTEGER,
+            billing_format VARCHAR,
+            product_code VARCHAR,
+            canonical_service VARCHAR
+        )
+    """)
+    con.execute("""
+        INSERT INTO aws_li_catalog VALUES (
+            'k_test_s5_4', 'Amazon Custom Product Name', 'BoxUsage:c5.large', 'RunInstances',
+            'Hrs', 'Usage', 'OnDemand', 100.0, 'c5.large', 2.0, 4.0, 1,
+            'cur', 'AmazonEC2', 'ec2'
+        )
+    """)
+    con.close()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["classify_mechanics.py", db_path])
+    try:
+        cm_main()
+    except SystemExit as e:
+        assert e.code == 0
+
+    con = duckdb.connect(db_path)
+    res = con.execute("SELECT mechanic_group FROM aws_li_catalog WHERE aws_li_key = 'k_test_s5_4'").fetchone()
+    con.close()
+    assert res[0] == "compute_breakdown"

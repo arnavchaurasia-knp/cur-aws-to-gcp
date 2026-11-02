@@ -29,7 +29,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import yaml
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 NETWORK_RANK = {"standard": 0, "high": 1, "efa": 2}
 

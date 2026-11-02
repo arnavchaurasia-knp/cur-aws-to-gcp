@@ -235,7 +235,7 @@ export function ApiTokens({ user }: Readonly<{ user: UserInfo }>) {
               setCreateError(null)
               setOpen(true)
             }}
-            className="inline-flex items-center gap-2 btn-shimmer py-2.5 rounded-lg text-sm font-medium text-white cursor-pointer hover:bg-[#645DF6]/80 transition-colors"
+            className="inline-flex items-center justify-center gap-2 btn-shimmer px-5 py-2.5 rounded-lg text-sm font-medium text-white cursor-pointer whitespace-nowrap"
           >
             <span>+</span> Create token
           </button>

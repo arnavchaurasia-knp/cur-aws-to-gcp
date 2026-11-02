@@ -210,7 +210,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                       </thead>
                       <tbody className="divide-y divide-white/5">
                         {groupAssumptions.map((a) => {
-                          const isEditing = saving === a.key
+                          const isEditing = a.key in edits
                           const edit = getEdit(a.key)
                           const inRange = !edit.value || (Number(edit.value) >= a.min_value && Number(edit.value) <= a.max_value)
                           return (

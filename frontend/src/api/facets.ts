@@ -44,9 +44,14 @@ export async function facetsListJobs(): Promise<Job[]> {
 }
 
 export async function facetsGetLogs(jobId: string): Promise<string[]> {
-  const res = await fetch(`/api/jobs/${jobId}/logs`)
+  const res = await fetch(`/api/jobs/${jobId}/logs?stream=pipeline&limit=500`)
   if (!res.ok) return []
   const data = await res.json()
+  // The default "pipeline" stream returns structured `entries`; other streams
+  // (e.g. engine) return `lines`. Parse both so the admin Logs modal isn't empty.
+  if (Array.isArray(data.entries) && data.entries.length > 0) {
+    return data.entries.map((e: { raw?: string; message?: string }) => e.raw || e.message || '')
+  }
   return data.lines ?? []
 }
 

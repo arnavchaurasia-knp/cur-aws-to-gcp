@@ -82,6 +82,30 @@ separate `components/JobLogsViewer.tsx` (may render raw, uncolored).
       treatment in `JobLogsViewer.tsx` if it renders log lines. Verify readability in both
       light and dark themes.
 
+### B7 — assumptions: page shakes / scrolls to top on Save (same pattern as B3)
+`pages/AdminAssumptions.tsx` — `handleSave` calls `await refresh()`, and `refresh()` flips the
+full-page `loading` flag, which swaps the whole list for a spinner and back, collapsing the
+layout and jerking scroll to the top (identical to the report-settings bug already fixed in
+`AdminReportSettings.tsx` via a `silent` refresh).
+- [ ] Give `refresh` a `silent` param: `const refresh = async (silent = false) => { if (!silent)
+      setLoading(true) … finally { if (!silent) setLoading(false) } }`, and call `refresh(true)`
+      after a successful save/reset so the row updates in place with no full-page spinner and no
+      scroll jump. Verify toggling/saving an assumption keeps scroll position.
+- [ ] Audit other admin pages that call `refresh()` after a mutation for the same jump
+      (`AdminUsers`, `AdminCatalog`, `AdminIntegrations`, `Tickets`) and apply the silent pattern
+      where a save re-fetch currently flips a full-page loader.
+
+---
+
+## 1b. ALREADY FIXED (reference — do NOT redo)
+Landed on `AGY` before this work order's remaining items:
+- Assumptions **Edit button** not opening the row — `isEditing` was keyed off `saving` instead
+  of `a.key in edits` (commit dfbefac).
+- **/admin Logs modal empty** — `facetsGetLogs` now parses the `entries` the default pipeline
+  stream returns, with a `lines` fallback (commit dfbefac).
+- **report-settings toggle shake/scroll-jump** — `refresh(silent)` added (commit c1b8db8). B7
+  applies the same fix to Assumptions.
+
 ---
 
 ## 2. INVARIANTS
@@ -92,7 +116,7 @@ separate `components/JobLogsViewer.tsx` (may render raw, uncolored).
 
 ## 3. PHASES
 ### Phase 1 — Fix
-- [ ] B1–B6 per above.
+- [ ] B1–B7 per above.
 ### Phase 2 — Verify (in-browser, per <verification_workflow>)
 - [ ] preview_start, log in, visit each page, confirm each bug is fixed (screenshot the
       before/after where visual). Check both themes for B2/B6.
@@ -108,6 +132,9 @@ separate `components/JobLogsViewer.tsx` (may render raw, uncolored).
   B3 AdminReportSettings.tsx (no sonner import/toast), B4 AdminAssumptions.tsx (no reset),
   B5 AdminIntegrations.tsx vs Catalog placement, B6 AdminJobs.tsx LogLine:66–79 + JobLogsViewer.
   NEXT: run P1–P7 in-browser, then fix.
+- 2026-11-02 Added B7 (Assumptions Save scroll-jump — same pattern as the report-settings
+  fix in c1b8db8). Recorded the three already-landed fixes (Edit button, Logs modal,
+  report-settings jump) in §1b so they are not redone.
 
 ## 6. IF STUCK
 Repro in the browser first (preview_start + login). For B2 a 0-height chart is the most common

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { toast } from 'sonner'
 import { Layout } from '../components/Layout'
 import {
   getReportSettings,
@@ -27,8 +28,11 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
 
   const groups = ['sections', 'columns', 'rows'] as const
 
-  const refresh = async () => {
-    setLoading(true)
+  const refresh = async (silent = false) => {
+    // Full-page spinner only on the initial load. A toggle/save re-fetch must be
+    // silent, otherwise swapping the list for a spinner collapses the layout and
+    // jerks the scroll position to the top on every toggle.
+    if (!silent) setLoading(true)
     setError(null)
     try {
       const d = await getReportSettings()
@@ -38,7 +42,7 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to load report settings')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
   useEffect(() => { refresh() }, [])
@@ -89,12 +93,16 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
       const result = await putReportSetting(setting.key, { value: normalized, reason })
       if (result) {
         setEditingValue('')
-        await refresh()
+        toast.success(`Updated ${setting.key}`)
+        await refresh(true)
       } else {
+        toast.error(`Failed to update ${setting.key}`)
         setError('save failed')
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'save failed')
+      const msg = err instanceof Error ? err.message : 'save failed'
+      toast.error(msg)
+      setError(msg)
     } finally {
       setSaving(null)
     }
@@ -106,13 +114,17 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
     try {
       const result = await resetReportSettings()
       if (result) {
-        await refresh()
+        toast.success('Report settings reset to defaults')
+        await refresh(true)
         setResetConfirmOpen(false)
       } else {
+        toast.error('Reset failed')
         setError('reset failed')
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'reset failed')
+      const msg = err instanceof Error ? err.message : 'reset failed'
+      toast.error(msg)
+      setError(msg)
     } finally {
       setResetting(false)
     }

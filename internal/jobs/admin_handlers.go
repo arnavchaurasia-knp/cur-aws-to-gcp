@@ -446,6 +446,33 @@ func (h *Handler) AdminSetUserRole(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"email": lowerTargetEmail, "role": body.Role})
 }
 
+// AdminDeleteUser removes a user account.
+func (h *Handler) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	rawEmail := chi.URLParam(r, "email")
+	email, unescapeErr := url.PathUnescape(rawEmail)
+	if unescapeErr != nil {
+		http.Error(w, `{"error":"invalid email in path"}`, http.StatusBadRequest)
+		return
+	}
+	lowerTargetEmail := strings.ToLower(strings.TrimSpace(email))
+	if sess != nil && strings.ToLower(strings.TrimSpace(sess.Email)) == lowerTargetEmail {
+		http.Error(w, `{"error":"cannot delete yourself"}`, http.StatusBadRequest)
+		return
+	}
+	callerEmail := ""
+	if sess != nil {
+		callerEmail = sess.Email
+	}
+	if err := h.db.DeleteUser(lowerTargetEmail); err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	_ = h.db.LogAdminAction(callerEmail, "delete_user", lowerTargetEmail, "")
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	w.Write([]byte(`{"status":"deleted"}`))
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Admin: catalog status / forced refresh
 // ─────────────────────────────────────────────────────────────────────────
@@ -1534,6 +1561,17 @@ func (h *Handler) AdminUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	json.NewEncoder(w).Encode(updated)
+}
+
+// AdminDeleteTicket deletes a ticket by id.
+func (h *Handler) AdminDeleteTicket(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := h.db.DeleteTicket(id); err != nil {
+		http.Error(w, `{"error":"failed to delete ticket"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	w.Write([]byte(`{"status":"deleted"}`))
 }
 
 // NotificationItem represents a single unified event in the admin notification feed.

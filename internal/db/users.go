@@ -314,3 +314,9 @@ func (d *DB) UpdateUserPreferences(email string, defaultEngine, defaultExportFor
 	return err
 }
 
+// DeleteUser removes a user record by email.
+func (d *DB) DeleteUser(email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	_, err := d.conn.Exec("DELETE FROM users WHERE lower(email) = ?", email)
+	return err
+}

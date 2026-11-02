@@ -281,3 +281,9 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
+
+// DeleteTicket removes a ticket record by id.
+func (d *DB) DeleteTicket(id string) error {
+	_, err := d.conn.Exec("DELETE FROM tickets WHERE id = ?", id)
+	return err
+}

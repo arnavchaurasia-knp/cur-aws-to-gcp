@@ -10,9 +10,11 @@ import { AdminReportSettings } from './pages/AdminReportSettings'
 import { AdminAudit } from './pages/AdminAudit'
 import { AdminAnalytics } from './pages/AdminAnalytics'
 import { AdminNotifications } from './pages/AdminNotifications'
+import { AdminIntegrations } from './pages/AdminIntegrations'
 import { SharedReport } from './pages/SharedReport'
 import { Tickets } from './pages/Tickets'
 import { Profile } from './pages/Profile'
+import { ApiTokens } from './pages/ApiTokens'
 import { Bills } from './pages/Bills'
 import { ReleaseDashboard } from './pages/ReleaseDashboard'
 import { useEffect, useState } from 'react'
@@ -61,12 +63,14 @@ export default function App() {
           <Route path="/admin/catalog" element={user && isAdmin ? <AdminCatalog user={user} /> : <Navigate to="/" />} />
           <Route path="/admin/assumptions" element={user && isAdmin ? <AdminAssumptions user={user} /> : <Navigate to="/" />} />
           <Route path="/admin/report-settings" element={user && isAdmin ? <AdminReportSettings user={user} /> : <Navigate to="/" />} />
+          <Route path="/admin/integrations" element={user && isAdmin ? <AdminIntegrations user={user} /> : <Navigate to="/" />} />
           <Route path="/admin/audit" element={user && isAdmin ? <AdminAudit user={user} /> : <Navigate to="/" />} />
           <Route path="/admin/analytics" element={user && isAdmin ? <AdminAnalytics user={user} /> : <Navigate to="/" />} />
           <Route path="/admin/notifications" element={user && isAdmin ? <AdminNotifications user={user} /> : <Navigate to="/" />} />
           <Route path="/admin/tickets" element={user && isAdmin ? <Tickets user={user} /> : <Navigate to="/" />} />
         <Route path="/admin/bills" element={user && isAdmin ? <Bills user={user} /> : <Navigate to="/" />} />
         <Route path="/profile" element={user ? <Profile user={user} /> : <Navigate to="/login" />} />
+        <Route path="/profile/tokens" element={user ? <ApiTokens user={user} /> : <Navigate to="/login" />} />
           <Route path="/reports/:token" element={<SharedReport />} />
           <Route path="*" element={<Navigate to={user ? "/" : "/login"} replace />} />
         </Routes>

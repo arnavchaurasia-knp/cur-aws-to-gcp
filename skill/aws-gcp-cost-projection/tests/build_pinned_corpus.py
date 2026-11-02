@@ -7,7 +7,16 @@ Builds 3 fully-priced representative job DBs in tests/corpus/:
   3. modern_serverless: Aurora Serverless v2, AWS Lambda, DynamoDB, ECS Fargate, CloudFront, KMS.
 
 Generates projection.duckdb with aws_li_catalog, aws_li_to_gcp_li, and gcp_projection,
-runs the deterministic mapper chain, and computes baseline accuracy scorecards.
+and computes baseline accuracy scorecards.
+
+SCOPE / HONESTY NOTE: this fixture does NOT run the real mapper chain. It hand-stamps
+aws_li_to_gcp_li (fake sku ids) and sets gcp_projected_cost = aws_od_cost * 0.94 for
+every mapped row (see _create_view_and_snapshot). It therefore validates the SCORECARD /
+coverage-mix plumbing only — it cannot catch a mapper or rate bug. Real end-to-end dollar
+coverage for the assumption-driven mappers (NAT/DAX/MemoryDB/DynamoDB/Glue) lives in
+tests/test_assumption_mappings_e2e.py, which drives the actual mappers against the
+committed data/catalog.duckdb. Adding service rows here would only add more 0.94 fiction,
+so new-mapper coverage belongs in that e2e test, not in this corpus.
 """
 
 import json

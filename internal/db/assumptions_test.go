@@ -19,7 +19,7 @@ func TestAssumptionsSeedInsertsMissingRows(t *testing.T) {
 	d := newAssumptionsTestDB(t)
 	assumptions, err := d.GetAssumptions()
 	require.NoError(t, err)
-	require.Len(t, assumptions, 10)
+	require.Len(t, assumptions, 18)
 
 	byKey := make(map[string]*db.Assumption)
 	for _, a := range assumptions {
@@ -249,4 +249,4 @@ func TestAssumptionCategoryValidation(t *testing.T) {
 			assert.Equal(t, 20.0, a.Value)
 		}
 	}
-}
+}

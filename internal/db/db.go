@@ -356,7 +356,15 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 			('aws_ri_1yr_discount_pct', 0.38, 0.38, 0.0, 0.90, 'fraction', 'AWS 1-Year RI Discount', 'Published typical AWS 1-year reserved instance discount rate (~38%)', 'commitment'),
 			('aws_ri_3yr_discount_pct', 0.52, 0.52, 0.0, 0.90, 'fraction', 'AWS 3-Year RI Discount', 'Published typical AWS 3-year reserved instance discount rate (~52%)', 'commitment'),
 			('aws_sp_discount_pct', 0.30, 0.30, 0.0, 0.90, 'fraction', 'AWS Savings Plans Discount', 'Published typical AWS Compute Savings Plans discount rate (~30%)', 'commitment'),
-			('aws_spot_discount_pct', 0.70, 0.70, 0.0, 0.95, 'fraction', 'AWS Spot Discount', 'Published typical AWS Spot instance discount rate (~70%)', 'commitment')
+			('aws_spot_discount_pct', 0.70, 0.70, 0.0, 0.95, 'fraction', 'AWS Spot Discount', 'Published typical AWS Spot instance discount rate (~70%)', 'commitment'),
+			('nat_vms_per_gateway', 32.0, 32.0, 1.0, 200.0, 'VMs', 'Cloud NAT assumed VMs per gateway', 'Number of VMs assumed behind each NAT gateway for Cloud NAT per-VM-hour pricing', 'networking'),
+			('dax_node_gib', 16.0, 16.0, 1.0, 512.0, 'GiB', 'DAX node RAM GiB', 'Assumed memory size for DAX accelerator nodes when instance type is unspecified', 'compute_sizing'),
+			('memorydb_node_gib', 16.0, 16.0, 1.0, 512.0, 'GiB', 'MemoryDB node RAM GiB', 'Assumed memory size for MemoryDB nodes when instance type is unspecified', 'compute_sizing'),
+			('inferentia_chip_to_tpu', 1.0, 1.0, 0.1, 10.0, 'ratio', 'Inferentia chip to Cloud TPU v5e ratio', 'Assumed chip equivalence factor between AWS Inferentia and Cloud TPU v5e', 'compute_sizing'),
+			('trainium_chip_to_tpu', 1.0, 1.0, 0.1, 10.0, 'ratio', 'Trainium chip to Cloud TPU v5e ratio', 'Assumed chip equivalence factor between AWS Trainium and Cloud TPU v5e', 'compute_sizing'),
+			('dynamodb_rcu_to_reads_sec', 1.0, 1.0, 0.1, 100.0, 'ratio', 'DynamoDB RCU to Reads/sec', 'Assumed reads per second per provisioned Read Capacity Unit', 'storage'),
+			('dynamodb_wcu_to_writes_sec', 1.0, 1.0, 0.1, 100.0, 'ratio', 'DynamoDB WCU to Writes/sec', 'Assumed writes per second per provisioned Write Capacity Unit', 'storage'),
+			('rds_iops_included_in_storage', 1.0, 1.0, 0.0, 2.0, 'flag', 'RDS Provisioned IOPS included in storage', '1.0 if provisioned IOPS are treated as included in Cloud SQL storage rate ($0), 0.0 to price separately', 'storage')
 			-- Cognito MAU estimation is LLM-guided with no deterministic call site; re-add this key when a Cognito mapper exists.
 	`); err != nil {
 		return nil, fmt.Errorf("seed assumptions: %w", err)

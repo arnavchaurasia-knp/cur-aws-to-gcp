@@ -1,0 +1,117 @@
+{
+  "_meta": {
+    "description": "Registry of assumption keys and the cloud services, charge types, mappers, and pricing decisions they control.",
+    "version": "1.0.0"
+  },
+  "impacts": {
+    "nat_vms_per_gateway": {
+      "services": ["AmazonVPC", "AmazonEC2"],
+      "charge_types": ["vpc_nat_hours", "NatGateway-Hours"],
+      "mapper": "apply_static_mappings.map_flat_hourly",
+      "decision_it_changes": "Cloud NAT gateway hourly fee: scales per-VM hourly rate by assumed VMs per gateway rather than a flat single-VM charge."
+    },
+    "dax_node_gib": {
+      "services": ["AmazonDynamoDB", "AmazonDAX"],
+      "charge_types": ["dax_node_hours", "NodeUsage"],
+      "mapper": "apply_static_mappings.map_flat_hourly",
+      "decision_it_changes": "DynamoDB Accelerator (DAX) node-hours: converts node-hours into Memorystore for Redis RAM GiB-hours."
+    },
+    "memorydb_node_gib": {
+      "services": ["AmazonMemoryDB"],
+      "charge_types": ["memorydb_node_hours", "NodeUsage"],
+      "mapper": "apply_static_mappings.map_flat_hourly",
+      "decision_it_changes": "Amazon MemoryDB for Redis node-hours: converts node-hours into Memorystore for Redis RAM GiB-hours."
+    },
+    "glue_dpu_vcpu": {
+      "services": ["AWSGlue"],
+      "charge_types": ["glue_dpu_hours", "DPU-Hours"],
+      "mapper": "apply_static_mappings.map_flat_hourly",
+      "decision_it_changes": "AWS Glue DPU-hours: decomposes standard DPU worker hours into Cloud Dataflow / Compute Engine vCPU worker hours."
+    },
+    "glue_dpu_ram_gib": {
+      "services": ["AWSGlue"],
+      "charge_types": ["glue_dpu_hours", "DPU-Hours"],
+      "mapper": "apply_static_mappings.map_flat_hourly",
+      "decision_it_changes": "AWS Glue DPU-hours: decomposes standard DPU worker hours into Cloud Dataflow / Compute Engine memory GiB worker hours."
+    },
+    "looker_studio_pro_seat_usd": {
+      "services": ["AmazonQuickSight"],
+      "charge_types": ["quicksight_seats", "UserMonth"],
+      "mapper": "apply_static_mappings.map_flat_hourly",
+      "decision_it_changes": "Amazon QuickSight user-month subscriptions: prices user seats using Looker Studio Pro list price."
+    },
+    "aurora_acu_vcpu": {
+      "services": ["AmazonRDS", "AmazonAurora"],
+      "charge_types": ["aurora_serverless_acu", "ServerlessUsage"],
+      "mapper": "apply_static_mappings.map_managed_db",
+      "decision_it_changes": "Aurora Serverless v2 ACU-hours: maps 1 ACU into Cloud SQL Custom vCPU equivalent."
+    },
+    "aurora_acu_ram_gib": {
+      "services": ["AmazonRDS", "AmazonAurora"],
+      "charge_types": ["aurora_serverless_acu", "ServerlessUsage"],
+      "mapper": "apply_static_mappings.map_managed_db",
+      "decision_it_changes": "Aurora Serverless v2 ACU-hours: maps 1 ACU into Cloud SQL Custom RAM GiB equivalent."
+    },
+    "lambda_mb_per_vcpu": {
+      "services": ["AWSLambda"],
+      "charge_types": ["lambda_compute", "Lambda-GB-Second"],
+      "mapper": "apply_static_mappings.map_serverless",
+      "decision_it_changes": "AWS Lambda memory-duration: derives Cloud Run vCPU-seconds and memory GiB-seconds from allocated memory ratio."
+    },
+    "inferentia_chip_to_tpu": {
+      "services": ["AmazonEC2"],
+      "charge_types": ["ec2_inferentia_instance_hours", "BoxUsage:inf1", "BoxUsage:inf2"],
+      "mapper": "apply_static_mappings.map_accelerators",
+      "decision_it_changes": "AWS Inferentia instance hours: maps Inferentia accelerator chips to Cloud TPU v5e chip-hours using declared chip ratio."
+    },
+    "trainium_chip_to_tpu": {
+      "services": ["AmazonEC2"],
+      "charge_types": ["ec2_trainium_instance_hours", "BoxUsage:trn1", "BoxUsage:trn2"],
+      "mapper": "apply_static_mappings.map_accelerators",
+      "decision_it_changes": "AWS Trainium instance hours: maps Trainium accelerator chips to Cloud TPU v5e chip-hours using declared chip ratio."
+    },
+    "dynamodb_rcu_to_reads_sec": {
+      "services": ["AmazonDynamoDB"],
+      "charge_types": ["dynamodb_rcu", "ReadCapacityUnit-Hrs"],
+      "mapper": "apply_static_mappings.map_per_request",
+      "decision_it_changes": "DynamoDB provisioned Read Capacity Units: maps provisioned RCU-hours to Cloud Firestore / Bigtable read operations."
+    },
+    "dynamodb_wcu_to_writes_sec": {
+      "services": ["AmazonDynamoDB"],
+      "charge_types": ["dynamodb_wcu", "WriteCapacityUnit-Hrs"],
+      "mapper": "apply_static_mappings.map_per_request",
+      "decision_it_changes": "DynamoDB provisioned Write Capacity Units: maps provisioned WCU-hours to Cloud Firestore / Bigtable write operations."
+    },
+    "rds_iops_included_in_storage": {
+      "services": ["AmazonRDS", "AmazonAurora"],
+      "charge_types": ["rds_provisioned_iops", "StorageIOPS", "ProvisionedIOPS"],
+      "mapper": "apply_static_mappings.map_block_storage",
+      "decision_it_changes": "RDS/Aurora provisioned IOPS: 1.0 treats IOPS as folded into Cloud SQL storage ($0), 0.0 prices separately as passthrough."
+    },
+    "aws_ri_1yr_discount_pct": {
+      "services": ["AmazonEC2", "AmazonRDS", "AmazonElastiCache", "AmazonRedshift"],
+      "charge_types": ["reserved_instance_amortized", "HeavyUsage", "DiscountedUsage"],
+      "mapper": "ingest.apply_od_basis",
+      "decision_it_changes": "1-Year Reserved Instance reconstruction: reconstructs AWS Public On-Demand cost baseline for 1-year RI covered usage."
+    },
+    "aws_ri_3yr_discount_pct": {
+      "services": ["AmazonEC2", "AmazonRDS", "AmazonElastiCache", "AmazonRedshift"],
+      "charge_types": ["reserved_instance_amortized", "HeavyUsage", "DiscountedUsage"],
+      "mapper": "ingest.apply_od_basis",
+      "decision_it_changes": "3-Year Reserved Instance reconstruction: reconstructs AWS Public On-Demand cost baseline for 3-year RI covered usage."
+    },
+    "aws_sp_discount_pct": {
+      "services": ["AmazonEC2", "AWSLambda", "AmazonECS"],
+      "charge_types": ["savings_plan_covered_usage", "ComputeSP", "EC2SP"],
+      "mapper": "ingest.apply_od_basis",
+      "decision_it_changes": "Savings Plans reconstruction: reconstructs AWS Public On-Demand cost baseline for Compute & EC2 Savings Plans usage."
+    },
+    "aws_spot_discount_pct": {
+      "services": ["AmazonEC2", "AmazonECS"],
+      "charge_types": ["spot_instance_usage", "SpotUsage"],
+      "mapper": "ingest.apply_od_basis",
+      "decision_it_changes": "Spot instance reconstruction: reconstructs AWS Public On-Demand cost baseline for Spot-discounted usage."
+    }
+  }
+}
+

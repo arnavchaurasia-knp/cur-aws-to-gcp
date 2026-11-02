@@ -57,7 +57,7 @@ DETERMINISTIC_GROUPS = frozenset({
     "block_storage", "data_transfer", "non_workload", "cloudwatch",
     "guardduty", "inspector", "marketplace_thirdparty", "quicksight", "redshift",
     "athena", "kinesis", "efs", "xray", "fsx", "emr", "elasticache", "msk",
-    "rds_extended_support", "glue", "shield", "dynamodb_storage", "mwaa", "ssm_parameter_store",
+    "rds_extended_support", "glue", "shield", "dynamodb_storage", "dynamodb_capacity", "mwaa", "ssm_parameter_store",
     "compute_windows", "compute_arm", "compute_burstable",
 })
 
@@ -515,8 +515,7 @@ RULES = [
                 or _ilike(r["product"], "Relational Database")
                 or _ilike(r["product"], "Aurora")
                 or _ilike(r["product"], "DocumentDB")
-                or _ilike(r["product"], "MemoryDB")
-                or r.get("canonical") in ("rds", "aurora", "documentdb", "memorydb")
+                or r.get("canonical") in ("rds", "aurora", "documentdb")
             )
             # Aurora Serverless v2 bills in ACU-Hrs; include alongside instance Hrs.
             # ElastiCache excluded — has its own static elasticache handler below.
@@ -617,7 +616,6 @@ RULES = [
                 (
                     _ilike(r["product"], "RDS") or _ilike(r["product"], "Relational Database")
                     or _ilike(r["product"], "Aurora") or _ilike(r["product"], "DocumentDB")
-                    or _ilike(r["product"], "MemoryDB")
                     # ElastiCache excluded — its own handler (elasticache) manages all rows
                     # including node-hours with empty pricing_unit (PDF bills).
                 )
@@ -852,13 +850,19 @@ RULES = [
         ),
     ),
     (
-        # ElastiCache → Cloud Memorystore for Redis. Static mapper converts
-        # node-hours to GiBy.h using node RAM from instance_type/operation text.
+        # ElastiCache, DAX, MemoryDB → Cloud Memorystore for Redis. Static mapper converts
+        # node-hours to GiBy.h using node RAM from instance_type/operation text,
+        # or declared assumptions (dax_node_gib, memorydb_node_gib).
         "elasticache",
         lambda r: (
             _ilike(r["product"], "ElastiCache")
             or _ilike(r["product"], "AmazonElastiCache")
             or r.get("canonical") == "elasticache"
+            or _ilike(r["product"], "DynamoDB Accelerator")
+            or _ilike(r["product"], "DAX")
+            or r.get("canonical") == "dax"
+            or _ilike(r["product"], "MemoryDB")
+            or r.get("canonical") == "memorydb"
         ),
     ),
     (
@@ -978,6 +982,20 @@ RULES = [
         lambda r: (
             (_ilike(r["product"], "DynamoDB") or _ilike(r["product"], "AmazonDynamoDB") or r.get("canonical") == "dynamodb")
             and _re(r.get("usage_type", ""), r"TimedStorage-ByteHrs|TimedPITRStorage-ByteHrs")
+        ),
+    ),
+    (
+        # DynamoDB Provisioned or On-Demand Throughput (RCU / WCU / RRU / WRU)
+        # Billed as RCU/WCU (provisioned capacity unit hours) or Read/Write Request Units (on-demand).
+        # Mapped via declared assumptions dynamodb_rcu_to_reads_sec and dynamodb_wcu_to_writes_sec
+        # to Cloud Firestore Read/Write operations.
+        "dynamodb_capacity",
+        lambda r: (
+            (_ilike(r["product"], "DynamoDB") or _ilike(r["product"], "AmazonDynamoDB") or r.get("canonical") == "dynamodb")
+            and (
+                _re(r.get("usage_type", ""), r"(?:Read|Write)CapacityUnit-Hrs|(?:Read|Write)RequestUnits|RCU|WCU")
+                or _re(r.get("operation", ""), r"(?:Read|Write)CapacityUnit|(?:Read|Write)RequestUnits")
+            )
         ),
     ),
     (

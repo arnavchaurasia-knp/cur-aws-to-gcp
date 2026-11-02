@@ -35,10 +35,10 @@
       "canonical_service": "ec2",
       "charge_type": "Inferentia / Trainium",
       "aws_unit": "Hrs",
-      "decision": "PASS",
-      "gcp_target": "Manual Review — Accelerator",
+      "decision": "FORMULA",
+      "gcp_target": "Cloud TPU v5e chip-hours (via assumptions inferentia_chip_to_tpu / trainium_chip_to_tpu)",
       "status": "active",
-      "reason": "No GCP equivalent — TPU is analogue, needs workload porting"
+      "reason": "Mapped to Cloud TPU v5e chip-hours scaled by declared chip ratio assumption"
     },
     {
       "service": "Amazon Elastic Compute Cloud",
@@ -118,7 +118,7 @@
       "charge_type": "Fargate vCPU-Hours",
       "aws_unit": "Hrs",
       "decision": "SKU",
-      "gcp_target": "GKE Autopilot Pod CPU Requests (mCPU × 1000)",
+      "gcp_target": "GKE Autopilot Pod CPU Requests (mCPU \u00d7 1000)",
       "status": "active",
       "reason": "Direct mapping to Autopilot Pod CPU"
     },
@@ -128,7 +128,7 @@
       "charge_type": "Fargate GB-Hours",
       "aws_unit": "Hrs",
       "decision": "SKU",
-      "gcp_target": "GKE Autopilot Pod Memory Requests × 1.0",
+      "gcp_target": "GKE Autopilot Pod Memory Requests \u00d7 1.0",
       "status": "active",
       "reason": "Direct mapping to Autopilot Pod Memory"
     },
@@ -291,10 +291,10 @@
       "canonical_service": "dynamodb",
       "charge_type": "RCU / WCU / Storage",
       "aws_unit": "various",
-      "decision": "PASS",
-      "gcp_target": "Firestore / Bigtable",
+      "decision": "FORMULA",
+      "gcp_target": "Cloud Firestore Read Ops / Entity Writes (RCU/WCU via assumptions dynamodb_rcu_to_reads_sec / dynamodb_wcu_to_writes_sec)",
       "status": "active",
-      "reason": "Workload access pattern dependent"
+      "reason": "RCU/WCU converted to Firestore operations using declared reads/sec and writes/sec assumptions; storage mapped to Firestore Storage"
     },
     {
       "service": "Amazon ElastiCache",
@@ -305,6 +305,26 @@
       "gcp_target": "Memorystore for Redis / Memcached GiB-hours",
       "status": "active",
       "reason": "Decomposed into Memorystore capacity"
+    },
+    {
+      "service": "Amazon DynamoDB Accelerator (DAX)",
+      "canonical_service": "dax",
+      "charge_type": "Node-hours",
+      "aws_unit": "Hrs",
+      "decision": "FORMULA",
+      "gcp_target": "Cloud Memorystore for Redis capacity GiB-hours",
+      "status": "active",
+      "reason": "Decomposed to Memorystore capacity using assumption dax_node_gib"
+    },
+    {
+      "service": "Amazon MemoryDB",
+      "canonical_service": "memorydb",
+      "charge_type": "Node-hours",
+      "aws_unit": "Hrs",
+      "decision": "FORMULA",
+      "gcp_target": "Cloud Memorystore for Redis capacity GiB-hours",
+      "status": "active",
+      "reason": "Decomposed to Memorystore capacity using assumption memorydb_node_gib"
     }
   ],
   "networking": [
@@ -448,7 +468,7 @@
       "decision": "PASS",
       "gcp_target": "Certificate Authority Service",
       "status": "active",
-      "reason": "ACM public certs free on both clouds; Private CA $400/mo has GCP CAS equivalent (~$20-200/mo tier) — passthrough until CAS pricer exists"
+      "reason": "ACM public certs free on both clouds; Private CA $400/mo has GCP CAS equivalent (~$20-200/mo tier) \u2014 passthrough until CAS pricer exists"
     }
   ]
 }

@@ -2720,14 +2720,13 @@ def map_flat_hourly(rows):
             else:
                 desc = "Networking Cloud Nat Gateway Uptime"
                 sku_id = resolve_sku("Networking", desc, gcp_region)
-                # Directive 4: Cloud NAT gateway priced at the 32-VM cap ($0.044/hr) — AWS parity.
-                # In the catalog, 'Networking Cloud Nat Gateway Uptime' rate is $0.0014/hr (per VM-hr).
-                # At the 32-VM cap, 32 * 0.0014 = $0.0448/hr (~$0.044/hr cap, multiplier = 31.4285714 or 32.0).
-                # Multiplier 32 or (0.044 / 0.0014 = 31.42857142857143) lands at $0.044/hr.
-                # Using 31.42857142857143 gives exactly 31.42857142857143 * 0.0014 = 0.044.
-                # If multiplier is 31.42857142857143, unit cost is $0.044/hr.
-                mult = round(0.044 / 0.0014, 8) if (sku_id and getattr(sku_id, 'rate', None) == 0.0014) else 31.42857143
-                note_text = "Cloud NAT gateway priced at the 32-VM cap ($0.044/hr) — AWS parity; per-VM detail not modeled." + _no_rate_suffix(sku_id, gcp_region)
+                nat_vms = float(_ASSUMPTIONS.get("nat_vms_per_gateway", 32.0))
+                base_mult = round(0.044 / 0.0014, 8) if (sku_id and getattr(sku_id, 'rate', None) == 0.0014) else 31.42857143
+                mult = base_mult if nat_vms == 32.0 else round((nat_vms / 32.0) * base_mult, 8)
+                note_text = (
+                    f"Cloud NAT gateway modeled via assumption nat_vms_per_gateway={nat_vms:g} "
+                    f"(GCP bills per-VM-hour at ~$0.0014/hr; {nat_vms:g} VMs assumed; 32-VM cap AWS parity)."
+                ) + _no_rate_suffix(sku_id, gcp_region)
                 entry = {
                     "aws_li_key": r["aws_li_key"],
                     "gcp_service": "Networking",
@@ -2740,7 +2739,7 @@ def map_flat_hourly(rows):
                     "projection_note": note_text,
                     "mapping_confidence": 0.85,
                     "is_assumption": True,
-                    "assumption": "Cloud NAT gateway priced at the 32-VM cap ($0.044/hr) — AWS parity; per-VM detail not modeled.",
+                    "assumption": f"Cloud NAT gateway priced at the 32-VM cap ($0.044/hr) — AWS parity; nat_vms_per_gateway={nat_vms:g}",
                 }
                 if sku_id:
                     entry["gcp_sku_id"] = sku_id
@@ -3643,16 +3642,28 @@ def map_block_storage(rows):
             gp3_like = "gp3" in blob.lower() or "gp2" in blob.lower()
             
             if is_managed_db:
+                rds_iops_included = float(_ASSUMPTIONS.get("rds_iops_included_in_storage", 1.0)) >= 0.5
+                if rds_iops_included:
+                    strategy = "ignore"
+                    note = "RDS Provisioned IOPS/throughput fee — performance scaling is included in Cloud SQL storage tier (rds_iops_included_in_storage=1)"
+                    assumption = "rds_iops_included_in_storage=1"
+                else:
+                    strategy = "passthrough"
+                    note = "RDS Provisioned IOPS/throughput fee — unbundled passthrough at AWS cost (rds_iops_included_in_storage=0)"
+                    assumption = "rds_iops_included_in_storage=0"
+
                 out.append({
                     "aws_li_key":       r["aws_li_key"],
                     "gcp_service":      GCP_CLOUD_SQL,
                     "gcp_sku_name":     None,
                     "component":        "storage",
-                    "strategy":         "ignore",
+                    "strategy":         strategy,
                     "unit_multiplier":  1.0,
                     "gcp_region":       gcp_region,
-                    "projection_note":  "RDS Provisioned IOPS/throughput fee — performance scaling is included in Cloud SQL storage tier",
-                    "mapping_confidence": 0.90,
+                    "projection_note":  note,
+                    "mapping_confidence": 0.90 if strategy == "ignore" else 0.70,
+                    "is_assumption":    True,
+                    "assumption":       assumption,
                 })
             else:
                 # gp3 provisioned IOPS: map to Hyperdisk Balanced IOPS (same unit: IOPS-month).
@@ -4658,6 +4669,84 @@ def map_dynamodb_storage(rows):
 # 4 GiB") isn't a single number I could verify against anything in this
 # offline environment. Honest passthrough with the correct target service,
 # not a guessed conversion table.
+
+def map_dynamodb_capacity(rows):
+    """DynamoDB Provisioned (RCU/WCU) or On-Demand Throughput → Cloud Firestore Ops.
+
+    Billed in AWS as RCU-hours / WCU-hours (provisioned capacity) or
+    ReadRequestUnits / WriteRequestUnits (on-demand).
+    Converted via declared assumptions:
+      dynamodb_rcu_to_reads_sec: reads/sec per provisioned RCU (default 1.0 -> 3600 reads/hr)
+      dynamodb_wcu_to_writes_sec: writes/sec per provisioned WCU (default 1.0 -> 3600 writes/hr)
+    """
+    out = []
+    rcu_factor = float(_ASSUMPTIONS.get("dynamodb_rcu_to_reads_sec", 1.0))
+    wcu_factor = float(_ASSUMPTIONS.get("dynamodb_wcu_to_writes_sec", 1.0))
+    for r in rows:
+        gcp_region = r.get("gcp_region") or "us-central1"
+        ut = (r.get("usage_type") or "").lower()
+        op = (r.get("operation") or "").lower()
+        blob = f"{ut} {op}"
+
+        is_write = "write" in blob or "wcu" in blob
+        is_provisioned = "capacityunit" in blob or "rcu" in blob or "wcu" in blob
+
+        if is_write:
+            sku_name = "Cloud Firestore Entity Writes"
+            sku_id = resolve_sku("Cloud Firestore", r"^Cloud Firestore Entity Writes\b", gcp_region)
+            if is_provisioned:
+                if wcu_factor <= 0:
+                    strategy = "passthrough"
+                    mult = 1.0
+                    note = "DynamoDB provisioned WCU-hours → passthrough at AWS cost (dynamodb_wcu_to_writes_sec=0)"
+                    assumption = "dynamodb_wcu_to_writes_sec=0"
+                else:
+                    mult = wcu_factor * 3600.0
+                    strategy = "map" if sku_id else "passthrough"
+                    note = f"DynamoDB provisioned WCU-hours → Cloud Firestore Entity Writes via assumption dynamodb_wcu_to_writes_sec={wcu_factor:g} (1 WCU = {wcu_factor:g} write/s = {mult:g} writes/hr); assumption-based, verify."
+                    assumption = f"dynamodb_wcu_to_writes_sec={wcu_factor:g}"
+            else:
+                mult = 1.0
+                strategy = "map" if sku_id else "passthrough"
+                note = "DynamoDB on-demand WriteRequestUnits → Cloud Firestore Entity Writes (1:1 write operation parity)"
+                assumption = None
+        else:
+            sku_name = "Cloud Firestore Read Ops"
+            sku_id = resolve_sku("Cloud Firestore", r"^Cloud Firestore Read Ops\b", gcp_region)
+            if is_provisioned:
+                if rcu_factor <= 0:
+                    strategy = "passthrough"
+                    mult = 1.0
+                    note = "DynamoDB provisioned RCU-hours → passthrough at AWS cost (dynamodb_rcu_to_reads_sec=0)"
+                    assumption = "dynamodb_rcu_to_reads_sec=0"
+                else:
+                    mult = rcu_factor * 3600.0
+                    strategy = "map" if sku_id else "passthrough"
+                    note = f"DynamoDB provisioned RCU-hours → Cloud Firestore Read Ops via assumption dynamodb_rcu_to_reads_sec={rcu_factor:g} (1 RCU = {rcu_factor:g} read/s = {mult:g} reads/hr); assumption-based, verify."
+                    assumption = f"dynamodb_rcu_to_reads_sec={rcu_factor:g}"
+            else:
+                mult = 1.0
+                strategy = "map" if sku_id else "passthrough"
+                note = "DynamoDB on-demand ReadRequestUnits → Cloud Firestore Read Ops (1:1 read operation parity)"
+                assumption = None
+
+        out.append({
+            "aws_li_key":         r["aws_li_key"],
+            "gcp_service":        "Cloud Firestore",
+            "gcp_sku_id":         sku_id if sku_id else None,
+            "gcp_sku_name":       sku_name,
+            "component":          "writes" if is_write else "reads",
+            "strategy":           strategy,
+            "unit_multiplier":    mult,
+            "gcp_region":         gcp_region,
+            "projection_note":    note + _no_rate_suffix(sku_id, gcp_region),
+            "mapping_confidence": 0.55 if strategy == "map" else 0.50,
+            "is_assumption":      bool(assumption),
+            "assumption":         assumption,
+        })
+    return out
+
+
 def map_mwaa(rows):
     out = []
     for r in rows:
@@ -5266,7 +5355,17 @@ _EC_NODE_RE = re.compile(
 
 
 def _elasticache_ram(r: dict) -> float | None:
-    """Return RAM in GiB for an ElastiCache row, or None if unknown."""
+    """Return RAM in GiB for an ElastiCache/DAX/MemoryDB row, or None if unknown."""
+    prod_low = (r.get("product") or "").lower()
+    pc_low = (r.get("product_code") or "").lower()
+    is_dax = "dax" in prod_low or "dynamodb accelerator" in prod_low or "dax" in pc_low
+    is_memdb = "memorydb" in prod_low or "memorydb" in pc_low
+
+    if is_dax:
+        return float(_ASSUMPTIONS.get("dax_node_gib", 16.0))
+    if is_memdb:
+        return float(_ASSUMPTIONS.get("memorydb_node_gib", 16.0))
+
     # instance_ram_gb is populated by ingest.py for rows that have instance_type
     ram = r.get("instance_ram_gb")
     if ram:
@@ -5490,7 +5589,24 @@ def map_elasticache(rows: list) -> list:
             sku_name = f"Redis Capacity {cache_tier} {size_tier}"
         sku_id = resolve_sku(GCP_MEMORYSTORE, sku_name, region)
         strategy = "map" if sku_id else "passthrough"
-        if is_ha:
+        prod_low = (r.get("product") or "").lower()
+        pc_low = (r.get("product_code") or "").lower()
+        is_dax = "dax" in prod_low or "dynamodb accelerator" in prod_low or "dax" in pc_low
+        is_memdb = "memorydb" in prod_low or "memorydb" in pc_low
+
+        is_assump = False
+        assump_text = None
+        if is_dax:
+            is_assump = True
+            assump_text = f"dax_node_gib={ram:g}"
+            note = (f"DynamoDB Accelerator (DAX) node-hours → Memorystore for Redis Basic ({sku_name}); "
+                    f"node RAM={ram:.2f} GiB via assumption {assump_text} → unit_multiplier={ram:.2f} (GiBy.h)")
+        elif is_memdb:
+            is_assump = True
+            assump_text = f"memorydb_node_gib={ram:g}"
+            note = (f"Amazon MemoryDB node-hours → Memorystore for Redis Basic ({sku_name}); "
+                    f"node RAM={ram:.2f} GiB via assumption {assump_text} → unit_multiplier={ram:.2f} (GiBy.h)")
+        elif is_ha:
             note = (f"ElastiCache Multi-AZ → Memorystore for Redis Standard HA ({sku_name}); "
                     f"node RAM={ram:.2f} GiB → unit_multiplier={ram:.2f} (GiBy.h); "
                     f"deployment_option=Multi-AZ — replicated/failover guarantee preserved, "
@@ -5520,6 +5636,8 @@ def map_elasticache(rows: list) -> list:
             # No signal at all → same 70% ceiling CLAUDE.md §6 uses for
             # OpenSearch's identical "no application context in CUR" case.
             "mapping_confidence": 0.85 if has_deployment_signal else 0.70,
+            "is_assumption":      is_assump,
+            "assumption":         assump_text,
         })
     return out
 
@@ -6848,6 +6966,7 @@ def map_glue(rows):
             ("vcpu", vcpu_sku, _GLUE_DPU_VCPU, "Dataflow vCPU Time (Batch)"),
             ("ram", ram_sku, _GLUE_DPU_RAM_GIB, "Dataflow RAM Time"),
         ]
+        assump_text = f"glue_dpu_vcpu={_GLUE_DPU_VCPU:g}, glue_dpu_ram_gib={_GLUE_DPU_RAM_GIB:g}"
         for comp, sku, mult, desc in components:
             strategy = "map" if sku else "passthrough"
             out.append({
@@ -6861,6 +6980,8 @@ def map_glue(rows):
                 "gcp_region":         gcp_region,
                 "projection_note":    note + _no_rate_suffix(sku, gcp_region),
                 "mapping_confidence": 0.65,
+                "is_assumption":      True,
+                "assumption":         assump_text,
             })
     return out
 
@@ -8564,10 +8685,25 @@ def map_tpu_row(r, parsed, itype):
     default_rate = _TPU_RATES_CFG.get("default_usd_per_chip_hour")
     rate = by_region.get(gcp_region, default_rate)
 
-    strategy = "map" if rate is not None else "passthrough"
+    if "inferentia" in family:
+        ratio = float(_ASSUMPTIONS.get("inferentia_chip_to_tpu", 1.0))
+        assumption_text = f"inferentia_chip_to_tpu={ratio:g}"
+    elif "trainium" in family:
+        ratio = float(_ASSUMPTIONS.get("trainium_chip_to_tpu", 1.0))
+        assumption_text = f"trainium_chip_to_tpu={ratio:g}"
+    else:
+        ratio = 1.0
+        assumption_text = None
+
+    if ratio <= 0:
+        strategy = "passthrough"
+        mult = 1.0
+    else:
+        strategy = "map" if rate is not None else "passthrough"
+        mult = float(chips) * ratio
 
     note_parts = [
-        f"Mapped 1 AWS {family_display} chip -> 1 Cloud TPU v5e chip (chip-count parity, {chips} chips). "
+        f"Mapped AWS {family_display} ({chips} chips) → Cloud TPU v5e (chip-count parity, {chips} chips, ratio={ratio:g} via assumption {assumption_text or '1.0'}). "
         "PRICE assumption only, NOT a verified performance equivalence — no public Inferentia/Trainium-vs-TPU "
         "benchmark exists (checked 2026-10). TPU v5e per-chip rate bundles the host VM, so no separate CPU/RAM line. "
         "Migration requires recompiling models from AWS Neuron SDK to GCP XLA/JAX; treat as directional."
@@ -8586,12 +8722,14 @@ def map_tpu_row(r, parsed, itype):
         "strategy": strategy,
         "unit_from": "instance-hour",
         "unit_to": "chip-hour",
-        "unit_multiplier": float(chips),
+        "unit_multiplier": mult,
         "gcp_region": gcp_region,
         "mapping_confidence": 0.3,
         "projection_note": projection_note,
         "is_workload": True,
         "break_down": False,
+        "is_assumption": bool(assumption_text),
+        "assumption": assumption_text,
     }
     return [entry]
 
@@ -8900,7 +9038,7 @@ def main():
               ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer',
                'non_workload', 'cloudwatch', 'guardduty', 'inspector', 'marketplace_thirdparty', 'quicksight', 'redshift', 'athena', 'kinesis', 'efs',
                'xray', 'fsx', 'emr', 'elasticache', 'msk', 'compute_windows', 'compute_arm',
-               'compute_burstable', 'compute_breakdown', 'managed_db', 'opensearch', 'commitment_discount', 'rds_extended_support', 'glue', 'shield', 'dynamodb_storage', 'mwaa', 'ssm_parameter_store')
+               'compute_burstable', 'compute_breakdown', 'managed_db', 'opensearch', 'commitment_discount', 'rds_extended_support', 'glue', 'shield', 'dynamodb_storage', 'dynamodb_capacity', 'mwaa', 'ssm_parameter_store')
     """).fetchall()
     con.close()
 
@@ -8910,7 +9048,7 @@ def main():
                                   "block_storage", "data_transfer", "non_workload", "cloudwatch", "msk",
                                   "guardduty", "inspector", "marketplace_thirdparty", "quicksight", "redshift", "athena", "kinesis", "efs", "xray",
                                   "fsx", "emr", "elasticache", "compute_windows", "compute_arm",
-                                  "compute_burstable", "compute_breakdown", "managed_db", "opensearch", "commitment_discount", "rds_extended_support", "glue", "shield", "dynamodb_storage", "mwaa", "ssm_parameter_store")}
+                                  "compute_burstable", "compute_breakdown", "managed_db", "opensearch", "commitment_discount", "rds_extended_support", "glue", "shield", "dynamodb_storage", "dynamodb_capacity", "mwaa", "ssm_parameter_store")}
     for raw in rows:
         r = dict(zip(cols, raw))
         by_group[r["mechanic_group"]].append(r)
@@ -8950,6 +9088,7 @@ def main():
         "glue":                 map_glue,
         "shield":               map_shield,
         "dynamodb_storage":     map_dynamodb_storage,
+        "dynamodb_capacity":    map_dynamodb_capacity,
         "mwaa":                 map_mwaa,
         "ssm_parameter_store":  map_ssm_parameter_store,
     }

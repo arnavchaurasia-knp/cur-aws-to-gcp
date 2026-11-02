@@ -2,7 +2,7 @@
   "_meta": {
     "purpose": "Canonical AWS-service -> GCP-service classification (the 'logical construct'). Single source of truth used by service_classifier.py to force the correct GCP target and eliminate LLM label variance. Grounded in Google's official 'Google Cloud for AWS professionals' service comparison. Curate this file to add/adjust services.",
     "mode_semantics": {
-      "keep": "Pipeline already prices this well deterministically — classifier only STAMPS metadata (category/reason), never changes pricing or the mapped SKU.",
+      "keep": "Pipeline already prices this well deterministically \u2014 classifier only STAMPS metadata (category/reason), never changes pricing or the mapped SKU.",
       "review": "Correct GCP target is known but precise GCP pricing needs per-service modelling. Classifier FORCES gcp_service=target + strategy=passthrough (carry AWS cost, no invented figure) + manual-review flag. Honest baseline until a deterministic pricer is built.",
       "ignore": "Not a real workload cost on GCP (burstable CPU credits, billing fees, taxes, support, refunds). Classifier FORCES strategy='ignore' -> $0. GCP has no equivalent charge."
     },
@@ -16,7 +16,7 @@
       "gcp_service": "N/A (AWS-only surcharge)",
       "mode": "ignore",
       "confidence": 95,
-      "reason": "RDS Extended Support (MySQL Community Edition EOL surcharge). AWS charges per vCPU-hour for running MySQL 5.7 past its EOL date. Cloud SQL has no equivalent surcharge — customers on older MySQL versions pay standard rates. This cost disappears entirely on GCP."
+      "reason": "RDS Extended Support (MySQL Community Edition EOL surcharge). AWS charges per vCPU-hour for running MySQL 5.7 past its EOL date. Cloud SQL has no equivalent surcharge \u2014 customers on older MySQL versions pay standard rates. This cost disappears entirely on GCP."
     },
     {
       "match": "cloudtrail",
@@ -24,7 +24,7 @@
       "gcp_service": "Cloud Logging",
       "mode": "review",
       "confidence": 55,
-      "reason": "CloudTrail charges per recorded management/data event; Cloud Logging charges primarily by ingested log volume — a direct event-count-to-log-volume conversion has no reliable basis without knowing average event size, retention, exclusions, and sink configuration. Passthrough at AWS cost until a real CloudTrail-specific sizing model exists; architecture review recommended."
+      "reason": "CloudTrail charges per recorded management/data event; Cloud Logging charges primarily by ingested log volume \u2014 a direct event-count-to-log-volume conversion has no reliable basis without knowing average event size, retention, exclusions, and sink configuration. Passthrough at AWS cost until a real CloudTrail-specific sizing model exists; architecture review recommended."
     },
     {
       "match": "cloudwatch",
@@ -70,9 +70,9 @@
       "match": "glue",
       "category": "ETL",
       "gcp_service": "Dataflow",
-      "mode": "review",
+      "mode": "keep",
       "confidence": 85,
-      "reason": "Serverless ETL -> Dataflow (or Cloud Data Fusion)."
+      "reason": "Serverless ETL -> Dataflow. DPU-hours converted to Dataflow worker vCPU+RAM via assumptions glue_dpu_vcpu and glue_dpu_ram_gib."
     },
     {
       "match": "athena",
@@ -104,7 +104,7 @@
       "gcp_service": "Compute Engine",
       "mode": "keep",
       "confidence": 75,
-      "reason": "MSK -> self-hosted Kafka on GCE; LLM maps to GCE instance family — preserving instance-level mapping."
+      "reason": "MSK -> self-hosted Kafka on GCE; LLM maps to GCE instance family \u2014 preserving instance-level mapping."
     },
     {
       "match": "msk",
@@ -120,7 +120,7 @@
       "gcp_service": "Compute Engine",
       "mode": "keep",
       "confidence": 72,
-      "reason": "No managed GCP equivalent; LLM maps to self-hosted GCE — preserving instance-level mapping."
+      "reason": "No managed GCP equivalent; LLM maps to self-hosted GCE \u2014 preserving instance-level mapping."
     },
     {
       "match": "elasticsearch",
@@ -240,7 +240,7 @@
       "gcp_service": "Certificate Manager",
       "mode": "review",
       "confidence": 85,
-      "reason": "ACM public certs are free on both clouds (rows are usually $0, so passthrough = $0 anyway). ACM Private CA ($400/mo) has a GCP CAS equivalent — passthrough carries that real spend instead of hiding it at $0."
+      "reason": "ACM public certs are free on both clouds (rows are usually $0, so passthrough = $0 anyway). ACM Private CA ($400/mo) has a GCP CAS equivalent \u2014 passthrough carries that real spend instead of hiding it at $0."
     },
     {
       "match": "elastic container service for kubernetes",
@@ -256,7 +256,7 @@
       "gcp_service": "GKE Autopilot",
       "mode": "keep",
       "confidence": 72,
-      "reason": "ECS Fargate tasks -> GKE Autopilot pod capacity. ECS on EC2 nodes are billed as EC2 — those appear as separate EC2 line items."
+      "reason": "ECS Fargate tasks -> GKE Autopilot pod capacity. ECS on EC2 nodes are billed as EC2 \u2014 those appear as separate EC2 line items."
     },
     {
       "match": "fargate",
@@ -280,31 +280,31 @@
       "gcp_service": "Memorystore",
       "mode": "keep",
       "confidence": 78,
-      "reason": "Redis/Memcached -> Memorystore; priced by node GB + tier (GiB-hour formula, or an honest passthrough when node RAM/SKU can't be resolved). Verify cluster mode: ElastiCache Redis Cluster mode maps to Memorystore Redis Cluster (different SKU, 30-40% higher) — confidence held lower until cluster topology is confirmed."
+      "reason": "Redis/Memcached -> Memorystore; priced by node GB + tier (GiB-hour formula, or an honest passthrough when node RAM/SKU can't be resolved). Verify cluster mode: ElastiCache Redis Cluster mode maps to Memorystore Redis Cluster (different SKU, 30-40% higher) \u2014 confidence held lower until cluster topology is confirmed."
     },
     {
       "match": "dynamodb accelerator",
       "category": "Cache",
       "gcp_service": "Memorystore",
-      "mode": "review",
+      "mode": "keep",
       "confidence": 80,
-      "reason": "DAX -> Memorystore for Redis."
+      "reason": "DAX -> Memorystore for Redis. Node-hours mapped to Memorystore capacity via assumption dax_node_gib."
     },
     {
       "match": "memorydb",
       "category": "Cache",
       "gcp_service": "Memorystore",
-      "mode": "review",
-      "confidence": 78,
-      "reason": "MemoryDB (durable Redis) -> Memorystore for Redis. Observed misroute to Cloud SQL in past runs — this rule pins the correct target. Passthrough baseline; node-RAM pricer would improve it."
+      "mode": "keep",
+      "confidence": 80,
+      "reason": "MemoryDB -> Memorystore for Redis. Node-hours mapped to Memorystore capacity via assumption memorydb_node_gib."
     },
     {
       "match": "dax",
       "category": "Cache",
       "gcp_service": "Memorystore",
-      "mode": "review",
+      "mode": "keep",
       "confidence": 80,
-      "reason": "DAX -> Memorystore for Redis."
+      "reason": "DAX -> Memorystore for Redis. Node-hours mapped to Memorystore capacity via assumption dax_node_gib."
     },
     {
       "match": "dynamodb",
@@ -320,7 +320,7 @@
       "gcp_service": "Manual Review",
       "mode": "review",
       "confidence": 60,
-      "reason": "Graph DB; no managed GCP equivalent — self-host or Spanner Graph."
+      "reason": "Graph DB; no managed GCP equivalent \u2014 self-host or Spanner Graph."
     },
     {
       "match": "documentdb",
@@ -336,7 +336,7 @@
       "gcp_service": "Database Migration Service",
       "mode": "review",
       "confidence": 88,
-      "reason": "AWS DMS billed per replication-instance-hour; GCP DMS billed per GiB of data copied ($2.08/GiB CDC in Mumbai, $0 for full dump). Ongoing CDC use (typical for $900+/mo spend) has real GCP cost but units are incompatible — passthrough until CDC data volume is known."
+      "reason": "AWS DMS billed per replication-instance-hour; GCP DMS billed per GiB of data copied ($2.08/GiB CDC in Mumbai, $0 for full dump). Ongoing CDC use (typical for $900+/mo spend) has real GCP cost but units are incompatible \u2014 passthrough until CDC data volume is known."
     },
     {
       "match": "sagemaker",
@@ -352,7 +352,7 @@
       "gcp_service": "Manual Review",
       "mode": "review",
       "confidence": 60,
-      "reason": "AWS Transfer Family (SFTP/FTPS/FTP) has no managed GCP equivalent — options are Storage Transfer Service (batch), SFTP on GCE, or third-party. Passthrough with manual-review flag."
+      "reason": "AWS Transfer Family (SFTP/FTPS/FTP) has no managed GCP equivalent \u2014 options are Storage Transfer Service (batch), SFTP on GCE, or third-party. Passthrough with manual-review flag."
     },
     {
       "match": "simple notification service",
@@ -400,7 +400,7 @@
       "gcp_service": "Cloud Billing",
       "mode": "review",
       "confidence": 90,
-      "reason": "Native billing/reporting is free in GCP — likely $0."
+      "reason": "Native billing/reporting is free in GCP \u2014 likely $0."
     },
     {
       "match": "key management",
@@ -464,7 +464,7 @@
       "gcp_service": "BeyondCorp Enterprise / IAP (manual review)",
       "mode": "review",
       "confidence": 40,
-      "reason": "AWS Client VPN is user-to-site remote-access VPN (billed per active connection-hour). GCP Cloud VPN is site-to-site IPsec (billed per always-on tunnel-hour) — a different product class that cannot serve the same purpose, so it is not used as the target here. GCP's nearest equivalent is zero-trust access via BeyondCorp Enterprise / IAP, which carries a different pricing model entirely. Passthrough at AWS cost pending manual review with the customer."
+      "reason": "AWS Client VPN is user-to-site remote-access VPN (billed per active connection-hour). GCP Cloud VPN is site-to-site IPsec (billed per always-on tunnel-hour) \u2014 a different product class that cannot serve the same purpose, so it is not used as the target here. GCP's nearest equivalent is zero-trust access via BeyondCorp Enterprise / IAP, which carries a different pricing model entirely. Passthrough at AWS cost pending manual review with the customer."
     },
     {
       "match": "vpn",
@@ -480,7 +480,7 @@
       "gcp_service": "Cloud DNS (forwarding/policies)",
       "mode": "review",
       "confidence": 70,
-      "reason": "Resolver endpoints (DNS resolution/forwarding) != authoritative managed zone; needs Cloud DNS policies / hybrid DNS — architecture review."
+      "reason": "Resolver endpoints (DNS resolution/forwarding) != authoritative managed zone; needs Cloud DNS policies / hybrid DNS \u2014 architecture review."
     },
     {
       "match": "resolver endpoint",
@@ -619,7 +619,7 @@
       "gcp_service": "N/A (AWS-only)",
       "mode": "ignore",
       "confidence": 95,
-      "reason": "AWS negotiated discount; nets AWS total down. GCP has no equivalent — GCP side stays at list ($0 offset)."
+      "reason": "AWS negotiated discount; nets AWS total down. GCP has no equivalent \u2014 GCP side stays at list ($0 offset)."
     },
     {
       "match": "edp discount",

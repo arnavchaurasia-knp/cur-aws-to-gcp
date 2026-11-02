@@ -208,40 +208,42 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
           ) : filtered.length === 0 ? (
             <div className="p-8 text-center text-gray-400 text-sm">No tickets yet.</div>
           ) : (
+            <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-white/[0.04] text-xs uppercase tracking-wider text-gray-400 border-b border-white/10">
                 <tr>
-                  <th className="text-left px-5 py-3 font-medium">ID</th>
-                  <th className="text-left px-5 py-3 font-medium">Title</th>
-                  <th className="text-left px-5 py-3 font-medium">Status</th>
-                  <th className="text-left px-5 py-3 font-medium">Priority</th>
-                  <th className="text-left px-5 py-3 font-medium">Category</th>
-                  <th className="text-left px-5 py-3 font-medium">Created By</th>
-                  <th className="text-left px-5 py-3 font-medium">Created At</th>
-                  <th className="text-right px-5 py-3 font-medium">Actions</th>
+                  <th className="text-left px-3 py-3 font-medium">Title</th>
+                  <th className="text-left px-3 py-3 font-medium">Status</th>
+                  <th className="text-left px-3 py-3 font-medium">Priority</th>
+                  <th className="text-left px-3 py-3 font-medium">Category</th>
+                  <th className="text-left px-3 py-3 font-medium">Created By</th>
+                  <th className="text-left px-3 py-3 font-medium">Created</th>
+                  <th className="text-right px-3 py-3 font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
                 {filtered.map(t => (
                   <tr key={t.id} className="hover:bg-white/[0.02] transition-colors">
-                    <td className="px-5 py-3 text-xs font-mono text-gray-400 whitespace-nowrap">{t.id}</td>
-                    <td className="px-5 py-3 text-gray-200 font-medium">{t.title}</td>
-                    <td className="px-5 py-3">
+                    <td className="px-3 py-3 max-w-[16rem]">
+                      <div className="text-gray-200 font-medium truncate" title={t.title}>{t.title}</div>
+                      <div className="text-[10px] font-mono text-gray-500 truncate">{t.id}</div>
+                    </td>
+                    <td className="px-3 py-3">
                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${statusColor(t.status)} border-current`}>
                         {t.status}
                       </span>
                     </td>
-                    <td className="px-5 py-3">
+                    <td className="px-3 py-3">
                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${priorityColor(t.priority)} border-current`}>
                         {t.priority}
                       </span>
                     </td>
-                    <td className="px-5 py-3 text-xs text-gray-400 capitalize">{t.category}</td>
-                    <td className="px-5 py-3 text-xs text-gray-400">{t.created_by}</td>
-                    <td className="px-5 py-3 text-xs text-gray-400 whitespace-nowrap">
-                      {new Date(t.created_at).toLocaleString()}
+                    <td className="px-3 py-3 text-xs text-gray-400 capitalize">{t.category}</td>
+                    <td className="px-3 py-3 text-xs text-gray-400 max-w-[12rem] truncate" title={t.created_by}>{t.created_by}</td>
+                    <td className="px-3 py-3 text-xs text-gray-400 whitespace-nowrap">
+                      {new Date(t.created_at).toLocaleDateString()}
                     </td>
-                    <td className="px-5 py-3 text-right whitespace-nowrap">
+                    <td className="px-3 py-3 text-right whitespace-nowrap">
                       <div className="flex items-center justify-end gap-2">
                         <button
                           onClick={() => openEdit(t)}
@@ -268,6 +270,7 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 

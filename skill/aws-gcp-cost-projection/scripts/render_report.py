@@ -1760,24 +1760,25 @@ def main():
 </div>
 """
     # ── AR-5 Assumptions Section ──
+    snapshot_data = {}
+    for cand in [os.environ.get("JOB_DIR"), "."]:
+        if cand and os.path.exists(os.path.join(cand, "assumptions.json")):
+            try:
+                with open(os.path.join(cand, "assumptions.json"), encoding="utf-8") as f:
+                    snapshot_data = json.load(f)
+                break
+            except Exception:
+                pass
+    if not snapshot_data:
+        try:
+            with open(os.path.join(_DATA_DIR, "assumption-defaults.json"), encoding="utf-8") as f:
+                snapshot_data = json.load(f)
+        except Exception:
+            pass
+
     assumptions_block_html = ""
     if rs_bool("section_assumptions"):
         try:
-            snapshot_data = {}
-            for cand in [os.environ.get("JOB_DIR"), "."]:
-                if cand and os.path.exists(os.path.join(cand, "assumptions.json")):
-                    try:
-                        with open(os.path.join(cand, "assumptions.json"), encoding="utf-8") as f:
-                            snapshot_data = json.load(f)
-                        break
-                    except Exception:
-                        pass
-            if not snapshot_data:
-                try:
-                    with open(os.path.join(_DATA_DIR, "assumption-defaults.json"), encoding="utf-8") as f:
-                        snapshot_data = json.load(f)
-                except Exception:
-                    pass
 
             category_labels = {
                 "compute_sizing": "Compute Sizing",
@@ -2234,6 +2235,39 @@ def main():
             f'</div>'
         )
 
+    custom_assumptions_badge_html = ""
+    overridden_keys = snapshot_data.get("overridden_keys") or []
+    if overridden_keys:
+        num_overrides = len(overridden_keys)
+        changed_by = snapshot_data.get("changed_by") or "user"
+        gen_time = snapshot_data.get("generated_at", "")
+        defaults_val = {}
+        try:
+            with open(os.path.join(_DATA_DIR, "assumption-defaults.json"), encoding="utf-8") as f:
+                defaults_val = json.load(f).get("values", {})
+        except Exception:
+            pass
+        items_details = []
+        curr_values = snapshot_data.get("values", {})
+        for k in overridden_keys:
+            old_v = defaults_val.get(k, "default")
+            new_v = curr_values.get(k, "custom")
+            items_details.append(f"<code>{_html.escape(str(k))}</code>: {old_v} &rarr; <b>{new_v}</b>")
+        details_str = ", ".join(items_details)
+        actor_info = f" &bull; Changed by {_html.escape(changed_by)}" if changed_by else ""
+        time_info = f" at {_html.escape(gen_time)}" if gen_time else ""
+        custom_assumptions_badge_html = (
+            f'<div class="custom-assumptions-banner" style="background:#F5F3FF;border:1px solid #7C3AED;border-radius:8px;padding:12px 16px;margin:16px 0;color:#5B21B6;font-size:13px;">'
+            f'<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">'
+            f'<strong>&#9881; Re-run with {num_overrides} custom assumption{"s" if num_overrides != 1 else ""}</strong>'
+            f'<span style="font-size:11px;color:#6D28D9;">{actor_info}{time_info}</span>'
+            f'</div>'
+            f'<div style="margin-top:6px;font-size:12px;color:#4C1D95;line-height:1.5;">'
+            f'{details_str}'
+            f'</div>'
+            f'</div>'
+        )
+
     page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2270,6 +2304,7 @@ def main():
 </p>
 
 {currency_notice_html}
+{custom_assumptions_badge_html}
 {data_gap_html}
 {_row_filter_note}
 

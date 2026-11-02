@@ -17,6 +17,7 @@ import { JobHealth } from '../components/JobHealth'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { formatMoney } from '../lib/preferencesContext'
 import { JobLogsViewer } from '../components/JobLogsViewer'
+import { JobAssumptionsPanel } from '../components/JobAssumptionsPanel'
 
 function pctVsAws(gcp: number, aws: number): { label: string; positive: boolean } | null {
   if (!aws || aws <= 0) return null
@@ -645,6 +646,17 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                   )}
                 </div>
               </div>
+
+              <Reveal delay={100}>
+                <JobAssumptionsPanel
+                  jobId={job.id}
+                  canEdit={user.is_admin || job.owner === user.email}
+                  onRerunStarted={() => {
+                    setJob(prev => prev ? { ...prev, status: 'running' } : null)
+                    setProgress({ phase_number: 1, phase_name: 'Ingestion', activity: 'Re-running pipeline with custom assumptions…' } as any)
+                  }}
+                />
+              </Reveal>
 
               {user.is_admin && (
                 <>

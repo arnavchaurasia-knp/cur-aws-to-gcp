@@ -336,3 +336,60 @@ export async function compareRuns(id: string, from: string, to: string): Promise
   return res.json()
 }
 
+// ─── Per-Job Assumptions & Re-run ───
+
+export interface JobAssumption {
+  key: string
+  value: number
+  default_value: number
+  min_value: number
+  max_value: number
+  unit: string
+  title: string
+  rationale: string
+  category: string
+  scope: string
+  is_overridden?: boolean
+}
+
+export interface JobAssumptionsResponse {
+  assumptions: JobAssumption[]
+  categories?: string[]
+  overridden_keys: string[]
+  version: string
+}
+
+export async function getJobAssumptions(jobId: string): Promise<JobAssumptionsResponse> {
+  const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/assumptions`)
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `Failed to fetch assumptions (${res.status})`)
+  }
+  return res.json()
+}
+
+export async function rerunJobAssumptions(
+  jobId: string,
+  overrides: Record<string, number>,
+  reason?: string
+): Promise<{ id: string; status: string; pid: number; version: string }> {
+  const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/assumptions/rerun`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ overrides, reason }),
+  })
+  if (!res.ok) {
+    let errMsg = `Failed to rerun (${res.status})`
+    try {
+      const errObj = await res.json()
+      if (errObj && errObj.error) errMsg = errObj.error
+    } catch {
+      const text = await res.text()
+      if (text) errMsg = text
+    }
+    throw new Error(errMsg)
+  }
+  return res.json()
+}
+
+

@@ -41,9 +41,19 @@ func (s *Spawner) SetDB(d *db.DB) { s.db = d }
 
 // WriteAssumptionsSnapshot reads current assumptions from the DB, computes the
 // version hash, writes <jobDir>/assumptions.json, and returns the version.
+// If <jobDir>/assumptions.json already exists (e.g. per-job overrides), it is preserved.
 func (s *Spawner) WriteAssumptionsSnapshot(jobDir string) (string, error) {
 	if s.db == nil {
 		return "", nil // no DB configured; snapshot skipped
+	}
+	snapshotPath := filepath.Join(jobDir, "assumptions.json")
+	if data, err := os.ReadFile(snapshotPath); err == nil {
+		var existing struct {
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(data, &existing); err == nil && existing.Version != "" {
+			return existing.Version, nil
+		}
 	}
 	assumptions, err := s.db.GetAssumptions()
 	if err != nil {

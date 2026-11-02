@@ -245,6 +245,8 @@ func main() {
 		r.Get("/api/jobs/{id}/logs", jobHandler.JobLogs)
 		r.Get("/api/jobs/{id}/runs", jobHandler.Runs)
 		r.Post("/api/jobs/{id}/share", jobHandler.ShareJob)
+		r.Get("/api/jobs/{id}/assumptions", jobHandler.GetJobAssumptions)
+		r.Post("/api/jobs/{id}/assumptions/rerun", jobHandler.RerunJobAssumptions)
 		r.Delete("/api/jobs/{id}", jobHandler.Delete)
 		// User profile
 		r.Get("/api/user/profile", jobHandler.GetUserProfile)

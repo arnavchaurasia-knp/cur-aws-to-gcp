@@ -65,6 +65,8 @@ func TestPhase4_IsolationAndPreferencesAndQuotas(t *testing.T) {
 			{"Progress", "GET", "/api/jobs/" + aliceJobID + "/progress", h.Progress},
 			{"Cancel", "POST", "/api/jobs/" + aliceJobID + "/cancel", h.Cancel},
 			{"Download", "GET", "/api/jobs/" + aliceJobID + "/download", h.Download},
+			{"GetJobAssumptions", "GET", "/api/jobs/" + aliceJobID + "/assumptions", h.GetJobAssumptions},
+			{"RerunJobAssumptions", "POST", "/api/jobs/" + aliceJobID + "/assumptions/rerun", h.RerunJobAssumptions},
 			{"Delete", "DELETE", "/api/jobs/" + aliceJobID, h.Delete},
 		}
 

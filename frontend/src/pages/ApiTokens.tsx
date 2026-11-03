@@ -4,12 +4,15 @@ import {
   createUserToken,
   getUserTokens,
   revokeUserToken,
+  deleteUserToken,
   type APIToken,
   type CreateUserTokenRequest,
 } from '../api/auth'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { toast } from 'sonner'
+import { ConfirmDialog } from '../components/ConfirmDialog'
+import { triggerNotificationRefresh } from '../lib/notificationsContext'
 
 const EXPIRY_OPTIONS: { label: string; value: number }[] = [
   { label: '30 days', value: 30 },
@@ -84,6 +87,9 @@ export function ApiTokens({ user }: Readonly<{ user: UserInfo }>) {
   const [revealing, setRevealing] = useState(false)
   const [revealedToken, setRevealedToken] = useState<string | null>(null)
   const [revoking, setRevoking] = useState<string | null>(null)
+  const [revokeTarget, setRevokeTarget] = useState<{ keyId: string; tokenName: string } | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<{ keyId: string; tokenName: string } | null>(null)
+  const [deletingTok, setDeletingTok] = useState(false)
   const [name, setName] = useState('')
   const [scopes, setScopes] = useState<string[]>(['jobs:read'])
   const [ttlDays, setTtlDays] = useState(90)
@@ -134,6 +140,7 @@ export function ApiTokens({ user }: Readonly<{ user: UserInfo }>) {
       setRevealedToken(res.token)
       setRevealing(true)
       await refresh()
+      triggerNotificationRefresh()
       toast.success('Token created')
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'create failed')
@@ -142,14 +149,13 @@ export function ApiTokens({ user }: Readonly<{ user: UserInfo }>) {
     }
   }
 
-  const handleRevoke = async (keyId: string, tokenName: string) => {
-    if (
-      !window.confirm(
-        `Revoke "${tokenName}"? Any integration using it will stop working immediately.`,
-      )
-    ) {
-      return
-    }
+  const confirmRevoke = (keyId: string, tokenName: string) => {
+    setRevokeTarget({ keyId, tokenName })
+  }
+
+  const handleRevoke = async () => {
+    if (!revokeTarget) return
+    const { keyId, tokenName } = revokeTarget
     const prev = tokens.find((t) => t.key_id === keyId)
     setRevoking(keyId)
     setTokens(
@@ -159,16 +165,32 @@ export function ApiTokens({ user }: Readonly<{ user: UserInfo }>) {
     )
     try {
       await revokeUserToken(keyId)
+      triggerNotificationRefresh()
       toast.success(`Revoked "${tokenName}"`)
+      setRevokeTarget(null)
     } catch (err) {
       setTokens(
         tokens.map((t) => (t.key_id === keyId ? (prev ?? t) : t)),
       )
-      toast.error(
-        err instanceof Error ? err.message : `failed to revoke "${tokenName}"`,
-      )
+      toast.error(err instanceof Error ? err.message : 'revoke failed')
     } finally {
       setRevoking(null)
+    }
+  }
+
+  const handleDeleteToken = async () => {
+    if (!deleteTarget) return
+    setDeletingTok(true)
+    try {
+      await deleteUserToken(deleteTarget.keyId)
+      setTokens(prev => prev.filter(t => t.key_id !== deleteTarget.keyId))
+      triggerNotificationRefresh()
+      toast.success(`Deleted "${deleteTarget.tokenName}"`)
+      setDeleteTarget(null)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'delete failed')
+    } finally {
+      setDeletingTok(false)
     }
   }
 
@@ -219,7 +241,7 @@ export function ApiTokens({ user }: Readonly<{ user: UserInfo }>) {
 
   return (
     <Layout user={user}>
-      <div className="max-w-4xl mx-auto px-6 py-8">
+      <div className="max-w-6xl mx-auto px-6 py-8">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">API Tokens</h1>
@@ -237,7 +259,7 @@ export function ApiTokens({ user }: Readonly<{ user: UserInfo }>) {
             }}
             className="inline-flex items-center justify-center gap-2 btn-shimmer px-5 py-2.5 rounded-lg text-sm font-medium text-white cursor-pointer whitespace-nowrap"
           >
-            <span>+</span> Create token
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg> Create token
           </button>
         </div>
 
@@ -253,20 +275,20 @@ export function ApiTokens({ user }: Readonly<{ user: UserInfo }>) {
               Your tokens
             </h2>
           </div>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto xl:overflow-x-visible">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-white/10">
-                  <th className="pb-3 pt-4 text-gray-400 text-xs px-5">Name</th>
-                  <th className="pb-3 pt-4 text-gray-400 text-xs px-5">Token</th>
-                  <th className="pb-3 pt-4 text-gray-400 text-xs px-5">Scopes</th>
-                  <th className="pb-3 pt-4 text-gray-400 text-xs px-5">Created</th>
-                  <th className="pb-3 pt-4 text-gray-400 text-xs px-5">Last used</th>
-                  <th className="pb-3 pt-4 text-gray-400 text-xs px-5">Expires</th>
-                  <th className="pb-3 pt-4 text-gray-400 text-xs px-5 text-right">
+                  <th className="pb-3 pt-4 text-gray-400 text-xs px-4">Name</th>
+                  <th className="pb-3 pt-4 text-gray-400 text-xs px-4">Token</th>
+                  <th className="pb-3 pt-4 text-gray-400 text-xs px-4">Scopes</th>
+                  <th className="pb-3 pt-4 text-gray-400 text-xs px-4">Created</th>
+                  <th className="pb-3 pt-4 text-gray-400 text-xs px-4">Last used</th>
+                  <th className="pb-3 pt-4 text-gray-400 text-xs px-4">Expires</th>
+                  <th className="pb-3 pt-4 text-gray-400 text-xs px-4 text-right">
                     Status
                   </th>
-                  <th className="pb-3 pt-4 text-gray-400 text-xs px-5 text-right">
+                  <th className="pb-3 pt-4 text-gray-400 text-xs px-4 text-right">
                     Action
                   </th>
                 </tr>
@@ -274,7 +296,7 @@ export function ApiTokens({ user }: Readonly<{ user: UserInfo }>) {
               <tbody className="divide-y divide-white/5">
                 {tokens.length === 0 ? (
                   <tr>
-                    <td className="px-5 py-6 text-center text-gray-500 text-xs" colSpan={8}>
+                    <td className="px-4 py-6 text-center text-gray-500 text-xs" colSpan={8}>
                       No API tokens yet
                     </td>
                   </tr>
@@ -291,44 +313,55 @@ export function ApiTokens({ user }: Readonly<{ user: UserInfo }>) {
                           revoked ? 'opacity-60' : ''
                         }`}
                       >
-                        <td className="px-5 py-4">
+                        <td className="px-4 py-4">
                           <div className="font-semibold text-white">{token.name}</div>
                           <div className="text-xs text-gray-500 mt-0.5 font-mono">
                             {token.key_id}
                           </div>
                         </td>
-                        <td className="px-5 py-4">
+                        <td className="px-4 py-4">
                           <span className="font-mono text-xs text-[#00C2BB]">
                             {token.display}
                           </span>
                         </td>
-                        <td className="px-5 py-4 text-gray-400 text-xs">
+                        <td className="px-4 py-4 text-gray-400 text-xs">
                           {token.scopes.join(', ')}
                         </td>
-                        <td className="px-5 py-4 text-gray-400 text-xs">
+                        <td className="px-4 py-4 text-gray-400 text-xs">
                           {token.created_at}
                         </td>
-                        <td className="px-5 py-4 text-gray-400 text-xs">
+                        <td className="px-4 py-4 text-gray-400 text-xs">
                           {relativeTime(token.last_used_at)}
                         </td>
-                        <td className="px-5 py-4 text-gray-400 text-xs">
+                        <td className="px-4 py-4 text-gray-400 text-xs">
                           {token.expires_at || 'Never'}
                         </td>
-                        <td className="px-5 py-4 text-right">
+                        <td className="px-4 py-4 text-right">
                           {statusBadge(token)}
                         </td>
-                        <td className="px-5 py-4 text-right">
-                          {!revoked && !expired ? (
+                        <td className="px-4 py-4 text-right">
+                          <div className="inline-flex items-center gap-2 justify-end">
+                            {!revoked && !expired && (
+                              <button
+                                type="button"
+                                onClick={() => confirmRevoke(token.key_id, token.name)}
+                                disabled={revoking === token.key_id}
+                                className="text-[10px] text-orange-400 hover:text-orange-300 underline cursor-pointer disabled:opacity-40"
+                              >
+                                Revoke
+                              </button>
+                            )}
                             <button
-                              onClick={() => handleRevoke(token.key_id, token.name)}
-                              disabled={revoking === token.key_id}
-                              className="text-[10px] text-red-400 hover:text-red-300 underline cursor-pointer disabled:opacity-40"
+                              type="button"
+                              onClick={() => setDeleteTarget({ keyId: token.key_id, tokenName: token.name })}
+                              title="Delete token permanently"
+                              className="inline-flex items-center justify-center w-7 h-7 rounded border border-white/10 text-gray-400 hover:text-red-400 hover:border-red-500/40 transition-colors cursor-pointer"
                             >
-                              Revoke
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
                             </button>
-                          ) : (
-                            <span className="text-[10px] text-gray-600">—</span>
-                          )}
+                          </div>
                         </td>
                       </tr>
                     )
@@ -352,10 +385,13 @@ export function ApiTokens({ user }: Readonly<{ user: UserInfo }>) {
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-bold">Create API token</h2>
                 <button
+                  type="button"
                   onClick={() => setOpen(false)}
-                  className="rounded hover:bg-white/5 text-gray-400 hover:text-white"
+                  className="rounded p-1 hover:bg-white/5 text-gray-400 hover:text-white cursor-pointer"
                 >
-                  ✕
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
                 </button>
               </div>
               <form onSubmit={handleCreate} className="space-y-4">
@@ -475,6 +511,28 @@ export function ApiTokens({ user }: Readonly<{ user: UserInfo }>) {
             </div>
           </div>
         )}
+
+        <ConfirmDialog
+          open={!!revokeTarget}
+          onOpenChange={(o) => { if (!o) setRevokeTarget(null) }}
+          title={`Revoke "${revokeTarget?.tokenName ?? ''}"?`}
+          description="Any integration using this token will stop working immediately. This cannot be undone."
+          confirmLabel="Revoke token"
+          destructive
+          loading={!!revoking}
+          onConfirm={handleRevoke}
+        />
+
+        <ConfirmDialog
+          open={!!deleteTarget}
+          onOpenChange={(o) => { if (!o) setDeleteTarget(null) }}
+          title={`Delete "${deleteTarget?.tokenName ?? ''}" permanently?`}
+          description="This removes the token from your list entirely. Any integration still using it will stop working. This cannot be undone."
+          confirmLabel="Delete token"
+          destructive
+          loading={deletingTok}
+          onConfirm={handleDeleteToken}
+        />
       </div>
     </Layout>
   )

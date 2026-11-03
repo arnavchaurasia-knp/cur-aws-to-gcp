@@ -118,6 +118,17 @@ export async function setUserRole(email: string, role: string): Promise<void> {
   }
 }
 
+export async function deleteUser(email: string): Promise<void> {
+  const res = await fetch(`/api/admin/users/${encodeURIComponent(email)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  })
+  if (!res.ok && res.status !== 204) {
+    const text = await res.text().catch(() => '')
+    throw new Error(text || `delete failed (${res.status})`)
+  }
+}
+
 export interface CatalogStatus {
   age_days: number
   stale: boolean
@@ -501,6 +512,17 @@ export async function previewUploadedBill(hash: string): Promise<BillPreviewResp
   return getJSON<BillPreviewResponse>(`/api/admin/bills/${encodeURIComponent(hash)}/preview`)
 }
 
+export async function deleteUploadedBill(hash: string): Promise<void> {
+  const res = await fetch(`/api/admin/bills/${encodeURIComponent(hash)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  })
+  if (!res.ok && res.status !== 204) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || `Failed to delete bill (${res.status})`)
+  }
+}
+
 export interface Ticket {
   id: string
   title: string
@@ -566,6 +588,17 @@ export async function updateTicket(id: string, body: UpdateTicketBody): Promise<
     throw new Error(text || `update ticket failed (${res.status})`)
   }
   return res.json()
+}
+
+export async function deleteTicket(id: string): Promise<void> {
+  const res = await fetch(`/api/admin/tickets/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  })
+  if (!res.ok && res.status !== 204) {
+    const text = await res.text().catch(() => '')
+    throw new Error(text || `delete failed (${res.status})`)
+  }
 }
 
 export interface AdminJobNotif {

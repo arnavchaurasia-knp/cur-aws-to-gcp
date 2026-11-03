@@ -1,6 +1,9 @@
 package db_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"path/filepath"
 	"testing"
 
@@ -237,4 +240,73 @@ func TestMergeURLEncodedBadDecodeLeftAlone(t *testing.T) {
 	role, err := d.GetUserRole(bad)
 	require.NoError(t, err)
 	assert.Equal(t, "viewer", role)
+}
+
+// SEC-1: AuthenticateUser must not auto-provision unknown users.
+func TestSEC1_AuthenticateUser_DoesNotAutoProvision(t *testing.T) {
+	d := newTestDB(t)
+	email := "unclaimed_user@facets.cloud"
+
+	ok, err := d.AuthenticateUser(email, "somepassword")
+	require.NoError(t, err)
+	assert.False(t, ok, "AuthenticateUser must return false for unknown user")
+
+	role, err := d.GetUserRole(email)
+	require.NoError(t, err)
+	assert.Empty(t, role, "No user row must be provisioned")
+}
+
+// SEC-4: Passwords use bcrypt; legacy SHA-256 hashes are verified and upgraded on login.
+func TestSEC4_BcryptPasswordHashingAndLegacyUpgrade(t *testing.T) {
+	d := newTestDB(t)
+	email := "upgrade_test@facets.cloud"
+
+	// 1. Create user and set password using SetUserPassword (should be bcrypt)
+	err := d.UpsertUserSeen(email, "viewer")
+	require.NoError(t, err)
+
+	err = d.SetUserPassword(email, "mysecret123")
+	require.NoError(t, err)
+
+	// Verify stored hash starts with $2a$ or $2b$ (bcrypt)
+	var storedHash string
+	err = d.Conn().QueryRow(`SELECT password_hash FROM users WHERE email = ?`, email).Scan(&storedHash)
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(storedHash, "$2"), "New password hash must be bcrypt ($2)")
+
+	// Successful login with correct password
+	ok, err := d.AuthenticateUser(email, "mysecret123")
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	// Failed login with wrong password
+	ok, err = d.AuthenticateUser(email, "wrongpassword")
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	// 2. Test legacy SHA-256 hash upgrade
+	legacySalt := "0102030405060708090a0b0c0d0e0f10"
+	saltBytes, _ := hex.DecodeString(legacySalt)
+	h := sha256.Sum256(append(saltBytes, []byte("legacypass")...))
+	legacyStored := legacySalt + ":" + hex.EncodeToString(h[:])
+
+	legacyEmail := "legacy_user@facets.cloud"
+	_, err = d.Conn().Exec(`INSERT INTO users (email, role, password_hash) VALUES (?, 'viewer', ?)`, legacyEmail, legacyStored)
+	require.NoError(t, err)
+
+	// Authenticate with legacy password -> should succeed and trigger upgrade
+	ok, err = d.AuthenticateUser(legacyEmail, "legacypass")
+	require.NoError(t, err)
+	assert.True(t, ok, "Legacy password must authenticate successfully")
+
+	// Verify stored hash was upgraded to bcrypt
+	var upgradedHash string
+	err = d.Conn().QueryRow(`SELECT password_hash FROM users WHERE email = ?`, legacyEmail).Scan(&upgradedHash)
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(upgradedHash, "$2"), "Legacy hash must be upgraded to bcrypt ($2) on login")
+
+	// Next login uses bcrypt
+	ok, err = d.AuthenticateUser(legacyEmail, "legacypass")
+	require.NoError(t, err)
+	assert.True(t, ok)
 }

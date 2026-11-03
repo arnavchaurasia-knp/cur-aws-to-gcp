@@ -1843,6 +1843,7 @@ func (h *Handler) ListUploadedBills(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
+	h.syncBillsFromJobsDir()
 	bills, err := h.db.ListUploadedBills()
 	if err != nil {
 		http.Error(w, `{"error":"failed to list bills"}`, http.StatusInternalServerError)
@@ -1954,3 +1955,28 @@ func (h *Handler) RevokeUserAPIToken(w http.ResponseWriter, r *http.Request) {
 	_ = h.db.LogAdminAction(sess.Email, "token.revoke", keyID, "")
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// DeleteUserAPIToken permanently removes an API token.
+func (h *Handler) DeleteUserAPIToken(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if auth.TokenAuthenticated(r.Context()) {
+		http.Error(w, `{"error":"token-authenticated requests cannot manage tokens"}`, http.StatusForbidden)
+		return
+	}
+	keyID := chi.URLParam(r, "key_id")
+	if err := h.db.DeleteAPIToken(keyID, sess.Email); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"token not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, fmt.Sprintf(`{"error":"failed to delete api token: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	_ = h.db.LogAdminAction(sess.Email, "token.delete", keyID, "")
+	w.WriteHeader(http.StatusNoContent)
+}
+

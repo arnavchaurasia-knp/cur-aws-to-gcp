@@ -282,6 +282,12 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// DeleteUploadedBill deletes an uploaded bill record by content hash.
+func (d *DB) DeleteUploadedBill(contentHash string) error {
+	_, err := d.conn.Exec(`DELETE FROM uploaded_bills WHERE content_hash = ?`, contentHash)
+	return err
+}
+
 // DeleteTicket removes a ticket record by id.
 func (d *DB) DeleteTicket(id string) error {
 	_, err := d.conn.Exec("DELETE FROM tickets WHERE id = ?", id)

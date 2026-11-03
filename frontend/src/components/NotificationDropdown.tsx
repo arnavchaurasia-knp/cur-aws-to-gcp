@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { getAdminNotifications, type NotificationItem } from '../api/admin'
 import { useTheme } from '../lib/themeContext'
+import { useNotifications } from '../lib/notificationsContext'
 
 function formatTimeAgo(isoString: string): string {
   if (!isoString) return ''
@@ -19,51 +19,10 @@ function formatTimeAgo(isoString: string): string {
 }
 
 export function NotificationDropdown() {
+  const { feed, unreadCount, loading, refresh, markAllAsRead } = useNotifications()
   const [open, setOpen] = useState(false)
-  const [feed, setFeed] = useState<NotificationItem[]>([])
-  const [loading, setLoading] = useState(false)
-  const [unreadCount, setUnreadCount] = useState(0)
-  const [lastViewedTimestamp, setLastViewedTimestamp] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem('cur_admin_notif_last_viewed')
-      return saved ? parseInt(saved, 10) : 0
-    } catch {
-      return 0
-    }
-  })
-
   const menuRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
-
-  const fetchFeed = async () => {
-    try {
-      setLoading(true)
-      const data = await getAdminNotifications()
-      const items = data.feed || []
-      setFeed(items)
-
-      // Calculate unread items (occurred after lastViewedTimestamp)
-      if (lastViewedTimestamp > 0) {
-        const unread = items.filter(
-          item => new Date(item.timestamp).getTime() > lastViewedTimestamp
-        ).length
-        setUnreadCount(unread)
-      } else {
-        setUnreadCount(Math.min(items.length, 5))
-      }
-    } catch {
-      // Quiet fail for dropdown poll
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    fetchFeed()
-    // Poll every 30 seconds for live admin updates
-    const interval = setInterval(fetchFeed, 30000)
-    return () => clearInterval(interval)
-  }, [lastViewedTimestamp])
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -82,15 +41,7 @@ export function NotificationDropdown() {
     const nextState = !open
     setOpen(nextState)
     if (nextState) {
-      // Mark as read
-      const now = Date.now()
-      setLastViewedTimestamp(now)
-      setUnreadCount(0)
-      try {
-        localStorage.setItem('cur_admin_notif_last_viewed', now.toString())
-      } catch {
-        // ignore
-      }
+      markAllAsRead()
     }
   }
 
@@ -116,6 +67,38 @@ export function NotificationDropdown() {
           <span className="w-7 h-7 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
+            </svg>
+          </span>
+        )
+      case 'ticket_reopened':
+        return (
+          <span className="w-7 h-7 rounded-full bg-orange-500/10 border border-orange-500/30 text-orange-400 flex items-center justify-center shrink-0" title="Ticket Reopened">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </span>
+        )
+      case 'ticket_updated':
+        return (
+          <span className="w-7 h-7 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center shrink-0">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+          </span>
+        )
+      case 'ticket_resolved':
+        return (
+          <span className="w-7 h-7 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </span>
+        )
+      case 'ticket_deleted':
+        return (
+          <span className="w-7 h-7 rounded-full bg-red-500/10 border border-red-500/30 text-red-400 flex items-center justify-center shrink-0">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
             </svg>
           </span>
         )
@@ -190,7 +173,7 @@ export function NotificationDropdown() {
 
       {/* Notification Dropdown Panel */}
       {open && (
-        <div className={`absolute right-0 mt-2 w-96 max-w-[92vw] border rounded-2xl shadow-2xl overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-150 ${
+        <div className={`absolute right-0 mt-2 w-96 max-w-[92vw] border rounded-2xl shadow-2xl overflow-hidden z-50 anim-slide-down origin-top-right ${
           isDark
             ? 'bg-[#0c0d14] border-white/15 text-white'
             : 'bg-white border-gray-200 text-gray-900 shadow-xl'
@@ -208,9 +191,9 @@ export function NotificationDropdown() {
               </span>
             </div>
             <button
-              onClick={fetchFeed}
+              onClick={refresh}
               disabled={loading}
-              className="text-[11px] text-gray-400 hover:text-white transition flex items-center gap-1"
+              className="text-[11px] text-gray-400 hover:text-white transition flex items-center gap-1 cursor-pointer"
             >
               <svg className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />

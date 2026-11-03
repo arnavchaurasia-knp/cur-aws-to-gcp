@@ -287,6 +287,7 @@ func main() {
 		r.Get("/api/user/tokens", jobHandler.ListUserAPITokens)
 		r.Post("/api/user/tokens", tokenCreateLimiter(jobHandler.CreateUserAPIToken))
 		r.Delete("/api/user/tokens/{key_id}", jobHandler.RevokeUserAPIToken)
+		r.Delete("/api/user/tokens/{key_id}/purge", jobHandler.DeleteUserAPIToken)
 
 		// MCP (Model Context Protocol) server — Streamable HTTP transport.
 		// Remote clients (Claude Desktop, Praxis) connect to ${APP_BASE_URL}/mcp
@@ -371,6 +372,7 @@ func main() {
 			r.Get("/api/admin/bills/{hash}/download", jobHandler.AdminDownloadUploadedBill)
 			r.Get("/api/admin/bills/{hash}/view", jobHandler.AdminViewUploadedBill)
 			r.Get("/api/admin/bills/{hash}/preview", jobHandler.AdminPreviewUploadedBill)
+			r.Delete("/api/admin/bills/{hash}", jobHandler.AdminDeleteUploadedBill)
 		})
 		// @facets.cloud-only internal panel: recent job logs + a manually
 		// selected multi-job portfolio summary. Each handler re-checks

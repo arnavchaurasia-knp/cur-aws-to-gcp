@@ -14,6 +14,33 @@ import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { BackButton } from '../components/BackButton'
+import { triggerNotificationRefresh } from '../lib/notificationsContext'
+
+function formatReportTimestamp(raw: string): { dateStr: string; timeStr: string; relative: string } {
+  if (!raw) return { dateStr: '—', timeStr: '', relative: '' }
+  try {
+    const d = new Date(raw)
+    if (Number.isNaN(d.getTime())) return { dateStr: raw, timeStr: '', relative: '' }
+    const dateStr = d.toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    })
+    const timeStr = d.toLocaleTimeString(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+    const diffSec = Math.floor((Date.now() - d.getTime()) / 1000)
+    let relative = 'just now'
+    if (diffSec >= 60 && diffSec < 3600) relative = `${Math.floor(diffSec / 60)}m ago`
+    else if (diffSec >= 3600 && diffSec < 86400) relative = `${Math.floor(diffSec / 3600)}h ago`
+    else if (diffSec >= 86400) relative = `${Math.floor(diffSec / 86400)}d ago`
+    return { dateStr, timeStr, relative }
+  } catch {
+    return { dateStr: raw, timeStr: '', relative: '' }
+  }
+}
 
 export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('Report settings — admin')
@@ -22,7 +49,7 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState<string | null>(null) // key being saved
-  const [editingValue, setEditingValue] = useState<string>('')
+  const [edits, setEdits] = useState<Record<string, { value: string; reason: string }>>({})
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
   const [resetting, setResetting] = useState(false)
 
@@ -47,36 +74,36 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
   }
   useEffect(() => { refresh() }, [])
 
-  const handleSave = async (setting: ReportSetting, value: string) => {
+  const handleSave = async (setting: ReportSetting, value: string, customReason?: string) => {
     // Validate numeric
     if (setting.value_type === 'number') {
       const num = Number(value)
       if (!Number.isFinite(num)) {
-        setError('value must be a number')
+        setError('Value must be a valid number')
         return
       }
       if (setting.min_value != null && num < setting.min_value) {
-        setError(`value must be >= ${setting.min_value}`)
+        setError(`Value must be >= ${setting.min_value}`)
         return
       }
       if (setting.max_value != null && num > setting.max_value) {
-        setError(`value must be <= ${setting.max_value}`)
+        setError(`Value must be <= ${setting.max_value}`)
         return
       }
     } else if (setting.value_type === 'bool') {
       const lower = value.trim().toLowerCase()
       if (lower !== 'true' && lower !== 'false' && lower !== '1' && lower !== '0' && lower !== 'yes' && lower !== 'no') {
-        setError('value must be true or false')
+        setError('Value must be true or false')
         return
       }
     }
 
-    let reason = editingValue.trim()
+    let reason = (customReason || '').trim()
     if (!reason) {
       if (setting.value_type === 'bool') {
         reason = `Toggled ${setting.key} to ${value}`
       } else {
-        setError('a reason is required to change a setting')
+        setError('A reason is required to change a setting')
         return
       }
     }
@@ -92,15 +119,20 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
       }
       const result = await putReportSetting(setting.key, { value: normalized, reason })
       if (result) {
-        setEditingValue('')
+        setEdits(prev => {
+          const next = { ...prev }
+          delete next[setting.key]
+          return next
+        })
         toast.success(`Updated ${setting.key}`)
         await refresh(true)
+        triggerNotificationRefresh()
       } else {
         toast.error(`Failed to update ${setting.key}`)
-        setError('save failed')
+        setError('Save failed')
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'save failed'
+      const msg = err instanceof Error ? err.message : 'Save failed'
       toast.error(msg)
       setError(msg)
     } finally {
@@ -116,6 +148,7 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
       if (result) {
         toast.success('Report settings reset to defaults')
         await refresh(true)
+        triggerNotificationRefresh()
         setResetConfirmOpen(false)
       } else {
         toast.error('Reset failed')
@@ -140,11 +173,13 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
     )
   }
 
-  if (error) {
+  if (!data && error) {
     return (
       <Layout user={user}>
         <div className="max-w-2xl mx-auto px-6 py-10">
-          <p className="text-xs text-orange-400">{error}</p>
+          <div className="p-4 rounded-xl bg-orange-950/30 border border-orange-500/30 text-orange-400 text-xs">
+            {error}
+          </div>
         </div>
       </Layout>
     )
@@ -154,6 +189,12 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
     <Layout user={user}>
       <div className="max-w-5xl mx-auto px-6 py-10">
         <BackButton fallback="/admin" />
+        {error && (
+          <div className="mb-6 p-3 rounded-lg bg-orange-950/40 border border-orange-500/40 text-orange-400 text-xs flex items-center justify-between">
+            <span>{error}</span>
+            <button onClick={() => setError(null)} className="text-orange-400 hover:text-orange-200 cursor-pointer text-sm font-bold ml-2">✕</button>
+          </div>
+        )}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
           <div>
             <h1 className="text-2xl font-semibold mb-1">Report Settings</h1>
@@ -163,7 +204,7 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
           </div>
           <div className="flex items-center gap-3">
             <button
-              onClick={refresh}
+              onClick={() => refresh()}
               disabled={loading}
               className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg border border-white/10 hover:border-white/25 bg-white/5 hover:bg-white/10 text-xs font-medium text-gray-200 transition-colors cursor-pointer disabled:opacity-50"
             >
@@ -237,45 +278,76 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
                       {settingsInGroup.map((s) => {
                         const isBool = s.value_type === 'bool'
                         const isChecked = s.value === 'true'
+                        const edit = edits[s.key]
+                        const isEditing = Boolean(edit)
+                        const inRange = !edit || edit.value === '' || (() => {
+                          const n = Number(edit.value)
+                          return Number.isFinite(n) && (s.min_value == null || n >= s.min_value) && (s.max_value == null || n <= s.max_value)
+                        })()
+
                         return (
                           <tr key={s.key} className="hover:bg-white/[0.02] transition-colors">
                             <td className="py-3.5 px-6">
-                              <div className="font-semibold text-white text-xs">{s.title}</div>
-                              <div className="text-[10px] font-mono text-gray-500 mt-0.5">{s.key}</div>
-                              <div className="text-[11px] text-gray-400 mt-1 leading-relaxed">{s.description}</div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-[color:var(--fcp-text-primary)] text-xs">{s.title}</span>
+                                <span className="font-mono text-[9px] text-[color:var(--fcp-text-tertiary)] bg-[var(--fcp-bg-subtle)] border border-[var(--fcp-border-subtle)] px-1.5 py-0.5 rounded">{s.key}</span>
+                              </div>
+                              <div className="text-[11px] text-[color:var(--fcp-text-secondary)] mt-1.5 leading-relaxed max-w-md">{s.description}</div>
                             </td>
                             <td className="py-3.5 px-4">
                               {isBool ? (
                                 <button
                                   type="button"
-                                  onClick={() => handleSave(s, isChecked ? 'false' : 'true')}
-                                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                                    isChecked ? 'bg-[#00C2BB]' : 'bg-white/20'
+                                  onClick={() => handleSave(s, isChecked ? 'false' : 'true', `Toggled ${s.key} to ${isChecked ? 'false' : 'true'}`)}
+                                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border transition-colors duration-200 ease-in-out focus:outline-none ${
+                                    isChecked
+                                      ? 'bg-[#00C2BB] border-[#00C2BB]'
+                                      : 'bg-slate-300 dark:bg-white/20 border-slate-400 dark:border-white/20'
                                   }`}
                                   role="switch"
                                   aria-checked={isChecked}
+                                  title={isChecked ? 'Click to disable' : 'Click to enable'}
                                 >
                                   <span
-                                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-1 ring-black/10 transition duration-200 ease-in-out ${
                                       isChecked ? 'translate-x-4' : 'translate-x-0'
                                     }`}
                                   />
                                 </button>
-                              ) : (
-                                <div className="space-y-1">
+                              ) : isEditing ? (
+                                <div className="flex flex-col gap-1.5 py-1">
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      min={s.min_value ?? undefined}
+                                      max={s.max_value ?? undefined}
+                                      value={edit.value}
+                                      onChange={(e) => setEdits(prev => ({ ...prev, [s.key]: { ...prev[s.key], value: e.target.value } }))}
+                                      className="bg-[var(--fcp-input-bg)] border border-[var(--fcp-input-border)] rounded px-2.5 py-1.5 text-[var(--fcp-text-primary)] text-xs w-28 focus:border-[#645DF6] outline-none"
+                                      placeholder="Value"
+                                    />
+                                    {edit.value !== '' && !inRange && (
+                                      <span className="text-[11px] text-red-400">out of range</span>
+                                    )}
+                                  </div>
                                   <input
                                     type="text"
-                                    value={editingValue === s.key ? editingValue : s.value}
-                                    onChange={(e) => setEditingValue(e.target.value)}
-                                    onBlur={() => {
-                                      if (editingValue === s.key) {
-                                        handleSave(s, editingValue)
-                                        setEditingValue('')
-                                      }
-                                    }}
-                                    className="bg-white/5 border border-white/10 rounded px-2.5 py-1 text-white text-xs w-28 focus:border-[#645DF6] outline-none"
+                                    placeholder="Reason for change…"
+                                    value={edit.reason}
+                                    onChange={(e) => setEdits(prev => ({ ...prev, [s.key]: { ...prev[s.key], reason: e.target.value } }))}
+                                    className="bg-[var(--fcp-input-bg)] border border-[var(--fcp-input-border)] rounded px-2 py-1 text-[var(--fcp-text-primary)] text-xs placeholder-[var(--fcp-text-tertiary)] focus:border-[#645DF6] outline-none w-56"
                                   />
-                                  <div className="text-[10px] text-gray-500 font-mono">
+                                  <div className="text-[10px] text-[var(--fcp-text-tertiary)] font-mono">
+                                    Range: [{s.min_value ?? '–'} to {s.max_value ?? '–'}]
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="space-y-0.5">
+                                  <span className="font-mono tabular-nums text-xs font-semibold text-[#00C2BB]">
+                                    {s.value}
+                                  </span>
+                                  <div className="text-[10px] text-[var(--fcp-text-tertiary)] font-mono">
                                     Range: [{s.min_value ?? '–'} to {s.max_value ?? '–'}]
                                   </div>
                                 </div>
@@ -286,30 +358,36 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
                                 <span className="text-[11px] text-[#00C2BB] font-medium animate-pulse inline-flex items-center gap-1.5">
                                   <RefreshIcon className="w-3 h-3 animate-spin" /> Saving…
                                 </span>
-                              ) : !isBool ? (
-                                <div className="flex items-center justify-end gap-2">
-                                  <button
-                                    onClick={() => setEditingValue(s.value)}
-                                    className="px-2.5 py-1 rounded border border-white/10 hover:border-white/30 text-gray-300 hover:text-white text-xs transition-colors cursor-pointer"
-                                  >
-                                    Edit
-                                  </button>
-                                  {editingValue === s.key && (
-                                    <button
-                                      onClick={() => {
-                                        handleSave(s, editingValue)
-                                        setEditingValue('')
-                                      }}
-                                      className="px-2.5 py-1 rounded bg-[#00C2BB] text-black font-semibold text-xs hover:bg-[#00C2BB]/90 transition-colors cursor-pointer"
-                                    >
-                                      Save
-                                    </button>
-                                  )}
-                                </div>
-                              ) : (
+                              ) : isBool ? (
                                 <span className={`text-[11px] font-medium ${isChecked ? 'text-[#00C2BB]' : 'text-gray-500'}`}>
                                   {isChecked ? 'Enabled' : 'Disabled'}
                                 </span>
+                              ) : isEditing ? (
+                                <div className="flex items-center justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSave(s, edit.value, edit.reason)}
+                                    disabled={!edit.value || !edit.reason.trim() || !inRange || saving === s.key}
+                                    className="px-2.5 py-1.5 rounded bg-[#00C2BB] text-black font-semibold text-xs hover:bg-[#00C2BB]/90 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    {saving === s.key ? 'Saving…' : 'Save'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEdits(prev => { const next = { ...prev }; delete next[s.key]; return next })}
+                                    className="px-2.5 py-1.5 rounded text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-hover)] text-xs transition-colors cursor-pointer border border-[var(--fcp-border-subtle)]"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setEdits(prev => ({ ...prev, [s.key]: { value: s.value, reason: '' } }))}
+                                  className="px-2.5 py-1.5 rounded border border-[var(--fcp-border-subtle)] text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)] hover:border-[var(--fcp-border-default)] text-xs transition-colors cursor-pointer"
+                                >
+                                  Edit
+                                </button>
                               )}
                             </td>
                           </tr>
@@ -336,29 +414,61 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
               {history.length === 0 ? (
                 <p className="text-xs text-gray-500 py-4 text-center">No setting changes recorded yet.</p>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border-collapse">
+                <div className="overflow-x-auto border border-[var(--fcp-border-subtle)] rounded-xl">
+                  <table className="w-full text-left text-xs border-collapse table-fixed min-w-[720px]">
+                    <colgroup>
+                      <col className="w-56" />
+                      <col className="w-60" />
+                      <col />
+                      <col className="w-52" />
+                    </colgroup>
                     <thead>
-                      <tr className="border-b border-white/10 text-gray-400">
-                        <th className="pb-3 font-medium">Timestamp</th>
-                        <th className="pb-3 font-medium">Setting Key</th>
-                        <th className="pb-3 font-medium">Transition</th>
-                        <th className="pb-3 font-medium text-right">Modified By</th>
+                      <tr className="border-b border-[var(--fcp-border-subtle)] text-[var(--fcp-text-secondary)] bg-[var(--fcp-table-header-bg)]">
+                        <th className="py-3 px-4 font-semibold text-left">Timestamp</th>
+                        <th className="py-3 px-4 font-semibold text-left">Setting Key</th>
+                        <th className="py-3 px-4 font-semibold text-left">Transition</th>
+                        <th className="py-3 px-4 font-semibold text-right">Modified By</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-white/5">
-                      {history.map((h) => (
-                        <tr key={h.id} className="hover:bg-white/[0.01]">
-                          <td className="py-2.5 text-gray-400 font-mono text-[11px]">{h.changed_at}</td>
-                          <td className="py-2.5 font-mono text-gray-300">{h.key}</td>
-                          <td className="py-2.5">
-                            <span className="text-gray-500">{h.old_value}</span>
-                            <span className="text-gray-600 mx-2">→</span>
-                            <span className="text-[#00C2BB] font-medium">{h.new_value}</span>
-                          </td>
-                          <td className="py-2.5 text-gray-400 text-right">{h.changed_by}</td>
-                        </tr>
-                      ))}
+                    <tbody className="divide-y divide-[var(--fcp-border-subtle)]">
+                      {history.map((h) => {
+                        const ts = formatReportTimestamp(h.changed_at)
+                        return (
+                          <tr key={h.id} className="hover:bg-[var(--fcp-bg-hover)] transition-colors group">
+                            <td className="py-3 px-4 align-top">
+                              <div className="font-semibold text-[var(--fcp-text-primary)] text-xs">{ts.dateStr}</div>
+                              <div className="text-[11px] font-mono text-[var(--fcp-text-tertiary)] flex items-center gap-1.5 mt-0.5">
+                                <span>{ts.timeStr}</span>
+                                {ts.relative && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="text-[#00C2BB] font-sans font-medium">{ts.relative}</span>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                            <td className="py-3 px-4 align-top font-mono text-xs">
+                              <span className="inline-block bg-[var(--fcp-bg-subtle)] border border-[var(--fcp-border-subtle)] text-[var(--fcp-text-primary)] px-2.5 py-1 rounded-md text-[11px] font-semibold break-all">
+                                {h.key}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 align-top text-xs">
+                              <div className="flex items-center gap-2 flex-wrap break-all leading-relaxed">
+                                <span className="bg-red-500/10 text-red-400 border border-red-500/20 px-2 py-0.5 rounded text-[11px] font-mono break-all line-through">
+                                  {h.old_value}
+                                </span>
+                                <span className="text-[var(--fcp-text-secondary)] font-bold">→</span>
+                                <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded text-[11px] font-mono font-bold break-all">
+                                  {h.new_value}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="py-3 px-4 align-top text-right text-xs text-[var(--fcp-text-secondary)] font-medium whitespace-nowrap truncate" title={h.changed_by}>
+                              {h.changed_by}
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>

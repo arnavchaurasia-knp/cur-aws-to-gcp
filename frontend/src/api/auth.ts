@@ -140,5 +140,13 @@ export async function revokeUserToken(keyId: string): Promise<void> {
   }
 }
 
+export async function deleteUserToken(keyId: string): Promise<void> {
+  const res = await fetch(`/api/user/tokens/${keyId}/purge`, { method: 'DELETE' })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `delete failed (${res.status})`)
+  }
+}
+
 export function loginURL() { return '/api/auth/login' }
 export function logoutURL() { return '/api/auth/logout' }

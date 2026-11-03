@@ -4,6 +4,8 @@ package jobs
 import (
 	"bufio"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -522,17 +524,42 @@ func (h *Handler) AdminAuditLog(w http.ResponseWriter, r *http.Request) {
 	actor := q.Get("actor")
 	action := q.Get("action")
 	var from, to *time.Time
-	if v := q.Get("from"); v != "" {
-		if t, err := time.Parse("2006-01-02", v); err == nil {
-			from = &t
+
+	parseAuditTime := func(v string, isEnd bool) *time.Time {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return nil
 		}
-	}
-	if v := q.Get("to"); v != "" {
-		if t, err := time.Parse("2006-01-02", v); err == nil {
-			t = t.Add(24*time.Hour - time.Second)
-			to = &t
+		// RFC3339
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			return &t
 		}
+		// "2006-01-02T15:04:05" or "2006-01-02T15:04"
+		for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04"} {
+			if t, err := time.Parse(layout, v); err == nil {
+				return &t
+			}
+		}
+		// "2006-01-02"
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			if isEnd {
+				t = t.Add(24*time.Hour - time.Second)
+			}
+			return &t
+		}
+		// "2006-01" (month)
+		if t, err := time.Parse("2006-01", v); err == nil {
+			if isEnd {
+				nextMonth := t.AddDate(0, 1, 0)
+				t = nextMonth.Add(-time.Second)
+			}
+			return &t
+		}
+		return nil
 	}
+
+	from = parseAuditTime(q.Get("from"), false)
+	to = parseAuditTime(q.Get("to"), true)
 
 	entries, err := h.db.ListAuditLog(limit, offset, actor, action, from, to)
 	if err != nil {
@@ -1433,6 +1460,7 @@ func (h *Handler) AdminCreateTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"failed to create ticket"}`, http.StatusInternalServerError)
 		return
 	}
+	_ = h.db.LogAdminAction(sess.Email, "create_ticket", ticket.ID, fmt.Sprintf("title=%s priority=%s category=%s", ticket.Title, ticket.Priority, ticket.Category))
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(ticket)
@@ -1521,9 +1549,9 @@ func (h *Handler) AdminUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
 	}
-	// Only admins can change status to resolved/closed
-	if body.Status != "" && body.Status != ticket.Status && !isAdmin {
-		http.Error(w, `{"error":"only admins can change ticket status"}`, http.StatusForbidden)
+	// Admins or ticket creators can change ticket status
+	if body.Status != "" && body.Status != ticket.Status && !isAdmin && ticket.CreatedBy != sess.Email {
+		http.Error(w, `{"error":"only admins or ticket creators can change ticket status"}`, http.StatusForbidden)
 		return
 	}
 	if body.Status != "" {
@@ -1559,17 +1587,32 @@ func (h *Handler) AdminUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"failed to get updated ticket"}`, http.StatusInternalServerError)
 		return
 	}
+	auditAction := "update_ticket"
+	if body.Status != "" && strings.EqualFold(body.Status, "resolved") {
+		auditAction = "resolve_ticket"
+	} else if body.Status != "" && strings.EqualFold(body.Status, "closed") {
+		auditAction = "close_ticket"
+	} else if body.Status != "" && strings.EqualFold(body.Status, "open") {
+		auditAction = "reopen_ticket"
+	}
+	_ = h.db.LogAdminAction(sess.Email, auditAction, id, fmt.Sprintf("status=%s priority=%s title=%s", updated.Status, updated.Priority, updated.Title))
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	json.NewEncoder(w).Encode(updated)
 }
 
 // AdminDeleteTicket deletes a ticket by id.
 func (h *Handler) AdminDeleteTicket(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	actorEmail := "system"
+	if sess != nil {
+		actorEmail = sess.Email
+	}
 	id := chi.URLParam(r, "id")
 	if err := h.db.DeleteTicket(id); err != nil {
 		http.Error(w, `{"error":"failed to delete ticket"}`, http.StatusInternalServerError)
 		return
 	}
+	_ = h.db.LogAdminAction(actorEmail, "delete_ticket", id, "")
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	w.Write([]byte(`{"status":"deleted"}`))
 }
@@ -1612,22 +1655,87 @@ func (h *Handler) AdminNotifications(w http.ResponseWriter, r *http.Request) {
 		tickets = []db.Ticket{}
 	}
 	for _, t := range tickets {
-		sev := "warning"
-		if strings.EqualFold(t.Priority, "urgent") || strings.EqualFold(t.Priority, "high") {
-			sev = "critical"
-		} else if strings.EqualFold(t.Status, "resolved") || strings.EqualFold(t.Status, "closed") {
-			sev = "info"
+		isResolved := strings.EqualFold(t.Status, "resolved") || strings.EqualFold(t.Status, "closed")
+		if isResolved {
+			resTime := t.UpdatedAt
+			if t.ResolvedAt != nil {
+				resTime = *t.ResolvedAt
+			}
+			actor := t.ResolvedBy
+			if actor == "" {
+				actor = t.CreatedBy
+			}
+			feed = append(feed, NotificationItem{
+				ID:        "ticket-resolved-" + t.ID,
+				Type:      "ticket_resolved",
+				Title:     fmt.Sprintf("Ticket %s: %s", strings.Title(t.Status), t.Title),
+				Message:   fmt.Sprintf("[%s] by %s (Resolved by %s): %s", strings.ToUpper(t.Priority), t.CreatedBy, actor, t.Description),
+				Severity:  "success",
+				Actor:     actor,
+				Link:      "/admin/tickets",
+				Timestamp: resTime.Format(time.RFC3339),
+			})
+		} else {
+			sev := "warning"
+			if strings.EqualFold(t.Priority, "urgent") || strings.EqualFold(t.Priority, "high") {
+				sev = "critical"
+			}
+			feed = append(feed, NotificationItem{
+				ID:        "ticket-" + t.ID,
+				Type:      "ticket_raised",
+				Title:     fmt.Sprintf("Ticket Raised: %s", t.Title),
+				Message:   fmt.Sprintf("[%s/%s] by %s: %s", strings.ToUpper(t.Priority), strings.ToUpper(t.Status), t.CreatedBy, t.Description),
+				Severity:  sev,
+				Actor:     t.CreatedBy,
+				Link:      "/admin/tickets",
+				Timestamp: t.CreatedAt.Format(time.RFC3339),
+			})
 		}
-		feed = append(feed, NotificationItem{
-			ID:        "ticket-" + t.ID,
-			Type:      "ticket_raised",
-			Title:     fmt.Sprintf("Ticket Raised: %s", t.Title),
-			Message:   fmt.Sprintf("[%s/%s] by %s: %s", strings.ToUpper(t.Priority), strings.ToUpper(t.Status), t.CreatedBy, t.Description),
-			Severity:  sev,
-			Actor:     t.CreatedBy,
-			Link:      "/admin/tickets",
-			Timestamp: t.CreatedAt.Format(time.RFC3339),
-		})
+	}
+
+	// 1b. Fetch ticket lifecycle events from audit log
+	auditEntries, aErr := h.db.ListAuditLog(50, 0, "", "", nil, nil)
+	if aErr == nil {
+		for _, a := range auditEntries {
+			if a.Action == "delete_ticket" {
+				feed = append(feed, NotificationItem{
+					ID:        fmt.Sprintf("audit-del-ticket-%d", a.ID),
+					Type:      "ticket_deleted",
+					Title:     fmt.Sprintf("Ticket Deleted: %s", a.TargetID),
+					Message:   fmt.Sprintf("Deleted by %s", a.ActorEmail),
+					Severity:  "info",
+					Actor:     a.ActorEmail,
+					Link:      "/admin/tickets",
+					Timestamp: a.CreatedAt.Format(time.RFC3339),
+				})
+			} else if a.Action == "reopen_ticket" {
+				tid := a.TargetID
+				if len(tid) > 8 {
+					tid = tid[:8]
+				}
+				feed = append(feed, NotificationItem{
+					ID:        fmt.Sprintf("audit-reopen-ticket-%d", a.ID),
+					Type:      "ticket_reopened",
+					Title:     fmt.Sprintf("Ticket Reopened: #%s", tid),
+					Message:   fmt.Sprintf("Reopened by %s (%s)", a.ActorEmail, a.Details),
+					Severity:  "warning",
+					Actor:     a.ActorEmail,
+					Link:      "/admin/tickets",
+					Timestamp: a.CreatedAt.Format(time.RFC3339),
+				})
+			} else if a.Action == "update_ticket" {
+				feed = append(feed, NotificationItem{
+					ID:        fmt.Sprintf("audit-update-ticket-%d", a.ID),
+					Type:      "ticket_updated",
+					Title:     fmt.Sprintf("Ticket Edited: %s", a.TargetID),
+					Message:   fmt.Sprintf("Edited by %s — %s", a.ActorEmail, a.Details),
+					Severity:  "info",
+					Actor:     a.ActorEmail,
+					Link:      "/admin/tickets",
+					Timestamp: a.CreatedAt.Format(time.RFC3339),
+				})
+			}
+		}
 	}
 
 	// 2. Fetch jobs (inspect both my jobs and all failed jobs)
@@ -2173,4 +2281,114 @@ func (h *Handler) promoteFindingToRefreshStore(key, gcpService, gcpSKUName, gcpS
 	if out, err := json.MarshalIndent(doc, "", "  "); err == nil {
 		_ = os.WriteFile(storePath, out, 0644)
 	}
+}
+
+
+// syncBillsFromJobsDir automatically scans both .shared_bills and all individual job directories
+// to ensure every bill ever submitted or on disk is discovered, indexed, and visible in uploaded_bills.
+func (h *Handler) syncBillsFromJobsDir() {
+	sharedBillsDir := filepath.Join(h.jobsDir, ".shared_bills")
+	_ = os.MkdirAll(sharedBillsDir, 0755)
+
+	// 1. Scan .shared_bills directory
+	if entries, err := os.ReadDir(sharedBillsDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			ext := filepath.Ext(name)
+			base := strings.TrimSuffix(name, ext)
+			if len(base) == 64 {
+				if existing, _ := h.db.GetUploadedBill(base); existing == nil {
+					fi, _ := e.Info()
+					sz := int64(0)
+					if fi != nil {
+						sz = fi.Size()
+					}
+					_ = h.db.UpsertUploadedBill(base, ext, "bill-"+base[:8]+ext, sz)
+				}
+			}
+		}
+	}
+
+	// 2. Scan all job folders for input.* files
+	jobDirs, _ := filepath.Glob(filepath.Join(h.jobsDir, "*"))
+	for _, jd := range jobDirs {
+		base := filepath.Base(jd)
+		if strings.HasPrefix(base, ".") {
+			continue
+		}
+		inputs, _ := filepath.Glob(filepath.Join(jd, "input.*"))
+		for _, inp := range inputs {
+			fi, err := os.Stat(inp)
+			if err != nil || fi.IsDir() || fi.Size() == 0 {
+				continue
+			}
+			ext := filepath.Ext(inp)
+			f, oerr := os.Open(inp)
+			if oerr != nil {
+				continue
+			}
+			hasher := sha256.New()
+			_, _ = io.Copy(hasher, f)
+			f.Close()
+			hashHex := hex.EncodeToString(hasher.Sum(nil))
+			if existing, _ := h.db.GetUploadedBill(hashHex); existing == nil {
+				prospect := "bill-" + base[:8]
+				if custData, cerr := os.ReadFile(filepath.Join(jd, "customer_name.txt")); cerr == nil && len(custData) > 0 {
+					prospect = strings.TrimSpace(string(custData))
+				}
+				_ = h.db.UpsertUploadedBill(hashHex, ext, prospect+ext, fi.Size())
+				// Link into shared bills
+				sharedPath := filepath.Join(sharedBillsDir, hashHex+ext)
+				if _, serr := os.Stat(sharedPath); os.IsNotExist(serr) {
+					_ = os.Link(inp, sharedPath)
+				}
+			}
+		}
+	}
+}
+
+// AdminDeleteUploadedBill deletes an uploaded bill from storage and database.
+func (h *Handler) AdminDeleteUploadedBill(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if !sess.IsAdmin(h.adminEmails) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	hash := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "hash")))
+	if len(hash) != 64 {
+		http.Error(w, `{"error":"invalid sha256 hash"}`, http.StatusBadRequest)
+		return
+	}
+
+	bill, _ := h.db.GetUploadedBill(hash)
+	fileName := ""
+	if bill != nil {
+		fileName = bill.FileName
+	}
+
+	if err := h.db.DeleteUploadedBill(hash); err != nil {
+		http.Error(w, `{"error":"failed to delete bill record"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Remove physical files matching hash from .shared_bills
+	sharedBillsDir := filepath.Join(h.jobsDir, ".shared_bills")
+	if files, err := filepath.Glob(filepath.Join(sharedBillsDir, hash+"*")); err == nil {
+		for _, f := range files {
+			_ = os.Remove(f)
+		}
+	}
+
+	_ = h.db.LogAdminAction(sess.Email, "delete_bill", hash, fileName)
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	w.Write([]byte(`{"status":"deleted"}`))
 }

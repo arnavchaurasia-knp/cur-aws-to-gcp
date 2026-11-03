@@ -560,8 +560,8 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
 
   return (
     <Layout user={user}>
-      <div className="max-w-5xl mx-auto px-6 py-10 grid gap-8 lg:grid-cols-[1fr_320px]">
-        <main className="flex flex-col gap-6">
+      <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 py-8 flex flex-col xl:flex-row gap-8 items-start min-w-0">
+        <main className="flex-1 min-w-0 w-full flex flex-col gap-6">
           <BackButton fallback="/" />
           <div className="flex flex-wrap items-center justify-between gap-3 anim-fade-in-up">
             <h1 className="text-2xl font-semibold">
@@ -686,26 +686,29 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
                   <div className="flex flex-col gap-2 anim-fade-in-up delay-175">
                     <p className="text-xs uppercase tracking-wider text-gray-500">Admin actions</p>
                     <button
+                      type="button"
                       onClick={submitRegenerate}
                       disabled={regenerating}
-                      className="w-full py-2.5 rounded-lg border border-[#645DF6]/30 text-[#645DF6] text-xs font-medium hover:bg-[#645DF6]/10 disabled:opacity-40 transition-colors"
+                      className="w-full py-2.5 rounded-lg border border-[#645DF6]/30 text-[#645DF6] text-xs font-medium hover:bg-[#645DF6]/10 disabled:opacity-40 transition-colors cursor-pointer"
                     >
                       {regenerating ? 'Regenerating…' : 'Regenerate Report'}
                     </button>
                     {regenerateError && <p className="text-xs text-orange-400">{regenerateError}</p>}
                     <button
+                      type="button"
                       onClick={submitRecalculate}
                       disabled={recalculating}
-                      className="w-full py-2.5 rounded-lg border border-[#00C2BB]/30 text-[#00C2BB] text-xs font-medium hover:bg-[#00C2BB]/10 disabled:opacity-40 transition-colors"
+                      className="w-full py-2.5 rounded-lg border border-[#00C2BB]/30 text-[#00C2BB] text-xs font-medium hover:bg-[#00C2BB]/10 disabled:opacity-40 transition-colors cursor-pointer"
                       title="Re-run deterministic mapping and pricing pipeline with latest assumptions and rules without re-running ingest or LLM"
                     >
                       {recalculating ? 'Recalculating…' : 'Recalculate (Deterministic Chain)'}
                     </button>
                     {recalculateError && <p className="text-xs text-orange-400">{recalculateError}</p>}
                     <button
+                      type="button"
                       onClick={submitCompare}
                       disabled={comparing || runs.length < 2}
-                      className="w-full py-2.5 rounded-lg border border-[#00C2BB]/30 text-[#00C2BB] text-xs font-medium hover:bg-[#00C2BB]/10 disabled:opacity-40 transition-colors"
+                      className="w-full py-2.5 rounded-lg border border-[#00C2BB]/30 text-[#00C2BB] text-xs font-medium hover:bg-[#00C2BB]/10 disabled:opacity-40 transition-colors cursor-pointer"
                     >
                       {comparing ? 'Comparing…' : 'Compare Runs'}
                     </button>
@@ -915,7 +918,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
             )}
           </div>
         </main>
-        <aside className="lg:border-l lg:border-white/10 lg:pl-8 flex flex-col gap-6">
+        <aside className="w-full xl:w-80 shrink-0 flex flex-col gap-6 xl:border-l xl:border-[var(--fcp-border-subtle)] xl:pl-6 min-w-0">
           <div className="anim-fade-in delay-175">
             <p className="text-xs uppercase tracking-wider text-gray-400 mb-3">Your Reports</p>
             <JobList jobs={jobs} />

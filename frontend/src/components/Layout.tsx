@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { ThemeToggle } from './ThemeToggle'
 import { UserMenu } from './Nav'
@@ -12,7 +12,18 @@ interface LayoutProps {
 }
 
 export function Layout({ user, children }: LayoutProps) {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const location = useLocation()
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('fcp-sidebar-collapsed') === '1' } catch { return false }
+  })
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed(prev => {
+      const next = !prev
+      try { localStorage.setItem('fcp-sidebar-collapsed', next ? '1' : '0') } catch { /* ignore */ }
+      return next
+    })
+  }
 
   // Redirect unauthenticated users
   if (!user) return <Navigate to="/login" replace />
@@ -24,7 +35,7 @@ export function Layout({ user, children }: LayoutProps) {
     <div className="min-h-screen bg-[var(--fcp-bg-base)] text-[var(--fcp-text-primary)] transition-colors duration-200">
       {/* Top Navbar */}
       <header
-        className={`fixed top-0 right-0 h-16 z-30 border-b border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-base)]/90 backdrop-blur-md transition-all duration-300 ${
+        className={`fixed top-0 right-0 h-16 z-30 border-b border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-base)]/90 backdrop-blur-md transition-all duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
           !isAdmin ? 'left-0' : sidebarCollapsed ? 'left-16' : 'left-64'
         }`}
       >
@@ -54,19 +65,21 @@ export function Layout({ user, children }: LayoutProps) {
       </header>
 
       {/* Main content layout */}
-      <div className={`flex transition-all duration-300 ${!isAdmin ? 'pl-0' : sidebarCollapsed ? 'pl-16' : 'pl-64'}`}>
+      <div className={`flex transition-all duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${!isAdmin ? 'pl-0' : sidebarCollapsed ? 'pl-16' : 'pl-64'}`}>
         {/* Sidebar matching Facets Control Plane specifications (Admins only) */}
         {isAdmin && (
           <Sidebar
             user={user}
             collapsed={sidebarCollapsed}
-            onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+            onToggle={toggleSidebar}
           />
         )}
 
         {/* Page Content: occupies full page smoothly */}
         <main className="flex-1 pt-16 min-h-screen overflow-x-hidden">
-          {children}
+          <div key={location.pathname} className="page-enter">
+            {children}
+          </div>
         </main>
       </div>
     </div>

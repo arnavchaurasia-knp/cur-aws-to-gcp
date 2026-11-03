@@ -73,10 +73,10 @@ function LogLine({ line }: Readonly<{ line: string }>) {
   }
 
   return (
-    <div className="flex gap-2 text-xs font-mono leading-tight border-b border-white/5 pb-1 last:border-0">
-      {timestamp && <span className="text-gray-500 w-24">{timestamp}</span>}
-      <span className={`font-bold w-16 ${levelStyles[level] || levelStyles.INFO}`}>[{level}]</span>
-      <span className="text-gray-300">{message || line}</span>
+    <div className="flex items-start gap-2.5 text-xs font-mono leading-relaxed py-1 px-2 rounded hover:bg-white/[0.08] hover:border-l-2 hover:border-l-[#00C2BB] pl-1.5 transition-all duration-100 group">
+      {timestamp && <span className="text-slate-400 group-hover:text-slate-200 select-none text-[11px] shrink-0 font-mono w-24">{timestamp}</span>}
+      <span className={`font-bold shrink-0 text-[11px] w-14 ${levelStyles[level] || levelStyles.INFO}`}>[{level}]</span>
+      <span className="text-slate-200 break-all leading-relaxed flex-1 select-text">{message || line}</span>
     </div>
   )
 }
@@ -111,8 +111,28 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   const [statusFilter, setStatusFilter] = useState(() => searchParams.get('status') || '')
   const [fromDate, setFromDate] = useState(() => searchParams.get('from') || '')
   const [toDate, setToDate] = useState(() => searchParams.get('to') || '')
-  const [query, setQuery] = useState<string>(() => searchParams.get('q') || '')
-  const [debouncedQuery, setDebouncedQuery] = useState<string>(() => searchParams.get('q') || '')
+  const [ownerFilter, setOwnerFilter] = useState(() => searchParams.get('owner') || '')
+  const [searchTags, setSearchTags] = useState<string[]>(() => {
+    const raw = searchParams.get('q') || ''
+    return raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : []
+  })
+  const [query, setQuery] = useState<string>('')
+  const [debouncedQuery, setDebouncedQuery] = useState<string>('')
+
+  const addSearchTag = (term: string) => {
+    const t = term.trim()
+    if (!t) return
+    if (!searchTags.includes(t)) {
+      setSearchTags(prev => [...prev, t])
+      setOffset(0)
+    }
+    setQuery('')
+  }
+
+  const removeSearchTag = (idx: number) => {
+    setSearchTags(prev => prev.filter((_, i) => i !== idx))
+    setOffset(0)
+  }
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [rowError, setRowError] = useState<Record<string, string>>({})
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -134,10 +154,11 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   useEffect(() => {
     const params = new URLSearchParams()
     if (tab !== 'active') params.set('tab', tab)
-    if (debouncedQuery) params.set('q', debouncedQuery)
+    if (searchTags.length > 0) params.set('q', searchTags.join(','))
     if (statusFilter) params.set('status', statusFilter)
     if (fromDate) params.set('from', fromDate)
     if (toDate) params.set('to', toDate)
+    if (ownerFilter) params.set('owner', ownerFilter)
     if (sortField !== 'created_at') params.set('sort', sortField)
     if (sortDir !== 'desc') params.set('dir', sortDir)
     if (pageSize !== 50) params.set('limit', String(pageSize))
@@ -167,6 +188,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
 
   // Log Modal
   const [activeLogJob, setActiveLogJob] = useState<Job | null>(null)
+  const [logCopied, setLogCopied] = useState(false)
   const [logLines, setLogLines] = useState<string[] | null>(null)
   const [logsLoading, setLogsLoading] = useState(false)
 
@@ -330,7 +352,53 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     }
   }
 
-  const filtered = useMemo(() => jobs ?? [], [jobs])
+  const uniqueOwners = useMemo(() => {
+    if (!jobs) return []
+    const set = new Set<string>()
+    jobs.forEach(j => { if (j.owner) set.add(j.owner) })
+    return Array.from(set).sort()
+  }, [jobs])
+
+  const activeSearchTerms = useMemo(() => {
+    const list = [...searchTags]
+    if (query.trim() && !searchTags.includes(query.trim())) {
+      list.push(query.trim())
+    }
+    return list
+  }, [searchTags, query])
+
+  const filtered = useMemo(() => {
+    if (!jobs) return []
+    let list = jobs
+    if (ownerFilter) {
+      list = list.filter(j => j.owner.toLowerCase() === ownerFilter.toLowerCase())
+    }
+    if (activeSearchTerms.length > 0) {
+      list = list.filter(j => {
+        return activeSearchTerms.every(term => {
+          const q = term.toLowerCase()
+          return j.prospect.toLowerCase().includes(q) ||
+            j.owner.toLowerCase().includes(q) ||
+            j.id.toLowerCase().includes(q) ||
+            (j.status && j.status.toLowerCase().includes(q))
+        })
+      })
+    }
+    return list
+  }, [jobs, ownerFilter, activeSearchTerms])
+
+  const hasActiveFilters = Boolean(searchTags.length > 0 || query || statusFilter || ownerFilter || fromDate || toDate)
+
+  const clearAllFilters = () => {
+    setSearchTags([])
+    setQuery('')
+    setDebouncedQuery('')
+    setStatusFilter('')
+    setOwnerFilter('')
+    setFromDate('')
+    setToDate('')
+    setOffset(0)
+  }
 
   const filteredDeleted = useMemo(() => deletedJobs ?? [], [deletedJobs])
 
@@ -412,21 +480,6 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
             </p>
           </div>
           <div className="flex items-center gap-2 text-xs flex-wrap">
-            <Link to="/facets" className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white font-medium border border-white/10 transition-colors">
-              ⚡ Logs &amp; Engine
-            </Link>
-            <Link to="/admin/users" className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white font-medium border border-white/10 transition-colors">
-              Users
-            </Link>
-            <Link to="/admin/catalog" className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white font-medium border border-white/10 transition-colors">
-              Catalog
-            </Link>
-            <Link to="/admin/analytics" className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white font-medium border border-white/10 transition-colors">
-              Analytics
-            </Link>
-            <Link to="/admin/audit" className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white font-medium border border-white/10 transition-colors">
-              Audit
-            </Link>
             {!halted ? (
               <button
                 onClick={() => setConfirmStopAllOpen(true)}
@@ -530,14 +583,32 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
         {tab === 'active' && (
           <>
             <div className="mb-6 anim-fade-in flex flex-wrap items-center gap-3">
-              <input
-                type="text"
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-                placeholder="Search prospect, owner, ID, status…"
-                className="w-full sm:w-80 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm
-                  placeholder:text-gray-500 transition-colors duration-150 focus:border-[#645DF6]"
-              />
+              <div className="relative flex items-center">
+                <input
+                  type="text"
+                  value={query}
+                  onChange={e => setQuery(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ',') {
+                      e.preventDefault()
+                      addSearchTag(query)
+                    }
+                  }}
+                  placeholder="Search & hit Enter to add tag…"
+                  className="w-full sm:w-80 bg-white/5 border border-white/10 rounded-lg px-3 py-2 pr-16 text-sm
+                    placeholder:text-gray-500 transition-colors duration-150 focus:border-[#645DF6]"
+                />
+                {query.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => addSearchTag(query)}
+                    className="absolute right-1.5 px-2 py-1 bg-[#645DF6]/20 hover:bg-[#645DF6]/40 text-[#a5a0ff] text-xs font-semibold rounded cursor-pointer transition-colors"
+                    title="Add filter tag"
+                  >
+                    + Add
+                  </button>
+                )}
+              </div>
               <select
                 value={statusFilter}
                 onChange={e => { setStatusFilter(e.target.value); setOffset(0) }}
@@ -555,17 +626,92 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                 <input type="date" value={fromDate} onChange={e => { setFromDate(e.target.value); setOffset(0) }}
                   className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" />
               </label>
+              <select
+                value={ownerFilter}
+                onChange={e => { setOwnerFilter(e.target.value); setOffset(0) }}
+                className="bg-[#12121a] border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-200 cursor-pointer"
+                title="Filter by job owner / user"
+              >
+                <option value="">All Owners / Users</option>
+                {uniqueOwners.map(o => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
+              </select>
+              <label className="text-xs text-gray-400 flex items-center gap-1.5">
+                From:
+                <input type="date" value={fromDate} onChange={e => { setFromDate(e.target.value); setOffset(0) }}
+                  className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" />
+              </label>
               <label className="text-xs text-gray-400 flex items-center gap-1.5">
                 To:
                 <input type="date" value={toDate} onChange={e => { setToDate(e.target.value); setOffset(0) }}
                   className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" />
               </label>
+              {hasActiveFilters && (
+                <button
+                  type="button"
+                  onClick={clearAllFilters}
+                  className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-red-400 hover:text-red-300 hover:bg-red-500/10 border border-red-500/30 transition-colors cursor-pointer"
+                >
+                  Clear filters
+                </button>
+              )}
               {debouncedQuery && (
                 <span className="text-xs text-gray-400 ml-auto">
                   {total} results for &lsquo;{debouncedQuery}&rsquo;
                 </span>
               )}
             </div>
+
+            {/* Amazon-style Active Filter Pills */}
+            {hasActiveFilters && (
+              <div className="flex flex-wrap items-center gap-2 mb-6 p-3 rounded-xl bg-white/[0.02] border border-white/10 text-xs anim-fade-in">
+                <span className="text-gray-400 font-semibold mr-1">Active filters:</span>
+                {searchTags.map((tag, idx) => (
+                  <span key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-[#645DF6]/15 text-[#a5a0ff] border border-[#645DF6]/30">
+                    <span>Search: &ldquo;{tag}&rdquo;</span>
+                    <button type="button" onClick={() => removeSearchTag(idx)} className="hover:text-white cursor-pointer ml-1 font-bold" title="Remove tag">✕</button>
+                  </span>
+                ))}
+                {query.trim() && !searchTags.includes(query.trim()) && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-white/10 text-gray-300 border border-white/20 italic">
+                    <span>Typing: &ldquo;{query.trim()}&rdquo; (Press Enter to add tag)</span>
+                    <button type="button" onClick={() => addSearchTag(query)} className="text-[#00C2BB] font-bold ml-1 cursor-pointer">↵</button>
+                  </span>
+                )}
+                {statusFilter && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-[#00C2BB]/15 text-[#00C2BB] border border-[#00C2BB]/30 capitalize">
+                    <span>Status: {statusFilter}</span>
+                    <button type="button" onClick={() => setStatusFilter('')} className="hover:text-white cursor-pointer ml-1 font-bold">✕</button>
+                  </span>
+                )}
+                {ownerFilter && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    <span>Owner: {ownerFilter}</span>
+                    <button type="button" onClick={() => setOwnerFilter('')} className="hover:text-white cursor-pointer ml-1 font-bold">✕</button>
+                  </span>
+                )}
+                {fromDate && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                    <span>From: {fromDate}</span>
+                    <button type="button" onClick={() => setFromDate('')} className="hover:text-white cursor-pointer ml-1 font-bold">✕</button>
+                  </span>
+                )}
+                {toDate && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                    <span>To: {toDate}</span>
+                    <button type="button" onClick={() => setToDate('')} className="hover:text-white cursor-pointer ml-1 font-bold">✕</button>
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={clearAllFilters}
+                  className="ml-auto text-xs font-semibold px-2.5 py-1 rounded-md text-red-400 hover:text-red-300 hover:bg-red-500/10 border border-red-500/30 transition-colors cursor-pointer"
+                >
+                  Clear all
+                </button>
+              </div>
+            )}
 
             {jobs === null && (
               <div className="flex items-center gap-2 text-sm text-gray-500 py-16 justify-center">
@@ -741,6 +887,13 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                                               className="px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white transition-colors"
                                             >
                                               CSV
+                                            </a>
+                                            <a
+                                              href={downloadURL(j.id, undefined, 'bill')}
+                                              title="Download Original Input Bill"
+                                              className="px-2 py-1 rounded bg-[#00C2BB]/10 hover:bg-[#00C2BB]/25 text-[#00C2BB] font-medium transition-colors border border-[#00C2BB]/30"
+                                            >
+                                              Bill
                                             </a>
                                           </div>
                                         ) : (
@@ -1023,53 +1176,97 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
 
         {/* Live Logs Slide-out / Modal */}
         {activeLogJob && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm anim-fade-in">
-            <div className="bg-[#12121a] border border-white/10 rounded-2xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden anim-scale-in">
-              <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between gap-4 bg-white/[0.02]">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md anim-fade-in"
+            onClick={(e) => { if (e.target === e.currentTarget) setActiveLogJob(null) }}
+            role="dialog"
+            aria-modal="true"
+          >
+            <div
+              className="bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-default)] rounded-2xl w-full max-w-5xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden anim-scale-in text-[var(--fcp-text-primary)]"
+            >
+              <div className="px-6 py-4 border-b border-[var(--fcp-border-subtle)] flex items-center justify-between gap-4 bg-[var(--fcp-bg-raised)]">
                 <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold text-white">{activeLogJob.prospect}</h3>
-                    <span className="text-xs px-2 py-0.5 rounded bg-white/10 font-mono text-gray-400">
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <h3 className="font-bold text-[var(--fcp-text-primary)] text-base">{activeLogJob.prospect}</h3>
+                    <span className="text-xs px-2.5 py-0.5 rounded-md bg-[var(--fcp-bg-subtle)] border border-[var(--fcp-border-subtle)] font-mono text-[var(--fcp-text-secondary)]">
                       {activeLogJob.id}
                     </span>
-                    <span className={`text-xs font-semibold ${statusColor[activeLogJob.status] ?? 'text-gray-400'}`}>
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-md border ${
+                      activeLogJob.status === 'done'
+                        ? 'text-emerald-500 bg-emerald-500/10 border-emerald-500/30'
+                        : activeLogJob.status === 'running'
+                        ? 'text-cyan-500 bg-cyan-500/10 border-cyan-500/30'
+                        : activeLogJob.status === 'failed'
+                        ? 'text-rose-500 bg-rose-500/10 border-rose-500/30'
+                        : 'text-gray-400 bg-gray-500/10 border-gray-500/30'
+                    }`}>
                       ● {activeLogJob.status}
                     </span>
                   </div>
-                  <p className="text-xs text-gray-400 mt-0.5">Live execution and agent logs</p>
+                  <p className="text-xs text-[var(--fcp-text-secondary)] mt-1 font-medium">Live execution console and system agent logs</p>
                 </div>
                 <div className="flex items-center gap-2">
                   {logLines && logLines.length > 0 && (
                     <button
+                      type="button"
                       onClick={() => {
                         navigator.clipboard.writeText(logLines.join('\n'))
+                        setLogCopied(true)
                         toast.success('Logs copied to clipboard')
+                        setTimeout(() => setLogCopied(false), 2000)
                       }}
-                      className="text-xs px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white transition-colors cursor-pointer"
+                      className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border font-medium transition-all duration-150 cursor-pointer ${
+                        logCopied
+                          ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                          : 'bg-white/5 hover:bg-white/10 border-white/10 text-slate-200 hover:text-white'
+                      }`}
+                      title="Copy complete log to clipboard"
                     >
-                      Copy Log
+                      {logCopied ? (
+                        <>
+                          <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                          <span>Copied!</span>
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                          </svg>
+                          <span>Copy Log</span>
+                        </>
+                      )}
                     </button>
                   )}
                   <button
+                    type="button"
                     onClick={() => setActiveLogJob(null)}
-                    className="text-gray-400 hover:text-white text-lg px-2 py-1 rounded transition-colors cursor-pointer"
+                    className="text-slate-400 hover:text-white text-lg px-2 py-1 rounded transition-colors cursor-pointer"
+                    title="Close modal"
                   >
                     ✕
                   </button>
                 </div>
               </div>
 
-              <div className="p-6 overflow-auto flex-1 font-mono text-xs bg-black/40 leading-relaxed">
+              <div
+                data-terminal
+                style={{ backgroundColor: '#07090e' }}
+                className="dark-console p-4 sm:p-5 overflow-auto flex-1 font-mono text-xs leading-relaxed select-text"
+              >
                 {logsLoading && (
-                  <div className="text-gray-500 flex items-center gap-2 p-2">
-                    <span className="animate-pulse">Loading live execution logs…</span>
+                  <div className="text-slate-400 flex items-center gap-2 p-3">
+                    <span className="w-2 h-2 rounded-full bg-[#00C2BB] animate-ping" />
+                    <span>Loading live execution logs…</span>
                   </div>
                 )}
                 {!logsLoading && (!logLines || logLines.length === 0) && (
-                  <p className="text-gray-500 p-2">No logs generated for this run yet.</p>
+                  <p className="text-slate-500 p-3 italic">No logs generated for this run yet.</p>
                 )}
                 {!logsLoading && logLines && logLines.length > 0 && (
-                  <div className="space-y-0 p-1">
+                  <div className="space-y-0.5 p-1">
                     {logLines.map((line, i) => (
                       <LogLine key={i} line={line} />
                     ))}

@@ -72,7 +72,7 @@ export function Sidebar({ user, collapsed, onToggle }: SidebarProps) {
           {item.icon}
         </div>
         {!collapsed && (
-          <div className="flex items-center justify-between flex-1 truncate">
+          <div className="flex items-center justify-between flex-1 truncate anim-fade-in">
             <span className="truncate">{item.label}</span>
             {item.badge && (
               <span className="text-[10px] uppercase px-1.5 py-0.5 rounded font-semibold bg-white/10 text-gray-300 border border-white/20">
@@ -107,7 +107,7 @@ export function Sidebar({ user, collapsed, onToggle }: SidebarProps) {
 
   return (
     <aside
-      className={`fixed top-0 bottom-0 left-0 h-screen z-50 flex flex-col transition-all duration-300 ease-in-out border-r select-none
+      className={`fixed top-0 bottom-0 left-0 h-screen z-50 flex flex-col transition-all duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] border-r select-none
         ${collapsed ? 'w-16' : 'w-64'}
         bg-[var(--fcp-bg-surface)] border-[var(--fcp-border-subtle)]`}
     >

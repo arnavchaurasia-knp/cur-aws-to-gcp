@@ -7,6 +7,7 @@ import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { toast } from 'sonner'
 import { BackButton } from '../components/BackButton'
+import { useNotifications, triggerNotificationRefresh } from '../lib/notificationsContext'
 
 function statusBadge(status: string) {
   switch (status) {
@@ -38,6 +39,7 @@ export function AdminNotifications({ user }: Readonly<{ user: UserInfo }>) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'all' | 'jobs' | 'tickets'>('all')
+  const { markAllAsRead } = useNotifications()
 
   // Notification configuration state
   const [emailNotif, setEmailNotif] = useState(true)
@@ -75,7 +77,8 @@ export function AdminNotifications({ user }: Readonly<{ user: UserInfo }>) {
   useEffect(() => {
     load()
     loadSettings()
-  }, [])
+    markAllAsRead()
+  }, [markAllAsRead])
 
   const handleToggleEmail = async () => {
     const nextVal = !emailNotif
@@ -90,6 +93,7 @@ export function AdminNotifications({ user }: Readonly<{ user: UserInfo }>) {
       })
       setSettingsSaved(true)
       setTimeout(() => setSettingsSaved(false), 3000)
+      triggerNotificationRefresh()
       toast.success(`Email reports are now ${nextVal ? 'enabled' : 'disabled'}`)
     } catch (err) {
       toast.error('Failed to update email preferences')
@@ -112,6 +116,7 @@ export function AdminNotifications({ user }: Readonly<{ user: UserInfo }>) {
       })
       setSettingsSaved(true)
       setTimeout(() => setSettingsSaved(false), 3000)
+      triggerNotificationRefresh()
       toast.success(`Slack notifications are now ${nextVal ? 'enabled' : 'disabled'}`)
     } catch (err) {
       toast.error('Failed to update Slack toggle')
@@ -132,6 +137,7 @@ export function AdminNotifications({ user }: Readonly<{ user: UserInfo }>) {
       })
       setSettingsSaved(true)
       setTimeout(() => setSettingsSaved(false), 3000)
+      triggerNotificationRefresh()
       toast.success('Slack webhook and channel preferences saved')
     } catch (err) {
       toast.error('Failed to save Slack settings')

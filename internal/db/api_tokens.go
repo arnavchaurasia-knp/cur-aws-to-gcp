@@ -237,6 +237,22 @@ func (d *DB) RevokeAPIToken(keyID, email string) error {
 	return nil
 }
 
+// DeleteAPIToken permanently removes a token row owned by email.
+func (d *DB) DeleteAPIToken(keyID, email string) error {
+	result, err := d.conn.Exec(`
+		DELETE FROM api_tokens
+		WHERE key_id = ? AND user_email = ?
+	`, keyID, strings.ToLower(email))
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // TouchAPITokenLastUsed updates last_used_at for a key id. Callers should
 // throttle writes (at most once per minute per key id) and perform the write
 // off the request path; see TokenMiddleware.

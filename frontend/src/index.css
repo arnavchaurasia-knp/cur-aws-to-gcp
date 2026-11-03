@@ -26,6 +26,10 @@
   --fcp-input-bg: #090a10;
   --fcp-input-border: rgba(255, 255, 255, 0.16);
   --fcp-card-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.45);
+
+  /* Unified animation timing — one duration + easing for the whole app */
+  --fcp-anim-dur: 0.42s;
+  --fcp-anim-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Light Theme Tokens (Refined Facets Enterprise IDP style) */
@@ -103,6 +107,85 @@ html:not(.dark) .text-white,
 html:not(.dark) .text-gray-100,
 html:not(.dark) .text-gray-200 {
   color: #0f172a !important;
+}
+
+/* Explicitly preserve crisp pure white text and pointer cursor on shimmer buttons & primary action badges in Light Mode */
+html:not(.dark) .btn-shimmer,
+html:not(.dark) .btn-shimmer *,
+html:not(.dark) button.btn-shimmer,
+html:not(.dark) a.btn-shimmer,
+html:not(.dark) [data-contact-btn],
+html:not(.dark) [data-contact-btn] * {
+  color: #ffffff !important;
+  cursor: pointer !important;
+}
+
+/* Terminal & Code Console Isolation:
+   Never invert text or border colors inside dark terminals/code viewers in Light Mode */
+[data-terminal],
+.dark-console {
+  background-color: #07090e !important;
+  color: #f8fafc !important;
+}
+
+html:not(.dark) [data-terminal] .text-white,
+html:not(.dark) .dark-console .text-white {
+  color: #ffffff !important;
+}
+
+html:not(.dark) [data-terminal] .text-slate-100,
+html:not(.dark) .dark-console .text-slate-100,
+html:not(.dark) [data-terminal] .text-slate-200,
+html:not(.dark) .dark-console .text-slate-200,
+html:not(.dark) [data-terminal] .text-slate-300,
+html:not(.dark) .dark-console .text-slate-300,
+html:not(.dark) [data-terminal] .text-gray-300,
+html:not(.dark) .dark-console .text-gray-300 {
+  color: #e2e8f0 !important;
+}
+
+html:not(.dark) [data-terminal] .text-slate-400,
+html:not(.dark) .dark-console .text-slate-400,
+html:not(.dark) [data-terminal] .text-gray-400,
+html:not(.dark) .dark-console .text-gray-400 {
+  color: #94a3b8 !important;
+}
+
+html:not(.dark) [data-terminal] .text-slate-500,
+html:not(.dark) .dark-console .text-slate-500,
+html:not(.dark) [data-terminal] .text-gray-500,
+html:not(.dark) .dark-console .text-gray-500 {
+  color: #64748b !important;
+}
+
+html:not(.dark) [data-terminal] .text-cyan-300,
+html:not(.dark) .dark-console .text-cyan-300,
+html:not(.dark) [data-terminal] [class*="#00C2BB"],
+html:not(.dark) .dark-console [class*="#00C2BB"] {
+  color: #00C2BB !important;
+}
+
+html:not(.dark) [data-terminal] .text-emerald-300,
+html:not(.dark) [data-terminal] .text-emerald-400,
+html:not(.dark) .dark-console .text-emerald-400 {
+  color: #34d399 !important;
+}
+
+html:not(.dark) [data-terminal] .text-amber-300,
+html:not(.dark) [data-terminal] .text-amber-400,
+html:not(.dark) .dark-console .text-amber-300 {
+  color: #fbbf24 !important;
+}
+
+html:not(.dark) [data-terminal] .text-rose-400,
+html:not(.dark) [data-terminal] .text-red-400,
+html:not(.dark) .dark-console .text-rose-400 {
+  color: #f87171 !important;
+}
+
+html:not(.dark) [data-terminal] .border-white\/5,
+html:not(.dark) .dark-console .border-white\/5 {
+  border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
 html:not(.dark) .text-gray-300,
@@ -269,25 +352,32 @@ select:focus {
 
 /* ── Utility animation classes (GPU composited for 120Hz/144Hz+) ── */
 .anim-fade-in-up  {
-  animation: fade-in-up 0.45s cubic-bezier(0.22,1,0.36,1) both;
+  animation: fade-in-up var(--fcp-anim-dur) var(--fcp-anim-ease) both;
   will-change: transform, opacity;
   transform: translateZ(0);
 }
 .anim-fade-in     {
-  animation: fade-in 0.35s ease-out both;
+  animation: fade-in var(--fcp-anim-dur) var(--fcp-anim-ease) both;
   will-change: opacity;
 }
 .anim-slide-down  {
-  animation: slide-down 0.35s cubic-bezier(0.22,1,0.36,1) both;
+  animation: slide-down var(--fcp-anim-dur) var(--fcp-anim-ease) both;
   will-change: transform, opacity;
   transform: translateZ(0);
 }
 .anim-scale-in    {
-  animation: scale-in 0.3s cubic-bezier(0.22,1,0.36,1) both;
+  animation: scale-in var(--fcp-anim-dur) var(--fcp-anim-ease) both;
   will-change: transform, opacity;
   transform: translateZ(0);
 }
 .anim-glow-breathe { animation: glow-breathe 2.8s ease-in-out infinite; }
+
+/* ── Page entrance — the one animation every route plays on mount ── */
+.page-enter {
+  animation: fade-in-up var(--fcp-anim-dur) var(--fcp-anim-ease) both;
+  will-change: transform, opacity;
+  transform: translateZ(0);
+}
 
 /* ── Stagger delays ─────────────────────────────────────────── */
 .delay-50  { animation-delay: 50ms; }
@@ -313,6 +403,8 @@ select:focus {
   background-size: 200% 100%;
   animation: shimmer-sweep 3s linear infinite;
   transition: transform 0.15s ease, opacity 0.15s ease;
+  color: #ffffff !important;
+  cursor: pointer !important;
 }
 .btn-shimmer:not(:disabled):hover  { transform: translateY(-1px); }
 .btn-shimmer:not(:disabled):active { transform: translateY(0); }
@@ -492,7 +584,7 @@ select:focus {
 /* ── Reduced motion ─────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   .anim-fade-in-up, .anim-fade-in, .anim-slide-down,
-  .anim-scale-in, .anim-glow-breathe, .btn-shimmer,
+  .anim-scale-in, .anim-glow-breathe, .btn-shimmer, .page-enter,
   .phase-bar-done, .login-orb,
   .login-gradient-text, .login-feature,
   .login-drop-dot, .login-glyph-wrap,
@@ -505,4 +597,23 @@ select:focus {
   .reveal, .reveal.reveal-visible { opacity: 1; transform: none; transition: none; }
   .card-lift:hover { transform: none; box-shadow: none; }
   .dropzone-drag   { animation: none; transform: none; }
+}
+
+/* ── Global Interactive Cursor Guarantees ─────────────────────── */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+select,
+summary,
+input[type="button"],
+input[type="submit"],
+input[type="reset"],
+a.cursor-pointer,
+button.cursor-pointer {
+  cursor: pointer !important;
+}
+
+button:disabled,
+[role="button"][aria-disabled="true"],
+input:disabled {
+  cursor: not-allowed !important;
 }

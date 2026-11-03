@@ -27,13 +27,14 @@ export function ContactCard() {
 
   if (sent) {
     return (
-      <div className="bg-white/[0.02] border border-[#00C2BB]/30 rounded-lg p-4 anim-scale-in">
+      <div className="bg-[var(--fcp-bg-surface)] border border-[#00C2BB]/40 rounded-xl p-4 anim-scale-in w-full overflow-hidden shadow-sm">
         <p className="text-xs uppercase tracking-wider text-[#00C2BB] mb-1 font-semibold">Gmail Opened</p>
-        <p className="text-xs text-gray-400 leading-relaxed">
+        <p className="text-xs text-[var(--fcp-text-secondary)] leading-relaxed">
           Gmail compose has opened in a new tab addressed to{' '}
-          <strong className="text-white">arnav.chaurasia@facets.cloud</strong> with your subject and message prefilled.
+          <strong className="text-[var(--fcp-text-primary)]">arnav.chaurasia@facets.cloud</strong> with your subject and message prefilled.
         </p>
         <button
+          type="button"
           onClick={() => { setSent(false); setMessage('') }}
           className="mt-2.5 text-[11px] text-[#00C2BB] hover:underline cursor-pointer"
         >
@@ -45,43 +46,48 @@ export function ContactCard() {
 
   return (
     <>
-      <div className="bg-white/[0.02] border border-white/10 rounded-lg p-4 space-y-3 card-lift">
+      <div className="bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-default)] rounded-xl p-4 space-y-3 card-lift w-full overflow-hidden shadow-sm min-w-0">
         <div>
-          <p className="text-xs uppercase tracking-wider text-[#645DF6] mb-1">Need help?</p>
-          <p className="text-xs text-gray-400 leading-relaxed">
+          <p className="text-xs uppercase tracking-wider text-[#645DF6] mb-1 font-semibold">Need help?</p>
+          <p className="text-xs text-[var(--fcp-text-secondary)] leading-relaxed break-words">
             Need help understanding your cost analysis or want a more detailed infrastructure and cost assessment? Drop a note and our team will get in touch with you.
           </p>
         </div>
         <button
+          type="button"
+          data-contact-btn
           onClick={() => setOpen(true)}
-          className="btn-shimmer w-full py-2 rounded-lg text-xs font-medium text-white">
-          Contact Us
+          style={{ color: '#ffffff' }}
+          className="btn-shimmer w-full py-2.5 rounded-lg text-xs font-semibold !text-white cursor-pointer shadow-sm hover:opacity-95 transition-all flex items-center justify-center gap-1.5"
+        >
+          <span style={{ color: '#ffffff' }} className="!text-white font-semibold">Contact Us</span>
         </button>
       </div>
 
       {open && (
         <div
           role="presentation"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 anim-fade-in"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm px-4 anim-fade-in"
           onClick={() => setOpen(false)}
           onKeyDown={e => { if (e.key === 'Escape') setOpen(false) }}>
           <div
             role="dialog"
             aria-modal="true"
             aria-label="Contact us"
-            className="w-full max-w-xl bg-[#0d0d14] border border-white/10 rounded-2xl shadow-2xl p-6 space-y-4 anim-scale-in"
+            className="w-full max-w-xl bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-default)] rounded-2xl shadow-2xl p-6 space-y-4 anim-scale-in text-[var(--fcp-text-primary)]"
             onClick={e => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs uppercase tracking-wider text-[#645DF6] mb-1">Need help?</p>
-                <h2 className="text-lg font-semibold text-white">Tell us what you're looking for</h2>
-                <p className="text-sm text-gray-400 leading-relaxed mt-2">
+                <p className="text-xs uppercase tracking-wider text-[#645DF6] mb-1 font-semibold">Need help?</p>
+                <h2 className="text-lg font-semibold text-[var(--fcp-text-primary)]">Tell us what you're looking for</h2>
+                <p className="text-sm text-[var(--fcp-text-secondary)] leading-relaxed mt-2">
                   Need help understanding your cost analysis or want a more detailed infrastructure and cost assessment? Drop a note below and our team will get in touch with you.
                 </p>
               </div>
               <button
+                type="button"
                 onClick={() => setOpen(false)}
-                className="text-gray-500 hover:text-gray-200 text-xl leading-none transition-colors duration-150"
+                className="text-[var(--fcp-text-tertiary)] hover:text-[var(--fcp-text-primary)] text-xl leading-none transition-colors duration-150 cursor-pointer"
                 aria-label="Close">
                 ×
               </button>
@@ -94,22 +100,22 @@ export function ContactCard() {
               placeholder="What's the context? What kind of help would be most useful?"
               maxLength={2000}
               rows={8}
-              className="w-full bg-white/5 border border-white/20 rounded-lg px-3 py-3 text-sm outline-none
-                focus:border-[#645DF6] transition-colors duration-150 resize-y"
+              className="w-full bg-[var(--fcp-input-bg)] border border-[var(--fcp-input-border)] text-[var(--fcp-text-primary)] placeholder-[var(--fcp-text-tertiary)] rounded-lg px-3 py-3 text-sm outline-none focus:border-[#645DF6] transition-colors duration-150 resize-y"
             />
 
             <div className="flex items-center justify-end gap-3">
               <button
+                type="button"
                 onClick={() => setOpen(false)}
-                className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors duration-150
-                  cursor-pointer">
+                className="px-4 py-2 text-sm text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)] transition-colors duration-150 cursor-pointer">
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={submit}
-                className="btn-shimmer px-5 py-2 rounded-lg text-sm font-medium text-white
-                  cursor-pointer">
-                Submit Request
+                style={{ color: '#ffffff' }}
+                className="btn-shimmer px-5 py-2 rounded-lg text-sm font-semibold !text-white cursor-pointer shadow-sm hover:opacity-95 transition-all">
+                <span style={{ color: '#ffffff' }} className="!text-white font-semibold">Submit Request</span>
               </button>
             </div>
           </div>

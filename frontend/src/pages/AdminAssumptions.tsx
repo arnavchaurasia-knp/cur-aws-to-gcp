@@ -12,6 +12,7 @@ import { useTitle } from '../lib/useTitle'
 import { toast } from 'sonner'
 import { CATEGORY_ORDER, CATEGORY_META } from '../lib/assumptionsConstants'
 import { BackButton } from '../components/BackButton'
+import { triggerNotificationRefresh } from '../lib/notificationsContext'
 
 const RATIO_OPTIONS = [
   { value: '4', label: '1:4 (compute-optimised, C4/N2D)' },
@@ -83,6 +84,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
       await putAssumption(key, { value: num, reason: edit.reason.trim() })
       setEdits(prev => { const next = { ...prev }; delete next[key]; return next })
       await refresh()
+      triggerNotificationRefresh()
       toast.success('Assumption updated')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'save failed')
@@ -229,10 +231,10 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                       <select
                                         value={edit.value}
                                         onChange={e => handleValueChange(a.key, e.target.value)}
-                                        className="bg-[#121217] border border-white/10 rounded px-2.5 py-1.5 text-white text-xs focus:border-[#645DF6] outline-none"
+                                        className="bg-[var(--fcp-input-bg)] border border-[var(--fcp-input-border)] rounded px-2.5 py-1.5 text-[var(--fcp-text-primary)] text-xs focus:border-[#645DF6] outline-none cursor-pointer"
                                       >
                                         {RATIO_OPTIONS.map(opt => (
-                                          <option key={opt.value} value={opt.value}>
+                                          <option key={opt.value} value={opt.value} className="bg-[var(--fcp-bg-surface)] text-[var(--fcp-text-primary)]">
                                             {opt.label}
                                           </option>
                                         ))}
@@ -246,7 +248,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                           max={a.max_value}
                                           value={edit.value}
                                           onChange={e => handleValueChange(a.key, e.target.value)}
-                                          className="bg-white/[0.05] border border-white/10 rounded px-2.5 py-1.5 text-white w-24 text-sm focus:border-[#645DF6] outline-none"
+                                          className="bg-[var(--fcp-input-bg)] border border-[var(--fcp-input-border)] rounded px-2.5 py-1.5 text-[var(--fcp-text-primary)] w-24 text-sm focus:border-[#645DF6] outline-none"
                                         />
                                         {edit.value && !inRange && (
                                           <span className="text-xs text-red-400">out of range</span>
@@ -258,7 +260,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                       placeholder="Reason for change…"
                                       value={edit.reason}
                                       onChange={e => handleReasonChange(a.key, e.target.value)}
-                                      className="bg-white/[0.05] border border-white/10 rounded px-2 py-1 text-white text-xs placeholder:text-gray-500 focus:border-[#645DF6] outline-none w-48"
+                                      className="bg-[var(--fcp-input-bg)] border border-[var(--fcp-input-border)] rounded px-2 py-1 text-[var(--fcp-text-primary)] text-xs placeholder-[var(--fcp-text-tertiary)] focus:border-[#645DF6] outline-none w-48"
                                     />
                                   </div>
                                 ) : (
@@ -280,14 +282,14 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                   <div className="flex items-center gap-2 justify-end">
                                     <button
                                       onClick={() => handleSave(a.key)}
-                                      disabled={!edit.value || !edit.reason.trim() || !inRange}
-                                      className="px-2.5 py-1.5 rounded bg-[#645DF6] text-white text-[10px] font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#645DF6]/80 transition-colors"
+                                      disabled={!edit.value || !edit.reason.trim() || !inRange || saving === a.key}
+                                      className="px-2.5 py-1.5 rounded bg-[#645DF6] text-white text-[10px] font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#645DF6]/80 transition-colors cursor-pointer"
                                     >
-                                      Save
+                                      {saving === a.key ? 'Saving...' : 'Save'}
                                     </button>
                                     <button
                                       onClick={() => setEdits(prev => { const next = { ...prev }; delete next[a.key]; return next })}
-                                      className="px-2.5 py-1.5 rounded text-gray-400 hover:text-white hover:bg-white/5 text-[10px] transition-colors"
+                                      className="px-2.5 py-1.5 rounded text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-hover)] text-[10px] transition-colors cursor-pointer border border-[var(--fcp-border-subtle)]"
                                     >
                                       Cancel
                                     </button>
@@ -295,7 +297,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                 ) : (
                                   <button
                                     onClick={() => setEdits(prev => ({ ...prev, [a.key]: { value: String(a.value), reason: '' } }))}
-                                    className="px-2.5 py-1.5 rounded border border-white/10 text-gray-300 hover:text-white hover:border-white/30 text-[10px] transition-colors"
+                                    className="px-2.5 py-1.5 rounded border border-[var(--fcp-border-subtle)] text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)] hover:border-[var(--fcp-border-default)] text-[10px] transition-colors cursor-pointer"
                                   >
                                     Edit
                                   </button>

@@ -10,6 +10,9 @@ import { parseAdminApiError, type AdminApiErrorState } from '../components/admin
 import { BackButton } from '../components/BackButton'
 
 export function AdminAnalytics({ user }: Readonly<{ user: UserInfo }>) {
+  const axisColor = 'var(--fcp-text-tertiary)'
+  const gridColor = 'var(--fcp-border-subtle)'
+
   useTitle('Analytics — admin')
   const nav = useNavigate()
   const [stats, setStats] = useState<UsageStats | null>(null)
@@ -131,9 +134,9 @@ export function AdminAnalytics({ user }: Readonly<{ user: UserInfo }>) {
                 <div style={{ width: '100%', height: 260 }}>
                   <ResponsiveContainer>
                     <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
-                      <XAxis dataKey="day" stroke="rgba(255,255,255,0.4)" fontSize={11} tickLine={false} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} />
-                      <YAxis stroke="rgba(255,255,255,0.4)" fontSize={11} allowDecimals={false} tickLine={false} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} />
+                      <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+                      <XAxis dataKey="day" stroke={axisColor} fontSize={11} tickLine={false} axisLine={{ stroke: gridColor }} />
+                      <YAxis stroke={axisColor} fontSize={11} allowDecimals={false} tickLine={false} axisLine={{ stroke: gridColor }} />
                       <Tooltip
                         cursor={{ fill: 'rgba(255,255,255,0.04)' }}
                         contentStyle={{

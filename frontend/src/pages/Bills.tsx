@@ -1,6 +1,10 @@
+import { createPortal } from 'react-dom'
 import { useEffect, useState, useMemo } from 'react'
 import { Layout } from '../components/Layout'
-import { listUploadedBills, previewUploadedBill, type UploadedBill, type BillPreviewResponse } from '../api/admin'
+import { listUploadedBills, previewUploadedBill, deleteUploadedBill, type UploadedBill, type BillPreviewResponse } from '../api/admin'
+import { ConfirmDialog } from '../components/ConfirmDialog'
+import { toast } from 'sonner'
+import { triggerNotificationRefresh } from '../lib/notificationsContext'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { BackButton } from '../components/BackButton'
@@ -27,7 +31,26 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [selectedBill, setSelectedBill] = useState<UploadedBill | null>(null)
 
+  const [deleteTarget, setDeleteTarget] = useState<UploadedBill | null>(null)
+  const [deleting, setDeleting] = useState(false)
+
   const isAdmin = Boolean(user?.is_admin)
+
+  const handleDeleteBill = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      await deleteUploadedBill(deleteTarget.content_hash)
+      toast.success(`Bill "${deleteTarget.file_name || deleteTarget.content_hash.slice(0, 12)}" deleted`)
+      setDeleteTarget(null)
+      await refreshBills()
+      triggerNotificationRefresh()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete bill')
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   const refreshBills = async () => {
     setError(null)
@@ -45,6 +68,17 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
   useEffect(() => {
     refreshBills()
   }, [])
+
+  // Close preview modal on Escape key
+  useEffect(() => {
+    if (!previewModalOpen) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPreviewModalOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [previewModalOpen])
+
 
   const handleOpenPreview = async (bill: UploadedBill) => {
     setSelectedBill(bill)
@@ -125,7 +159,7 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
           <button
             onClick={refreshBills}
             disabled={loading}
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-medium text-gray-300 transition"
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-medium text-gray-300 transition cursor-pointer"
           >
             <svg
               className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`}
@@ -218,7 +252,7 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
                           {/* View Button */}
                           <button
                             onClick={() => handleOpenPreview(b)}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white/5 hover:bg-[#00C2BB]/20 hover:text-[#00C2BB] text-gray-300 text-xs font-medium border border-white/10 hover:border-[#00C2BB]/40 transition"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white/5 hover:bg-[#00C2BB]/20 hover:text-[#00C2BB] text-gray-300 text-xs font-medium border border-white/10 hover:border-[#00C2BB]/40 transition cursor-pointer"
                             title="View / inspect bill"
                           >
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -242,7 +276,7 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
                           <a
                             href={`/api/admin/bills/${encodeURIComponent(b.content_hash)}/download`}
                             download={b.file_name || undefined}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-[#00C2BB]/10 hover:bg-[#00C2BB]/20 text-[#00C2BB] text-xs font-medium border border-[#00C2BB]/30 hover:border-[#00C2BB]/60 transition"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-[#00C2BB]/10 hover:bg-[#00C2BB]/20 text-[#00C2BB] text-xs font-medium border border-[#00C2BB]/30 hover:border-[#00C2BB]/60 transition cursor-pointer"
                             title="Download original file"
                           >
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -255,6 +289,21 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
                             </svg>
                             Download
                           </a>
+
+                          {/* Delete Button */}
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => setDeleteTarget(b)}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 text-xs font-medium border border-red-500/30 hover:border-red-500/50 transition cursor-pointer"
+                              title="Delete bill"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                              Delete
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -276,13 +325,18 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
       </div>
 
       {/* Bill Preview Modal */}
-      {previewModalOpen && selectedBill && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="relative w-full max-w-5xl max-h-[90vh] bg-[#0c0d14] border border-white/20 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+      {previewModalOpen && selectedBill && createPortal(
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-black/80 backdrop-blur-md animate-in fade-in duration-150"
+          onClick={(e) => { if (e.target === e.currentTarget) setPreviewModalOpen(false) }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="relative w-full max-w-5xl max-h-[90vh] bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-default)] rounded-2xl shadow-2xl flex flex-col overflow-hidden text-[var(--fcp-text-primary)]">
             {/* Modal Header */}
-            <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-white/[0.02]">
+            <div className="px-6 py-4 border-b border-[var(--fcp-border-subtle)] flex items-center justify-between bg-[var(--fcp-bg-surface)] shrink-0">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-[#00C2BB]/10 border border-[#00C2BB]/30 flex items-center justify-center text-[#00C2BB]">
+                <div className="w-8 h-8 rounded-lg bg-[#00C2BB]/10 border border-[#00C2BB]/30 flex items-center justify-center text-[#00C2BB] shrink-0">
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path
                       strokeLinecap="round"
@@ -293,10 +347,10 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
                   </svg>
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-white truncate max-w-lg">
+                  <h3 className="text-base font-semibold text-[var(--fcp-text-primary)] truncate max-w-lg">
                     {selectedBill.file_name}
                   </h3>
-                  <div className="flex items-center gap-3 text-xs text-gray-400 mt-0.5">
+                  <div className="flex items-center gap-3 text-xs text-[var(--fcp-text-secondary)] mt-0.5">
                     <span>Size: {fmtBytes(selectedBill.file_size)}</span>
                     <span>•</span>
                     <span className="font-mono text-[11px]">{selectedBill.content_hash.slice(0, 20)}…</span>
@@ -309,7 +363,7 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
                   href={`/api/admin/bills/${encodeURIComponent(selectedBill.content_hash)}/view`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-medium border border-white/10 inline-flex items-center gap-1.5 transition"
+                  className="px-3 py-1.5 rounded-lg bg-[var(--fcp-bg-elevated)] hover:bg-[var(--fcp-bg-hover)] text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)] text-xs font-medium border border-[var(--fcp-border-subtle)] inline-flex items-center gap-1.5 transition cursor-pointer"
                 >
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path
@@ -324,7 +378,7 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
                 <a
                   href={`/api/admin/bills/${encodeURIComponent(selectedBill.content_hash)}/download`}
                   download={selectedBill.file_name || undefined}
-                  className="px-3 py-1.5 rounded-lg bg-[#00C2BB] hover:bg-[#00C2BB]/90 text-black text-xs font-semibold inline-flex items-center gap-1.5 transition"
+                  className="px-3 py-1.5 rounded-lg bg-[#00C2BB] hover:bg-[#00C2BB]/90 text-black text-xs font-semibold inline-flex items-center gap-1.5 transition cursor-pointer"
                 >
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path
@@ -337,20 +391,23 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
                   Download File
                 </a>
                 <button
+                  type="button"
                   onClick={() => setPreviewModalOpen(false)}
-                  className="p-1.5 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition ml-2"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/20 text-xs font-semibold transition cursor-pointer ml-1"
+                  title="Close preview (Esc)"
                 >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
+                  <span>Close</span>
                 </button>
               </div>
             </div>
 
             {/* Modal Content */}
-            <div className="flex-1 overflow-y-auto p-6 bg-black/40">
+            <div className="flex-1 overflow-y-auto p-6 bg-[var(--fcp-bg-surface)]">
               {previewLoading ? (
-                <div className="flex flex-col items-center justify-center py-20 text-gray-400 space-y-3">
+                <div className="flex flex-col items-center justify-center py-20 text-[var(--fcp-text-secondary)] space-y-3">
                   <svg className="w-8 h-8 animate-spin text-[#00C2BB]" fill="none" viewBox="0 0 24 24">
                     <circle
                       className="opacity-25"
@@ -375,7 +432,7 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
                 </div>
               ) : selectedBill.input_ext?.toLowerCase() === '.pdf' ||
                 selectedBill.file_name?.toLowerCase().endsWith('.pdf') ? (
-                <div className="h-[65vh] w-full rounded-lg overflow-hidden border border-white/10">
+                <div className="h-[65vh] w-full rounded-lg overflow-hidden border border-[var(--fcp-border-subtle)]">
                   <iframe
                     src={`/api/admin/bills/${encodeURIComponent(selectedBill.content_hash)}/view`}
                     className="w-full h-full bg-white"
@@ -384,28 +441,32 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
                 </div>
               ) : previewData?.lines && previewData.lines.length > 0 ? (
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between text-xs text-gray-400 px-1">
+                  <div className="flex items-center justify-between text-xs text-[var(--fcp-text-secondary)] px-1">
                     <span>
                       Showing first {previewData.lines.length} lines of file
                       {previewData.is_truncated && ' (truncated for quick inspection)'}
                     </span>
-                    <span className="font-mono text-gray-500">{selectedBill.input_ext}</span>
+                    <span className="font-mono text-[var(--fcp-text-tertiary)]">{selectedBill.input_ext}</span>
                   </div>
 
-                  <div className="rounded-xl border border-white/10 bg-[#07080c] p-4 overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed max-h-[60vh] select-text">
+                  <div className="rounded-xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] p-4 overflow-x-auto font-mono text-xs leading-relaxed max-h-[60vh] select-text">
                     <table className="w-full border-collapse">
                       <tbody>
                         {previewData.lines.map((line, idx) => (
                           <tr
                             key={idx}
-                            className={`hover:bg-white/5 transition-colors ${
-                              idx === 0 ? 'text-[#00C2BB] font-semibold bg-white/[0.02]' : ''
+                            className={`transition-colors ${
+                              idx === 0
+                                ? 'text-[#00C2BB] font-semibold bg-[var(--fcp-bg-elevated)]'
+                                : 'hover:bg-[var(--fcp-bg-hover)]'
                             }`}
                           >
-                            <td className="pr-4 py-1 text-gray-600 select-none text-right font-mono text-[10px] w-12 border-r border-white/5">
+                            <td className="pr-4 py-1 text-[var(--fcp-text-tertiary)] select-none text-right font-mono text-[11px] w-12 border-r border-[var(--fcp-border-subtle)]">
                               {idx + 1}
                             </td>
-                            <td className="pl-4 py-1 whitespace-pre break-all">{line}</td>
+                            <td className="pl-4 py-1 whitespace-pre break-all font-mono text-[var(--fcp-text-primary)]">
+                              {line}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -413,15 +474,39 @@ export function Bills({ user }: Readonly<{ user: UserInfo }>) {
                   </div>
                 </div>
               ) : (
-                <div className="text-center py-16 text-gray-500 text-sm">
+                <div className="text-center py-16 text-[var(--fcp-text-secondary)] text-sm">
                   No preview text available. You can download the file directly via the button above.
                 </div>
               )}
             </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3 border-t border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] flex items-center justify-between shrink-0">
+              <span className="text-xs text-[var(--fcp-text-secondary)]">
+                Press <kbd className="px-1.5 py-0.5 rounded bg-white/10 border border-white/10 font-mono text-[10px] text-[var(--fcp-text-primary)]">Esc</kbd> or click outside to exit
+              </span>
+              <button
+                type="button"
+                onClick={() => setPreviewModalOpen(false)}
+                className="px-4 py-1.5 rounded-lg bg-[var(--fcp-bg-elevated)] hover:bg-[var(--fcp-bg-hover)] text-[var(--fcp-text-primary)] border border-[var(--fcp-border-subtle)] text-xs font-medium transition cursor-pointer"
+              >
+                Close Preview
+              </button>
+            </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}
+        title="Delete Bill"
+        description={`Are you sure you want to delete "${deleteTarget?.file_name || deleteTarget?.content_hash?.slice(0, 12)}"? This will permanently remove the stored bill file and database record.`}
+        confirmLabel="Delete bill"
+        destructive
+        loading={deleting}
+        onConfirm={handleDeleteBill}
+      />
     </Layout>
   )
 }
-

@@ -1,12 +1,13 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { Layout } from '../components/Layout'
-import { listUsers, setUserRole } from '../api/admin'
+import { listUsers, setUserRole, deleteUser } from '../api/admin'
 import type { AdminUser } from '../api/admin'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { BackButton } from '../components/BackButton'
 import { toast } from 'sonner'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 
 export function AdminUsers({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('Users — admin')
@@ -15,6 +16,8 @@ export function AdminUsers({ user }: Readonly<{ user: UserInfo }>) {
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [error, setError] = useState<Record<string, string>>({})
   const [globalError, setGlobalError] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   // Confirmation dialog state
   const [confirm, setConfirm] = useState<{
@@ -107,9 +110,24 @@ export function AdminUsers({ user }: Readonly<{ user: UserInfo }>) {
     }
   }
 
+  const handleDelete = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      await deleteUser(deleteTarget)
+      await refresh()
+      toast.success(`Deleted ${deleteTarget}`)
+      setDeleteTarget(null)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'delete failed')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <Layout user={user}>
-      <div className="max-w-5xl mx-auto px-6 py-10">
+      <div className="max-w-6xl mx-auto px-6 py-8">
         <BackButton fallback="/admin" />
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
           <div>
@@ -139,7 +157,7 @@ export function AdminUsers({ user }: Readonly<{ user: UserInfo }>) {
         )}
 
         {filteredUsers && filteredUsers.length > 0 && (
-          <div className="border border-white/10 rounded-xl overflow-hidden shadow-sm">
+          <div className="border border-[var(--fcp-border-subtle)] rounded-xl overflow-hidden shadow-[var(--fcp-card-shadow)]">
             <table className="w-full text-sm">
               <thead className="bg-white/[0.04] text-xs uppercase tracking-wider text-gray-400 border-b border-white/10">
                 <tr>
@@ -212,12 +230,26 @@ export function AdminUsers({ user }: Readonly<{ user: UserInfo }>) {
                       </td>
                       <td className="px-5 py-3 text-gray-400 text-xs">{new Date(u.updated_at).toLocaleString()}</td>
                       <td className="px-5 py-3 text-right">
-                        <Link
-                          to={`/admin?q=${encodeURIComponent(u.email)}`}
-                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-[#00C2BB]/10 text-[#00C2BB] hover:bg-[#00C2BB]/20 text-xs font-medium transition-colors"
-                        >
-                          View runs →
-                        </Link>
+                        <div className="inline-flex items-center gap-2">
+                          <Link
+                            to={`/admin?q=${encodeURIComponent(u.email)}`}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-[#00C2BB]/10 text-[#00C2BB] hover:bg-[#00C2BB]/20 text-xs font-medium transition-colors"
+                          >
+                            View runs →
+                          </Link>
+                          {!isFacets && (
+                            <button
+                              type="button"
+                              onClick={() => setDeleteTarget(u.email)}
+                              title="Delete user"
+                              className="inline-flex items-center justify-center w-7 h-7 rounded border border-white/10 text-gray-400 hover:text-red-400 hover:border-red-500/40 transition-colors cursor-pointer"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -228,50 +260,35 @@ export function AdminUsers({ user }: Readonly<{ user: UserInfo }>) {
         )}
 
         {/* Confirmation dialog */}
-        {confirm && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center">
-            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={closeConfirm} />
-            <div className="bg-white/10 border border-white/20 rounded-xl p-6 shadow-2xl w-full max-w-md relative z-10">
-              <div className="flex items-start gap-3 mb-4">
-                <div className={`mt-1 p-1.5 rounded-lg ${
-                  confirm.severity === 'grant_admin' ? 'bg-red-950/20 text-red-400 border border-red-500/30' :
-                  confirm.severity === 'revoke_admin' ? 'bg-orange-950/20 text-orange-400 border border-orange-500/30' :
-                  'bg-blue-950/20 text-blue-400 border border-blue-500/30'
-                }`}>
-                  {confirm.severity === 'grant_admin' && '⚠️'}
-                  {confirm.severity === 'revoke_admin' && '🔒'}
-                  {confirm.severity === 'other' && 'ℹ️'}
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-white">{severityTitle(confirm)}</h3>
-                  <p className="text-xs text-gray-400 mt-1 leading-relaxed">{severityBody(confirm)}</p>
-                </div>
-              </div>
-              <div className="flex justify-end gap-2 mt-6">
-                <button
-                  onClick={closeConfirm}
-                  autoFocus
-                  className="px-4 py-2 rounded-lg text-sm font-medium text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleConfirm}
-                  disabled={busy.has(confirm.email)}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    confirm.severity === 'grant_admin'
-                      ? 'bg-red-600 text-white hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed'
-                      : confirm.severity === 'revoke_admin'
-                        ? 'bg-orange-600 text-white hover:bg-orange-500 disabled:opacity-50 disabled:cursor-not-allowed'
-                        : 'bg-[#645DF6] text-white hover:bg-[#645DF6]/80 disabled:opacity-50 disabled:cursor-not-allowed'
-                  }`}
-                >
-                  {busy.has(confirm.email) ? 'Saving…' : confirmButtonLabel(confirm)}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        <ConfirmDialog
+          open={!!confirm}
+          onOpenChange={(o) => { if (!o) closeConfirm() }}
+          title={severityTitle(confirm)}
+          description={
+            <>
+              {severityBody(confirm)}
+              {confirm && error[confirm.email] && (
+                <p className="mt-2 text-xs text-orange-400">{error[confirm.email]}</p>
+              )}
+            </>
+          }
+          confirmLabel={confirmButtonLabel(confirm)}
+          cancelLabel="Cancel"
+          destructive={confirm?.severity === 'grant_admin' || confirm?.severity === 'revoke_admin'}
+          loading={confirm ? busy.has(confirm.email) : false}
+          onConfirm={handleConfirm}
+        />
+
+        <ConfirmDialog
+          open={!!deleteTarget}
+          onOpenChange={(o) => { if (!o) setDeleteTarget(null) }}
+          title={`Delete ${deleteTarget ?? ''}?`}
+          description="This permanently removes the user account and their access. This cannot be undone."
+          confirmLabel="Delete user"
+          destructive
+          loading={deleting}
+          onConfirm={handleDelete}
+        />
       </div>
     </Layout>
   )

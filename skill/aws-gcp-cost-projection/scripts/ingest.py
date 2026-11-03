@@ -545,6 +545,38 @@ def _nonworkload_sql(*col_exprs):
     return "(" + " OR ".join(ors) + ")" if ors else "(FALSE)"
 
 
+def parse_money(val) -> float:
+    """Robustly parse a currency/numeric string into float (ING-4).
+    Handles accounting parens (150.00) -> -150.00, currency symbols ($/€/£/₹),
+    and EU decimal comma formats (1.234,56 -> 1234.56)."""
+    if val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if not s:
+        return 0.0
+    s = re.sub(r'[\$\€\£\¥\₹\s]', '', s)
+    if s.startswith('(') and s.endswith(')'):
+        s = '-' + s[1:-1]
+    if ',' in s and '.' in s:
+        if s.rfind(',') > s.rfind('.'):
+            s = s.replace('.', '').replace(',', '.')
+        else:
+            s = s.replace(',', '')
+    elif ',' in s and '.' not in s:
+        parts = s.split(',')
+        if len(parts) == 2 and len(parts[1]) in (1, 2):
+            s = parts[0] + '.' + parts[1]
+        elif len(parts) == 2 and len(parts[1]) == 3 and len(parts[0]) <= 3:
+            s = parts[0] + parts[1]
+        else:
+            s = s.replace(',', '')
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
 def _sql_num(col_expr: str) -> str:
     """SQL fragment that robustly parses a possibly-messy numeric cell to DOUBLE.
 
@@ -656,6 +688,25 @@ DESCRIPTIVE_REGION_MAP = {
 }
 
 
+_IDENT_RE = re.compile(r'^[A-Za-z0-9 _/:.\-]+$')
+
+
+def quote_ident(name: str) -> str:
+    """Safely quote a SQL identifier (table, view, or column name).
+    Validates against allowed characters, sanitizes breakout attempts,
+    disallows SQL comment sequences (-- and /*), and doubles any embedded double-quotes (SEC-2)."""
+    if not isinstance(name, str):
+        name = str(name)
+    s = name.strip()
+    if not s or not _IDENT_RE.match(s) or '--' in s or '/*' in s:
+        s = re.sub(r'--', '__', s)
+        s = re.sub(r'/\*|\*/', '__', s)
+        s = re.sub(r'[^A-Za-z0-9 _/:.\-]', '_', s)
+        if not s:
+            s = 'col_sanitized'
+    escaped = s.replace('"', '""')
+    return f'"{escaped}"'
+
 def _drop_raw(conn):
     try:
         conn.execute("DROP VIEW IF EXISTS aws_raw")
@@ -677,8 +728,9 @@ def _detect_foreign_currency(cols, conn):
     col_vals = []
     for col in cur_cols:
         try:
+            q_col = quote_ident(col)
             vals = conn.execute(
-                f'SELECT DISTINCT UPPER(TRIM(CAST("{col}" AS VARCHAR))) FROM aws_raw'
+                f'SELECT DISTINCT UPPER(TRIM(CAST({q_col} AS VARCHAR))) FROM aws_raw'
             ).fetchall()
             col_vals.extend(v[0] for v in vals if v[0] not in (None, ""))
         except Exception:
@@ -688,7 +740,8 @@ def _detect_foreign_currency(cols, conn):
     for col in ("description", "lineitem/lineitemdescription", "item_description", "service"):
         if col in cl:
             try:
-                rows = conn.execute(f'SELECT "{cl[col]}" FROM aws_raw LIMIT 20').fetchall()
+                q_col = quote_ident(cl[col])
+                rows = conn.execute(f'SELECT {q_col} FROM aws_raw LIMIT 20').fetchall()
                 sample_text += " " + " ".join(str(r[0] or "") for r in rows)
             except Exception:
                 pass
@@ -1155,9 +1208,10 @@ def _detect_unit_price_outliers(conn, col_map, job_dir=None):
 
 def _load_excel(conn, path):
     """Excel → aws_raw via DuckDB excel extension, spatial fallback, then openpyxl."""
+    safe_excel_path = path.replace("\\", "/").replace("'", "''")
     for setup, query in (
-        ("INSTALL excel; LOAD excel;", f"SELECT row_number() OVER () AS _src_row, * FROM read_xlsx('{path}', all_varchar=true)"),
-        ("INSTALL spatial; LOAD spatial;", f"SELECT row_number() OVER () AS _src_row, * FROM st_read('{path}')"),
+        ("INSTALL excel; LOAD excel;", f"SELECT row_number() OVER () AS _src_row, * FROM read_xlsx('{safe_excel_path}', all_varchar=true)"),
+        ("INSTALL spatial; LOAD spatial;", f"SELECT row_number() OVER () AS _src_row, * FROM st_read('{safe_excel_path}')"),
     ):
         try:
             conn.execute(setup)
@@ -1199,7 +1253,7 @@ def _load_excel(conn, path):
                 seen[nm] = 0
             names.append(nm)
         width = len(names) - 1
-        cols_ddl = '"_src_row" BIGINT, ' + ", ".join(f'"{n}" VARCHAR' for n in names[1:])
+        cols_ddl = '"_src_row" BIGINT, ' + ", ".join(f'{quote_ident(n)} VARCHAR' for n in names[1:])
         _drop_raw(conn)
         conn.execute(f"CREATE TABLE aws_raw ({cols_ddl})")
         placeholders = ",".join("?" for _ in names)
@@ -1538,7 +1592,7 @@ def _read_into_aws_raw(conn, path):
     Creating aws_raw as a VIEW streams large CSVs on-demand and eliminates the
     multi-gigabyte memory footprint that causes OOM kills on 512MB containers."""
     p = path.lower()
-    sql_path = path.replace("\\", "/")
+    sql_path = path.replace("\\", "/").replace("'", "''")
     _drop_raw(conn)
     if p.endswith(".parquet"):
         conn.execute(f"CREATE VIEW aws_raw AS SELECT row_number() OVER () AS _src_row, * FROM read_parquet('{sql_path}')")
@@ -1642,10 +1696,20 @@ def main():
     save_currency_info(JOB_DIR, _currency_info, conn)
 
     # Parquet data-lake CUR uses underscores (line_item_product_code) while the
-    # CSV CUR uses slashes (lineItem/ProductCode). Detect both.
+    # CSV CUR uses slashes (lineItem/ProductCode). Broaden signature (ING-3).
+    cur_signature_cols = {
+        "lineitem/productcode", "product/productcode", "product_product_code",
+        "lineitem/usageamount", "line_item_usage_amount",
+        "lineitem/unblendedcost", "line_item_unblended_cost",
+        "lineitem/lineitemdescription", "line_item_line_item_description",
+        "pricing/publicondemandcost", "pricing_public_on_demand_cost"
+    }
+    cols_lower = {col.lower() for col in cols}
+    has_cur_signature = len(cols_lower.intersection(cur_signature_cols)) >= 2
     is_raw_cur = (
         "lineItem/LineItemType" in cols or "LineItemType" in cols
-        or "line_item_line_item_type" in cols
+        or "line_item_line_item_type" in cols or "line_item_type" in cols_lower
+        or has_cur_signature
     )
 
     # Normalize col names to make queries easier
@@ -2216,247 +2280,242 @@ def main():
                     b_month = str(row[date_idx] or '')[:7] if date_idx is not None else ""
                     usage_str = row[usage_idx]
                     cost_str = row[cost_idx]
-                
-                if not desc or desc.lower() == 'total tax' or 'tax' in desc.lower():
-                    continue
-                
-                # Parse usage quantity and unit
-                total_usage = 0.0
-                pricing_unit = ""
-                if usage_str:
-                    m = re.match(r'([\d,\.]+)\s*(.*)', str(usage_str).strip())
-                    if m:
-                        try:
-                            total_usage = float(m.group(1).replace(",", ""))
-                        except ValueError:
-                            total_usage = 0.0
-                        pricing_unit = m.group(2).strip()
-                        
-                # Parse cost
-                row_cost = 0.0
-                if cost_str:
-                    try:
-                        row_cost = float(str(cost_str).replace(",", "").replace("$", "").strip())
-                    except ValueError:
-                        row_cost = 0.0
-                        
-                # Map product and usage_type
-                desc_lower = desc.lower()
-                # "reserved instance applied" (an RI-discount-adjustment line item in
-                # some bill formats) is a narrower phrase than this bill format's own
-                # product-catalog naming, which plainly says "... Reserved Instances"
-                # (e.g. "Amazon Redshift Node Usage Reserved Instances", "Amazon
-                # Elastic Compute Cloud running Linux/UNIX Reserved Instances") —
-                # confirmed real: this narrower check missed every genuinely-Reserved
-                # row across EC2/RDS/Redshift in one bill, silently defaulting
-                # pricing_model to "OnDemand" for all of them. Since these rows'
-                # amortized cost already reflects the real reserved/discounted rate
-                # (not a separate fee-adjustment line), this is exactly the same
-                # "Committed"/"DiscountedUsage" case, not a distinct one — downstream
-                # (projection_view.py) relies on this pair to compare GCP's committed
-                # rate against AWS's committed rate instead of GCP's full on-demand
-                # rate against an already-discounted AWS price (a real, structural
-                # 2-10x over-projection when this pairing is missed).
-                is_reserved = "reserved instance applied" in desc_lower or "reserved instances" in desc_lower
-                pricing_model = "OnDemand"
-                if "spot" in desc_lower:
-                    pricing_model = "Spot"
-                elif is_reserved:
-                    pricing_model = "Committed"
-                
-                product = ""
-                usage_type = ""
-                
-                # EMR's per-node surcharge is frequently described in free-text
-                # bills as "... EC2 instance usage <type> (EMR) ..." — if the EC2
-                # branch below matched first, the row gets permanently relabeled
-                # as plain Elastic Compute Cloud and all EMR identity is lost
-                # before classify_mechanics.py / map_emr() ever see it, so it
-                # never gets priced via the real Dataproc Premium SKU and instead
-                # falls through to a generic Compute Engine VM mapping (mirrors
-                # the same EC2/EMR exclusion already applied in
-                # classify_mechanics.py's compute_breakdown rule).
-                if ("elastic compute" in desc_lower or desc_lower.startswith("ec2") or "natgateway" in desc_lower) \
-                        and "emr" not in desc_lower:
-                    product = "Amazon Elastic Compute Cloud"
-                    if "natgateway" in desc_lower:
-                        if "hour" in desc_lower:
-                            usage_type = "NatGateway-Hours"
-                        else:
-                            usage_type = "NatGateway-Bytes"
-                    elif "t4g cpu credits" in desc_lower:
-                        usage_type = "T4G CPU Credits"
-                    else:
-                        inst_match = re.search(r'\b([a-z0-9]+\.[a-z0-9]+)\b', desc_lower)
-                        if inst_match:
-                            itype = inst_match.group(1)
-                            prefix = "SpotUsage:" if pricing_model == "Spot" else "BoxUsage:"
-                            usage_type = prefix + itype
-                        else:
-                            usage_type = "BoxUsage"
-                elif "cloudtrail" in desc_lower:
-                    product = "AWS CloudTrail"
-                    usage_type = "CloudTrail"
-                elif "cloudwatch" in desc_lower:
-                    product = "AmazonCloudWatch"
-                    if "alarm" in desc_lower:
-                        usage_type = "AlarmThreshold"
-                    else:
-                        usage_type = "Metrics"
-                elif "cost explorer" in desc_lower:
-                    product = "AWS Cost Explorer"
-                    usage_type = "CostExplorer"
-                elif "dax" in desc_lower:
-                    product = "Amazon DynamoDB"
-                    usage_type = "DAX"
-                elif "dms" in desc_lower:
-                    product = "AWS Database Migration Service"
-                    usage_type = "DMS"
-                elif "data transfer" in desc_lower:
-                    product = "AWS Data Transfer"
-                    usage_type = "DataTransfer"
-                elif "directory service" in desc_lower:
-                    product = "AWS Directory Service"
-                    usage_type = "DirectoryService"
-                elif "dynamodb" in desc_lower:
-                    product = "Amazon DynamoDB"
-                    usage_type = "DynamoDB"
-                elif "ebs" in desc_lower:
-                    product = "Amazon Elastic Block Store"
-                    if "snapshot" in desc_lower:
-                        usage_type = "EBS:Snapshot"
-                    else:
-                        for vt in ["gp2", "gp3", "io1", "io2", "st1", "sc1"]:
-                            if vt in desc_lower:
-                                usage_type = f"EBS:VolumeUsage:{vt}"
-                                break
-                        if not usage_type:
-                            usage_type = "EBS:VolumeUsage"
-                elif "ecr" in desc_lower:
-                    product = "Amazon EC2 Container Registry"
-                    usage_type = "ECR"
-                elif "efs" in desc_lower:
-                    product = "Amazon Elastic File System"
-                    usage_type = "EFS"
-                elif "eks" in desc_lower:
-                    product = "Amazon Elastic Kubernetes Service"
-                    usage_type = "EKS"
-                elif "emr" in desc_lower:
-                    product = "Amazon Elastic MapReduce"
-                    # Preserve the instance type so apply_static_mappings.py's
-                    # _emr_vcpus() can resolve a real vCPU count for the
-                    # Dataproc Premium ($/vCPU-hr) formula. The flat literal
-                    # "EMR" (no instance type) used here previously matched
-                    # neither of _emr_vcpus()'s regexes, so every such row
-                    # silently fell to the "vCPU unknown" passthrough branch
-                    # instead of computing the real formula-based price.
-                    # "BoxUsage:<type>" matches the fallback pattern
-                    # _emr_vcpus() already supports for raw-CUR-style EMR rows.
-                    inst_match = re.search(r'\b([a-z0-9]+\.[a-z0-9]+)\b', desc_lower)
-                    usage_type = f"BoxUsage:{inst_match.group(1)}" if inst_match else "EMR"
-                elif "elasticache" in desc_lower or "valkey" in desc_lower:
-                    product = "Amazon ElastiCache"
-                    usage_type = "ElastiCache"
-                elif "glue" in desc_lower:
-                    product = "AWS Glue"
-                    usage_type = "Glue"
-                elif "kms" in desc_lower:
-                    product = "AWS Key Management Service"
-                    usage_type = "KMS"
-                elif "lambda" in desc_lower:
-                    product = "AWS Lambda"
-                    if "compute" in desc_lower:
-                        usage_type = "Lambda-GB-Second"
-                    else:
-                        usage_type = "Lambda"
-                elif "nlb" in desc_lower:
-                    product = "Elastic Load Balancing"
-                    usage_type = "LoadBalancerUsage"
-                elif "neptune" in desc_lower:
-                    product = "Amazon Neptune"
-                    usage_type = "Neptune"
-                elif "quicksight" in desc_lower:
-                    product = "Amazon QuickSight"
-                    usage_type = "QuickSight"
-                elif "redshift" in desc_lower:
-                    product = "Amazon Redshift"
-                    usage_type = "Redshift"
-                elif "rekognition" in desc_lower:
-                    product = "Amazon Rekognition"
-                    usage_type = "Rekognition"
-                elif "route 53" in desc_lower or "route53" in desc_lower:
-                    product = "Amazon Route 53"
-                    usage_type = "Route53"
-                # Bare "s3"/"ses" substring checks would false-match region-code
-                # prefixes ("APS3" contains "s3") and common English words ("ses"
-                # in "licenses") — confirmed real for "s3" (an SQS row's own
-                # description contained "APS3" and was misclassified as S3
-                # elsewhere in this pipeline before this fix); "ses" in "licenses"
-                # is the exact same documented risk aws_normalizer.py already
-                # guards against for "ecs"/"ses". AWS's real product names always
-                # contain the full "simple storage"/"simple email" phrase, so
-                # checking that alone is both sufficient and safe.
-                elif "simple storage" in desc_lower:
-                    product = "Amazon Simple Storage Service"
-                    usage_type = "S3"
-                elif "simple email" in desc_lower:
-                    product = "Amazon Simple Email Service"
-                    usage_type = "SES"
-                elif "sqs" in desc_lower or "simple queue" in desc_lower:
-                    product = "Amazon Simple Queue Service"
-                    usage_type = "SQS"
-                elif "secrets manager" in desc_lower:
-                    product = "AWS Secrets Manager"
-                    usage_type = "SecretsManager"
-                elif "security hub" in desc_lower:
-                    product = "AWS Security Hub"
-                    usage_type = "SecurityHub"
-                elif "vpc" in desc_lower:
-                    product = "Amazon Elastic Compute Cloud"
-                    if "endpoint" in desc_lower:
-                        usage_type = "VPCEndpoint-Hours"
-                    elif "peering" in desc_lower:
-                        usage_type = "DataTransfer-Peering-Bytes"
-                    elif "transit gateway" in desc_lower:
-                        usage_type = "TransitGateway-Hours"
-                    elif "vpn" in desc_lower:
-                        usage_type = "VPN-Hours"
-                    elif "public ipv4" in desc_lower:
-                        usage_type = "IPAddress-Hours"
-                    else:
-                        usage_type = "VPC"
-                else:
-                    # Unknown service: do NOT silently relabel to "Other" and
-                    # passthrough — that hides the row and loses its identity. Keep
-                    # the bill's real description verbatim as the product so
-                    # canonical_service / the Phase-2 LLM can still resolve it, and
-                    # flag it (below) so it surfaces for review. Surface, don't bury.
-                    product = desc.strip() or "Unknown service"
-                    usage_type = "UnrecognizedService"
 
-                _ch_cat, line_item_type, is_workload = classify_charge(
-                    product=product,
-                    usage_type=usage_type,
-                    operation=desc,
-                    cost=row_cost,
-                )
-                    
-                projection_note = None
-                if usage_type == "UnrecognizedService":
-                    projection_note = ("Unrecognized service in 4-column bill: no keyword "
-                                       "matched, so the bill's description is kept verbatim as "
-                                       "the service (not bucketed as 'Other') for resolution/"
-                                       "review downstream.")
+                    if not desc or desc.lower() == 'total tax' or 'tax' in desc.lower():
+                        continue
+
+                    # Parse usage quantity and unit
+                    total_usage = 0.0
+                    pricing_unit = ""
+                    if usage_str:
+                        m = re.match(r'([\d,\.]+)\s*(.*)', str(usage_str).strip())
+                        if m:
+                            try:
+                                total_usage = float(m.group(1).replace(",", ""))
+                            except ValueError:
+                                total_usage = 0.0
+                            pricing_unit = m.group(2).strip()
+
+                    # Parse cost (ING-4 robust money parser)
+                    row_cost = parse_money(cost_str)
+
+                    # Map product and usage_type
+                    desc_lower = desc.lower()
+                    # "reserved instance applied" (an RI-discount-adjustment line item in
+                    # some bill formats) is a narrower phrase than this bill format's own
+                    # product-catalog naming, which plainly says "... Reserved Instances"
+                    # (e.g. "Amazon Redshift Node Usage Reserved Instances", "Amazon
+                    # Elastic Compute Cloud running Linux/UNIX Reserved Instances") —
+                    # confirmed real: this narrower check missed every genuinely-Reserved
+                    # row across EC2/RDS/Redshift in one bill, silently defaulting
+                    # pricing_model to "OnDemand" for all of them. Since these rows'
+                    # amortized cost already reflects the real reserved/discounted rate
+                    # (not a separate fee-adjustment line), this is exactly the same
+                    # "Committed"/"DiscountedUsage" case, not a distinct one — downstream
+                    # (projection_view.py) relies on this pair to compare GCP's committed
+                    # rate against AWS's committed rate instead of GCP's full on-demand
+                    # rate against an already-discounted AWS price (a real, structural
+                    # 2-10x over-projection when this pairing is missed).
+                    is_reserved = "reserved instance applied" in desc_lower or "reserved instances" in desc_lower
+                    pricing_model = "OnDemand"
+                    if "spot" in desc_lower:
+                        pricing_model = "Spot"
+                    elif is_reserved:
+                        pricing_model = "Committed"
+
+                    product = ""
                     usage_type = ""
-                if "reserved instance applied" in desc_lower:
-                    projection_note = 'AWS rate is RI-amortized; compare GCP CUD, not OD'
 
-                group_key = (product, usage_type, desc, region, pricing_model, line_item_type, is_workload, projection_note, pricing_unit, b_month)
-                if group_key not in aggregated:
-                    aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0}
-                aggregated[group_key]["total_usage"] += total_usage
-                aggregated[group_key]["row_cost"] += row_cost
-                
+                    # EMR's per-node surcharge is frequently described in free-text
+                    # bills as "... EC2 instance usage <type> (EMR) ..." — if the EC2
+                    # branch below matched first, the row gets permanently relabeled
+                    # as plain Elastic Compute Cloud and all EMR identity is lost
+                    # before classify_mechanics.py / map_emr() ever see it, so it
+                    # never gets priced via the real Dataproc Premium SKU and instead
+                    # falls through to a generic Compute Engine VM mapping (mirrors
+                    # the same EC2/EMR exclusion already applied in
+                    # classify_mechanics.py's compute_breakdown rule).
+                    if ("elastic compute" in desc_lower or desc_lower.startswith("ec2") or "natgateway" in desc_lower) \
+                            and "emr" not in desc_lower:
+                        product = "Amazon Elastic Compute Cloud"
+                        if "natgateway" in desc_lower:
+                            if "hour" in desc_lower:
+                                usage_type = "NatGateway-Hours"
+                            else:
+                                usage_type = "NatGateway-Bytes"
+                        elif "t4g cpu credits" in desc_lower:
+                            usage_type = "T4G CPU Credits"
+                        else:
+                            inst_match = re.search(r'\b([a-z0-9]+\.[a-z0-9]+)\b', desc_lower)
+                            if inst_match:
+                                itype = inst_match.group(1)
+                                prefix = "SpotUsage:" if pricing_model == "Spot" else "BoxUsage:"
+                                usage_type = prefix + itype
+                            else:
+                                usage_type = "BoxUsage"
+                    elif "cloudtrail" in desc_lower:
+                        product = "AWS CloudTrail"
+                        usage_type = "CloudTrail"
+                    elif "cloudwatch" in desc_lower:
+                        product = "AmazonCloudWatch"
+                        if "alarm" in desc_lower:
+                            usage_type = "AlarmThreshold"
+                        else:
+                            usage_type = "Metrics"
+                    elif "cost explorer" in desc_lower:
+                        product = "AWS Cost Explorer"
+                        usage_type = "CostExplorer"
+                    elif "dax" in desc_lower:
+                        product = "Amazon DynamoDB"
+                        usage_type = "DAX"
+                    elif "dms" in desc_lower:
+                        product = "AWS Database Migration Service"
+                        usage_type = "DMS"
+                    elif "data transfer" in desc_lower:
+                        product = "AWS Data Transfer"
+                        usage_type = "DataTransfer"
+                    elif "directory service" in desc_lower:
+                        product = "AWS Directory Service"
+                        usage_type = "DirectoryService"
+                    elif "dynamodb" in desc_lower:
+                        product = "Amazon DynamoDB"
+                        usage_type = "DynamoDB"
+                    elif "ebs" in desc_lower:
+                        product = "Amazon Elastic Block Store"
+                        if "snapshot" in desc_lower:
+                            usage_type = "EBS:Snapshot"
+                        else:
+                            for vt in ["gp2", "gp3", "io1", "io2", "st1", "sc1"]:
+                                if vt in desc_lower:
+                                    usage_type = f"EBS:VolumeUsage:{vt}"
+                                    break
+                            if not usage_type:
+                                usage_type = "EBS:VolumeUsage"
+                    elif "ecr" in desc_lower:
+                        product = "Amazon EC2 Container Registry"
+                        usage_type = "ECR"
+                    elif "efs" in desc_lower:
+                        product = "Amazon Elastic File System"
+                        usage_type = "EFS"
+                    elif "eks" in desc_lower:
+                        product = "Amazon Elastic Kubernetes Service"
+                        usage_type = "EKS"
+                    elif "emr" in desc_lower:
+                        product = "Amazon Elastic MapReduce"
+                        # Preserve the instance type so apply_static_mappings.py's
+                        # _emr_vcpus() can resolve a real vCPU count for the
+                        # Dataproc Premium ($/vCPU-hr) formula. The flat literal
+                        # "EMR" (no instance type) used here previously matched
+                        # neither of _emr_vcpus()'s regexes, so every such row
+                        # silently fell to the "vCPU unknown" passthrough branch
+                        # instead of computing the real formula-based price.
+                        # "BoxUsage:<type>" matches the fallback pattern
+                        # _emr_vcpus() already supports for raw-CUR-style EMR rows.
+                        inst_match = re.search(r'\b([a-z0-9]+\.[a-z0-9]+)\b', desc_lower)
+                        usage_type = f"BoxUsage:{inst_match.group(1)}" if inst_match else "EMR"
+                    elif "elasticache" in desc_lower or "valkey" in desc_lower:
+                        product = "Amazon ElastiCache"
+                        usage_type = "ElastiCache"
+                    elif "glue" in desc_lower:
+                        product = "AWS Glue"
+                        usage_type = "Glue"
+                    elif "kms" in desc_lower:
+                        product = "AWS Key Management Service"
+                        usage_type = "KMS"
+                    elif "lambda" in desc_lower:
+                        product = "AWS Lambda"
+                        if "compute" in desc_lower:
+                            usage_type = "Lambda-GB-Second"
+                        else:
+                            usage_type = "Lambda"
+                    elif "nlb" in desc_lower:
+                        product = "Elastic Load Balancing"
+                        usage_type = "LoadBalancerUsage"
+                    elif "neptune" in desc_lower:
+                        product = "Amazon Neptune"
+                        usage_type = "Neptune"
+                    elif "quicksight" in desc_lower:
+                        product = "Amazon QuickSight"
+                        usage_type = "QuickSight"
+                    elif "redshift" in desc_lower:
+                        product = "Amazon Redshift"
+                        usage_type = "Redshift"
+                    elif "rekognition" in desc_lower:
+                        product = "Amazon Rekognition"
+                        usage_type = "Rekognition"
+                    elif "route 53" in desc_lower or "route53" in desc_lower:
+                        product = "Amazon Route 53"
+                        usage_type = "Route53"
+                    # Bare "s3"/"ses" substring checks would false-match region-code
+                    # prefixes ("APS3" contains "s3") and common English words ("ses"
+                    # in "licenses") — confirmed real for "s3" (an SQS row's own
+                    # description contained "APS3" and was misclassified as S3
+                    # elsewhere in this pipeline before this fix); "ses" in "licenses"
+                    # is the exact same documented risk aws_normalizer.py already
+                    # guards against for "ecs"/"ses". AWS's real product names always
+                    # contain the full "simple storage"/"simple email" phrase, so
+                    # checking that alone is both sufficient and safe.
+                    elif "simple storage" in desc_lower:
+                        product = "Amazon Simple Storage Service"
+                        usage_type = "S3"
+                    elif "simple email" in desc_lower:
+                        product = "Amazon Simple Email Service"
+                        usage_type = "SES"
+                    elif "sqs" in desc_lower or "simple queue" in desc_lower:
+                        product = "Amazon Simple Queue Service"
+                        usage_type = "SQS"
+                    elif "secrets manager" in desc_lower:
+                        product = "AWS Secrets Manager"
+                        usage_type = "SecretsManager"
+                    elif "security hub" in desc_lower:
+                        product = "AWS Security Hub"
+                        usage_type = "SecurityHub"
+                    elif "vpc" in desc_lower:
+                        product = "Amazon Elastic Compute Cloud"
+                        if "endpoint" in desc_lower:
+                            usage_type = "VPCEndpoint-Hours"
+                        elif "peering" in desc_lower:
+                            usage_type = "DataTransfer-Peering-Bytes"
+                        elif "transit gateway" in desc_lower:
+                            usage_type = "TransitGateway-Hours"
+                        elif "vpn" in desc_lower:
+                            usage_type = "VPN-Hours"
+                        elif "public ipv4" in desc_lower:
+                            usage_type = "IPAddress-Hours"
+                        else:
+                            usage_type = "VPC"
+                    else:
+                        # Unknown service: do NOT silently relabel to "Other" and
+                        # passthrough — that hides the row and loses its identity. Keep
+                        # the bill's real description verbatim as the product so
+                        # canonical_service / the Phase-2 LLM can still resolve it, and
+                        # flag it (below) so it surfaces for review. Surface, don't bury.
+                        product = desc.strip() or "Unknown service"
+                        usage_type = "UnrecognizedService"
+
+                    _ch_cat, line_item_type, is_workload = classify_charge(
+                        product=product,
+                        usage_type=usage_type,
+                        operation=desc,
+                        cost=row_cost,
+                    )
+
+                    projection_note = None
+                    if usage_type == "UnrecognizedService":
+                        projection_note = ("Unrecognized service in 4-column bill: no keyword "
+                                           "matched, so the bill's description is kept verbatim as "
+                                           "the service (not bucketed as 'Other') for resolution/"
+                                           "review downstream.")
+                        usage_type = ""
+                    if "reserved instance applied" in desc_lower:
+                        projection_note = 'AWS rate is RI-amortized; compare GCP CUD, not OD'
+
+                    group_key = (product, usage_type, desc, region, pricing_model, line_item_type, is_workload, projection_note, pricing_unit, b_month)
+                    if group_key not in aggregated:
+                        aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0}
+                    aggregated[group_key]["total_usage"] += total_usage
+                    aggregated[group_key]["row_cost"] += row_cost
+
             # Insert aggregated rows in batches
             insert_rows = []
             for gk, val in aggregated.items():
@@ -2845,14 +2904,20 @@ def main():
     fmt = "raw_cur" if is_raw_cur else "flat_csv"
     conn.execute("UPDATE aws_li_catalog SET billing_format = ?", (fmt,))
 
-    # Faithfulness reference: the freshly-built catalog total (ex-tax) BEFORE the
-    # materiality filter. Dedup is a cost-preserving GROUP BY SUM, so this equals
-    # the faithful sum of every non-tax line item on the bill. The materiality
-    # filter below deletes low-value rows and re-adds their sum as one row, so the
-    # final catalog total must still equal this — asserted before "Ingest complete".
-    _bill_reference_total = conn.execute(
-        "SELECT COALESCE(SUM(aws_amortized_cost), 0.0) FROM aws_li_catalog"
-    ).fetchone()[0]
+    # Faithfulness reference (ING-2): Compute from raw file if cost_col is available,
+    # reconciling the final catalog against the source data to catch extraction loss.
+    _bill_reference_total = 0.0
+    try:
+        if cost_col and cost_col != "NULL":
+            _bill_reference_total = conn.execute(
+                f"SELECT COALESCE(SUM({_sql_num(cost_col)}), 0.0) FROM aws_raw"
+            ).fetchone()[0] or 0.0
+    except Exception:
+        pass
+    if _bill_reference_total == 0.0:
+        _bill_reference_total = conn.execute(
+            "SELECT COALESCE(SUM(aws_amortized_cost), 0.0) FROM aws_li_catalog"
+        ).fetchone()[0] or 0.0
 
     # ── Materiality filter ────────────────────────────────────────────────────
     # 1. Drop zero-cost rows. Negative costs are credits/refunds — always kept.

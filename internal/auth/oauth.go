@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -162,10 +163,10 @@ func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 				authenticated = true
 			}
 		}
-		if !authenticated && h.adminPassword != "" && password == h.adminPassword {
+		if !authenticated && h.adminPassword != "" && subtle.ConstantTimeCompare([]byte(password), []byte(h.adminPassword)) == 1 {
 			authenticated = true
 		}
-		if !authenticated && h.devBypass && password != "" {
+		if !authenticated && h.devBypass && os.Getenv("ENV") != "production" && os.Getenv("GO_ENV") != "production" && password != "" {
 			authenticated = true
 		}
 
@@ -197,11 +198,7 @@ func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		isFacets := IsFacetsEmail(email)
 		role := "viewer"
-		if isFacets {
-			role = "admin"
-		}
 		if h.users != nil {
 			if r, err := h.users.GetUserRole(email); err == nil && r != "" {
 				role = r
@@ -320,16 +317,24 @@ func (h *OAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *OAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
-	stateCookie, err := r.Cookie("oauth_state")
-	queryState := r.URL.Query().Get("state")
-	if err == nil && stateCookie.Value != "" && queryState != "" && stateCookie.Value != queryState {
-		http.Redirect(w, r, "/login?error=invalid_state", http.StatusTemporaryRedirect)
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		if r.Header.Get("Accept") == "application/json" {
+			http.Error(w, `{"error":"missing_code"}`, http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/login?error=missing_code", http.StatusTemporaryRedirect)
 		return
 	}
 
-	code := r.URL.Query().Get("code")
-	if code == "" {
-		http.Redirect(w, r, "/login?error=missing_code", http.StatusTemporaryRedirect)
+	stateCookie, err := r.Cookie("oauth_state")
+	queryState := r.URL.Query().Get("state")
+	if err != nil || stateCookie == nil || stateCookie.Value == "" || queryState == "" || subtle.ConstantTimeCompare([]byte(stateCookie.Value), []byte(queryState)) != 1 {
+		if r.Header.Get("Accept") == "application/json" {
+			http.Error(w, `{"error":"invalid_state"}`, http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/login?error=invalid_state", http.StatusTemporaryRedirect)
 		return
 	}
 

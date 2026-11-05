@@ -30,15 +30,18 @@ func TestPhase4_IsolationAndPreferencesAndQuotas(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	defer d.Close()
+	var createdJobIDs []string
 	defer func() {
 		for i := 0; i < 50; i++ {
-			jobList, _ := d.ListAllJobs()
 			hasRunning := false
-			for _, j := range jobList {
-				if j.AgentPID > 0 {
-					jobs.KillProcessTreeForTest(j.AgentPID)
-				} else if j.Status == "pending" || j.Status == "running" {
-					hasRunning = true
+			for _, id := range createdJobIDs {
+				j, _ := d.GetJob(id)
+				if j != nil {
+					if j.AgentPID > 0 {
+						jobs.KillProcessTreeForTest(j.AgentPID)
+					} else {
+						hasRunning = true
+					}
 				}
 			}
 			if !hasRunning {
@@ -46,7 +49,7 @@ func TestPhase4_IsolationAndPreferencesAndQuotas(t *testing.T) {
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 	}()
 
 	jobsDir := t.TempDir()
@@ -147,6 +150,12 @@ func TestPhase4_IsolationAndPreferencesAndQuotas(t *testing.T) {
 			req.Header.Set("Content-Type", writer.FormDataContentType())
 			rec := httptest.NewRecorder()
 			h.Create(rec, req)
+			if rec.Code == http.StatusCreated {
+				var created map[string]string
+				if err := json.Unmarshal(rec.Body.Bytes(), &created); err == nil && created["id"] != "" {
+					createdJobIDs = append(createdJobIDs, created["id"])
+				}
+			}
 			return rec
 		}
 

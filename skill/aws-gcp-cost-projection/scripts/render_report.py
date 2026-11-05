@@ -983,7 +983,7 @@ def main():
         "COALESCE(ANY_VALUE(p.commitment_basis), 'on_demand')" if "commitment_basis" in _p_cols
         else "'on_demand'"
     )
-    _c_od_val = "c.aws_od_cost" if "aws_od_cost" in _c_cols else "c.aws_amortized_cost"
+    _c_od_val = "ANY_VALUE(c.aws_od_cost)" if "aws_od_cost" in _c_cols else "c.aws_amortized_cost"
     _p_od_val = "ANY_VALUE(p.aws_od_cost)" if "aws_od_cost" in _p_cols else ("ANY_VALUE(p.aws_cost_od_est)" if "aws_cost_od_est" in _p_cols else _c_od_val)
     _aws_cost_od_est_expr = f"COALESCE({_p_od_val}, {_c_od_val}, c.aws_amortized_cost) * {aws_fx_rate}"
 

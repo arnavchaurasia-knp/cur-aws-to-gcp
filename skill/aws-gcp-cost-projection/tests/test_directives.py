@@ -128,3 +128,59 @@ def test_atomic_write_safety():
 
         # Original content is untouched
         assert open(target_path, "r", encoding="utf-8").read() == orig_content
+
+
+def test_per_user_scoping():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d_alice = Directive(
+            id="d_alice_1",
+            author="alice@company.com",
+            selector={"service": "s3"},
+            action={"type": "set_strategy", "value": "passthrough"},
+        )
+        d_bob = Directive(
+            id="d_bob_1",
+            author="bob@competitor.com",
+            selector={"service": "ec2"},
+            action={"type": "set_strategy", "value": "ignore"},
+        )
+
+        # Alice saves her ledger
+        save_ledger(tmpdir, [d_alice], user_id="alice@company.com")
+        # Bob saves his ledger on the same job
+        save_ledger(tmpdir, [d_bob], user_id="bob@competitor.com")
+
+        # Each user loads only their own directives
+        alice_ledger = load_ledger(tmpdir, user_id="alice@company.com")
+        bob_ledger = load_ledger(tmpdir, user_id="bob@competitor.com")
+
+        assert len(alice_ledger) == 1
+        assert alice_ledger[0].id == "d_alice_1"
+        assert alice_ledger[0].author == "alice@company.com"
+
+        assert len(bob_ledger) == 1
+        assert bob_ledger[0].id == "d_bob_1"
+        assert bob_ledger[0].author == "bob@competitor.com"
+
+        # Neither sees the other's
+        assert "d_bob_1" not in [d.id for d in alice_ledger]
+        assert "d_alice_1" not in [d.id for d in bob_ledger]
+
+        # Files on disk are partitioned
+        assert os.path.exists(os.path.join(tmpdir, "directives", "alice@company.com.json"))
+        assert os.path.exists(os.path.join(tmpdir, "directives", "bob@competitor.com.json"))
+        assert os.path.exists(os.path.join(tmpdir, "directives.baseline.json"))
+
+        # Back-compat fallback: a new user on a legacy job with unscoped directives.json loads unscoped
+        legacy_dir = os.path.join(tmpdir, "legacy_job")
+        os.makedirs(legacy_dir, exist_ok=True)
+        d_legacy = Directive(
+            id="d_legacy",
+            author="owner",
+            selector={"service": "rds"},
+            action={"type": "set_strategy", "value": "passthrough"},
+        )
+        save_ledger(legacy_dir, [d_legacy]) # unscoped
+        loaded_legacy = load_ledger(legacy_dir, user_id="charlie@company.com")
+        assert len(loaded_legacy) == 1
+        assert loaded_legacy[0].id == "d_legacy"

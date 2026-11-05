@@ -214,7 +214,7 @@ def _build_query_line_item(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=N
         ROUND(COALESCE(p.gcp_cost_1yr_cud * {fx_rate}, p.gcp_projected_cost * {fx_rate}, (CASE WHEN m.strategy = 'ignore' THEN 0.0 ELSE c.aws_amortized_cost * {aws_fx_rate} END)), 2) AS "GCP 1yr CUD{cur_sym}",
         ROUND(COALESCE(p.gcp_cost_3yr_cud * {fx_rate}, p.gcp_projected_cost * {fx_rate}, (CASE WHEN m.strategy = 'ignore' THEN 0.0 ELSE c.aws_amortized_cost * {aws_fx_rate} END)), 2) AS "GCP 3yr CUD{cur_sym}",
         COALESCE(m.strategy, '')                              AS "Strategy",
-        COALESCE(m.mapping_confidence, '')                    AS "Confidence",
+        COALESCE(CAST(m.mapping_confidence AS VARCHAR), '')    AS "Confidence",
         COALESCE({assumption_col}, '')                        AS "Assumption",
         COALESCE({desc_col}, '')                              AS "Description"
     FROM aws_li_catalog c

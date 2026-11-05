@@ -165,3 +165,48 @@ def test_pricing_basis_and_override_rate_no_column_collision(tmp_path):
     con.close()
     # Composed as base(50.0) * cud_3yr multiplier; multiplier is a discount (<1, >0).
     assert 0.0 < cost < 50.0
+
+
+def test_apply_directives_per_user_isolation(temp_job_env):
+    tmpdir, db_path = temp_job_env
+
+    d_alice = Directive(
+        id="d_alice_s3",
+        author="alice@company.com",
+        selector={"service": "s3"},
+        action={"type": "set_strategy", "value": "passthrough"},
+    )
+    d_bob = Directive(
+        id="d_bob_ec2",
+        author="bob@competitor.com",
+        selector={"service": "ec2"},
+        action={"type": "set_strategy", "value": "ignore"},
+    )
+
+    save_ledger(tmpdir, [d_alice], user_id="alice@company.com")
+    save_ledger(tmpdir, [d_bob], user_id="bob@competitor.com")
+
+    # Apply Alice's directives to a copy of the DB
+    import shutil
+    db_alice = os.path.join(tmpdir, "projection_alice.duckdb")
+    db_bob = os.path.join(tmpdir, "projection_bob.duckdb")
+    shutil.copyfile(db_path, db_alice)
+    shutil.copyfile(db_path, db_bob)
+
+    # 1. Alice's run
+    apply_directives_to_db(db_alice, job_dir=tmpdir, user_id="alice@company.com")
+    con_a = duckdb.connect(db_alice, read_only=True)
+    res_a = dict(con_a.execute("SELECT aws_li_key, strategy FROM aws_li_to_gcp_li").fetchall())
+    con_a.close()
+
+    assert res_a["k2"] == "passthrough"  # s3 changed
+    assert res_a["k1"] == "map"          # ec2 untouched by Alice
+
+    # 2. Bob's run
+    apply_directives_to_db(db_bob, job_dir=tmpdir, user_id="bob@competitor.com")
+    con_b = duckdb.connect(db_bob, read_only=True)
+    res_b = dict(con_b.execute("SELECT aws_li_key, strategy FROM aws_li_to_gcp_li").fetchall())
+    con_b.close()
+
+    assert res_b["k1"] == "ignore"       # ec2 changed
+    assert res_b["k2"] == "map"          # s3 untouched by Bob

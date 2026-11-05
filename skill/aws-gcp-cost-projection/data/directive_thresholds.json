@@ -1,0 +1,5 @@
+{
+  "auto_apply_max_rows": 10,
+  "auto_apply_max_spend": 100.0,
+  "high_confidence_min": 0.90
+}

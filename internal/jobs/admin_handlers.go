@@ -2800,7 +2800,13 @@ func (h *Handler) runRecalculateBackground(id, changedBy string) {
 		{filepath.Join(scriptsDir, "service_classifier.py"), dbPath},
 		{filepath.Join(scriptsDir, "apply_rates.py")},
 		{filepath.Join(scriptsDir, "directives_from_legacy.py"), jobDir, dbPath},
-		{filepath.Join(scriptsDir, "apply_directives.py"), dbPath},
+		func() []string {
+			args := []string{filepath.Join(scriptsDir, "apply_directives.py"), dbPath}
+			if changedBy != "" {
+				args = append(args, "--user-id", changedBy)
+			}
+			return args
+		}(),
 		{filepath.Join(scriptsDir, "render_report.py")},
 	}
 	python := pythonBin()

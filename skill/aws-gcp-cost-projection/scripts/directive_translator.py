@@ -396,11 +396,63 @@ def validate_proposed_directive(directive: Directive) -> Tuple[bool, Optional[Di
     return True, None
 
 
+def load_directive_thresholds() -> Dict[str, Any]:
+    default_thresholds = {
+        "auto_apply_max_rows": 10,
+        "auto_apply_max_spend": 100.0,
+        "high_confidence_min": 0.90,
+    }
+    skill_dir = os.environ.get("SKILL_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(skill_dir, "data", "directive_thresholds.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    default_thresholds.update(data)
+        except Exception:
+            pass
+    return default_thresholds
+
+
+def should_auto_apply(directive: Directive, thresholds: Optional[Dict[str, Any]] = None) -> bool:
+    """
+    Check if a proposed directive meets the blast-radius and confidence criteria to auto-apply.
+    set_pricing_basis ALWAYS requires explicit user confirmation regardless of size.
+    Directives with open clarifications or invalid state cannot auto-apply.
+    Directives exceeding row count or spend thresholds, or below high-confidence, require explicit confirmation.
+    """
+    if directive.needs_clarification:
+        return False
+
+    act_type = directive.action.get("type")
+    # set_pricing_basis always requires confirm
+    if act_type == "set_pricing_basis":
+        return False
+
+    t = thresholds or load_directive_thresholds()
+    min_conf = float(t.get("high_confidence_min", 0.90))
+    if directive.confidence < min_conf:
+        return False
+
+    max_rows = int(t.get("auto_apply_max_rows", 10))
+    max_spend = float(t.get("auto_apply_max_spend", 100.0))
+
+    if directive.scope_estimate:
+        rows = int(directive.scope_estimate.get("rows", 0))
+        spend = float(directive.scope_estimate.get("aws_spend", 0.0))
+        if rows > max_rows or spend > max_spend:
+            return False
+
+    return True
+
+
 def translate_utterance(
     utterance: str,
     job_dir: str,
     selected_row_keys: Optional[List[str]] = None,
-    llm_func: Optional[Callable[[str], str]] = None
+    llm_func: Optional[Callable[[str], str]] = None,
+    user_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Translates a natural language user utterance into proposed Directive(s) and/or Clarifications.
@@ -538,7 +590,7 @@ def translate_utterance(
         if action:
             d = Directive(
                 id=d_id,
-                author="agy",
+                author=user_id or "agy",
                 source_utterance=utterance_clean,
                 selector=selector,
                 action=action,
@@ -555,7 +607,7 @@ def translate_utterance(
                 "blocking": True
             })
 
-    # 4. Scope estimate + Validation before confirm
+    # 4. Scope estimate + Validation before confirm + Blast radius auto-apply check
     validated_directives = []
     for d in proposed_directives:
         d.scope_estimate = compute_scope_estimate(job_dir, d)
@@ -564,6 +616,21 @@ def translate_utterance(
             clarif["id"] = f"clarif_{uuid.uuid4().hex[:8]}"
             d.needs_clarification = clarif
             clarifications.append(clarif)
+        elif is_valid and should_auto_apply(d):
+            # Meets blast radius threshold -> auto-applied / confirmed
+            d.status = "confirmed"
+            try:
+                from directives import load_ledger, save_ledger
+                ledger = load_ledger(job_dir, user_id=user_id)
+                existing_idx = next((i for i, item in enumerate(ledger) if item.id == d.id), None)
+                if existing_idx is not None:
+                    ledger[existing_idx] = d
+                else:
+                    ledger.append(d)
+                save_ledger(job_dir, ledger, user_id=user_id)
+            except Exception as exc:
+                print(f"warning auto-saving directive: {exc}", file=sys.stderr)
+
         validated_directives.append(d)
 
     return {
@@ -574,23 +641,31 @@ def translate_utterance(
 
 def main():
     if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <job_dir> <utterance> [--selected-keys k1,k2]", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <job_dir> <utterance> [--selected-keys k1,k2] [--user-id <USER>]", file=sys.stderr)
         return 1
     job_dir = sys.argv[1]
     utterance = sys.argv[2]
     selected_keys = None
-    if "--selected-keys" in sys.argv:
-        idx = sys.argv.index("--selected-keys")
-        if idx + 1 < len(sys.argv):
-            selected_keys = [k.strip() for k in sys.argv[idx + 1].split(",") if k.strip()]
+    user_id = os.environ.get("USER_ID") or None
 
-    res = translate_utterance(utterance, job_dir, selected_keys)
+    i = 3
+    while i < len(sys.argv):
+        if sys.argv[i] == "--selected-keys" and i + 1 < len(sys.argv):
+            selected_keys = [k.strip() for k in sys.argv[i + 1].split(",") if k.strip()]
+            i += 2
+        elif sys.argv[i] == "--user-id" and i + 1 < len(sys.argv):
+            user_id = sys.argv[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    res = translate_utterance(utterance, job_dir, selected_keys, user_id=user_id)
     # Record in thread if possible
     try:
         from refinement_thread import add_user_message, add_agy_response
-        add_user_message(job_dir, utterance)
+        add_user_message(job_dir, utterance, user_id=user_id)
         msg_text = "Here is the proposed directive." if res["proposed_directives"] else "I have a follow-up question regarding your request."
-        add_agy_response(job_dir, msg_text, res["proposed_directives"], res["clarifications"])
+        add_agy_response(job_dir, msg_text, res["proposed_directives"], res["clarifications"], user_id=user_id)
     except Exception as exc:
         print(f"warning recording thread: {exc}", file=sys.stderr)
 

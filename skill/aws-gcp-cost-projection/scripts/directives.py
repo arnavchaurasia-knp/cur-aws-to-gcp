@@ -13,6 +13,7 @@ import dataclasses
 from datetime import datetime, timezone
 import json
 import os
+import re
 import shutil
 import tempfile
 from typing import Any, Dict, List, Optional, Union
@@ -202,16 +203,45 @@ def validate_directive(d: Union[Directive, Dict[str, Any]], raise_exc: bool = Fa
     return True, None
 
 
-def load_ledger(job_dir: str) -> List[Directive]:
+def _sanitize_user_id(user_id: str) -> str:
+    """Sanitize user ID or email for filesystem-safe filenames across Windows/Unix."""
+    if not user_id:
+        return ""
+    return re.sub(r'[\\/:*?"<>|\s]', '_', user_id.strip())
+
+
+def ledger_path(job_dir: str, user_id: Optional[str] = None) -> str:
     """
-    Read <job_dir>/directives.json (ordered, append-only).
+    Get the path to the directive ledger file.
+    If user_id is given, returns <job_dir>/directives/<safe_user_id>.json.
+    Otherwise returns <job_dir>/directives.json.
+    """
+    if not job_dir:
+        return ""
+    if user_id and user_id.strip():
+        safe_id = _sanitize_user_id(user_id)
+        return os.path.join(job_dir, "directives", f"{safe_id}.json")
+    return os.path.join(job_dir, "directives.json")
+
+
+def load_ledger(job_dir: str, user_id: Optional[str] = None) -> List[Directive]:
+    """
+    Read the directive ledger for a job.
+    If user_id is provided, reads <job_dir>/directives/<user_id>.json.
+    Falls back to <job_dir>/directives.json for back-compat when unscoped ledger exists.
     Returns [] when absent or corrupted — never raises (mirrors load_assumptions).
     """
     if not job_dir:
         return []
-    path = os.path.join(job_dir, "directives.json")
+
+    path = ledger_path(job_dir, user_id)
     if not os.path.exists(path):
-        return []
+        # Back-compat fallback: if user-scoped file doesn't exist, check unscoped directives.json
+        if user_id and os.path.exists(os.path.join(job_dir, "directives.json")):
+            path = os.path.join(job_dir, "directives.json")
+        else:
+            return []
+
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -228,15 +258,20 @@ def load_ledger(job_dir: str) -> List[Directive]:
         return []
 
 
-def save_ledger(job_dir: str, directives: List[Union[Directive, Dict[str, Any]]]) -> None:
+def save_ledger(
+    job_dir: str,
+    directives: List[Union[Directive, Dict[str, Any]]],
+    user_id: Optional[str] = None
+) -> None:
     """
-    Atomically write directives to <job_dir>/directives.json.
+    Atomically write directives to <job_dir>/directives.json or <job_dir>/directives/<user_id>.json.
     Writes <job_dir>/directives.baseline.json on first write if it does not already exist.
     """
     if not job_dir:
         return
     os.makedirs(job_dir, exist_ok=True)
-    target_path = os.path.join(job_dir, "directives.json")
+    target_path = ledger_path(job_dir, user_id)
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
     baseline_path = os.path.join(job_dir, "directives.baseline.json")
 
     # Serialize
@@ -261,9 +296,10 @@ def save_ledger(job_dir: str, directives: List[Union[Directive, Dict[str, Any]]]
             raise
 
     # Atomic write of target_path (write to temp file in same directory, then rename)
+    target_dir = os.path.dirname(target_path)
     temp_target = None
     try:
-        with tempfile.NamedTemporaryFile("w", dir=job_dir, delete=False, encoding="utf-8") as tf:
+        with tempfile.NamedTemporaryFile("w", dir=target_dir, delete=False, encoding="utf-8") as tf:
             temp_target = tf.name
             json.dump(payload, tf, indent=2)
         os.replace(temp_target, target_path)

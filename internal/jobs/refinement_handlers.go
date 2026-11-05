@@ -14,6 +14,21 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+func sanitizeUserFilename(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if r == '/' || r == '\\' || r == ':' || r == '*' || r == '?' || r == '"' || r == '<' || r == '>' || r == '|' || r <= ' ' {
+			b.WriteRune('_')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // GetRefinementThread returns the conversational refinement thread for a job.
 func (h *Handler) GetRefinementThread(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
@@ -34,7 +49,16 @@ func (h *Handler) GetRefinementThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	threadPath := filepath.Join(jobDir, "refinement_thread.json")
+	userEmail := "user"
+	if sess != nil && sess.Email != "" {
+		userEmail = sess.Email
+	}
+	safeUser := sanitizeUserFilename(userEmail)
+
+	threadPath := filepath.Join(jobDir, "refinement_threads", safeUser+".json")
+	if _, err := os.Stat(threadPath); err != nil {
+		threadPath = filepath.Join(jobDir, "refinement_thread.json")
+	}
 	var threadMap map[string]any
 	if data, err := os.ReadFile(threadPath); err == nil {
 		_ = json.Unmarshal(data, &threadMap)
@@ -42,13 +66,17 @@ func (h *Handler) GetRefinementThread(w http.ResponseWriter, r *http.Request) {
 	if threadMap == nil {
 		threadMap = map[string]any{
 			"job_id":              id,
+			"user_id":             userEmail,
 			"messages":            []any{},
 			"open_clarifications": []any{},
 			"proposed_directives": []any{},
 		}
 	}
 
-	directivesPath := filepath.Join(jobDir, "directives.json")
+	directivesPath := filepath.Join(jobDir, "directives", safeUser+".json")
+	if _, err := os.Stat(directivesPath); err != nil {
+		directivesPath = filepath.Join(jobDir, "directives.json")
+	}
 	var directives []any
 	if data, err := os.ReadFile(directivesPath); err == nil {
 		_ = json.Unmarshal(data, &directives)
@@ -97,9 +125,14 @@ func (h *Handler) ProposeRefinement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userEmail := "user"
+	if sess != nil && sess.Email != "" {
+		userEmail = sess.Email
+	}
+
 	scriptsDir := filepath.Join(skill.ResolveDir(), "scripts")
 	scriptPath := filepath.Join(scriptsDir, "directive_translator.py")
-	args := []string{scriptPath, jobDir, utterance}
+	args := []string{scriptPath, jobDir, utterance, "--user-id", userEmail}
 	if len(body.SelectedRowKeys) > 0 {
 		args = append(args, "--selected-keys", strings.Join(body.SelectedRowKeys, ","))
 	}
@@ -110,6 +143,7 @@ func (h *Handler) ProposeRefinement(w http.ResponseWriter, r *http.Request) {
 		"SKILL_DIR="+skill.ResolveDir(),
 		"PYTHONPATH="+scriptsDir,
 		"JOB_DIR="+jobDir,
+		"USER_ID="+userEmail,
 	)
 
 	out, err := cmd.CombinedOutput()
@@ -150,14 +184,20 @@ func (h *Handler) ConfirmRefinement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userEmail := "user"
+	if sess != nil && sess.Email != "" {
+		userEmail = sess.Email
+	}
+
 	scriptsDir := filepath.Join(skill.ResolveDir(), "scripts")
 	scriptPath := filepath.Join(scriptsDir, "refinement_thread.py")
-	cmd := exec.Command(pythonBin(), scriptPath, jobDir, "confirm", body.DirectiveID)
+	cmd := exec.Command(pythonBin(), scriptPath, jobDir, "confirm", body.DirectiveID, "--user-id", userEmail)
 	cmd.Dir = jobDir
 	cmd.Env = append(os.Environ(),
 		"SKILL_DIR="+skill.ResolveDir(),
 		"PYTHONPATH="+scriptsDir,
 		"JOB_DIR="+jobDir,
+		"USER_ID="+userEmail,
 	)
 
 	out, err := cmd.CombinedOutput()
@@ -199,14 +239,20 @@ func (h *Handler) AnswerClarification(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userEmail := "user"
+	if sess != nil && sess.Email != "" {
+		userEmail = sess.Email
+	}
+
 	scriptsDir := filepath.Join(skill.ResolveDir(), "scripts")
 	scriptPath := filepath.Join(scriptsDir, "refinement_thread.py")
-	cmd := exec.Command(pythonBin(), scriptPath, jobDir, "clarify", body.ClarificationID, body.Answer)
+	cmd := exec.Command(pythonBin(), scriptPath, jobDir, "clarify", body.ClarificationID, body.Answer, "--user-id", userEmail)
 	cmd.Dir = jobDir
 	cmd.Env = append(os.Environ(),
 		"SKILL_DIR="+skill.ResolveDir(),
 		"PYTHONPATH="+scriptsDir,
 		"JOB_DIR="+jobDir,
+		"USER_ID="+userEmail,
 	)
 
 	out, err := cmd.CombinedOutput()
@@ -247,14 +293,20 @@ func (h *Handler) RevokeRefinement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userEmail := "user"
+	if sess != nil && sess.Email != "" {
+		userEmail = sess.Email
+	}
+
 	scriptsDir := filepath.Join(skill.ResolveDir(), "scripts")
 	scriptPath := filepath.Join(scriptsDir, "refinement_thread.py")
-	cmd := exec.Command(pythonBin(), scriptPath, jobDir, "revoke", body.DirectiveID)
+	cmd := exec.Command(pythonBin(), scriptPath, jobDir, "revoke", body.DirectiveID, "--user-id", userEmail)
 	cmd.Dir = jobDir
 	cmd.Env = append(os.Environ(),
 		"SKILL_DIR="+skill.ResolveDir(),
 		"PYTHONPATH="+scriptsDir,
 		"JOB_DIR="+jobDir,
+		"USER_ID="+userEmail,
 	)
 
 	out, err := cmd.CombinedOutput()

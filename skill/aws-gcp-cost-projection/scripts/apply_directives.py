@@ -102,7 +102,12 @@ def re_escape(s: str) -> str:
     return s.replace("(", r"\(").replace(")", r"\)").replace("[", r"\[").replace("]", r"\]")
 
 
-def apply_directives_to_db(db_path: str, check_only: bool = False, job_dir: Optional[str] = None) -> int:
+def apply_directives_to_db(
+    db_path: str,
+    check_only: bool = False,
+    job_dir: Optional[str] = None,
+    user_id: Optional[str] = None
+) -> int:
     if not os.path.exists(db_path):
         print(f"apply_directives: DB {db_path} does not exist", file=sys.stderr)
         return 0
@@ -114,6 +119,9 @@ def apply_directives_to_db(db_path: str, check_only: bool = False, job_dir: Opti
             job_dir = os.path.dirname(parent)
         else:
             job_dir = os.getcwd()
+
+    if not user_id:
+        user_id = os.environ.get("USER_ID") or None
 
     con = duckdb.connect(db_path)
 
@@ -133,6 +141,21 @@ def apply_directives_to_db(db_path: str, check_only: bool = False, job_dir: Opti
     mapping_cols = {r[1].lower() for r in con.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
     has_projection_table = "gcp_projection" in tables
     projection_cols = {r[1].lower() for r in con.execute("PRAGMA table_info('gcp_projection')").fetchall()} if has_projection_table else set()
+    if has_projection_table:
+        if "gcp_cost_1yr_cud" not in projection_cols:
+            try:
+                con.execute("ALTER TABLE gcp_projection ADD COLUMN gcp_cost_1yr_cud DOUBLE")
+                con.execute("UPDATE gcp_projection SET gcp_cost_1yr_cud = gcp_projected_cost")
+                projection_cols.add("gcp_cost_1yr_cud")
+            except Exception:
+                pass
+        if "gcp_cost_3yr_cud" not in projection_cols:
+            try:
+                con.execute("ALTER TABLE gcp_projection ADD COLUMN gcp_cost_3yr_cud DOUBLE")
+                con.execute("UPDATE gcp_projection SET gcp_cost_3yr_cud = gcp_projected_cost")
+                projection_cols.add("gcp_cost_3yr_cud")
+            except Exception:
+                pass
     has_workload_col = "is_workload" in mapping_cols
     is_workload_sel = "m.is_workload" if has_workload_col else "TRUE AS is_workload"
 
@@ -169,9 +192,9 @@ def apply_directives_to_db(db_path: str, check_only: bool = False, job_dir: Opti
         JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
     """
 
-    # 1. Load directives (pass open connection to legacy converter if needed)
-    directives = load_ledger(job_dir)
-    if not directives:
+    # 1. Load directives (scoped to user_id if provided)
+    directives = load_ledger(job_dir, user_id=user_id)
+    if not directives and not user_id:
         legacy = convert_legacy_to_directives(job_dir, con=con)
         if legacy:
             directives = legacy
@@ -388,7 +411,7 @@ def apply_directives_to_db(db_path: str, check_only: bool = False, job_dir: Opti
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <projection.duckdb> [--check-only] [--job-dir <DIR>]", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <projection.duckdb> [--check-only] [--job-dir <DIR>] [--user-id <USER_ID>]", file=sys.stderr)
         return 2
 
     db_path = sys.argv[1]
@@ -400,7 +423,13 @@ def main() -> int:
         if idx + 1 < len(sys.argv):
             job_dir = sys.argv[idx + 1]
 
-    apply_directives_to_db(db_path, check_only=check_only, job_dir=job_dir)
+    user_id = None
+    if "--user-id" in sys.argv:
+        idx = sys.argv.index("--user-id")
+        if idx + 1 < len(sys.argv):
+            user_id = sys.argv[idx + 1]
+
+    apply_directives_to_db(db_path, check_only=check_only, job_dir=job_dir, user_id=user_id)
     return 0
 
 

@@ -91,4 +91,47 @@ func TestRefinementHandlers_Lifecycle(t *testing.T) {
 		assert.FileExists(t, filepath.Join(jobDir, "assumptions.baseline.json"))
 		assert.FileExists(t, filepath.Join(jobDir, "directives.baseline.json"))
 	})
+
+	t.Run("Per-user ledger scoping: Alice and Admin have independent ledgers", func(t *testing.T) {
+		// Create Alice's user-scoped directive
+		require.NoError(t, os.MkdirAll(filepath.Join(jobDir, "directives"), 0755))
+		aliceDirective := `[{"id":"dir_alice","author":"alice@example.com","selector":{"service":"s3"},"action":{"type":"set_strategy","value":"passthrough"},"status":"confirmed","confidence":1.0}]`
+		require.NoError(t, os.WriteFile(filepath.Join(jobDir, "directives", "alice@example.com.json"), []byte(aliceDirective), 0644))
+
+		// Create Admin's user-scoped directive
+		adminDirective := `[{"id":"dir_admin","author":"admin@facets.cloud","selector":{"service":"ec2"},"action":{"type":"set_strategy","value":"ignore"},"status":"confirmed","confidence":1.0}]`
+		require.NoError(t, os.WriteFile(filepath.Join(jobDir, "directives", "admin@facets.cloud.json"), []byte(adminDirective), 0644))
+
+		// Request as Alice
+		reqAlice, _ := http.NewRequestWithContext(ctxWithFullSession(aliceEmail, "Alice", "viewer"), "GET", "/api/jobs/"+jobID+"/refinement/thread", nil)
+		reqAlice = reqAlice.WithContext(withChiID(reqAlice.Context(), jobID))
+		recAlice := httptest.NewRecorder()
+		h.GetRefinementThread(recAlice, reqAlice)
+		assert.Equal(t, http.StatusOK, recAlice.Code)
+
+		var respAlice struct {
+			Directives []struct {
+				ID string `json:"id"`
+			} `json:"directives"`
+		}
+		require.NoError(t, json.Unmarshal(recAlice.Body.Bytes(), &respAlice))
+		require.Len(t, respAlice.Directives, 1)
+		assert.Equal(t, "dir_alice", respAlice.Directives[0].ID)
+
+		// Request as Admin
+		reqAdmin, _ := http.NewRequestWithContext(ctxWithFullSession("admin@facets.cloud", "Admin", "admin"), "GET", "/api/jobs/"+jobID+"/refinement/thread", nil)
+		reqAdmin = reqAdmin.WithContext(withChiID(reqAdmin.Context(), jobID))
+		recAdmin := httptest.NewRecorder()
+		h.GetRefinementThread(recAdmin, reqAdmin)
+		assert.Equal(t, http.StatusOK, recAdmin.Code)
+
+		var respAdmin struct {
+			Directives []struct {
+				ID string `json:"id"`
+			} `json:"directives"`
+		}
+		require.NoError(t, json.Unmarshal(recAdmin.Body.Bytes(), &respAdmin))
+		require.Len(t, respAdmin.Directives, 1)
+		assert.Equal(t, "dir_admin", respAdmin.Directives[0].ID)
+	})
 }

@@ -319,13 +319,21 @@ export function ReportOverride({ user }: Readonly<{ user: UserInfo }>) {
           <div className="flex items-center gap-3">
             <button
               onClick={() => setShowThreadPanel(!showThreadPanel)}
-              className={`px-3.5 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
+              className={`px-3.5 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
                 showThreadPanel
                   ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-400'
                   : 'border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] text-[color:var(--fcp-text-primary)]'
               }`}
             >
-              💬 {showThreadPanel ? 'Hide Refinement Assistant' : 'Show Refinement Assistant'}
+              <span>💬 {showThreadPanel ? 'Hide Refinement Assistant' : 'Show Refinement Assistant'}</span>
+              {openClarifications.length > 0 && (
+                <span
+                  title={`${openClarifications.length} unresolved clarification(s)`}
+                  className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                >
+                  {openClarifications.length}
+                </span>
+              )}
             </button>
             <Link
               to={`/jobs/${id}`}

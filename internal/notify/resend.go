@@ -75,6 +75,117 @@ func SendContactInterest(cfg EmailConfig, toEmails []string, contactName, contac
 	return firstErr
 }
 
+// StalePinAlertItem describes an invalidated pinned directive for a user.
+type StalePinAlertItem struct {
+	JobID       string `json:"job_id"`
+	DirectiveID string `json:"directive_id"`
+	PinnedItem  string `json:"pinned_item"`
+	Region      string `json:"region"`
+	Question    string `json:"question"`
+}
+
+// SendStalePinAlert sends an email to the user notifying them of pinned directives invalidated by a catalog refresh.
+// Multiple stale pins for the user are batched into a single email.
+func SendStalePinAlert(cfg EmailConfig, toEmail, toName string, items []StalePinAlertItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "http://localhost:8080"
+	}
+
+	displayName := toName
+	if strings.Contains(displayName, "@") {
+		displayName = strings.Split(displayName, "@")[0]
+	}
+	if displayName == "" {
+		displayName = "there"
+	}
+
+	primaryJobID := items[0].JobID
+	reviewURL := fmt.Sprintf("%s/jobs/%s/review", baseURL, primaryJobID)
+
+	subject := fmt.Sprintf("Action Required: %d pinned item(s) need review following catalog refresh", len(items))
+	if len(items) == 1 {
+		subject = fmt.Sprintf("Action Required: Pinned %s needs review following catalog refresh", items[0].PinnedItem)
+	}
+
+	var textBuilder strings.Builder
+	textBuilder.WriteString(fmt.Sprintf("Hi %s,\n\nA recent Google Cloud catalog refresh invalidated %d of your pinned directives:\n\n", displayName, len(items)))
+	for _, it := range items {
+		textBuilder.WriteString(fmt.Sprintf("• Job %s: %s\n", it.JobID, it.Question))
+		textBuilder.WriteString(fmt.Sprintf("  Review: %s/jobs/%s/review\n\n", baseURL, it.JobID))
+	}
+	textBuilder.WriteString("Your current projections remain unchanged until you choose an option.\n\n— Facets Cloud")
+
+	htmlBody := buildStalePinAlertHTML(displayName, items, baseURL, reviewURL)
+	return sendResend(cfg, toEmail, subject, textBuilder.String(), htmlBody)
+}
+
+func buildStalePinAlertHTML(name string, items []StalePinAlertItem, baseURL, primaryReviewURL string) string {
+	var rowsHTML strings.Builder
+	for _, it := range items {
+		jobReviewURL := fmt.Sprintf("%s/jobs/%s/review", baseURL, it.JobID)
+		rowsHTML.WriteString(fmt.Sprintf(`
+          <tr>
+            <td style="padding: 12px 18px; color: #64748B; font-size: 13px; font-weight: 500; border-bottom: 1px solid #EDF2F7;">
+              <strong>Job %s</strong> (%s)
+            </td>
+            <td style="padding: 12px 18px; color: #0F172A; font-size: 13px; text-align: right; border-bottom: 1px solid #EDF2F7;">
+              <a href="%s" style="color: #645DF6; text-decoration: underline; font-weight: 600;">Review Pin</a>
+            </td>
+          </tr>
+          <tr>
+            <td colspan="2" style="padding: 6px 18px 14px 18px; color: #475569; font-size: 12px; border-bottom: 1px solid #EDF2F7;">
+              %s
+            </td>
+          </tr>`, it.JobID, it.PinnedItem, jobReviewURL, it.Question))
+	}
+
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Catalog Refresh: Pinned Items Review</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #F8FAFC; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%%" style="background-color: #F8FAFC; padding: 40px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%%" style="max-width: 580px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+          <tr>
+            <td style="padding: 36px 36px 28px 36px;">
+              <span style="color: #D97706; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">
+                ● Catalog Refresh Notice
+              </span>
+              <h1 style="margin: 10px 0; font-size: 22px; font-weight: 700; color: #0F172A;">
+                Pinned Directive Needs Review
+              </h1>
+              <p style="margin: 0 0 20px 0; font-size: 14px; line-height: 1.6; color: #475569;">
+                Hi <strong>%s</strong>, a catalog refresh updated Google Cloud SKU availability. The following pinned item(s) are no longer offered in their target regions:
+              </p>
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%%" style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px; margin-bottom: 24px; border-collapse: separate;">
+                %s
+              </table>
+              <p style="font-size: 13px; color: #64748B; margin-bottom: 24px;">
+                Your existing projections continue to honor the last-known rates and will not change until you select a preferred replacement in the refinement panel.
+              </p>
+              <div style="text-align: center; margin: 26px 0;">
+                <a href="%s" style="background-color: #645DF6; color: #FFFFFF; text-decoration: none; padding: 13px 30px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
+                  Open Refinement Panel &rarr;
+                </a>
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`, name, rowsHTML.String(), primaryReviewURL)
+}
+
 // SendJobFailed alerts the user that report generation failed.
 func SendJobFailed(cfg EmailConfig, toEmail, toName, prospect string, jobID ...string) error {
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")

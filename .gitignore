@@ -48,6 +48,7 @@ NOTES.md
 # Temp
 /tmp/
 *.tmp
+catalog_refresh_status.json
 __pycache__/
 *.pyc
 personal_intelligence_agent/
@@ -58,3 +59,4 @@ bill_line_items_filtered.csv
 scripts/extract_bill_csv.py
 scripts/filter_bill_csv.py
 projection-audit/
+.claude/settings.local.json

@@ -72,6 +72,7 @@ func buildTestRouter(database *db.DB, jobsDir string, adminEmails []string) http
 			r.Get("/api/admin/users", jobHandler.AdminListUsers)
 			r.Post("/api/admin/users/{email}/role", jobHandler.AdminSetUserRole)
 			r.Get("/api/admin/catalog/status", jobHandler.AdminCatalogStatus)
+			r.Get("/api/admin/catalog/refresh-status", jobHandler.AdminCatalogRefreshStatus)
 			r.Post("/api/admin/catalog/refresh", jobHandler.AdminCatalogRefresh)
 			r.Get("/api/admin/audit", jobHandler.AdminAuditLog)
 			r.Get("/api/admin/analytics", jobHandler.AdminAnalytics)
@@ -142,6 +143,7 @@ func TestSection3_AuthorizationMatrix(t *testing.T) {
 		{"GET", "/api/admin/bills/hash123/preview"},
 		{"GET", "/api/admin/bills/hash123/view"},
 		{"GET", "/api/admin/catalog/status"},
+		{"GET", "/api/admin/catalog/refresh-status"},
 		{"POST", "/api/admin/catalog/refresh"},
 		{"GET", "/api/admin/deleted-jobs"},
 		{"GET", "/api/admin/jobs"},

@@ -134,8 +134,24 @@ export interface CatalogStatus {
   stale: boolean
 }
 
+export interface CatalogRefreshRun {
+  state: 'idle' | 'running' | 'success' | 'failed' | 'skipped'
+  started_at?: string
+  finished_at?: string
+  exit_code?: number
+  trigger?: string
+  actor?: string
+  reason?: string
+  log_tail?: string[]
+  duration_seconds?: number
+}
+
 export async function getCatalogStatus(): Promise<CatalogStatus> {
   return getJSON<CatalogStatus>('/api/admin/catalog/status')
+}
+
+export async function getCatalogRefreshStatus(): Promise<CatalogRefreshRun> {
+  return getJSON<CatalogRefreshRun>('/api/admin/catalog/refresh-status')
 }
 
 export async function triggerCatalogRefresh(): Promise<void> {
@@ -748,4 +764,112 @@ export async function testNotify(channel: 'email' | 'slack'): Promise<{ status: 
     body: JSON.stringify({ channel }),
   })
   return res.json() as Promise<{ status: string; error?: string }>
+}
+
+// ── System Health ──────────────────────────────────────────────────────────
+export interface StoreHealth {
+  key: string
+  file: string
+  status: 'ok' | 'warn' | 'fail' | 'unknown'
+  detail: string
+  size_bytes: number
+  age_days: number
+  count: number
+}
+
+export interface HealthSummary {
+  engine: {
+    active_engine: string
+    version: string
+    concurrency_limit: number
+    phases: string[]
+    status: string
+  }
+  catalog: {
+    sku_count: number
+    service_count: number
+    vintage: string
+    age_days: number
+    stale: boolean
+    status: string
+  }
+  pipeline: {
+    queue_depth: number
+    running_jobs: number
+    completed_jobs: number
+    failed_jobs: number
+    halted: boolean
+    failure_rate_pct: number
+  }
+  tokens: {
+    total_jobs_analyzed: number
+    total_tokens_est: number
+    estimated_cost_usd: number
+  }
+  stores: StoreHealth[]
+  data_status: 'ok' | 'warn' | 'fail' | 'unknown'
+  status: string
+}
+
+export async function getAdminHealth(): Promise<HealthSummary> {
+  return getJSON<HealthSummary>('/api/admin/health')
+}
+
+// ── Line item overrides ───────────────────────────────────────────────────
+export interface LineItem {
+  aws_li_key: string
+  product: string
+  usage_type: string
+  operation?: string
+  region?: string
+  pricing_unit?: string
+  aws_amortized_cost: number
+  mechanic_group?: string
+  strategy: string
+  gcp_service: string
+  gcp_sku_description?: string
+  gcp_projected_cost?: number
+  confidence?: number
+  is_suppressed?: boolean
+  manual_rate?: number
+  notes?: string
+}
+
+export interface LineItemsResponse {
+  job_id: string
+  total_aws: number
+  total_gcp: number
+  items: LineItem[]
+}
+
+export async function getJobLineItems(jobId: string): Promise<LineItemsResponse> {
+  return getJSON<LineItemsResponse>(`/api/admin/jobs/${jobId}/line-items`)
+}
+
+export async function overrideLineItem(
+  jobId: string,
+  rowKey: string,
+  data: {
+    gcp_service?: string
+    gcp_sku?: string
+    manual_rate?: number
+    is_suppressed?: boolean
+    notes?: string
+  }
+): Promise<{ status: string }> {
+  const res = await fetch(`/api/admin/jobs/${jobId}/line-items/${encodeURIComponent(rowKey)}/override`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error((await res.text()) || 'override failed')
+  return res.json()
+}
+
+export async function deleteLineItemOverride(jobId: string, rowKey: string): Promise<{ status: string }> {
+  const res = await fetch(`/api/admin/jobs/${jobId}/line-items/${encodeURIComponent(rowKey)}/override`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error((await res.text()) || 'delete override failed')
+  return res.json()
 }

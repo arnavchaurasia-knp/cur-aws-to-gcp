@@ -1,17 +1,94 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/facets/cur-web/internal/skill"
 )
+
+// CatalogRefreshRun represents the live and recorded execution status of a GCP catalog refresh.
+type CatalogRefreshRun struct {
+	State           string   `json:"state"`                      // idle | running | success | failed | skipped
+	StartedAt       string   `json:"started_at,omitempty"`
+	FinishedAt      string   `json:"finished_at,omitempty"`
+	ExitCode        int      `json:"exit_code"`
+	Trigger         string   `json:"trigger,omitempty"`          // manual | auto
+	Actor           string   `json:"actor,omitempty"`
+	Reason          string   `json:"reason,omitempty"`           // populated on skipped/failed (e.g. image-baked)
+	LogTail         []string `json:"log_tail,omitempty"`         // last ~40 lines of combined stdout/stderr
+	DurationSeconds int      `json:"duration_seconds,omitempty"`
+}
+
+var refreshRunMu sync.Mutex
+
+func refreshStatusPath() string {
+	return filepath.Join(skill.ResolveDir(), "data", "catalog_refresh_status.json")
+}
+
+func readRefreshRunLocked(path string) CatalogRefreshRun {
+	fallback := CatalogRefreshRun{State: "idle"}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fallback
+	}
+	var run CatalogRefreshRun
+	if err := json.Unmarshal(data, &run); err != nil || run.State == "" {
+		return fallback
+	}
+	return run
+}
+
+func readRefreshRun() CatalogRefreshRun {
+	refreshRunMu.Lock()
+	defer refreshRunMu.Unlock()
+	return readRefreshRunLocked(refreshStatusPath())
+}
+
+func writeRefreshRunLocked(path string, run CatalogRefreshRun) {
+	data, err := json.MarshalIndent(run, "", "  ")
+	if err != nil {
+		return
+	}
+	dir := filepath.Dir(path)
+	_ = os.MkdirAll(dir, 0755)
+
+	tmp, err := os.CreateTemp(dir, "catalog_refresh_status_*.tmp")
+	if err != nil {
+		_ = os.WriteFile(path, data, 0644)
+		return
+	}
+	tmpName := tmp.Name()
+	_, _ = tmp.Write(data)
+	_ = tmp.Close()
+
+	// On Windows, os.Rename fails if target already exists; remove first
+	_ = os.Remove(path)
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.WriteFile(path, data, 0644)
+		_ = os.Remove(tmpName)
+	}
+}
+
+func writeRefreshRun(run CatalogRefreshRun) {
+	refreshRunMu.Lock()
+	defer refreshRunMu.Unlock()
+	writeRefreshRunLocked(refreshStatusPath(), run)
+}
+
+// GetCatalogRefreshStatus returns the latest persisted refresh run state.
+func GetCatalogRefreshStatus() CatalogRefreshRun {
+	return readRefreshRun()
+}
 
 // catalogStaleDays reads catalog_refresh_after_days from data/review-config.json,
 // falling back to 7 if missing or unreadable.
@@ -98,40 +175,49 @@ func runCatalogRefreshIfStale() {
 		slog.Debug("catalog is fresh, skipping refresh", "age_days", age)
 		return
 	}
-	runCatalogRefreshNow()
+	runCatalogRefreshNow("auto", "system")
 }
 
 // catalogRefreshTimeout bounds runCatalogRefreshNow's subprocess.
-//
-// CONFIRMED REAL BUG this guards against: catalog_health_check.py's own
-// `gcloud auth print-access-token` fallback can hang indefinitely on
-// Windows even with an active, valid gcloud session (gcloud.cmd spawns a
-// child process that can keep stdout/stderr pipes open past any timeout the
-// Python subprocess call itself requests) -- confirmed by reproducing it
-// directly. That script now gates the gcloud path behind
-// AGY_ALLOW_GCLOUD_LIVE_FETCH=1 so it is off by default, but cmd.Run() here
-// had NO bound at all at the Go layer either: if that env var (or some
-// future change) ever re-enabled a hang-prone path, this goroutine -- which
-// runs on every server startup and every 24h tick -- would block forever
-// and leak a zombie python/gcloud process each time. A context timeout at
-// this layer is defense in depth independent of whatever the script does.
 const catalogRefreshTimeout = 2 * time.Minute
 
 // runCatalogRefreshNow runs the health-check/refresh script unconditionally,
 // ignoring catalogStaleDays. Used by the forced "refresh now" admin action.
-func runCatalogRefreshNow() {
+func runCatalogRefreshNow(trigger, actor string) {
 	skillDir := skill.ResolveDir()
 	if isImageBaked(skillDir) {
-		slog.Info("GCP catalog is image-baked and refreshed at build time, skipping runtime refresh", "skill_dir", skillDir)
+		reason := "GCP catalog is image-baked and refreshed at build time, skipping runtime refresh"
+		slog.Info(reason, "skill_dir", skillDir)
+		writeRefreshRun(CatalogRefreshRun{
+			State:      "skipped",
+			Reason:     reason,
+			Trigger:    trigger,
+			Actor:      actor,
+			FinishedAt: time.Now().UTC().Format(time.RFC3339),
+		})
 		return
 	}
 	script := filepath.Join(skillDir, "scripts", "catalog_manager.py")
 	if _, err := os.Stat(script); err != nil {
 		slog.Warn("catalog_manager.py not found, skipping refresh", "path", script)
+		writeRefreshRun(CatalogRefreshRun{
+			State:      "failed",
+			Reason:     "catalog_manager.py not found",
+			Trigger:    trigger,
+			Actor:      actor,
+			FinishedAt: time.Now().UTC().Format(time.RFC3339),
+		})
 		return
 	}
 
-	slog.Info("refreshing GCP catalog", "age_days", catalogAge())
+	slog.Info("refreshing GCP catalog", "age_days", catalogAge(), "trigger", trigger, "actor", actor)
+	startTime := time.Now().UTC()
+	writeRefreshRun(CatalogRefreshRun{
+		State:     "running",
+		StartedAt: startTime.Format(time.RFC3339),
+		Trigger:   trigger,
+		Actor:     actor,
+	})
 
 	python := "python3"
 	if _, err := exec.LookPath(python); err != nil {
@@ -143,17 +229,63 @@ func runCatalogRefreshNow() {
 
 	cmd := exec.CommandContext(ctx, python, script, "refresh", "--skill-dir", skillDir)
 	cmd.Dir = skillDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
+	var buf bytes.Buffer
+	mw := io.MultiWriter(os.Stdout, &buf)
+	cmd.Stdout = mw
+	cmd.Stderr = mw
+
+	err := cmd.Run()
+	finishedTime := time.Now().UTC()
+	durationSec := int(finishedTime.Sub(startTime).Seconds())
+
+	rawLines := strings.Split(buf.String(), "\n")
+	var logTail []string
+	for _, l := range rawLines {
+		l = strings.TrimRight(l, "\r")
+		if strings.TrimSpace(l) != "" {
+			logTail = append(logTail, l)
+		}
+	}
+	if len(logTail) > 40 {
+		logTail = logTail[len(logTail)-40:]
+	}
+
+	if err != nil {
+		exitCode := 1
+		reason := err.Error()
 		if ctx.Err() == context.DeadlineExceeded {
+			reason = "timed out after 2m"
 			slog.Warn("catalog refresh timed out, killed subprocess", "timeout", catalogRefreshTimeout)
 		} else {
-			slog.Warn("catalog refresh finished with error", "err", err)
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			}
+			slog.Warn("catalog refresh finished with error", "err", err, "exit_code", exitCode)
 		}
+		writeRefreshRun(CatalogRefreshRun{
+			State:           "failed",
+			StartedAt:       startTime.Format(time.RFC3339),
+			FinishedAt:      finishedTime.Format(time.RFC3339),
+			ExitCode:        exitCode,
+			Trigger:         trigger,
+			Actor:           actor,
+			Reason:          reason,
+			LogTail:         logTail,
+			DurationSeconds: durationSec,
+		})
 	} else {
-		slog.Info("GCP catalog refresh complete")
+		slog.Info("GCP catalog refresh complete", "duration_seconds", durationSec)
+		writeRefreshRun(CatalogRefreshRun{
+			State:           "success",
+			StartedAt:       startTime.Format(time.RFC3339),
+			FinishedAt:      finishedTime.Format(time.RFC3339),
+			ExitCode:        0,
+			Trigger:         trigger,
+			Actor:           actor,
+			LogTail:         logTail,
+			DurationSeconds: durationSec,
+		})
 	}
 }
 
@@ -180,11 +312,30 @@ func GetCatalogStatus() CatalogStatus {
 // the next deploy — so nothing is started. The caller MUST surface that to the
 // admin: a button that reports "refresh started" while doing nothing is worse
 // than one that declines, because the operator stops looking.
-func TriggerCatalogRefresh() (bool, string) {
-	if skillDir := skill.ResolveDir(); isImageBaked(skillDir) {
-		return false, "catalog is baked into the container image and refreshed at build time; " +
+func TriggerCatalogRefresh(actor string) (bool, string) {
+	skillDir := skill.ResolveDir()
+	if isImageBaked(skillDir) {
+		reason := "catalog is baked into the container image and refreshed at build time; " +
 			"a runtime refresh would be discarded on the next deploy"
+		writeRefreshRun(CatalogRefreshRun{
+			State:      "skipped",
+			Reason:     reason,
+			Trigger:    "manual",
+			Actor:      actor,
+			FinishedAt: time.Now().UTC().Format(time.RFC3339),
+		})
+		return false, reason
 	}
-	go runCatalogRefreshNow()
+
+	curr := readRefreshRun()
+	if curr.State == "running" && curr.StartedAt != "" {
+		if t, err := time.Parse(time.RFC3339, curr.StartedAt); err == nil {
+			if time.Since(t) < catalogRefreshTimeout+30*time.Second {
+				return false, "a refresh is already running"
+			}
+		}
+	}
+
+	go runCatalogRefreshNow("manual", actor)
 	return true, ""
 }

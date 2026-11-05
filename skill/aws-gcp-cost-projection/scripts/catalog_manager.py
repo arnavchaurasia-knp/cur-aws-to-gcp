@@ -302,43 +302,105 @@ class _FileLock:
 # MODE: check (read-only)
 # ---------------------------------------------------------------------------
 
-def cmd_check(p):
+def cmd_check(p, as_json=False):
     if not os.path.exists(p["services"]):
+        if as_json:
+            json.dump({"overall": "fail", "error": f"services.json not found at {p['services']}"}, sys.stdout)
+            sys.stdout.write("\n")
+            return 2
         print(f"ERROR: services.json not found at {p['services']}")
         return 2
     services = json.load(open(p["services"], encoding="utf-8"))
     meta = _load_meta(p)
 
-    print("=" * 66)
-    print("GCP SKU Catalog — health check (read-only)")
-    print("=" * 66)
-    print(f"Services in allow-list : {len(services)}")
-
     # Catalog age (global, from META)
     is_stale = True
+    age = -1
     fetched_at = meta.get("fetched_at", "")
     if fetched_at:
         try:
             ts = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
             age = (datetime.now(timezone.utc) - ts).days
             is_stale = age >= STALE_DAYS
+        except Exception:
+            pass
+
+    # Source integrity
+    results, healthy = _scan_source(p, services, meta)
+    bad = {sid: r for sid, r in results.items() if r["status"] != "OK"}
+
+    # Artifact sanity (what the pricer reads)
+    artifact_ok = _artifact_sanity(p, quiet=as_json)
+
+    sku_count = meta.get("sku_count", 0)
+    if not sku_count and artifact_ok:
+        try:
+            import duckdb
+            con = duckdb.connect(p["catalog_db"], read_only=True)
+            sku_count = con.execute("SELECT count(*) FROM skus").fetchone()[0]
+            con.close()
+        except Exception:
+            pass
+
+    service_count = meta.get("service_count", len(services))
+
+    has_hard_fail = (not artifact_ok) or any(r["status"] in ("MISSING", "CORRUPT", "EMPTY") for r in bad.values())
+    if has_hard_fail:
+        overall = "fail"
+    elif is_stale or any(r["status"] == "DEGRADED" for r in bad.values()):
+        overall = "warn"
+    else:
+        overall = "ok"
+
+    code = 0 if (not bad and artifact_ok and not is_stale) else 1
+
+    if as_json:
+        bad_list = [
+            {
+                "service": sid,
+                "name": r.get("name", sid),
+                "status": r.get("status"),
+                "issues": r.get("issues", []),
+            }
+            for sid, r in bad.items()
+        ]
+        summary = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "age_days": age,
+            "stale": is_stale,
+            "artifact_ok": artifact_ok,
+            "source": {
+                "total": len(results),
+                "ok": len(results) - len(bad),
+                "problems": len(bad),
+                "bad": bad_list,
+            },
+            "sku_count": sku_count,
+            "service_count": service_count,
+            "overall": overall,
+        }
+        json.dump(summary, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return code
+
+    print("=" * 66)
+    print("GCP SKU Catalog — health check (read-only)")
+    print("=" * 66)
+    print(f"Services in allow-list : {len(services)}")
+
+    if fetched_at:
+        try:
             print(f"Catalog age            : {age}d [{'STALE' if is_stale else 'fresh'} — threshold {STALE_DAYS}d]")
         except Exception as e:
             print(f"Catalog age            : unreadable META ({e})")
     else:
         print("Catalog age            : CATALOG_META.json missing / no fetched_at")
 
-    # Source integrity
-    results, healthy = _scan_source(p, services, meta)
-    bad = {sid: r for sid, r in results.items() if r["status"] != "OK"}
     print(f"\n{'Service':<45} {'status':<9} {'SKUs':>6} {'priced':>7}")
     print("-" * 70)
     for sid, r in results.items():
         flag = "" if r["status"] == "OK" else "  <-- " + "; ".join(r["issues"])
         print(f"  {r['name'][:43]:<43} {r['status']:<9} {r['count']:>6} {r['priced']:>7}{flag}")
-
-    # Artifact sanity (what the pricer reads)
-    artifact_ok = _artifact_sanity(p)
 
     print("-" * 70)
     print(f"Source OK      : {len(results) - len(bad)}/{len(results)}")
@@ -348,15 +410,15 @@ def cmd_check(p):
 
     if bad or is_stale:
         print("\nHINT: run `catalog_manager.py refresh` (needs GCP creds) to fetch + rebuild.")
-    code = 0 if (not bad and artifact_ok and not is_stale) else 1
     print(f"\nExit code: {code}")
     return code
 
 
-def _artifact_sanity(p):
+def _artifact_sanity(p, quiet=False):
     """catalog.duckdb exists, opens read-only, and its skus/tiered_rates tables are non-empty."""
     if not os.path.exists(p["catalog_db"]):
-        print("  [artifact] catalog.duckdb MISSING")
+        if not quiet:
+            print("  [artifact] catalog.duckdb MISSING")
         return False
     try:
         import duckdb
@@ -364,18 +426,21 @@ def _artifact_sanity(p):
         tabs = {t[0] for t in con.execute(
             "SELECT table_name FROM information_schema.tables").fetchall()}
         if not {"skus", "tiered_rates"} <= tabs:
-            print(f"  [artifact] catalog.duckdb missing tables (have {sorted(tabs)})")
+            if not quiet:
+                print(f"  [artifact] catalog.duckdb missing tables (have {sorted(tabs)})")
             con.close()
             return False
         n_sku = con.execute("SELECT count(*) FROM skus").fetchone()[0]
         n_rate = con.execute("SELECT count(*) FROM tiered_rates").fetchone()[0]
         con.close()
         if n_sku == 0 or n_rate == 0:
-            print(f"  [artifact] catalog.duckdb empty (skus={n_sku}, rates={n_rate})")
+            if not quiet:
+                print(f"  [artifact] catalog.duckdb empty (skus={n_sku}, rates={n_rate})")
             return False
         return True
     except Exception as e:
-        print(f"  [artifact] catalog.duckdb unreadable: {e}")
+        if not quiet:
+            print(f"  [artifact] catalog.duckdb unreadable: {e}")
         return False
 
 
@@ -541,6 +606,7 @@ def main():
     ap = argparse.ArgumentParser(description="GCP SKU catalog manager")
     ap.add_argument("mode", nargs="?", default="check", choices=["check", "refresh", "coverage"])
     ap.add_argument("--all", action="store_true", help="refresh: fetch every service, not just gaps")
+    ap.add_argument("--json", action="store_true", help="output JSON instead of text table")
     ap.add_argument("--db", default=None, help="coverage: job dir or projection.duckdb path")
     ap.add_argument("--skill-dir", default=None)
     args = ap.parse_args()
@@ -548,7 +614,7 @@ def main():
     p = _paths(args.skill_dir)
 
     if args.mode == "check":
-        sys.exit(cmd_check(p))
+        sys.exit(cmd_check(p, as_json=args.json))
     elif args.mode == "refresh":
         sys.exit(cmd_refresh(p, refresh_all=args.all))
     elif args.mode == "coverage":

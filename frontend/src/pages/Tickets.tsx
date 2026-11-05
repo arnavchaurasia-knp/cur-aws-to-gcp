@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { createTicket, listTickets, updateTicket, deleteTicket, type Ticket } from '../api/admin'
 import { ConfirmDialog } from '../components/ConfirmDialog'
@@ -7,6 +8,7 @@ import { useTitle } from '../lib/useTitle'
 import { toast } from 'sonner'
 import { BackButton } from '../components/BackButton'
 import { triggerNotificationRefresh } from '../lib/notificationsContext'
+import { triggerTicketsRefresh } from '../lib/ticketsContext'
 
 function statusColor(status: string): string {
   switch (status) {
@@ -45,10 +47,22 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
   const [editCategory, setEditCategory] = useState('general')
   const [error, setError] = useState<string | null>(null)
   const [resolveTarget, setResolveTarget] = useState<Ticket | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
   const [resolving, setResolving] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Ticket | null>(null)
   const [viewTicket, setViewTicket] = useState<Ticket | null>(null)
   const [deleting, setDeleting] = useState(false)
+
+  const closeViewTicket = () => {
+    setViewTicket(null)
+    const next = new URLSearchParams(searchParams)
+    if (next.has('ticket') || next.has('ticketId') || next.has('id')) {
+      next.delete('ticket')
+      next.delete('ticketId')
+      next.delete('id')
+      setSearchParams(next, { replace: true })
+    }
+  }
 
   const handleResolve = async () => {
     if (!resolveTarget) return
@@ -59,6 +73,7 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
       setResolveTarget(null)
       await refresh()
       triggerNotificationRefresh()
+      triggerTicketsRefresh()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'failed to resolve ticket')
     } finally {
@@ -72,6 +87,7 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
       toast.success(`Ticket "${ticket.title}" reopened`)
       await refresh()
       triggerNotificationRefresh()
+      triggerTicketsRefresh()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'failed to reopen ticket')
     }
@@ -86,6 +102,7 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
       setDeleteTarget(null)
       await refresh()
       triggerNotificationRefresh()
+      triggerTicketsRefresh()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'failed to delete ticket')
     } finally {
@@ -112,6 +129,17 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
     refresh()
   }, [])
 
+  // Auto-open ticket modal if ?ticket=<id> or ?ticketId=<id> is present in the URL
+  useEffect(() => {
+    const targetTicketId = searchParams.get('ticket') || searchParams.get('ticketId') || searchParams.get('id')
+    if (targetTicketId && tickets.length > 0) {
+      const match = tickets.find(t => t.id === targetTicketId || t.id.startsWith(targetTicketId))
+      if (match) {
+        setViewTicket(match)
+      }
+    }
+  }, [searchParams, tickets])
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!newTitle.trim() || !newDescription.trim()) return
@@ -130,6 +158,7 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
       setNewCategory('general')
       await refresh()
       triggerNotificationRefresh()
+      triggerTicketsRefresh()
       toast.success('Ticket created')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to create ticket')
@@ -163,6 +192,7 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
       setEditingId(null)
       await refresh()
       triggerNotificationRefresh()
+      triggerTicketsRefresh()
       toast.success('Ticket updated')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to update ticket')
@@ -491,7 +521,7 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
         {viewTicket && (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm anim-fade-in"
-            onClick={e => { if (e.target === e.currentTarget) setViewTicket(null) }}
+            onClick={e => { if (e.target === e.currentTarget) closeViewTicket() }}
             role="dialog"
             aria-modal="true"
           >
@@ -523,14 +553,29 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
                     {viewTicket.category}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setViewTicket(null)}
-                  className="text-[var(--fcp-text-tertiary)] hover:text-[var(--fcp-text-primary)] text-xl p-1 rounded transition-colors cursor-pointer"
-                  title="Close modal (Esc)"
-                >
-                  ✕
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = `${window.location.origin}/tickets?ticket=${viewTicket.id}`
+                      navigator.clipboard.writeText(url)
+                      toast.success('Ticket link copied to clipboard')
+                    }}
+                    className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-subtle)] hover:bg-[var(--fcp-bg-hover)] text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)] transition-colors cursor-pointer"
+                    title="Copy direct link to this ticket"
+                  >
+                    <span>🔗</span>
+                    <span>Copy Link</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => closeViewTicket()}
+                    className="text-[var(--fcp-text-tertiary)] hover:text-[var(--fcp-text-primary)] text-xl p-1 rounded transition-colors cursor-pointer"
+                    title="Close modal (Esc)"
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
 
               {/* Content */}
@@ -574,7 +619,7 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
               <div className="px-6 py-4 border-t border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-raised)] flex items-center justify-between gap-3">
                 <button
                   type="button"
-                  onClick={() => { const target = viewTicket; setViewTicket(null); openEdit(target) }}
+                  onClick={() => { const target = viewTicket; closeViewTicket(); openEdit(target) }}
                   className="text-xs px-3.5 py-2 rounded-lg border border-[var(--fcp-border-default)] hover:bg-[var(--fcp-bg-hover)] text-[var(--fcp-text-primary)] font-medium transition-colors cursor-pointer"
                 >
                   Edit Ticket
@@ -584,7 +629,7 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
                     (isAdmin || viewTicket.created_by === user?.email) && (
                       <button
                         type="button"
-                        onClick={() => { handleReopen(viewTicket); setViewTicket(null) }}
+                        onClick={() => { handleReopen(viewTicket); closeViewTicket() }}
                         className="text-xs px-4 py-2 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 font-semibold transition-colors cursor-pointer border border-amber-500/30"
                       >
                         Reopen Ticket
@@ -594,7 +639,7 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
                     (isAdmin || viewTicket.created_by === user?.email) && (
                       <button
                         type="button"
-                        onClick={() => { setResolveTarget(viewTicket); setViewTicket(null) }}
+                        onClick={() => { setResolveTarget(viewTicket); closeViewTicket() }}
                         className="text-xs px-4 py-2 rounded-lg bg-[#10B981]/15 hover:bg-[#10B981]/25 text-[#10B981] font-semibold transition-colors cursor-pointer border border-[#10B981]/30"
                       >
                         Resolve Ticket
@@ -603,7 +648,7 @@ export function Tickets({ user }: Readonly<{ user: UserInfo }>) {
                   ) : null}
                   <button
                     type="button"
-                    onClick={() => setViewTicket(null)}
+                    onClick={() => closeViewTicket()}
                     className="text-xs px-4 py-2 rounded-lg bg-[var(--fcp-bg-subtle)] hover:bg-[var(--fcp-bg-hover)] text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)] border border-[var(--fcp-border-subtle)] transition-colors cursor-pointer"
                   >
                     Close

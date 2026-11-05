@@ -4,6 +4,7 @@ package jobs
 import (
 	"bufio"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"database/sql"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -486,8 +488,14 @@ func (h *Handler) AdminCatalogStatus(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) AdminCatalogRefresh(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
-	started, reason := TriggerCatalogRefresh()
-	_ = h.db.LogAdminAction(sess.Email, "catalog_refresh", "", reason)
+	actorEmail := "admin"
+	if sess != nil {
+		actorEmail = sess.Email
+	}
+	started, reason := TriggerCatalogRefresh(actorEmail)
+	if sess != nil {
+		_ = h.db.LogAdminAction(sess.Email, "catalog_refresh", "", reason)
+	}
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	if !started {
 		// Report the refusal rather than claiming success. See
@@ -501,6 +509,22 @@ func (h *Handler) AdminCatalogRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "refresh started"})
+}
+
+// AdminCatalogRefreshStatus returns the latest live/persisted refresh run state.
+func (h *Handler) AdminCatalogRefreshStatus(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if !sess.IsAdmin(h.adminEmails) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(GetCatalogRefreshStatus())
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1603,11 +1627,26 @@ func (h *Handler) AdminUpdateTicket(w http.ResponseWriter, r *http.Request) {
 // AdminDeleteTicket deletes a ticket by id.
 func (h *Handler) AdminDeleteTicket(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
-	actorEmail := "system"
-	if sess != nil {
-		actorEmail = sess.Email
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
 	}
+	actorEmail := sess.Email
 	id := chi.URLParam(r, "id")
+	// Owner-scope: a non-admin may only delete their own ticket.
+	ticket, err := h.db.GetTicket(id)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get ticket"}`, http.StatusInternalServerError)
+		return
+	}
+	if ticket == nil {
+		http.Error(w, `{"error":"ticket not found"}`, http.StatusNotFound)
+		return
+	}
+	if !sess.IsAdmin(h.adminEmails) && ticket.CreatedBy != sess.Email {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
 	if err := h.db.DeleteTicket(id); err != nil {
 		http.Error(w, `{"error":"failed to delete ticket"}`, http.StatusInternalServerError)
 		return
@@ -1910,10 +1949,6 @@ func (h *Handler) AdminDownloadUploadedBill(w http.ResponseWriter, r *http.Reque
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if !sess.IsAdmin(h.adminEmails) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
-		return
-	}
 
 	hash := chi.URLParam(r, "hash")
 	if len(hash) != 64 {
@@ -1924,6 +1959,13 @@ func (h *Handler) AdminDownloadUploadedBill(w http.ResponseWriter, r *http.Reque
 	bill, err := h.db.GetUploadedBill(hash)
 	if err != nil || bill == nil {
 		http.Error(w, `{"error":"bill not found in database"}`, http.StatusNotFound)
+		return
+	}
+
+	// Owner-scope: a non-admin may access only their own bills (legacy bills
+	// with an empty owner remain shared-visible, matching the list endpoint).
+	if !sess.IsAdmin(h.adminEmails) && bill.Owner != "" && bill.Owner != sess.Email {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
 
@@ -2000,10 +2042,6 @@ func (h *Handler) AdminPreviewUploadedBill(w http.ResponseWriter, r *http.Reques
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if !sess.IsAdmin(h.adminEmails) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
-		return
-	}
 
 	hash := chi.URLParam(r, "hash")
 	if len(hash) != 64 {
@@ -2014,6 +2052,13 @@ func (h *Handler) AdminPreviewUploadedBill(w http.ResponseWriter, r *http.Reques
 	bill, err := h.db.GetUploadedBill(hash)
 	if err != nil || bill == nil {
 		http.Error(w, `{"error":"bill not found in database"}`, http.StatusNotFound)
+		return
+	}
+
+	// Owner-scope: a non-admin may access only their own bills (legacy bills
+	// with an empty owner remain shared-visible, matching the list endpoint).
+	if !sess.IsAdmin(h.adminEmails) && bill.Owner != "" && bill.Owner != sess.Email {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
 
@@ -2357,10 +2402,6 @@ func (h *Handler) AdminDeleteUploadedBill(w http.ResponseWriter, r *http.Request
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if !sess.IsAdmin(h.adminEmails) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
-		return
-	}
 
 	hash := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "hash")))
 	if len(hash) != 64 {
@@ -2372,6 +2413,14 @@ func (h *Handler) AdminDeleteUploadedBill(w http.ResponseWriter, r *http.Request
 	fileName := ""
 	if bill != nil {
 		fileName = bill.FileName
+	}
+
+	// Owner-scope: a non-admin may delete only a bill they own. Unlike
+	// download/preview, empty-owner (legacy/shared) bills are NOT deletable by
+	// non-admins, so one user cannot destroy shared history.
+	if !sess.IsAdmin(h.adminEmails) && (bill == nil || bill.Owner != sess.Email) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
 	}
 
 	if err := h.db.DeleteUploadedBill(hash); err != nil {
@@ -2391,4 +2440,516 @@ func (h *Handler) AdminDeleteUploadedBill(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	w.Write([]byte(`{"status":"deleted"}`))
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// System Health Handlers (Phase 3)
+// ─────────────────────────────────────────────────────────────────────────
+
+type HealthResponse struct {
+	Engine     HealthEngine   `json:"engine"`
+	Catalog    HealthCatalog  `json:"catalog"`
+	Tokens     HealthTokens   `json:"tokens"`
+	Pipeline   HealthPipeline `json:"pipeline"`
+	Stores     []StoreHealth  `json:"stores"`
+	DataStatus string         `json:"data_status"`
+	Status     string         `json:"status"`
+}
+
+type HealthEngine struct {
+	ActiveEngine     string   `json:"active_engine"`
+	Version          string   `json:"version"`
+	ConcurrencyLimit int      `json:"concurrency_limit"`
+	Phases           []string `json:"phases"`
+	Status           string   `json:"status"`
+}
+
+type HealthCatalog struct {
+	TotalSKUs     int    `json:"sku_count"`
+	TotalServices int    `json:"service_count"`
+	Vintage       string `json:"vintage"`
+	AgeDays       int    `json:"age_days"`
+	Stale         bool   `json:"stale"`
+	Status        string `json:"status"`
+}
+
+type HealthTokens struct {
+	TotalJobsAnalyzed int     `json:"total_jobs_analyzed"`
+	TotalTokensEst    int64   `json:"total_tokens_est"`
+	EstimatedCostUSD  float64 `json:"estimated_cost_usd"`
+}
+
+type HealthPipeline struct {
+	QueueDepth     int     `json:"queue_depth"`
+	RunningJobs    int     `json:"running_jobs"`
+	CompletedJobs  int     `json:"completed_jobs"`
+	FailedJobs     int     `json:"failed_jobs"`
+	FailureRatePct float64 `json:"failure_rate_pct"`
+	Halted         bool    `json:"halted"`
+}
+
+type catalogHealthJSON struct {
+	GeneratedAt  string `json:"generated_at"`
+	AgeDays      int    `json:"age_days"`
+	Stale        bool   `json:"stale"`
+	ArtifactOK   bool   `json:"artifact_ok"`
+	Source       struct {
+		Total    int `json:"total"`
+		OK       int `json:"ok"`
+		Problems int `json:"problems"`
+	} `json:"source"`
+	SKUCount     int    `json:"sku_count"`
+	ServiceCount int    `json:"service_count"`
+	Overall      string `json:"overall"`
+}
+
+var (
+	catHealthCacheMu sync.Mutex
+	catHealthCacheAt time.Time
+	catHealthCached  *catalogHealthJSON
+)
+
+func getCatalogHealthCheck(skillDir string) (*catalogHealthJSON, error) {
+	catHealthCacheMu.Lock()
+	if catHealthCached != nil && time.Since(catHealthCacheAt) < 60*time.Second {
+		cached := catHealthCached
+		catHealthCacheMu.Unlock()
+		return cached, nil
+	}
+	catHealthCacheMu.Unlock()
+
+	python := "python3"
+	if _, err := exec.LookPath(python); err != nil {
+		python = "python"
+	}
+
+	script := filepath.Join(skillDir, "scripts", "catalog_manager.py")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, python, script, "check", "--json", "--skill-dir", skillDir)
+	cmd.Dir = skillDir
+	out, err := cmd.Output()
+	if err != nil && len(out) == 0 {
+		return nil, fmt.Errorf("check failed: %w", err)
+	}
+
+	var res catalogHealthJSON
+	if jsonErr := json.Unmarshal(out, &res); jsonErr != nil {
+		return nil, fmt.Errorf("unmarshal error: %w (output: %s)", jsonErr, string(out))
+	}
+
+	catHealthCacheMu.Lock()
+	catHealthCached = &res
+	catHealthCacheAt = time.Now()
+	catHealthCacheMu.Unlock()
+
+	return &res, nil
+}
+
+func (h *Handler) AdminHealthSummary(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if !sess.IsAdmin(h.adminEmails) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	// 1. Engine
+	engineChoice, allowed, _ := h.db.GetEngineSettings()
+	if engineChoice == "" {
+		engineChoice = "gemini-3.8-flash"
+	}
+	engineVer := h.spawner.EngineVersion()
+	engineHealth := HealthEngine{
+		ActiveEngine:     engineChoice,
+		Version:          engineVer,
+		ConcurrencyLimit: 5,
+		Phases: []string{
+			"1. Ingestion & Schema Normalization",
+			"2. Mechanics Classification",
+			"3. AI Mapping & Family Normalization",
+			"4. GCP Rate Application",
+			"5. Materiality & Logic Validation",
+			"6. Multi-Format Report Generation",
+		},
+		Status: "healthy",
+	}
+	_ = allowed
+
+	// 2. Catalog (derived dynamically without hardcoded constants)
+	skillDir := skill.ResolveDir()
+	catStatus := GetCatalogStatus()
+
+	totalSKUs := 0
+	totalServices := 0
+	vintage := "unknown"
+	ageDays := catStatus.AgeDays
+	stale := catStatus.Stale
+	catHealthStatus := "unknown"
+
+	metaFile := filepath.Join(skillDir, "data", "CATALOG_META.json")
+	if data, err := os.ReadFile(metaFile); err == nil {
+		var meta struct {
+			FetchedAt    string `json:"fetched_at"`
+			ServiceCount int    `json:"service_count"`
+			SKUCount     int    `json:"sku_count"`
+		}
+		if json.Unmarshal(data, &meta) == nil {
+			totalSKUs = meta.SKUCount
+			totalServices = meta.ServiceCount
+			if meta.FetchedAt != "" {
+				vintage = meta.FetchedAt
+			}
+		}
+	}
+
+	// Deep source + artifact integrity from catalog_manager.py check --json
+	if checkRes, err := getCatalogHealthCheck(skillDir); err == nil && checkRes != nil {
+		if checkRes.SKUCount > 0 {
+			totalSKUs = checkRes.SKUCount
+		}
+		if checkRes.ServiceCount > 0 {
+			totalServices = checkRes.ServiceCount
+		}
+		if checkRes.AgeDays >= 0 {
+			ageDays = checkRes.AgeDays
+		}
+		stale = checkRes.Stale
+		if checkRes.Overall != "" {
+			catHealthStatus = checkRes.Overall
+		} else if stale {
+			catHealthStatus = "warn"
+		} else {
+			catHealthStatus = "ok"
+		}
+	} else {
+		catHealthStatus = "unknown"
+	}
+
+	catalogHealth := HealthCatalog{
+		TotalSKUs:     totalSKUs,
+		TotalServices: totalServices,
+		Vintage:       vintage,
+		AgeDays:       ageDays,
+		Stale:         stale,
+		Status:        catHealthStatus,
+	}
+
+	// 3. Pipeline & Tokens
+	stats, _ := h.db.GetUsageStats()
+	var totalJobs, doneJobs, failedJobs int
+	var failureRate float64
+	if stats != nil {
+		totalJobs = stats.TotalJobs
+		doneJobs = stats.DoneJobs
+		failedJobs = stats.FailedJobs
+		failureRate = stats.FailureRate * 100.0
+	}
+	dataDir := filepath.Dir(h.jobsDir)
+	halted := IsStopAllActive(dataDir)
+
+	pipelineHealth := HealthPipeline{
+		QueueDepth:     totalJobs - doneJobs - failedJobs,
+		RunningJobs:    0,
+		CompletedJobs:  doneJobs,
+		FailedJobs:     failedJobs,
+		Halted:         halted,
+		FailureRatePct: failureRate,
+	}
+	if pipelineHealth.QueueDepth < 0 {
+		pipelineHealth.QueueDepth = 0
+	}
+
+	tokensHealth := HealthTokens{
+		TotalJobsAnalyzed: doneJobs,
+		TotalTokensEst:    int64(doneJobs) * 35000,
+		EstimatedCostUSD:  float64(doneJobs) * 0.05,
+	}
+
+	// 4. Data Dependencies
+	stores, dataStatus := CheckDataStores(skillDir)
+
+	// Derive overall status
+	overallStatus := "ok"
+	if dataStatus == "fail" || catalogHealth.Status == "fail" || failureRate > 25.0 {
+		overallStatus = "fail"
+	} else if dataStatus == "warn" || catalogHealth.Status == "warn" || catalogHealth.Status == "stale" || failureRate > 5.0 {
+		overallStatus = "warn"
+	}
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(HealthResponse{
+		Engine:     engineHealth,
+		Catalog:    catalogHealth,
+		Tokens:     tokensHealth,
+		Pipeline:   pipelineHealth,
+		Stores:     stores,
+		DataStatus: dataStatus,
+		Status:     overallStatus,
+	})
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Report Override Handlers (Phase 4)
+// ─────────────────────────────────────────────────────────────────────────
+
+type OverrideItemDTO struct {
+	AWSLIKey     string   `json:"aws_li_key"`
+	Product      string   `json:"product"`
+	UsageType    string   `json:"usage_type"`
+	PricingUnit  string   `json:"pricing_unit"`
+	AWSAmortized float64  `json:"aws_amortized_cost"`
+	Strategy     string   `json:"strategy"`
+	GCPService   string   `json:"gcp_service"`
+	GCPSKUName   string   `json:"gcp_sku_name"`
+	GCPProjected float64  `json:"gcp_projected_cost"`
+	Suppressed   bool     `json:"suppressed"`
+	OverrideRate *float64 `json:"override_rate,omitempty"`
+	Note         string   `json:"note"`
+}
+
+func (h *Handler) AdminGetLineItems(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if !sess.IsAdmin(h.adminEmails) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	if !isValidJobID(id) {
+		http.Error(w, `{"error":"invalid job id"}`, http.StatusBadRequest)
+		return
+	}
+
+	jobDir := filepath.Join(h.jobsDir, id)
+	dbPath := filepath.Join(jobDir, projectionAuditDir, projectionDuckDB)
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		http.Error(w, `{"error":"job projection database not found"}`, http.StatusNotFound)
+		return
+	}
+
+	sqlQuery := `
+		SELECT 
+			c.aws_li_key,
+			COALESCE(c.product, '') as product,
+			COALESCE(c.usage_type, '') as usage_type,
+			COALESCE(c.pricing_unit, '') as pricing_unit,
+			COALESCE(c.aws_amortized_cost, 0.0) as aws_amortized_cost,
+			COALESCE(m.strategy, 'map') as strategy,
+			COALESCE(m.gcp_service, '') as gcp_service,
+			COALESCE(m.gcp_sku_name, '') as gcp_sku_name,
+			COALESCE(p.gcp_projected_cost, 0.0) as gcp_projected_cost
+		FROM aws_li_catalog c
+		LEFT JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
+		LEFT JOIN gcp_projection p ON c.aws_li_key = p.aws_li_key
+		WHERE c.aws_amortized_cost > 0
+		ORDER BY c.aws_amortized_cost DESC
+		LIMIT 1000;
+	`
+	rawJSON, err := runDuckDB(dbPath, sqlQuery)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to query line items: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	var rawRows []struct {
+		AWSLIKey     string  `json:"aws_li_key"`
+		Product      string  `json:"product"`
+		UsageType    string  `json:"usage_type"`
+		PricingUnit  string  `json:"pricing_unit"`
+		AWSAmortized float64 `json:"aws_amortized_cost"`
+		Strategy     string  `json:"strategy"`
+		GCPService   string  `json:"gcp_service"`
+		GCPSKUName   string  `json:"gcp_sku_name"`
+		GCPProjected float64 `json:"gcp_projected_cost"`
+	}
+	_ = json.Unmarshal(rawJSON, &rawRows)
+
+	overrides, _ := h.db.ListJobOverrides(id)
+	overrideMap := make(map[string]db.LineItemOverride)
+	for _, o := range overrides {
+		overrideMap[o.RowKey] = o
+	}
+
+	var dtos []OverrideItemDTO
+	for _, r := range rawRows {
+		dto := OverrideItemDTO{
+			AWSLIKey:     r.AWSLIKey,
+			Product:      r.Product,
+			UsageType:    r.UsageType,
+			PricingUnit:  r.PricingUnit,
+			AWSAmortized: r.AWSAmortized,
+			Strategy:     r.Strategy,
+			GCPService:   r.GCPService,
+			GCPSKUName:   r.GCPSKUName,
+			GCPProjected: r.GCPProjected,
+		}
+		if ov, ok := overrideMap[r.AWSLIKey]; ok {
+			dto.Suppressed = ov.Suppressed
+			dto.Note = ov.Note
+			if ov.GCPTarget != "" {
+				dto.GCPService = ov.GCPTarget
+			}
+			if ov.OverrideRate >= 0 {
+				r := ov.OverrideRate
+				dto.OverrideRate = &r
+				dto.GCPProjected = ov.OverrideRate
+			}
+		}
+		dtos = append(dtos, dto)
+	}
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"line_items":      dtos,
+		"total":           len(dtos),
+		"overrides_count": len(overrides),
+	})
+}
+
+func (h *Handler) AdminOverrideLineItem(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if !sess.IsAdmin(h.adminEmails) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	rowKey := chi.URLParam(r, "row")
+	if !isValidJobID(id) || rowKey == "" {
+		http.Error(w, `{"error":"invalid job id or row key"}`, http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		Suppressed   *bool    `json:"suppressed"`
+		GCPTarget    string   `json:"gcp_target"`
+		OverrideRate *float64 `json:"override_rate"`
+		Note         string   `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+
+	suppressed := false
+	if body.Suppressed != nil {
+		suppressed = *body.Suppressed
+	}
+	rate := -1.0
+	if body.OverrideRate != nil {
+		rate = *body.OverrideRate
+	}
+
+	err := h.db.UpsertJobOverride(db.LineItemOverride{
+		JobID:        id,
+		RowKey:       rowKey,
+		Suppressed:   suppressed,
+		GCPTarget:    body.GCPTarget,
+		OverrideRate: rate,
+		Note:         body.Note,
+		UpdatedBy:    sess.Email,
+	})
+	if err != nil {
+		http.Error(w, `{"error":"failed to save override"}`, http.StatusInternalServerError)
+		return
+	}
+
+	h.syncJobOverridesFile(id)
+
+	_ = h.db.LogAdminAction(sess.Email, "line_item_override", id, fmt.Sprintf("row=%s suppressed=%v rate=%f target=%s", rowKey, suppressed, rate, body.GCPTarget))
+
+	go h.runRecalculateBackground(id, sess.Email)
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":        "saved",
+		"job_id":        id,
+		"row_key":       rowKey,
+		"recalculating": true,
+	})
+}
+
+func (h *Handler) AdminDeleteLineItemOverride(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if !sess.IsAdmin(h.adminEmails) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	rowKey := chi.URLParam(r, "row")
+	if err := h.db.DeleteJobOverride(id, rowKey); err != nil {
+		http.Error(w, `{"error":"failed to delete override"}`, http.StatusInternalServerError)
+		return
+	}
+
+	h.syncJobOverridesFile(id)
+	_ = h.db.LogAdminAction(sess.Email, "delete_line_item_override", id, fmt.Sprintf("row=%s", rowKey))
+	go h.runRecalculateBackground(id, sess.Email)
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":        "deleted",
+		"job_id":        id,
+		"row_key":       rowKey,
+		"recalculating": true,
+	})
+}
+
+func (h *Handler) syncJobOverridesFile(jobID string) {
+	overrides, err := h.db.ListJobOverrides(jobID)
+	if err != nil {
+		return
+	}
+	jobDir := filepath.Join(h.jobsDir, jobID)
+	_ = os.MkdirAll(jobDir, 0755)
+	filePath := filepath.Join(jobDir, "job_overrides.json")
+	data, _ := json.MarshalIndent(overrides, "", "  ")
+	_ = os.WriteFile(filePath, data, 0644)
+}
+
+func (h *Handler) runRecalculateBackground(id, changedBy string) {
+	jobDir := filepath.Clean(filepath.Join(h.jobsDir, id))
+	dbPath := filepath.Join(jobDir, projectionAuditDir, projectionDuckDB)
+	scriptsDir := filepath.Join(skill.ResolveDir(), "scripts")
+	chain := [][]string{
+		{filepath.Join(scriptsDir, "classify_mechanics.py"), dbPath},
+		{filepath.Join(scriptsDir, "apply_commitment_ignores.py"), dbPath},
+		{filepath.Join(scriptsDir, "apply_static_mappings.py"), dbPath},
+		{filepath.Join(scriptsDir, "merge_mappings.py"), dbPath, filepath.Join(projectionAuditDir, "mappings")},
+		{filepath.Join(scriptsDir, "service_classifier.py"), dbPath},
+		{filepath.Join(scriptsDir, "apply_rates.py")},
+		{filepath.Join(scriptsDir, "apply_overrides.py")},
+		{filepath.Join(scriptsDir, "render_report.py")},
+	}
+	python := pythonBin()
+	for _, step := range chain {
+		cmd := exec.Command(python, step...)
+		cmd.Dir = jobDir
+		cmd.Env = append(os.Environ(),
+			"SKILL_DIR="+skill.ResolveDir(),
+			"PYTHONPATH="+scriptsDir,
+			"JOB_DIR="+jobDir,
+		)
+		_ = cmd.Run()
+	}
+	_ = h.db.LogAdminAction(changedBy, "recalculated_overrides", id, "")
 }

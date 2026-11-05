@@ -289,6 +289,17 @@ func main() {
 		r.Delete("/api/user/tokens/{key_id}", jobHandler.RevokeUserAPIToken)
 		r.Delete("/api/user/tokens/{key_id}/purge", jobHandler.DeleteUserAPIToken)
 
+		// Promoted self-serve user routes (owner-scoped for regular users, global for admins)
+		r.Get("/api/bills", jobHandler.ListUploadedBills)
+		r.Get("/api/bills/{hash}/download", jobHandler.AdminDownloadUploadedBill)
+		r.Get("/api/bills/{hash}/preview", jobHandler.AdminPreviewUploadedBill)
+		r.Delete("/api/bills/{hash}", jobHandler.AdminDeleteUploadedBill)
+		r.Post("/api/tickets", jobHandler.AdminCreateTicket)
+		r.Get("/api/tickets", jobHandler.AdminListTickets)
+		r.Get("/api/tickets/{id}", jobHandler.AdminGetTicket)
+		r.Put("/api/tickets/{id}", jobHandler.AdminUpdateTicket)
+		r.Delete("/api/tickets/{id}", jobHandler.AdminDeleteTicket)
+
 		// MCP (Model Context Protocol) server — Streamable HTTP transport.
 		// Remote clients (Claude Desktop, Praxis) connect to ${APP_BASE_URL}/mcp
 		// with the same fct_live_ bearer token. Each tool is a thin adapter over
@@ -333,6 +344,7 @@ func main() {
 			r.Post("/api/admin/users/{email}/role", jobHandler.AdminSetUserRole)
 			r.Delete("/api/admin/users/{email}", jobHandler.AdminDeleteUser)
 			r.Get("/api/admin/catalog/status", jobHandler.AdminCatalogStatus)
+			r.Get("/api/admin/catalog/refresh-status", jobHandler.AdminCatalogRefreshStatus)
 			r.Post("/api/admin/catalog/refresh", jobHandler.AdminCatalogRefresh)
 			r.Get("/api/admin/audit", jobHandler.AdminAuditLog)
 			r.Get("/api/admin/analytics", jobHandler.AdminAnalytics)
@@ -373,6 +385,12 @@ func main() {
 			r.Get("/api/admin/bills/{hash}/view", jobHandler.AdminViewUploadedBill)
 			r.Get("/api/admin/bills/{hash}/preview", jobHandler.AdminPreviewUploadedBill)
 			r.Delete("/api/admin/bills/{hash}", jobHandler.AdminDeleteUploadedBill)
+			// System health summary
+			r.Get("/api/admin/health", jobHandler.AdminHealthSummary)
+			// Line item overrides
+			r.Get("/api/admin/jobs/{id}/line-items", jobHandler.AdminGetLineItems)
+			r.Post("/api/admin/jobs/{id}/line-items/{row}/override", jobHandler.AdminOverrideLineItem)
+			r.Delete("/api/admin/jobs/{id}/line-items/{row}/override", jobHandler.AdminDeleteLineItemOverride)
 		})
 		// @facets.cloud-only internal panel: recent job logs + a manually
 		// selected multi-job portfolio summary. Each handler re-checks

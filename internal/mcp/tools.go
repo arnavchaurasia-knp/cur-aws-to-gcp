@@ -16,9 +16,13 @@ import (
 // job handler's methods here from main.go — the MCP layer adds no business
 // logic of its own.
 type Handlers struct {
-	ListJobs http.HandlerFunc // GET /api/jobs        (owner-filtered)
-	GetJob   http.HandlerFunc // GET /api/jobs/{id}   (canAccess)
-	JobLogs  http.HandlerFunc // GET /api/jobs/{id}/logs
+	ListJobs            http.HandlerFunc // GET /api/jobs        (owner-filtered)
+	GetJob              http.HandlerFunc // GET /api/jobs/{id}   (canAccess)
+	JobLogs             http.HandlerFunc // GET /api/jobs/{id}/logs
+	ProposeRefinement   http.HandlerFunc // POST /api/jobs/{id}/refinement/propose
+	ConfirmRefinement   http.HandlerFunc // POST /api/jobs/{id}/refinement/confirm
+	AnswerClarification http.HandlerFunc // POST /api/jobs/{id}/refinement/clarify
+	RevokeRefinement    http.HandlerFunc // POST /api/jobs/{id}/refinement/revoke
 }
 
 // toolEnabled reports whether a tool is enabled, honoring an optional
@@ -82,6 +86,96 @@ func DefaultRegistry(h Handlers) *Registry {
 					return ToolResult{Text: err.Error(), IsError: true}, nil
 				}
 				return proxy(ctx, h.JobLogs, http.MethodGet, "/api/jobs/"+id+"/logs", map[string]string{"id": id}, nil)
+			},
+		},
+		ToolDef{
+			Name:        "propose_refinement",
+			Description: "Propose directives from a natural language refinement utterance for a job.",
+			Scope:       db.ScopeJobsWrite,
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id":        map[string]any{"type": "string", "description": "Job ID"},
+					"utterance": map[string]any{"type": "string", "description": "Natural language refinement request"},
+					"selected_row_keys": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"type": "string"},
+						"description": "Optional specific line item keys to pin",
+					},
+				},
+				"required": []string{"id", "utterance"},
+			},
+			Enabled: func() bool { return toolEnabled("propose_refinement") },
+			Invoke: func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+				id, err := requireID(args)
+				if err != nil {
+					return ToolResult{Text: err.Error(), IsError: true}, nil
+				}
+				return proxy(ctx, h.ProposeRefinement, http.MethodPost, "/api/jobs/"+id+"/refinement/propose", map[string]string{"id": id}, args)
+			},
+		},
+		ToolDef{
+			Name:        "confirm_refinement",
+			Description: "Confirm a proposed refinement directive for a job.",
+			Scope:       db.ScopeJobsWrite,
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id":           map[string]any{"type": "string", "description": "Job ID"},
+					"directive_id": map[string]any{"type": "string", "description": "Directive ID to confirm"},
+				},
+				"required": []string{"id", "directive_id"},
+			},
+			Enabled: func() bool { return toolEnabled("confirm_refinement") },
+			Invoke: func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+				id, err := requireID(args)
+				if err != nil {
+					return ToolResult{Text: err.Error(), IsError: true}, nil
+				}
+				return proxy(ctx, h.ConfirmRefinement, http.MethodPost, "/api/jobs/"+id+"/refinement/confirm", map[string]string{"id": id}, args)
+			},
+		},
+		ToolDef{
+			Name:        "answer_clarification",
+			Description: "Answer an open follow-up clarification for a refinement directive.",
+			Scope:       db.ScopeJobsWrite,
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id":               map[string]any{"type": "string", "description": "Job ID"},
+					"clarification_id": map[string]any{"type": "string", "description": "Clarification ID"},
+					"answer":           map[string]any{"type": "string", "description": "User's answer to the clarification"},
+				},
+				"required": []string{"id", "clarification_id", "answer"},
+			},
+			Enabled: func() bool { return toolEnabled("answer_clarification") },
+			Invoke: func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+				id, err := requireID(args)
+				if err != nil {
+					return ToolResult{Text: err.Error(), IsError: true}, nil
+				}
+				return proxy(ctx, h.AnswerClarification, http.MethodPost, "/api/jobs/"+id+"/refinement/clarify", map[string]string{"id": id}, args)
+			},
+		},
+		ToolDef{
+			Name:        "revoke_refinement",
+			Description: "Revoke a refinement directive, marking it superseded.",
+			Scope:       db.ScopeJobsWrite,
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id":           map[string]any{"type": "string", "description": "Job ID"},
+					"directive_id": map[string]any{"type": "string", "description": "Directive ID to revoke"},
+				},
+				"required": []string{"id", "directive_id"},
+			},
+			Enabled: func() bool { return toolEnabled("revoke_refinement") },
+			Invoke: func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+				id, err := requireID(args)
+				if err != nil {
+					return ToolResult{Text: err.Error(), IsError: true}, nil
+				}
+				return proxy(ctx, h.RevokeRefinement, http.MethodPost, "/api/jobs/"+id+"/refinement/revoke", map[string]string{"id": id}, args)
 			},
 		},
 	)

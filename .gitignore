@@ -49,6 +49,8 @@ NOTES.md
 /tmp/
 *.tmp
 catalog_refresh_status.json
+catalog_refresh_history.json
+settings-encryption.key
 _backups/
 **/_backups/
 __pycache__/

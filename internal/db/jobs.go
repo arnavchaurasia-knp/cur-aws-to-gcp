@@ -280,6 +280,8 @@ func (d *DB) ArchiveAndDeleteJob(id, deletedBy string) error {
 		FROM jobs WHERE id = ?
 	`, deletedBy, id)
 
+	_, _ = tx.Exec(`DELETE FROM job_analytics_breakdown WHERE job_id = ?`, id)
+	_, _ = tx.Exec(`DELETE FROM job_analytics WHERE job_id = ?`, id)
 	_, err = tx.Exec(`DELETE FROM jobs WHERE id=?`, id)
 	if err != nil {
 		return err

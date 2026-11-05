@@ -23,7 +23,15 @@ PHASE1_ACTION_VERBS = {
     "set_is_workload",
     "set_assumption",
     "annotate",
+    "set_field",
 }
+PHASE3_ACTION_VERBS = {
+    "set_target_family",
+    "set_target_shape",
+    "set_region",
+    "set_pricing_basis",
+}
+ALLOWED_ACTION_VERBS = PHASE1_ACTION_VERBS | PHASE3_ACTION_VERBS
 
 ALLOWED_STRATEGIES = {"map", "passthrough", "ignore", "break_down"}
 ALLOWED_STATUSES = {"proposed", "confirmed", "applied", "superseded"}
@@ -83,7 +91,7 @@ class Directive:
 
 def validate_directive(d: Union[Directive, Dict[str, Any]], raise_exc: bool = False) -> tuple[bool, Optional[str]]:
     """Validate a directive against the Phase 1 schema rules."""
-    raw = d.to_dict() if isinstance(d, Directive) else d
+    raw = d.to_dict() if hasattr(d, "to_dict") else d
 
     if not isinstance(raw, dict):
         msg = f"Directive must be a dict or Directive instance, got {type(raw).__name__}"
@@ -112,8 +120,8 @@ def validate_directive(d: Union[Directive, Dict[str, Any]], raise_exc: bool = Fa
         return False, msg
 
     act_type = action.get("type")
-    if act_type not in PHASE1_ACTION_VERBS:
-        msg = f"Unknown or unsupported action.type: '{act_type}'. Allowed in Phase 1: {sorted(PHASE1_ACTION_VERBS)}"
+    if act_type not in ALLOWED_ACTION_VERBS:
+        msg = f"Unknown or unsupported action.type: '{act_type}'. Allowed: {sorted(ALLOWED_ACTION_VERBS)}"
         if raise_exc:
             raise ValueError(msg)
         return False, msg
@@ -148,6 +156,38 @@ def validate_directive(d: Union[Directive, Dict[str, Any]], raise_exc: bool = Fa
         has_key = "key" in action or (isinstance(action.get("params"), dict) and "key" in action["params"])
         if not has_key and not action.get("value"):
             msg = "set_assumption requires a key and value (or params with key/value)"
+            if raise_exc:
+                raise ValueError(msg)
+            return False, msg
+
+    elif act_type == "set_target_family":
+        val = action.get("value") or action.get("target_family")
+        if not val or not isinstance(val, str):
+            msg = f"set_target_family value must be a non-empty string, got {val!r}"
+            if raise_exc:
+                raise ValueError(msg)
+            return False, msg
+
+    elif act_type == "set_target_shape":
+        val = action.get("value") if action.get("value") is not None else action.get("shape")
+        if not val or not isinstance(val, (str, dict)):
+            msg = f"set_target_shape value must be a string or dict, got {val!r}"
+            if raise_exc:
+                raise ValueError(msg)
+            return False, msg
+
+    elif act_type == "set_region":
+        val = action.get("value") or action.get("region")
+        if not val or not isinstance(val, str):
+            msg = f"set_region value must be a non-empty string, got {val!r}"
+            if raise_exc:
+                raise ValueError(msg)
+            return False, msg
+
+    elif act_type == "set_pricing_basis":
+        val = action.get("value") or action.get("pricing_basis")
+        if not val or not isinstance(val, str):
+            msg = f"set_pricing_basis value must be a non-empty string, got {val!r}"
             if raise_exc:
                 raise ValueError(msg)
             return False, msg

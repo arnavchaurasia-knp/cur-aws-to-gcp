@@ -11,10 +11,44 @@ import (
 	"github.com/facets/cur-web/internal/skill"
 )
 
+// storeInfo is the human description of a data file shown in System Health →
+// Data Files. Wording comes from each file's own _meta block — keep them in
+// sync when a file's purpose changes.
+type storeInfo struct {
+	Title       string
+	Description string
+}
+
+// storeManifest describes every monitored data file. To monitor a new file:
+// add a check in CheckDataStores, an entry here, and (if admins may edit it)
+// an entry in editableDatastores (datastore_handlers.go).
+var storeManifest = map[string]storeInfo{
+	"catalog_artifact": {"Pricing catalog database",
+		"The compiled GCP price list every projection reads (catalog.duckdb). Rebuilt by 'Refresh catalog' — never edit it by hand."},
+	"catalog_source": {"Pricing catalog downloads",
+		"Raw per-service price files downloaded from Google (skus/*.json.gz). The catalog database is built from these."},
+	"service_map": {"AWS → GCP service map",
+		"Decides which GCP service each AWS service maps to, and whether it is priced, passed through at AWS cost, or ignored. Rules are checked top to bottom and the FIRST match wins, so keep specific rules above general ones."},
+	"service_specs": {"Service charge-type specs",
+		"For each AWS service, the kinds of charges it has (instance hours, storage, requests…) and how each is recognised and priced. Charge types are tested in order; first match wins."},
+	"pricing_matrix": {"Per-SKU pricing decisions",
+		"The audited decision table: for each service and charge type, whether it is priced by a GCP SKU, a formula, passed through, or ignored — with the reason."},
+	"fx_rates": {"Currency exchange rates",
+		"Converts non-USD bills to USD. Flagged as stale after 60 days."},
+	"review_config": {"Validation thresholds",
+		"Numbers the pipeline uses to flag outliers, limit passthrough spend and decide when the pricing catalog is stale. Changing them needs no code change."},
+	"refresh_store": {"Learned mappings cache",
+		"Mappings and rates confirmed on earlier bills, reused to skip AI calls. Safe to empty — it refills as bills are processed."},
+	"assumption_defaults": {"Default sizing assumptions",
+		"Fallback values (for example Aurora ACU size) used when a bill does not say. Day-to-day overrides belong in Pricing Assumptions."},
+}
+
 // StoreHealth represents the integrity status of a data dependency file.
 type StoreHealth struct {
-	Key        string `json:"key"`
-	File       string `json:"file"`
+	Key         string `json:"key"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	File        string `json:"file"`
 	Status     string `json:"status"` // ok | warn | fail | unknown
 	Detail     string `json:"detail"` // human reason
 	SizeBytes  int64  `json:"size_bytes"`
@@ -264,6 +298,13 @@ func CheckDataStores(skillDir string) ([]StoreHealth, string) {
 		checkJSONStore(filepath.Join(dataDir, "review-config.json"), "review_config", "review-config.json", false, 1),
 		checkJSONStore(filepath.Join(dataDir, "refresh_store.json"), "refresh_store", "refresh_store.json", true, 0),
 		checkJSONStore(filepath.Join(dataDir, "assumption-defaults.json"), "assumption_defaults", "assumption-defaults.json", false, 1),
+	}
+	for i := range stores {
+		if m, ok := storeManifest[stores[i].Key]; ok {
+			stores[i].Title = m.Title
+			stores[i].Description = m.Description
+		}
+		_, stores[i].Editable = editableDatastores[stores[i].Key]
 	}
 
 	dataStatus := "ok"

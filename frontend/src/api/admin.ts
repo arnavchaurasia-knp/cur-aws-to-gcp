@@ -1,5 +1,5 @@
 import type { Job } from './jobs'
-import { getJSON } from './http'
+import { getJSON, sendJSON } from './http'
 
 export interface PagedJobs {
   jobs: Job[]
@@ -155,16 +155,7 @@ export async function getCatalogRefreshStatus(): Promise<CatalogRefreshRun> {
 }
 
 export async function triggerCatalogRefresh(): Promise<void> {
-  const res = await fetch('/api/admin/catalog/refresh', { method: 'POST' })
-  if (!res.ok) {
-    const text = await res.text()
-    try {
-      const data = JSON.parse(text)
-      throw new Error(data.reason || `refresh failed (${res.status})`)
-    } catch {
-      throw new Error(text || `refresh failed (${res.status})`)
-    }
-  }
+  return sendJSON<void>('POST', '/api/admin/catalog/refresh')
 }
 
 export interface AuditEntry {
@@ -221,6 +212,15 @@ export interface SavingsBucket {
   count: number
 }
 
+export interface AnalyticsFilter {
+  window?: '30d' | '90d' | 'all' | string
+  from?: string
+  to?: string
+  min_bill?: number
+  region?: string
+  vertical?: string
+}
+
 export interface UsageStats {
   total_jobs: number
   done_jobs: number
@@ -229,21 +229,154 @@ export interface UsageStats {
   avg_processing_seconds: number
   jobs_by_day: DayCount[] | null
 
-  // migration economics
+  // migration economics (Lens A)
   analyzed_jobs: number
   total_aws_spend: number
+  total_aws_workload?: number
   total_gcp_od: number
+  total_gcp_1yr_cud?: number
+  total_gcp_3yr_cud?: number
   total_savings: number
   savings_pct: number
+  savings_1yr_cud?: number
+  savings_pct_1yr_cud?: number
+  savings_3yr_cud?: number
+  savings_pct_3yr_cud?: number
   avg_savings_pct: number
   avg_bill_size: number
+  win_rate?: number
+  win_rate_20?: number
+  portfolio_coverage_pct?: number
+  total_unmapped_usd?: number
   spend_by_day: SpendDay[] | null
   top_prospects: ProspectSaving[] | null
   savings_buckets: SavingsBucket[] | null
 }
 
-export async function getAnalytics(): Promise<UsageStats> {
-  return getJSON<UsageStats>('/api/admin/analytics')
+export interface CompositionItem {
+  key: string
+  aws_usd: number
+  gcp_usd: number
+  savings_usd: number
+  savings_pct: number
+  rows: number
+  pct_of_aws: number
+}
+
+export interface CompositionResult {
+  dimension: string
+  items: CompositionItem[]
+  negative_savings: CompositionItem[]
+}
+
+export interface ConfidenceItem {
+  band: string
+  count: number
+  aws_usd: number
+  pct_of_usd: number
+}
+
+export interface FindingsSummary {
+  high: number
+  med: number
+  low: number
+  total: number
+}
+
+export interface VintageItem {
+  vintage: string
+  count: number
+}
+
+export interface QualityResult {
+  total_rows: number
+  mapped_rows: number
+  passthrough_rows: number
+  ignored_rows: number
+  llm_rows: number
+  deterministic_rows: number
+  deterministic_pct: number
+  llm_pct: number
+  passthrough_pct: number
+  ignored_pct: number
+  total_unmapped_usd: number
+  coverage_pct: number
+  confidence_distribution: ConfidenceItem[]
+  findings_summary: FindingsSummary
+  catalog_vintages: VintageItem[]
+}
+
+export interface ReviewLoopThroughput {
+  total_findings: number
+  pending: number
+  accepted: number
+  rejected: number
+  dismissed: number
+}
+
+export interface VersionCountItem {
+  version: string
+  count: number
+}
+
+export interface MethodologyResult {
+  matrix_coverage_pct: number
+  sp_ri_exposed_usd: number
+  sp_ri_exposed_pct: number
+  review_loop_throughput: ReviewLoopThroughput
+  assumptions_versions: VersionCountItem[]
+  engine_versions: VersionCountItem[]
+}
+
+function buildAnalyticsQuery(filter?: AnalyticsFilter, extra?: Record<string, string>): string {
+  const qs = new URLSearchParams()
+  if (filter?.window) qs.set('window', filter.window)
+  if (filter?.from) qs.set('from', filter.from)
+  if (filter?.to) qs.set('to', filter.to)
+  if (filter?.min_bill) qs.set('min_bill', String(filter.min_bill))
+  if (filter?.region) qs.set('region', filter.region)
+  if (filter?.vertical) qs.set('vertical', filter.vertical)
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      if (v) qs.set(k, v)
+    }
+  }
+  const s = qs.toString()
+  return s ? `?${s}` : ''
+}
+
+export async function getAnalytics(filter?: AnalyticsFilter): Promise<UsageStats> {
+  return getJSON<UsageStats>(`/api/admin/analytics${buildAnalyticsQuery(filter)}`)
+}
+
+export async function getAnalyticsComposition(dimension: string = 'service', filter?: AnalyticsFilter): Promise<CompositionResult> {
+  return getJSON<CompositionResult>(`/api/admin/analytics/composition${buildAnalyticsQuery(filter, { dimension })}`)
+}
+
+export async function getAnalyticsQuality(filter?: AnalyticsFilter): Promise<QualityResult> {
+  return getJSON<QualityResult>(`/api/admin/analytics/quality${buildAnalyticsQuery(filter)}`)
+}
+
+export async function getAnalyticsMethodology(filter?: AnalyticsFilter): Promise<MethodologyResult> {
+  return getJSON<MethodologyResult>(`/api/admin/analytics/methodology${buildAnalyticsQuery(filter)}`)
+}
+
+export async function rebuildAnalytics(): Promise<{ status: string; rebuilt_jobs: number }> {
+  const res = await fetch('/api/admin/analytics/rebuild', { method: 'POST' })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `rebuild failed (${res.status})`)
+  }
+  return res.json()
+}
+
+export async function refreshJobAnalytics(id: string): Promise<{ status: string; job_id: string }> {
+  const res = await fetch(`/api/admin/analytics/jobs/${id}/refresh`, { method: 'POST' })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `refresh job analytics failed (${res.status})`)
+  }
+  return res.json()
 }
 
 export async function shareJob(id: string): Promise<{ token: string; url: string }> {
@@ -913,38 +1046,11 @@ export async function getDataStore(key: string): Promise<DataStoreDetail> {
 }
 
 export async function updateDataStore(key: string, content: string): Promise<{ message: string; store: StoreHealth }> {
-  const res = await fetch(`/api/admin/datastores/${encodeURIComponent(key)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
-  })
-  if (!res.ok) {
-    const text = await res.text()
-    try {
-      const errObj = JSON.parse(text)
-      throw new Error(errObj.error || `save failed (${res.status})`)
-    } catch {
-      throw new Error(text || `save failed (${res.status})`)
-    }
-  }
-  return res.json()
+  return sendJSON<{ message: string; store: StoreHealth }>('PUT', `/api/admin/datastores/${encodeURIComponent(key)}`, { content })
 }
 
 export async function revertDataStore(key: string): Promise<{ message: string; store: StoreHealth }> {
-  const res = await fetch(`/api/admin/datastores/${encodeURIComponent(key)}/revert`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-  })
-  if (!res.ok) {
-    const text = await res.text()
-    try {
-      const errObj = JSON.parse(text)
-      throw new Error(errObj.error || `revert failed (${res.status})`)
-    } catch {
-      throw new Error(text || `revert failed (${res.status})`)
-    }
-  }
-  return res.json()
+  return sendJSON<{ message: string; store: StoreHealth }>('POST', `/api/admin/datastores/${encodeURIComponent(key)}/revert`)
 }
 
 // ── Line item overrides ───────────────────────────────────────────────────

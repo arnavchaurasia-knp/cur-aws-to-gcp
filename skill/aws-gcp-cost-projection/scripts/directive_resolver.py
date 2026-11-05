@@ -30,6 +30,12 @@ except Exception:
             return "s3"
         return p.split()[0] if p else ""
 
+try:
+    from apply_static_mappings import derive_identity
+except Exception:
+    def derive_identity(product: str = "", usage_type: str = "", instance_type: str = "") -> dict:
+        return {"arch": "", "instance_family": "", "vendor": "", "workload": ""}
+
 from directives import Directive, load_ledger
 
 
@@ -50,6 +56,13 @@ class EffectiveOverride:
     notes: List[str] = dataclasses.field(default_factory=list)
     applied_directives: List[str] = dataclasses.field(default_factory=list)
     superseded_directives: List[str] = dataclasses.field(default_factory=list)
+    override_rate: Optional[float] = None
+    fields: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    target_family: Optional[str] = None
+    target_shape: Optional[Any] = None
+    region: Optional[str] = None
+    region_policy: Optional[str] = None
+    pricing_basis: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -61,6 +74,13 @@ class EffectiveOverride:
             "notes": list(self.notes),
             "applied_directives": list(self.applied_directives),
             "superseded_directives": list(self.superseded_directives),
+            "override_rate": self.override_rate,
+            "fields": copy_dict(self.fields),
+            "target_family": self.target_family,
+            "target_shape": self.target_shape,
+            "region": self.region,
+            "region_policy": self.region_policy,
+            "pricing_basis": self.pricing_basis,
         }
 
 
@@ -95,23 +115,12 @@ def extract_row_identity(row: Dict[str, Any]) -> Dict[str, Any]:
     else:
         tags = {}
 
-    # Extract instance family & architecture
+    # Extract instance family, architecture & vendor via shared derivation
     instance_type = str(row.get("instance_type") or "")
-    if not instance_type and usage_type:
-        m = re.search(r'(?:BoxUsage:|Fargate-)?([a-z0-9]+(?:\.[a-z0-9]+)?)', usage_type)
-        if m:
-            instance_type = m.group(1)
-
-    family = ""
-    arch = "x86_64"
-    if instance_type:
-        clean = re.sub(r'^(db\.|cache\.)', '', instance_type.lower())
-        parts = clean.split('.')
-        family = parts[0]
-        if any(family.endswith(x) for x in ("g", "gd", "gn")) or "graviton" in usage_type.lower() or "arm" in usage_type.lower():
-            arch = "arm64"
-        elif family.startswith("a1"):
-            arch = "arm64"
+    identity = derive_identity(product, usage_type, instance_type)
+    family = identity.get("instance_family", "")
+    arch = identity.get("arch", "x86_64")
+    vendor = identity.get("vendor", "")
 
     return {
         "aws_li_key": key,
@@ -126,6 +135,7 @@ def extract_row_identity(row: Dict[str, Any]) -> Dict[str, Any]:
         "tags": tags,
         "instance_family": family,
         "arch": arch,
+        "vendor": vendor,
     }
 
 
@@ -144,8 +154,8 @@ def compute_specificity(directive: Directive) -> int:
     if selector.get("tag") or selector.get("account_id"):
         score += SPECIFICITY_TAG_ACCT
 
-    # 3. Family / Arch
-    if selector.get("instance_family") or selector.get("arch"):
+    # 3. Family / Arch / Vendor
+    if selector.get("instance_family") or selector.get("arch") or selector.get("vendor"):
         score += SPECIFICITY_FAMILY_ARCH
 
     # 4. Service / Product / Usage pattern
@@ -218,11 +228,31 @@ def matches_selector(directive: Directive, ident: Dict[str, Any]) -> bool:
     # 8. Arch
     if "arch" in selector and selector["arch"]:
         req_arch = str(selector["arch"]).strip().lower()
+        row_arch = str(ident.get("arch") or "").lower()
+        row_vendor = str(ident.get("vendor") or "").lower()
         if req_arch in ("arm", "arm64", "aarch64"):
-            req_arch = "arm64"
+            if row_arch not in ("arm", "arm64", "aarch64") and row_vendor not in ("graviton", "arm", "aws"):
+                return False
         elif req_arch in ("x86", "x86_64", "amd64"):
-            req_arch = "x86_64"
-        if ident["arch"] != req_arch:
+            if row_arch not in ("x86", "x86_64", "amd64") and row_vendor not in ("intel", "amd"):
+                return False
+        elif req_arch in ("intel", "amd"):
+            if row_arch != req_arch and row_vendor != req_arch:
+                return False
+        elif row_arch != req_arch:
+            return False
+
+    # 8b. Vendor
+    if "vendor" in selector and selector["vendor"]:
+        req_vendor = str(selector["vendor"]).strip().lower()
+        row_vendor = str(ident.get("vendor") or "").lower()
+        if req_vendor == "intel" and row_vendor != "intel":
+            return False
+        elif req_vendor == "amd" and row_vendor != "amd":
+            return False
+        elif req_vendor in ("aws", "graviton", "arm") and row_vendor not in ("aws", "graviton", "arm"):
+            return False
+        elif req_vendor not in ("intel", "amd", "aws", "graviton", "arm") and row_vendor != req_vendor:
             return False
 
     # 9. Usage Type Regex
@@ -275,6 +305,8 @@ def resolve(
     for d in directives:
         parsed = _as_directive(d)
         if parsed is not None:
+            if parsed.status == "superseded":
+                continue
             parsed_directives.append(parsed)
 
     # Pre-compute specificity and index rank for each directive:
@@ -340,6 +372,42 @@ def resolve(
                     if afield not in field_winners or rank > field_winners[afield][0]:
                         field_winners[afield] = (rank, d, val)
 
+            elif act_type == "set_field":
+                f_name = act.get("field") or (act.get("params") or {}).get("field")
+                val = act.get("value")
+                if f_name in ("override_rate", "rate", "gcp_projected_cost"):
+                    if "override_rate" not in field_winners or rank > field_winners["override_rate"][0]:
+                        field_winners["override_rate"] = (rank, d, val)
+                elif f_name:
+                    afield = f"field:{f_name}"
+                    if afield not in field_winners or rank > field_winners[afield][0]:
+                        field_winners[afield] = (rank, d, (f_name, val))
+
+            elif act_type == "set_pricing_basis":
+                field = "pricing_basis"
+                val = act.get("value") or act.get("pricing_basis")
+                if field not in field_winners or rank > field_winners[field][0]:
+                    field_winners[field] = (rank, d, val)
+
+            elif act_type == "set_target_family":
+                field = "target_family"
+                val = act.get("value") or act.get("target_family")
+                if field not in field_winners or rank > field_winners[field][0]:
+                    field_winners[field] = (rank, d, val)
+
+            elif act_type == "set_target_shape":
+                field = "target_shape"
+                val = act.get("value") if act.get("value") is not None else act.get("shape")
+                if field not in field_winners or rank > field_winners[field][0]:
+                    field_winners[field] = (rank, d, val)
+
+            elif act_type == "set_region":
+                field = "region"
+                val = act.get("value") or act.get("region")
+                pol = act.get("region_policy") or (act.get("params") or {}).get("region_policy") or "nearest_then_global"
+                if field not in field_winners or rank > field_winners[field][0]:
+                    field_winners[field] = (rank, d, (val, pol))
+
             elif act_type == "annotate":
                 note_text = str(act.get("value") or (act.get("params") or {}).get("note") or "").strip()
                 if note_text and note_text not in eff.notes:
@@ -360,6 +428,24 @@ def resolve(
             elif field.startswith("assumption:"):
                 as_key = field.split(":", 1)[1]
                 eff.assumptions[as_key] = val
+            elif field == "override_rate":
+                try:
+                    eff.override_rate = float(val)
+                except Exception:
+                    pass
+            elif field.startswith("field:"):
+                f_name, f_val = val
+                eff.fields[f_name] = f_val
+            elif field == "target_family":
+                eff.target_family = val
+            elif field == "target_shape":
+                eff.target_shape = val
+            elif field == "region":
+                r_val, r_pol = val
+                eff.region = r_val
+                eff.region_policy = r_pol
+            elif field == "pricing_basis":
+                eff.pricing_basis = val
 
         # Provenance: applied vs superseded
         for did in winning_directive_ids:

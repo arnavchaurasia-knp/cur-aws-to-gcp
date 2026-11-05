@@ -104,3 +104,87 @@ def test_annotation_accumulation():
     assert len(res["row_msk_1"].notes) == 2
     assert "d1" in res["row_msk_1"].applied_directives
     assert "d2" in res["row_msk_1"].applied_directives
+
+
+def test_section0_derived_identity_selectors():
+    """Verify {service:ec2, arch:arm64}, {vendor:intel}, and instance_family:['m7g']."""
+    rows = [
+        {"aws_li_key": "graviton_row", "product": "Amazon Elastic Compute Cloud", "usage_type": "BoxUsage:m7g.large"},
+        {"aws_li_key": "intel_row", "product": "Amazon Elastic Compute Cloud", "usage_type": "BoxUsage:c7i.2xlarge"},
+        {"aws_li_key": "amd_row", "product": "Amazon Elastic Compute Cloud", "usage_type": "BoxUsage:c6a.xlarge"},
+    ]
+
+    # 1. arch: arm64 hits only Graviton
+    d_arm = Directive(
+        id="d_arm",
+        author="user",
+        selector={"service": "ec2", "arch": "arm64"},
+        action={"type": "set_target_family", "value": "C4A"},
+    )
+    res_arm = resolve(rows, [d_arm])
+    assert "graviton_row" in res_arm
+    assert res_arm["graviton_row"].target_family == "C4A"
+    assert "intel_row" not in res_arm
+    assert "amd_row" not in res_arm
+
+    # 2. vendor: intel hits only Intel
+    d_intel = Directive(
+        id="d_intel",
+        author="user",
+        selector={"vendor": "intel"},
+        action={"type": "set_target_family", "value": "C4"},
+    )
+    res_intel = resolve(rows, [d_intel])
+    assert "intel_row" in res_intel
+    assert res_intel["intel_row"].target_family == "C4"
+    assert "graviton_row" not in res_intel
+    assert "amd_row" not in res_intel
+
+    # 3. instance_family: ["m7g"] hits exact family
+    d_m7g = Directive(
+        id="d_m7g",
+        author="user",
+        selector={"instance_family": ["m7g"]},
+        action={"type": "set_target_family", "value": "N2D"},
+    )
+    res_m7g = resolve(rows, [d_m7g])
+    assert "graviton_row" in res_m7g
+    assert res_m7g["graviton_row"].target_family == "N2D"
+    assert "intel_row" not in res_m7g
+    assert "amd_row" not in res_m7g
+
+
+def test_preference_verbs_resolution():
+    """Verify set_target_shape, set_region, set_pricing_basis fields in EffectiveOverride."""
+    rows = [
+        {"aws_li_key": "row_ec2", "product": "Amazon Elastic Compute Cloud", "usage_type": "BoxUsage:m5.large"},
+    ]
+
+    d_shape = Directive(
+        id="d_shape",
+        author="user",
+        selector={"aws_li_keys": ["row_ec2"]},
+        action={"type": "set_target_shape", "value": {"vcpu": 4, "ram_gb": 16.0}},
+    )
+    d_reg = Directive(
+        id="d_reg",
+        author="user",
+        selector={"aws_li_keys": ["row_ec2"]},
+        action={"type": "set_region", "value": "europe-west1", "region_policy": "nearest_then_global"},
+    )
+    d_cud = Directive(
+        id="d_cud",
+        author="user",
+        selector={"aws_li_keys": ["row_ec2"]},
+        action={"type": "set_pricing_basis", "value": "cud_3yr"},
+    )
+
+    res = resolve(rows, [d_shape, d_reg, d_cud])
+    eff = res["row_ec2"]
+    assert eff.target_shape == {"vcpu": 4, "ram_gb": 16.0}
+    assert eff.region == "europe-west1"
+    assert eff.region_policy == "nearest_then_global"
+    assert eff.pricing_basis == "cud_3yr"
+    assert "d_shape" in eff.applied_directives
+    assert "d_reg" in eff.applied_directives
+    assert "d_cud" in eff.applied_directives

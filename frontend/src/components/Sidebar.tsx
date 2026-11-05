@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom'
 import facetsFullLogo from '../assets/facets-logo-full.svg'
+import facetsLogoF from '../assets/facets-logo-f.svg'
 import type { UserInfo } from '../api/auth'
 
 export interface SidebarItem {
@@ -64,6 +65,7 @@ export function Sidebar({ user, collapsed, onToggle }: SidebarProps) {
       adminOnly: true,
       items: [
         { to: '/admin/report-settings', label: 'Report Settings', icon: <SettingsIcon /> },
+        { to: '/settings/notifications', label: 'Delivery Channels', icon: <DeliveryChannelsIcon /> },
         { to: '/admin/audit', label: 'Audit Trail', icon: <AuditLogsIcon /> },
         { to: '/admin/users', label: 'User Management', icon: <UsersIcon /> },
       ],
@@ -151,37 +153,51 @@ export function Sidebar({ user, collapsed, onToggle }: SidebarProps) {
   return (
     <aside
       data-sidebar
-      className={`fixed top-0 bottom-0 left-0 h-screen z-50 flex flex-col transition-all duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] border-r select-none
+      className={`fixed top-0 bottom-0 left-0 h-screen z-50 flex flex-col transition-all duration-200 ease-in-out border-r select-none
         ${collapsed ? 'w-16' : 'w-64'}
         bg-[var(--fcp-bg-surface)] border-[var(--fcp-border-subtle)]`}
     >
       {/* Top Brand Area: Facets logo acts as toggle button, aligned at standard h-16 level */}
-      <div className="flex items-center h-16 px-3 border-b border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] shrink-0">
+      <div className="flex items-center h-16 px-2.5 border-b border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] shrink-0 overflow-hidden">
         <button
           onClick={onToggle}
-          className="flex items-center w-full cursor-pointer group text-left focus:outline-none py-1.5 px-1.5 rounded-lg hover:bg-white/5 transition-colors"
+          className="relative flex items-center w-full h-10 px-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer group text-left focus:outline-none"
           title={collapsed ? 'Click Facets logo to expand menu' : 'Click to minimize menu'}
         >
-          <div className="flex items-center justify-between w-full overflow-hidden">
-            <div className={`flex items-center overflow-hidden shrink-0 ${collapsed ? 'w-[48px]' : 'w-auto'}`}>
-              <img
-                src={facetsFullLogo}
-                alt="facets.cloud"
-                className="h-5 max-w-none object-left object-contain"
-              />
-            </div>
-            {!collapsed && (
-              <span className="w-6 h-6 rounded-md border border-white/10 bg-white/5 flex items-center justify-center text-gray-400 group-hover:text-white group-hover:border-white/25 group-hover:bg-white/10 transition-all duration-200 ml-auto shrink-0 shadow-xs">
-                <svg
-                  className="w-3.5 h-3.5 transition-transform duration-200 group-hover:-translate-x-0.5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                </svg>
-              </span>
-            )}
+          {/* Collapsed state: standalone F logo centered */}
+          <div
+            className={`absolute inset-0 flex items-center justify-center transition-opacity duration-200 ${
+              collapsed ? 'opacity-100' : 'opacity-0 pointer-events-none'
+            }`}
+          >
+            <img
+              src={facetsLogoF}
+              alt="Facets"
+              className="h-5 w-auto object-contain shrink-0"
+            />
+          </div>
+
+          {/* Expanded state: full logo and collapse chevron */}
+          <div
+            className={`flex items-center justify-between w-full min-w-0 transition-opacity duration-200 ${
+              collapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'
+            }`}
+          >
+            <img
+              src={facetsFullLogo}
+              alt="facets.cloud"
+              className="h-5 w-auto object-contain shrink-0"
+            />
+            <span className="w-6 h-6 rounded-md border border-white/10 bg-white/5 flex items-center justify-center text-gray-400 group-hover:text-white group-hover:border-white/25 group-hover:bg-white/10 transition-all duration-150 ml-auto shrink-0 shadow-xs">
+              <svg
+                className="w-3.5 h-3.5 transition-transform duration-150 group-hover:-translate-x-0.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </span>
           </div>
         </button>
       </div>
@@ -280,6 +296,14 @@ function SettingsIcon() {
   return (
     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+    </svg>
+  )
+}
+
+function DeliveryChannelsIcon() {
+  return (
+    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
     </svg>
   )
 }

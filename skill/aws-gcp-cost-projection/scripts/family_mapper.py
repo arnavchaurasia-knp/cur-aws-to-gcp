@@ -54,6 +54,7 @@ from apply_static_mappings import (
     _TPU_RATES_CFG,
     _cfg_family_map as _cfg,
     family_arch,
+    derive_identity,
     _emit,
 )
 

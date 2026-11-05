@@ -20,6 +20,7 @@ import (
 	"github.com/facets/cur-web/internal/auth"
 	"github.com/facets/cur-web/internal/config"
 	"github.com/facets/cur-web/internal/db"
+	"github.com/facets/cur-web/internal/envmgr"
 	"github.com/facets/cur-web/internal/jobs"
 	"github.com/facets/cur-web/internal/logger"
 	"github.com/facets/cur-web/internal/mcp"
@@ -37,6 +38,7 @@ func main() {
 	_ = godotenv.Load(".env")
 	_ = godotenv.Load("../.env")
 	_ = godotenv.Load("../../.env")
+	envmgr.CaptureBaseline()
 	logger.Init()
 
 	cfg, err := config.LoadFromEnv()
@@ -44,7 +46,14 @@ func main() {
 		log.Fatalf("config error: %v", err)
 	}
 
+	if src, kerr := db.EnsureEncryptionKey(cfg.DataDir); kerr != nil {
+		slog.Warn("saved secrets can't be encrypted", "err", kerr)
+	} else {
+		slog.Info("encryption key for saved secrets ready", "source", src)
+	}
+
 	buildSHA, buildTime = resolveBuildInfo(buildSHA, buildTime, os.Getenv)
+	jobs.SetServerInfo(buildSHA, buildTime)
 
 	if cfg.GoogleClientID != "" {
 		slog.Info("Google OAuth configured", "client_id_prefix", cfg.GoogleClientID[:min(12, len(cfg.GoogleClientID))]+"...")
@@ -66,6 +75,10 @@ func main() {
 	}
 	defer database.Close()
 
+	envmgr.RegisterApplyHook("LOG_LEVEL", logger.ApplyLevelFromEnv)
+	envmgr.RegisterApplyHook("AGY_PATH", jobs.InvalidateEngineProbeCache)
+	jobs.ApplyStoredEnvOverrides(database)
+
 	// Log the effective allowed-domains list so it is visible in deploy logs.
 	// parseAllowedDomains always returns at least one entry, so the previous
 	// len()==0 branch here could never run and the "unset" case was reported as
@@ -79,6 +92,9 @@ func main() {
 	// Errors are logged, not fatal — bad job dirs can't crash startup.
 	if err := jobs.BackfillRunResults(cfg.JobsDir()); err != nil {
 		log.Printf("backfill run_results: %v", err)
+	}
+	if _, err := jobs.BackfillJobAnalytics(database, cfg.JobsDir(), false); err != nil {
+		log.Printf("backfill job_analytics: %v", err)
 	}
 
 	secureCookies := strings.HasPrefix(cfg.AppBaseURL, "https://")
@@ -273,6 +289,13 @@ func main() {
 		r.Post("/api/jobs/{id}/share", jobHandler.ShareJob)
 		r.Get("/api/jobs/{id}/assumptions", jobHandler.GetJobAssumptions)
 		r.Post("/api/jobs/{id}/assumptions/rerun", jobHandler.RerunJobAssumptions)
+		// Conversational Refinement (Directive Layer Phase 2)
+		r.Get("/api/jobs/{id}/refinement/thread", jobHandler.GetRefinementThread)
+		r.Post("/api/jobs/{id}/refinement/propose", jobHandler.ProposeRefinement)
+		r.Post("/api/jobs/{id}/refinement/confirm", jobHandler.ConfirmRefinement)
+		r.Post("/api/jobs/{id}/refinement/clarify", jobHandler.AnswerClarification)
+		r.Post("/api/jobs/{id}/refinement/revoke", jobHandler.RevokeRefinement)
+		r.Post("/api/jobs/{id}/refinement/apply", jobHandler.ApplyRefinement)
 		r.Delete("/api/jobs/{id}", jobHandler.Delete)
 		// User profile
 		r.Get("/api/user/profile", jobHandler.GetUserProfile)
@@ -308,9 +331,13 @@ func main() {
 		// individual tools toggle via MCP_TOOL_<NAME>_ENABLED.
 		if mcp.Enabled() {
 			mcpReg := mcp.DefaultRegistry(mcp.Handlers{
-				ListJobs: jobHandler.List,
-				GetJob:   jobHandler.GetByID,
-				JobLogs:  jobHandler.JobLogs,
+				ListJobs:            jobHandler.List,
+				GetJob:              jobHandler.GetByID,
+				JobLogs:             jobHandler.JobLogs,
+				ProposeRefinement:   jobHandler.ProposeRefinement,
+				ConfirmRefinement:   jobHandler.ConfirmRefinement,
+				AnswerClarification: jobHandler.AnswerClarification,
+				RevokeRefinement:    jobHandler.RevokeRefinement,
 			})
 			mcpHandler := mcp.Handler(mcpReg)
 			r.Post("/mcp", mcpHandler)
@@ -348,6 +375,11 @@ func main() {
 			r.Post("/api/admin/catalog/refresh", jobHandler.AdminCatalogRefresh)
 			r.Get("/api/admin/audit", jobHandler.AdminAuditLog)
 			r.Get("/api/admin/analytics", jobHandler.AdminAnalytics)
+			r.Get("/api/admin/analytics/composition", jobHandler.AdminAnalyticsComposition)
+			r.Get("/api/admin/analytics/quality", jobHandler.AdminAnalyticsQuality)
+			r.Get("/api/admin/analytics/methodology", jobHandler.AdminAnalyticsMethodology)
+			r.Post("/api/admin/analytics/rebuild", jobHandler.AdminAnalyticsRebuild)
+			r.Post("/api/admin/analytics/jobs/{id}/refresh", jobHandler.AdminAnalyticsRefreshJob)
 			r.Get("/api/admin/assumptions", jobHandler.AdminGetAssumptions)
 			r.Post("/api/admin/assumptions", jobHandler.AdminCreateAssumption)
 			r.Put("/api/admin/assumptions/{key}", jobHandler.AdminPutAssumption)
@@ -385,14 +417,21 @@ func main() {
 			r.Get("/api/admin/bills/{hash}/view", jobHandler.AdminViewUploadedBill)
 			r.Get("/api/admin/bills/{hash}/preview", jobHandler.AdminPreviewUploadedBill)
 			r.Delete("/api/admin/bills/{hash}", jobHandler.AdminDeleteUploadedBill)
-			// System health summary & engine test probe
+			// System Health & Engine
 			r.Get("/api/admin/health", jobHandler.AdminHealthSummary)
 			r.Post("/api/admin/engine/test", jobHandler.AdminTestEngine)
+			// Settings & Secrets
+			r.Get("/api/admin/env", jobHandler.AdminListEnv)
+			r.Put("/api/admin/env/{key}", jobHandler.AdminSetEnv)
+			r.Delete("/api/admin/env/{key}", jobHandler.AdminClearEnv)
+			r.Post("/api/admin/env/{key}/test", jobHandler.AdminTestEnv)
 			// Managed Data Stores
 			r.Get("/api/admin/datastores", jobHandler.AdminListDataStores)
 			r.Get("/api/admin/datastores/{key}", jobHandler.AdminGetDataStore)
 			r.Put("/api/admin/datastores/{key}", jobHandler.AdminPutDataStore)
 			r.Post("/api/admin/datastores/{key}/revert", jobHandler.AdminRevertDataStore)
+			r.Get("/api/admin/datastores/{key}/backups", jobHandler.AdminListDataStoreBackups)
+			r.Post("/api/admin/datastores/{key}/restore", jobHandler.AdminRestoreDataStoreBackup)
 			// Line item overrides
 			r.Get("/api/admin/jobs/{id}/line-items", jobHandler.AdminGetLineItems)
 			r.Post("/api/admin/jobs/{id}/line-items/{row}/override", jobHandler.AdminOverrideLineItem)

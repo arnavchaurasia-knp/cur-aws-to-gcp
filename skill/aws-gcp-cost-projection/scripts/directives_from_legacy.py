@@ -267,6 +267,82 @@ def convert_legacy_to_directives(job_dir: str, db_path: Optional[str] = None, co
         except Exception as exc:
             print(f"directives_from_legacy: warning reading assumptions: {exc}", file=sys.stderr)
 
+    # 5. job_overrides.json
+    overrides_path = os.path.join(job_dir, "job_overrides.json")
+    if os.path.exists(overrides_path):
+        try:
+            with open(overrides_path, "r", encoding="utf-8") as f:
+                overrides_data = json.load(f)
+            if isinstance(overrides_data, list):
+                for ov in overrides_data:
+                    key = ov.get("row_key")
+                    if not key:
+                        continue
+                    suppressed = ov.get("suppressed", False)
+                    gcp_target = ov.get("gcp_target")
+                    rate = ov.get("override_rate")
+                    p_key = ov.get("pinned_key")
+                    p_val = ov.get("pinned_val")
+                    note = ov.get("note")
+                    user = ov.get("updated_by") or "admin"
+
+                    if suppressed:
+                        directives.append(Directive(
+                            id=f"legacy_ov_supp_{key}",
+                            author=user,
+                            source_utterance=f"Suppressed via admin override for {key}",
+                            selector={"aws_li_keys": [key]},
+                            action={"type": "set_strategy", "value": "ignore"},
+                            status="applied",
+                        ))
+                        directives.append(Directive(
+                            id=f"legacy_ov_note_supp_{key}",
+                            author=user,
+                            source_utterance=f"Suppressed note for {key}",
+                            selector={"aws_li_keys": [key]},
+                            action={"type": "annotate", "value": "Suppressed via admin override"},
+                            status="applied",
+                        ))
+                    else:
+                        if gcp_target:
+                            directives.append(Directive(
+                                id=f"legacy_ov_target_{key}",
+                                author=user,
+                                source_utterance=f"GCP target set to {gcp_target} for {key}",
+                                selector={"aws_li_keys": [key]},
+                                action={"type": "set_target_service", "value": gcp_target},
+                                status="applied",
+                            ))
+                        if rate is not None and rate >= 0:
+                            directives.append(Directive(
+                                id=f"legacy_ov_rate_{key}",
+                                author=user,
+                                source_utterance=f"Override rate {rate} for {key}",
+                                selector={"aws_li_keys": [key]},
+                                action={"type": "set_field", "field": "override_rate", "value": float(rate)},
+                                status="applied",
+                            ))
+                        if p_key and p_val:
+                            directives.append(Directive(
+                                id=f"legacy_ov_pin_{key}",
+                                author=user,
+                                source_utterance=f"Pinned {p_key}={p_val} for {key}",
+                                selector={"aws_li_keys": [key]},
+                                action={"type": "set_field", "field": p_key, "value": p_val},
+                                status="applied",
+                            ))
+                        if note:
+                            directives.append(Directive(
+                                id=f"legacy_ov_note_{key}",
+                                author=user,
+                                source_utterance=f"Note: {note}",
+                                selector={"aws_li_keys": [key]},
+                                action={"type": "annotate", "value": note},
+                                status="applied",
+                            ))
+        except Exception as exc:
+            print(f"directives_from_legacy: warning reading job_overrides.json: {exc}", file=sys.stderr)
+
     return directives
 
 

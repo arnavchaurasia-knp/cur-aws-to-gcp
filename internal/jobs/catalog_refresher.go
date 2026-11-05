@@ -83,6 +83,53 @@ func writeRefreshRun(run CatalogRefreshRun) {
 	refreshRunMu.Lock()
 	defer refreshRunMu.Unlock()
 	writeRefreshRunLocked(refreshStatusPath(), run)
+	if run.State == "success" || run.State == "failed" || run.State == "skipped" {
+		appendRefreshHistoryLocked(run)
+	}
+}
+
+// ── Refresh history ─────────────────────────────────────────────────────
+// Every finished run is kept (newest first, capped) in
+// data/catalog_refresh_history.json so System Health can show a track record.
+
+const refreshHistoryMax = 15
+
+func refreshHistoryPath() string {
+	return filepath.Join(skill.ResolveDir(), "data", "catalog_refresh_history.json")
+}
+
+func readRefreshHistoryLocked() []CatalogRefreshRun {
+	data, err := os.ReadFile(refreshHistoryPath())
+	if err != nil {
+		return nil
+	}
+	var runs []CatalogRefreshRun
+	if json.Unmarshal(data, &runs) != nil {
+		return nil
+	}
+	return runs
+}
+
+func appendRefreshHistoryLocked(run CatalogRefreshRun) {
+	if len(run.LogTail) > 15 {
+		run.LogTail = run.LogTail[len(run.LogTail)-15:]
+	}
+	runs := append([]CatalogRefreshRun{run}, readRefreshHistoryLocked()...)
+	if len(runs) > refreshHistoryMax {
+		runs = runs[:refreshHistoryMax]
+	}
+	b, err := json.MarshalIndent(runs, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = atomicWriteFile(refreshHistoryPath(), b)
+}
+
+// GetCatalogRefreshHistory returns finished refresh runs, newest first.
+func GetCatalogRefreshHistory() []CatalogRefreshRun {
+	refreshRunMu.Lock()
+	defer refreshRunMu.Unlock()
+	return readRefreshHistoryLocked()
 }
 
 // GetCatalogRefreshStatus returns the latest persisted refresh run state.

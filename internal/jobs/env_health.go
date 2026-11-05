@@ -13,23 +13,30 @@ import (
 	"github.com/facets/cur-web/internal/skill"
 )
 
-// DepHealth reports the presence, reachability, and health of an environment dependency.
+// ─────────────────────────────────────────────────────────────────────────
+// Runtime dependencies: the programs and disk the pipeline needs on the
+// server itself. Credentials are NOT checked here — they live in the
+// Settings & Secrets registry (internal/envmgr) so each is shown once.
+// ─────────────────────────────────────────────────────────────────────────
+
+// DepHealth reports one runtime dependency.
 type DepHealth struct {
-	Key     string `json:"key"`
-	Status  string `json:"status"` // ok | warn | fail
-	Detail  string `json:"detail"`
-	Present bool   `json:"present"`
+	Key         string `json:"key"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Status      string `json:"status"` // ok | warn | fail
+	Detail      string `json:"detail"`
+	Present     bool   `json:"present"`
+	Fix         string `json:"fix,omitempty"`
 }
 
 var (
-	duckdbProbeMu       sync.Mutex
-	cachedDuckDBStatus  string
-	cachedDuckDBDetail  string
-	cachedDuckDBPresent bool
-	cachedDuckDBAt      time.Time
+	duckdbProbeMu  sync.Mutex
+	duckdbCached   *DepHealth
+	duckdbCachedAt time.Time
 )
 
-// redactPresence safely summarizes secret presence without leaking the value.
+// redactPresence summarises a secret without revealing it.
 func redactPresence(v string) string {
 	if v == "" {
 		return "not configured"
@@ -40,241 +47,130 @@ func redactPresence(v string) string {
 	return fmt.Sprintf("configured (len %d, ends ...%s)", len(v), v[len(v)-4:])
 }
 
-// CheckEnvDependencies checks all critical runtime dependencies for the pipeline and service.
-func CheckEnvDependencies(skillDir, jobsDir, agyPath string) ([]DepHealth, string) {
+// pythonBinary returns python3 if on PATH, else python, else "".
+func pythonBinary() (string, string) {
+	for _, name := range []string{"python3", "python"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return name, p
+		}
+	}
+	return "", ""
+}
+
+// CheckRuntimeDependencies checks the tools and disk the pipeline needs.
+func CheckRuntimeDependencies(skillDir, jobsDir string) ([]DepHealth, string) {
 	if skillDir == "" {
 		skillDir = skill.ResolveDir()
 	}
+	deps := make([]DepHealth, 0, 4)
 
-	deps := make([]DepHealth, 0, 8)
-
-	// 1. ANTIGRAVITY_API_KEY
-	antigravityKey := os.Getenv("ANTIGRAVITY_API_KEY")
-	if antigravityKey != "" {
-		deps = append(deps, DepHealth{
-			Key:     "ANTIGRAVITY_API_KEY",
-			Status:  "ok",
-			Detail:  redactPresence(antigravityKey),
-			Present: true,
-		})
+	// 1. Python
+	pyName, pyPath := pythonBinary()
+	py := DepHealth{
+		Key: "python", Title: "Python 3",
+		Description: "Runs the pricing scripts in every pipeline phase and the catalog refresh.",
+	}
+	if pyName != "" {
+		py.Status, py.Present, py.Detail = "ok", true, "found at "+pyPath
 	} else {
-		deps = append(deps, DepHealth{
-			Key:     "ANTIGRAVITY_API_KEY",
-			Status:  "fail",
-			Detail:  "missing; pipeline reasoning agent will fail authentication",
-			Present: false,
-		})
+		py.Status, py.Detail = "fail", "neither python3 nor python is on the server's PATH"
+		py.Fix = "Install Python 3 on the server and make sure it is on PATH, then restart the backend."
 	}
+	deps = append(deps, py)
 
-	// 2. RESEND_API_KEY
-	resendKey := os.Getenv("RESEND_API_KEY")
-	if resendKey != "" {
-		deps = append(deps, DepHealth{
-			Key:     "RESEND_API_KEY",
-			Status:  "ok",
-			Detail:  redactPresence(resendKey),
-			Present: true,
-		})
-	} else {
-		deps = append(deps, DepHealth{
-			Key:     "RESEND_API_KEY",
-			Status:  "warn",
-			Detail:  "not configured; outbound email notifications disabled",
-			Present: false,
-		})
+	// 2. DuckDB Python module (cached 5 min — importing takes ~1s)
+	deps = append(deps, checkDuckDB(pyName))
+
+	// 3. Skill data folder writable
+	wr := DepHealth{
+		Key: "skill_data_writable", Title: "Data folder is writable",
+		Description: "Needed to refresh the pricing catalog and to save edits to data files.",
 	}
-
-	// 3. agy binary
-	bin := agyPath
-	if bin == "" {
-		bin = "agy"
-	}
-	if p, err := exec.LookPath(bin); err == nil {
-		deps = append(deps, DepHealth{
-			Key:     "agy",
-			Status:  "ok",
-			Detail:  fmt.Sprintf("found at %s", p),
-			Present: true,
-		})
-	} else {
-		deps = append(deps, DepHealth{
-			Key:     "agy",
-			Status:  "fail",
-			Detail:  fmt.Sprintf("not found on PATH (looked for %q)", bin),
-			Present: false,
-		})
-	}
-
-	// 4. Python 3
-	pythonBin := "python3"
-	if p, err := exec.LookPath(pythonBin); err == nil {
-		deps = append(deps, DepHealth{
-			Key:     "python3",
-			Status:  "ok",
-			Detail:  fmt.Sprintf("found at %s", p),
-			Present: true,
-		})
-	} else if p, err := exec.LookPath("python"); err == nil {
-		pythonBin = "python"
-		deps = append(deps, DepHealth{
-			Key:     "python3",
-			Status:  "ok",
-			Detail:  fmt.Sprintf("found at %s (aliased as python)", p),
-			Present: true,
-		})
-	} else {
-		deps = append(deps, DepHealth{
-			Key:     "python3",
-			Status:  "fail",
-			Detail:  "neither python3 nor python found on PATH; catalog & validation will fail",
-			Present: false,
-		})
-	}
-
-	// 5. duckdb (python module)
-	duckdbProbeMu.Lock()
-	if cachedDuckDBStatus != "" && time.Since(cachedDuckDBAt) < 5*time.Minute {
-		deps = append(deps, DepHealth{
-			Key:     "python_duckdb",
-			Status:  cachedDuckDBStatus,
-			Detail:  cachedDuckDBDetail,
-			Present: cachedDuckDBPresent,
-		})
-		duckdbProbeMu.Unlock()
-	} else {
-		duckdbProbeMu.Unlock()
-		// Probe duckdb python module
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		cmd := exec.CommandContext(ctx, pythonBin, "-c", "import duckdb; print(duckdb.__version__)")
-		out, err := cmd.Output()
-		cancel()
-
-		var status, detail string
-		var present bool
-		if err == nil {
-			status = "ok"
-			present = true
-			detail = fmt.Sprintf("duckdb module v%s available", strings.TrimSpace(string(out)))
-		} else {
-			status = "fail"
-			present = false
-			detail = fmt.Sprintf("python duckdb import failed: %v", err)
-		}
-
-		duckdbProbeMu.Lock()
-		cachedDuckDBStatus = status
-		cachedDuckDBDetail = detail
-		cachedDuckDBPresent = present
-		cachedDuckDBAt = time.Now()
-		duckdbProbeMu.Unlock()
-
-		deps = append(deps, DepHealth{
-			Key:     "python_duckdb",
-			Status:  status,
-			Detail:  detail,
-			Present: present,
-		})
-	}
-
-	// 6. GCP Credentials for catalog refresh
-	gcpKey := os.Getenv("GOOGLE_CLOUD_API_KEY")
-	if gcpKey == "" {
-		gcpKey = os.Getenv("GCP_API_KEY")
-	}
-	if gcpKey != "" {
-		deps = append(deps, DepHealth{
-			Key:     "GCP_CREDENTIALS",
-			Status:  "ok",
-			Detail:  redactPresence(gcpKey),
-			Present: true,
-		})
-	} else {
-		deps = append(deps, DepHealth{
-			Key:     "GCP_CREDENTIALS",
-			Status:  "warn",
-			Detail:  "GOOGLE_CLOUD_API_KEY/GCP_API_KEY not set (catalog auto-refresh will be a no-op)",
-			Present: false,
-		})
-	}
-
-	// 7. Skill directory writable
 	if isImageBaked(skillDir) {
-		deps = append(deps, DepHealth{
-			Key:     "skill_dir_writable",
-			Status:  "warn",
-			Detail:  "image-baked (read-only container layer)",
-			Present: true,
-		})
+		wr.Status, wr.Present = "warn", true
+		wr.Detail = "Data files are baked into the container image (read-only). Edits and catalog refreshes can't be saved here; they ship with each deploy."
 	} else {
-		testFile := filepath.Join(skillDir, "data", fmt.Sprintf(".write_test_%d", time.Now().UnixNano()))
-		if err := os.WriteFile(testFile, []byte("ok"), 0644); err == nil {
-			_ = os.Remove(testFile)
-			deps = append(deps, DepHealth{
-				Key:     "skill_dir_writable",
-				Status:  "ok",
-				Detail:  "writable (runtime updates supported)",
-				Present: true,
-			})
+		probe := filepath.Join(skillDir, "data", fmt.Sprintf(".write_test_%d", time.Now().UnixNano()))
+		if err := os.WriteFile(probe, []byte("ok"), 0o644); err == nil {
+			_ = os.Remove(probe)
+			wr.Status, wr.Present, wr.Detail = "ok", true, "writable: "+filepath.Join(skillDir, "data")
 		} else {
-			deps = append(deps, DepHealth{
-				Key:     "skill_dir_writable",
-				Status:  "fail",
-				Detail:  fmt.Sprintf("directory not writable: %v", err),
-				Present: false,
-			})
+			wr.Status, wr.Detail = "fail", fmt.Sprintf("cannot write to %s: %v", filepath.Join(skillDir, "data"), err)
+			wr.Fix = "Give the server's user write permission on that folder."
 		}
 	}
+	deps = append(deps, wr)
 
-	// 8. Data disk free space
-	targetDir := jobsDir
-	if targetDir == "" {
-		targetDir = filepath.Dir(skillDir)
+	// 4. Disk space
+	target := jobsDir
+	if target == "" {
+		target = filepath.Dir(skillDir)
 	}
-	freeBytes, err := getDiskFreeSpaceBytes(targetDir)
-	if err == nil {
-		freeGB := float64(freeBytes) / (1024 * 1024 * 1024)
-		if freeBytes < 50*1024*1024 { // < 50MB
-			deps = append(deps, DepHealth{
-				Key:     "disk_free_space",
-				Status:  "fail",
-				Detail:  fmt.Sprintf("critical disk space: %.2f MB free", float64(freeBytes)/(1024*1024)),
-				Present: true,
-			})
-		} else if freeBytes < 1024*1024*1024 { // < 1GB
-			deps = append(deps, DepHealth{
-				Key:     "disk_free_space",
-				Status:  "warn",
-				Detail:  fmt.Sprintf("low disk space: %.2f MB free (<1GB threshold)", float64(freeBytes)/(1024*1024)),
-				Present: true,
-			})
-		} else {
-			deps = append(deps, DepHealth{
-				Key:     "disk_free_space",
-				Status:  "ok",
-				Detail:  fmt.Sprintf("%.1f GB free", freeGB),
-				Present: true,
-			})
+	disk := DepHealth{
+		Key: "disk_space", Title: "Free disk space",
+		Description: "Each projection job writes its bill, a DuckDB database and reports to disk.",
+	}
+	if free, err := getDiskFreeSpaceBytes(target); err == nil {
+		disk.Present = true
+		gb := float64(free) / (1 << 30)
+		switch {
+		case free < 50<<20:
+			disk.Status, disk.Detail = "fail", fmt.Sprintf("only %.0f MB free", float64(free)/(1<<20))
+			disk.Fix = "Free up space or delete old jobs — new jobs will fail to write their output."
+		case free < 1<<30:
+			disk.Status, disk.Detail = "warn", fmt.Sprintf("%.0f MB free (below 1 GB)", float64(free)/(1<<20))
+			disk.Fix = "Free up space soon; large bills need several hundred MB each."
+		default:
+			disk.Status, disk.Detail = "ok", fmt.Sprintf("%.1f GB free", gb)
 		}
 	} else {
-		deps = append(deps, DepHealth{
-			Key:     "disk_free_space",
-			Status:  "warn",
-			Detail:  fmt.Sprintf("unable to check disk space: %v", err),
-			Present: true,
-		})
+		disk.Status, disk.Detail = "warn", "could not measure free space: "+err.Error()
 	}
+	deps = append(deps, disk)
 
-	// Roll-up status
-	envStatus := "ok"
+	status := "ok"
 	for _, d := range deps {
 		if d.Status == "fail" {
-			envStatus = "fail"
-			break
+			return deps, "fail"
 		}
-		if d.Status == "warn" && envStatus != "fail" {
-			envStatus = "warn"
+		if d.Status == "warn" {
+			status = "warn"
+		}
+	}
+	return deps, status
+}
+
+func checkDuckDB(pythonName string) DepHealth {
+	duckdbProbeMu.Lock()
+	if duckdbCached != nil && time.Since(duckdbCachedAt) < 5*time.Minute {
+		d := *duckdbCached
+		duckdbProbeMu.Unlock()
+		return d
+	}
+	duckdbProbeMu.Unlock()
+
+	d := DepHealth{
+		Key: "python_duckdb", Title: "DuckDB for Python",
+		Description: "The database engine every pipeline phase and the pricing catalog use.",
+	}
+	if pythonName == "" {
+		d.Status, d.Detail = "fail", "can't check — Python is missing"
+		d.Fix = "Install Python 3 first."
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		out, err := exec.CommandContext(ctx, pythonName, "-c", "import duckdb; print(duckdb.__version__)").Output()
+		cancel()
+		if err == nil {
+			d.Status, d.Present = "ok", true
+			d.Detail = "version " + strings.TrimSpace(string(out))
+		} else {
+			d.Status, d.Detail = "fail", "import duckdb failed: "+err.Error()
+			d.Fix = "Run: pip install duckdb   (with the same Python the server uses)"
 		}
 	}
 
-	return deps, envStatus
+	duckdbProbeMu.Lock()
+	duckdbCached, duckdbCachedAt = &d, time.Now()
+	duckdbProbeMu.Unlock()
+	return d
 }

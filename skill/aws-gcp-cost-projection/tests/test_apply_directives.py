@@ -113,3 +113,55 @@ def test_apply_directives_check_only(temp_job_env):
     con.close()
     assert k1_strat == "map"  # Not ignore!
 
+
+
+def test_pricing_basis_and_override_rate_no_column_collision(tmp_path):
+    """Regression: a row carrying BOTH an override_rate (set_field) and a CUD
+    set_pricing_basis must produce a single composed gcp_projected_cost assignment
+    (base * multiplier), never two SETs on the same column in one UPDATE — which
+    DuckDB rejects. Guards the staged-mutation assignment-map fix."""
+    audit_dir = tmp_path / "projection-audit"
+    audit_dir.mkdir(parents=True)
+    db_path = str(audit_dir / "projection.duckdb")
+
+    con = duckdb.connect(db_path)
+    con.execute("""
+        CREATE TABLE aws_li_catalog (
+            aws_li_key TEXT PRIMARY KEY, product TEXT, product_code TEXT,
+            canonical_service TEXT, usage_type TEXT, operation TEXT,
+            region TEXT, account_id TEXT, tags TEXT, mechanic_group TEXT
+        );
+        CREATE TABLE aws_li_to_gcp_li (
+            aws_li_key TEXT PRIMARY KEY, gcp_service TEXT, strategy TEXT,
+            is_workload BOOLEAN, projection_note TEXT, review_flags TEXT,
+            component TEXT, gcp_region TEXT
+        );
+        CREATE TABLE gcp_projection (
+            aws_li_key TEXT PRIMARY KEY, gcp_projected_cost DOUBLE, is_workload BOOLEAN
+        );
+        INSERT INTO aws_li_catalog VALUES
+            ('k1', 'Amazon Elastic Compute Cloud', 'AmazonEC2', 'ec2',
+             'BoxUsage:n2', 'RunInstances', 'us-east-1', '1', '{}', 'compute_breakdown');
+        INSERT INTO aws_li_to_gcp_li VALUES
+            ('k1', 'Compute Engine', 'map', TRUE, '', '', 'core', 'us-central1');
+        INSERT INTO gcp_projection VALUES ('k1', 100.0, TRUE);
+    """)
+    con.close()
+
+    overrides = [
+        Directive(id="d_rate", author="user", selector={"service": "ec2"},
+                  action={"type": "set_field", "field": "override_rate", "value": 50.0}),
+        Directive(id="d_cud", author="user", selector={"service": "ec2"},
+                  action={"type": "set_pricing_basis", "value": "cud_3yr"}),
+    ]
+    save_ledger(str(tmp_path), overrides)
+
+    # Must not raise a binder/duplicate-assignment error.
+    updated = apply_directives_to_db(db_path, job_dir=str(tmp_path))
+    assert updated >= 1
+
+    con = duckdb.connect(db_path, read_only=True)
+    cost = con.execute("SELECT gcp_projected_cost FROM gcp_projection WHERE aws_li_key = 'k1'").fetchone()[0]
+    con.close()
+    # Composed as base(50.0) * cud_3yr multiplier; multiplier is a discount (<1, >0).
+    assert 0.0 < cost < 50.0

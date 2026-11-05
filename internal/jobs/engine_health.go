@@ -3,9 +3,11 @@ package jobs
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -13,175 +15,279 @@ import (
 	"github.com/facets/cur-web/internal/config"
 )
 
-// EngineProbe represents the health and round-trip liveness of the agy engine.
+// ─────────────────────────────────────────────────────────────────────────
+// AI engine health
+//
+// Two levels of checking, on purpose:
+//   - InspectEngine (cheap, runs on every System Health load): is the agy CLI
+//     installed, what version, is the API key present. No model call.
+//   - ProbeEngine(…, true) (the "Test AI engine" button): sends a one-word
+//     prompt through agy to the model and measures the round trip. Uses a tiny
+//     amount of quota, so it only runs when an admin asks for it.
+//
+// Every live test is saved (engine_tests.json in the data folder) so the page
+// can show "last tested 2h ago: OK" after a reload or restart.
+// ─────────────────────────────────────────────────────────────────────────
+
+// EngineProbe is the result of inspecting or live-testing the AI engine.
 type EngineProbe struct {
-	State       string `json:"state"`        // ok | warn | fail | unknown
+	State       string `json:"state"` // ok | warn | fail | unknown
 	Model       string `json:"model"`
 	BinaryFound bool   `json:"binary_found"`
 	BinaryPath  string `json:"binary_path"`
 	Version     string `json:"version"`
-	AuthPresent bool   `json:"auth_present"` // ANTIGRAVITY_API_KEY set (non-empty) — DO NOT return the key
-	RoundTrip   bool   `json:"round_trip"`   // a --print call returned output with no error
+	AuthPresent bool   `json:"auth_present"` // ANTIGRAVITY_API_KEY set — the value is never returned
+	RoundTrip   bool   `json:"round_trip"`   // a live prompt returned output
 	LatencyMS   int64  `json:"latency_ms"`
 	CheckedAt   string `json:"checked_at"`
-	Detail      string `json:"detail"`       // human reason, esp. on warn/fail
+	Detail      string `json:"detail"`
 }
+
+// EngineSlowThreshold: a successful round trip slower than this is "warn".
+const EngineSlowThreshold = 15 * time.Second
+
+// engineProbeTimeout bounds the live round trip.
+const engineProbeTimeout = 30 * time.Second
 
 var (
-	engineProbeMu      sync.Mutex
-	cachedEngineProbe  *EngineProbe
-	cachedEngineProbeAt time.Time
+	versionCacheMu   sync.Mutex
+	versionCachePath string
+	versionCacheVal  string
+	versionCacheAt   time.Time
 )
 
-// InvalidateEngineProbeCache clears the cached probe result.
+// InvalidateEngineProbeCache clears cached CLI version info (call after the
+// agy path changes).
 func InvalidateEngineProbeCache() {
-	engineProbeMu.Lock()
-	cachedEngineProbe = nil
-	cachedEngineProbeAt = time.Time{}
-	engineProbeMu.Unlock()
+	versionCacheMu.Lock()
+	versionCachePath, versionCacheVal, versionCacheAt = "", "", time.Time{}
+	versionCacheMu.Unlock()
 }
 
-// activeModel resolves the active model from DB engine settings or config default.
-func (s *Spawner) activeModel() string {
+// activeModel resolves the model: Report Settings default engine, else
+// AGY_MODEL, else the built-in default. modelSource says which one won.
+func (s *Spawner) activeModel() (model, source string) {
 	if s.db != nil {
 		if choice, _, err := s.db.GetEngineSettings(); err == nil && choice != "" {
-			return choice
+			return choice, "report_settings"
 		}
 	}
-	if s.cfg.AGYModel != "" {
-		return s.cfg.AGYModel
+	if v := strings.TrimSpace(os.Getenv("AGY_MODEL")); v != "" {
+		return v, "env"
 	}
-	return config.DefaultAGYModel
+	if s.cfg.AGYModel != "" {
+		return s.cfg.AGYModel, "env"
+	}
+	return config.DefaultAGYModel, "default"
 }
 
-// ProbeEngine inspects the engine binary, authentication credentials, and optionally
-// performs an end-to-end round trip call to verify the model API is functional.
-func (s *Spawner) ProbeEngine(ctx context.Context, forceLive bool) EngineProbe {
-	engineProbeMu.Lock()
-	if !forceLive && cachedEngineProbe != nil && time.Since(cachedEngineProbeAt) < 60*time.Second {
-		res := *cachedEngineProbe
-		engineProbeMu.Unlock()
-		return res
+// cliVersion runs `agy --version`, cached for 5 minutes per path.
+func cliVersion(ctx context.Context, path string) string {
+	versionCacheMu.Lock()
+	if versionCachePath == path && time.Since(versionCacheAt) < 5*time.Minute {
+		v := versionCacheVal
+		versionCacheMu.Unlock()
+		return v
 	}
-	engineProbeMu.Unlock()
+	versionCacheMu.Unlock()
 
-	active := s.activeModel()
+	vCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	v := "unknown"
+	if out, err := exec.CommandContext(vCtx, path, "--version").Output(); err == nil {
+		if s := strings.TrimSpace(string(out)); s != "" {
+			v = s
+		}
+	}
+	versionCacheMu.Lock()
+	versionCachePath, versionCacheVal, versionCacheAt = path, v, time.Now()
+	versionCacheMu.Unlock()
+	return v
+}
+
+// InspectEngine checks the CLI and API key without calling the model.
+// State is "fail" when the CLI or key is missing, otherwise "unknown" (a live
+// test or a recent successful job is needed to say "ok").
+func (s *Spawner) InspectEngine(ctx context.Context) EngineProbe {
+	model, _ := s.activeModel()
+	p := EngineProbe{Model: model, CheckedAt: time.Now().UTC().Format(time.RFC3339), State: "unknown"}
+
 	bin := s.agyBin()
-
-	probe := EngineProbe{
-		Model:     active,
-		CheckedAt: time.Now().UTC().Format(time.RFC3339),
-		State:     "unknown",
-	}
-
-	// 1. Binary check
-	resolvedPath, err := exec.LookPath(bin)
+	resolved, err := exec.LookPath(bin)
 	if err != nil {
-		probe.BinaryFound = false
-		probe.State = "fail"
-		probe.Detail = fmt.Sprintf("agy binary not found on PATH (set AGY_PATH; looked for %q)", bin)
-		return probe
+		p.State = "fail"
+		p.BinaryPath = bin
+		p.Detail = fmt.Sprintf("agy tool not found (looked for %q). Install it or set AGY_PATH.", bin)
+		return p
 	}
-	probe.BinaryFound = true
-	probe.BinaryPath = resolvedPath
+	p.BinaryFound = true
+	p.BinaryPath = resolved
+	p.Version = cliVersion(ctx, resolved)
 
-	// 2. Version check
-	vCtx, vCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer vCancel()
-	vCmd := exec.CommandContext(vCtx, resolvedPath, "--version")
-	if vOut, vErr := vCmd.Output(); vErr == nil {
-		probe.Version = strings.TrimSpace(string(vOut))
-	} else {
-		probe.Version = "unknown"
+	p.AuthPresent = os.Getenv("ANTIGRAVITY_API_KEY") != ""
+	if !p.AuthPresent {
+		p.State = "fail"
+		p.Detail = "ANTIGRAVITY_API_KEY is not set, so the AI engine can't sign in."
+		return p
 	}
+	p.Detail = "agy is installed and an API key is present. Run a test to confirm the model answers."
+	return p
+}
 
-	// 3. Auth check - NEVER log or return key contents
-	probe.AuthPresent = os.Getenv("ANTIGRAVITY_API_KEY") != ""
-	if !probe.AuthPresent {
-		probe.State = "fail"
-		probe.Detail = "ANTIGRAVITY_API_KEY not set; spawns will fail auth"
-		return probe
+// ProbeEngine inspects the engine and, when forceLive is true, sends a tiny
+// prompt to the model. forceLive=false is equivalent to InspectEngine.
+func (s *Spawner) ProbeEngine(ctx context.Context, forceLive bool) EngineProbe {
+	p := s.InspectEngine(ctx)
+	if p.State == "fail" || !forceLive {
+		return p
 	}
-
-	// If kill switch active
 	if os.Getenv("AGY_HEALTH_PROBE_DISABLED") == "1" {
-		probe.State = "unknown"
-		probe.Detail = "live probe disabled (AGY_HEALTH_PROBE_DISABLED=1)"
-		return probe
+		p.State = "unknown"
+		p.Detail = "Live test is turned off (AGY_HEALTH_PROBE_DISABLED=1)."
+		return p
 	}
 
-	// If not forceLive and no valid cache, avoid blocking health dashboard
-	if !forceLive {
-		probe.State = "unknown"
-		probe.Detail = "probe not yet run (use Test Engine)"
-		return probe
-	}
-
-	// 4. Live RoundTrip Probe
 	tempDir, err := os.MkdirTemp("", "agy_probe_*")
 	if err != nil {
-		probe.State = "fail"
-		probe.Detail = fmt.Sprintf("temp dir creation failed: %v", err)
-		return probe
+		p.State = "fail"
+		p.Detail = fmt.Sprintf("could not create a temp folder for the test: %v", err)
+		return p
 	}
 	defer os.RemoveAll(tempDir)
 
-	probeCtx, probeCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer probeCancel()
+	probeCtx, cancel := context.WithTimeout(ctx, engineProbeTimeout)
+	defer cancel()
 
-	// agy --model <active> --print "Reply with the single word: OK" --dangerously-skip-permissions
-	args := []string{"--model", active, "--dangerously-skip-permissions", "--print", "Reply with the single word: OK"}
-	cmd := exec.CommandContext(probeCtx, resolvedPath, args...)
+	args := []string{"--model", p.Model, "--dangerously-skip-permissions", "--print", "Reply with the single word: OK"}
+	cmd := exec.CommandContext(probeCtx, p.BinaryPath, args...)
 	cmd.Dir = tempDir
 	cmd.Env = s.skillEnv()
-
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 
 	start := time.Now()
 	runErr := cmd.Run()
-	latency := time.Since(start).Milliseconds()
-	probe.LatencyMS = latency
+	p.LatencyMS = time.Since(start).Milliseconds()
+	p.CheckedAt = time.Now().UTC().Format(time.RFC3339)
 
-	outStr := strings.TrimSpace(stdout.String())
-	errTail := strings.TrimSpace(stderr.String())
-	if len(errTail) > 400 {
-		errTail = errTail[len(errTail)-400:]
-	}
+	out := strings.TrimSpace(stdout.String())
+	errTail := tail(strings.TrimSpace(stderr.String()), 400)
 
-	if runErr != nil {
-		probe.RoundTrip = false
-		probe.State = "fail"
-		if probeCtx.Err() == context.DeadlineExceeded {
-			probe.Detail = fmt.Sprintf("probe timed out after 30s (engine unresponsive)")
-		} else if errTail != "" {
-			probe.Detail = fmt.Sprintf("probe failed (%v): %s", runErr, errTail)
-		} else if outStr != "" {
-			probe.Detail = fmt.Sprintf("probe failed (%v): %s", runErr, outStr)
-		} else {
-			probe.Detail = fmt.Sprintf("probe execution failed: %v", runErr)
+	switch {
+	case runErr != nil && probeCtx.Err() == context.DeadlineExceeded:
+		p.State = "fail"
+		p.Detail = fmt.Sprintf("No answer within %s — the model or network is unresponsive.", engineProbeTimeout)
+	case runErr != nil:
+		p.State = "fail"
+		msg := errTail
+		if msg == "" {
+			msg = tail(out, 400)
 		}
-	} else if outStr == "" {
-		probe.RoundTrip = false
-		probe.State = "fail"
-		probe.Detail = "probe returned exit code 0 but empty response"
-	} else {
-		probe.RoundTrip = true
-		if latency > 15000 {
-			probe.State = "warn"
-			probe.Detail = fmt.Sprintf("engine slow (latency %dms)", latency)
+		if msg == "" {
+			msg = runErr.Error()
+		}
+		p.Detail = "The model call failed: " + msg
+	case out == "":
+		p.State = "fail"
+		p.Detail = "agy exited normally but returned an empty answer."
+	default:
+		p.RoundTrip = true
+		if time.Duration(p.LatencyMS)*time.Millisecond > EngineSlowThreshold {
+			p.State = "warn"
+			p.Detail = fmt.Sprintf("The model answered, but slowly (%.1fs). Jobs will take longer than usual.", float64(p.LatencyMS)/1000)
 		} else {
-			probe.State = "ok"
-			probe.Detail = fmt.Sprintf("round-trip ok (%dms)", latency)
+			p.State = "ok"
+			p.Detail = fmt.Sprintf("The model answered in %.1fs.", float64(p.LatencyMS)/1000)
 		}
 	}
+	return p
+}
 
-	// Cache successful or evaluated live probe
-	engineProbeMu.Lock()
-	cachedEngineProbe = &probe
-	cachedEngineProbeAt = time.Now()
-	engineProbeMu.Unlock()
+func tail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return "…" + s[len(s)-n:]
+}
 
-	return probe
+// ── Test history ────────────────────────────────────────────────────────
+
+// EngineTestRecord is one saved live test.
+type EngineTestRecord struct {
+	EngineProbe
+	Actor string `json:"actor,omitempty"`
+}
+
+const engineHistoryMax = 20
+
+var engineHistoryMu sync.Mutex
+
+func engineHistoryPath(dataDir string) string {
+	return filepath.Join(dataDir, "health", "engine_tests.json")
+}
+
+// loadEngineHistory returns saved tests, newest first.
+func loadEngineHistory(dataDir string) []EngineTestRecord {
+	engineHistoryMu.Lock()
+	defer engineHistoryMu.Unlock()
+	return readEngineHistoryLocked(dataDir)
+}
+
+func readEngineHistoryLocked(dataDir string) []EngineTestRecord {
+	b, err := os.ReadFile(engineHistoryPath(dataDir))
+	if err != nil {
+		return nil
+	}
+	var recs []EngineTestRecord
+	if json.Unmarshal(b, &recs) != nil {
+		return nil
+	}
+	return recs
+}
+
+// appendEngineHistory saves a test result (newest first, capped).
+func appendEngineHistory(dataDir string, rec EngineTestRecord) {
+	engineHistoryMu.Lock()
+	defer engineHistoryMu.Unlock()
+	recs := append([]EngineTestRecord{rec}, readEngineHistoryLocked(dataDir)...)
+	if len(recs) > engineHistoryMax {
+		recs = recs[:engineHistoryMax]
+	}
+	b, err := json.MarshalIndent(recs, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = atomicWriteFile(engineHistoryPath(dataDir), b)
+}
+
+// atomicWriteFile writes data via a temp file + rename in the same folder, so a
+// reader never sees a half-written file. Windows-safe (removes the target
+// before renaming, falling back to a direct write).
+func atomicWriteFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return os.WriteFile(path, data, 0o644)
+	}
+	name := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		_ = os.Remove(path)
+		if err2 := os.Rename(name, path); err2 != nil {
+			os.Remove(name)
+			return os.WriteFile(path, data, 0o644)
+		}
+	}
+	return nil
 }

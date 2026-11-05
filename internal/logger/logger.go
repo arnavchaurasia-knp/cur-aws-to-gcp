@@ -10,14 +10,30 @@ import (
 	"strings"
 )
 
+// level is shared by the handler so the log level can change at runtime
+// (System Health → Settings & Secrets → LOG_LEVEL) without a restart.
+var level slog.LevelVar
+
+// ApplyLevelFromEnv re-reads LOG_LEVEL (info|debug|warn|error; default info)
+// and applies it immediately.
+func ApplyLevelFromEnv() {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	case "debug":
+		level.Set(slog.LevelDebug)
+	case "warn", "warning":
+		level.Set(slog.LevelWarn)
+	case "error":
+		level.Set(slog.LevelError)
+	default:
+		level.Set(slog.LevelInfo)
+	}
+}
+
 // Init sets the default slog logger (JSON unless LOG_FORMAT=text) and redirects
 // the stdlib log package to slog so existing log.Printf calls are also structured.
 func Init() {
-	level := slog.LevelInfo
-	if strings.EqualFold(os.Getenv("LOG_LEVEL"), "debug") {
-		level = slog.LevelDebug
-	}
-	opts := &slog.HandlerOptions{Level: level}
+	ApplyLevelFromEnv()
+	opts := &slog.HandlerOptions{Level: &level}
 
 	var h slog.Handler
 	if strings.EqualFold(os.Getenv("LOG_FORMAT"), "text") {

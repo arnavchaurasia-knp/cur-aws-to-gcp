@@ -990,6 +990,7 @@ def main():
     _c_basis_val = "ANY_VALUE(c.od_basis)" if "od_basis" in _c_cols else "'amortized_fallback'"
     _p_basis_val = "ANY_VALUE(p.od_basis)" if "od_basis" in _p_cols else _c_basis_val
     _od_basis_expr = f"COALESCE({_p_basis_val}, {_c_basis_val}, 'amortized_fallback')"
+    _applied_dir_expr = "ANY_VALUE(m.applied_directives)" if "applied_directives" in _m2g_cols else "NULL"
 
     rows = conn.execute(f"""
         SELECT
@@ -1016,7 +1017,8 @@ def main():
             STRING_AGG(DISTINCT CASE WHEN m.component IN ('license', 'sql_license') THEN COALESCE(NULLIF(m.gcp_sku_name, ''), m.component) ELSE NULL END, ', ') AS lic_name,
             {_commitment_basis_expr}                                           AS commitment_basis,
             {_aws_cost_od_est_expr}                                            AS aws_cost_od_est,
-            {_od_basis_expr}                                                   AS od_basis
+            {_od_basis_expr}                                                   AS od_basis,
+            {_applied_dir_expr}                                                AS applied_directives
         FROM aws_li_catalog c
         LEFT JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
         LEFT JOIN gcp_projection    p ON c.aws_li_key = p.aws_li_key
@@ -1219,6 +1221,18 @@ def main():
         conf_str = "N/A (intentional passthrough)" if cat == "Passthrough" else f"{conf*100:.1f}%"
         log.info(f"  {cat}: {conf_str} avg confidence, {cnt} rows")
 
+    directives_map = {}
+    directives_file = os.path.join(JOB_DIR, "directives.json")
+    if os.path.exists(directives_file):
+        try:
+            with open(directives_file, "r", encoding="utf-8") as f:
+                d_list = json.load(f)
+            for d in d_list:
+                if isinstance(d, dict) and d.get("id"):
+                    directives_map[d["id"]] = d.get("source_utterance") or d.get("id")
+        except Exception:
+            pass
+
     # ── Section A and Section B row partitioning (Directive 2) ────────────────
     # Section A: Mapped workload rows with resolved GCP rate
     # Section B: Passthrough (no GCP equivalent, non-workload, or unpriced rate)
@@ -1226,7 +1240,7 @@ def main():
     sec_b_rows = []
 
     for r in rows:
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis = r
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives = r
         if (aws or 0.0) < 0:
             continue
 
@@ -1238,7 +1252,7 @@ def main():
             sec_b_rows.append(r)
 
     def _render_row(r, idx, force_pt=False, active_columns=None):
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis = r
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives = r
 
         ptype  = pill_type(gcp_svc, product)
         p_html = pill_html(ptype)
@@ -1301,6 +1315,15 @@ def main():
         desc_html += '</div>'
         desc_html += why_html
         desc_html += cost_tier_html
+
+        if applied_directives:
+            try:
+                ad_ids = json.loads(applied_directives) if isinstance(applied_directives, str) else (applied_directives or [])
+                for did in ad_ids:
+                    utt = directives_map.get(did, did)
+                    desc_html += f'<div class="directive-audit" style="color:#1a73e8;font-size:11px;margin-top:4px;">Changed by your request: <em>{_html.escape(str(utt))}</em> <span style="color:#70757a">(id: {_html.escape(str(did))})</span></div>'
+            except Exception:
+                pass
 
         has_license_modeled = (gcp_lic_od is not None and gcp_lic_od > 0.005 and bool(lic_name) and not is_pt and not is_ignore)
 
@@ -1888,6 +1911,66 @@ def main():
         except Exception as e:
             log.warning(f"Could not build assumptions section: {e}")
 
+    refinement_summary_block_html = ""
+    try:
+        if "applied_directives" in _m2g_cols:
+            refine_rows = conn.execute(f"""
+                SELECT m.applied_directives, c.aws_amortized_cost * {aws_fx_rate}
+                FROM aws_li_to_gcp_li m
+                JOIN aws_li_catalog c USING (aws_li_key)
+                WHERE m.applied_directives IS NOT NULL AND m.applied_directives != '[]'
+            """).fetchall()
+            if refine_rows:
+                n_changed = len(refine_rows)
+                affected_spend = sum(r[1] or 0.0 for r in refine_rows)
+
+                dir_list = []
+                directives_file = os.path.join(JOB_DIR, "directives.json")
+                if os.path.exists(directives_file):
+                    try:
+                        with open(directives_file, "r", encoding="utf-8") as f:
+                            dir_list = json.load(f)
+                    except Exception:
+                        pass
+
+                table_rows_html = ""
+                for d in dir_list:
+                    if not isinstance(d, dict):
+                        continue
+                    did = _html.escape(str(d.get("id") or ""))
+                    utt = _html.escape(str(d.get("source_utterance") or ""))
+                    act = _html.escape(str(d.get("action", {}).get("type") or ""))
+                    val = _html.escape(str(d.get("action", {}).get("value") or ""))
+                    st = _html.escape(str(d.get("status") or "applied"))
+                    table_rows_html += f"""
+                    <tr>
+                      <td style="font-weight:600; font-family:monospace;">{did}</td>
+                      <td><em>"{utt}"</em></td>
+                      <td><code>{act}</code>: {val}</td>
+                      <td><span class="badge">{st}</span></td>
+                    </tr>
+                    """
+
+                refinement_summary_block_html = f"""
+<div class="refinement-section" style="margin-top:28px">
+  <h3>Refinement Audit Summary</h3>
+  <p class="section-meta">
+    This projection reflects <strong>{n_changed}</strong> line item(s) (${affected_spend:,.2f}/mo) modified via conversational and manual refinement directives.
+  </p>
+  <div class="table-scroll"><table>
+    <tr>
+      <th style="width:100px">Directive ID</th>
+      <th>Request Utterance</th>
+      <th>Action</th>
+      <th style="width:90px">Status</th>
+    </tr>
+    {table_rows_html}
+  </table></div>
+</div>
+"""
+    except Exception as e:
+        log.warning(f"Could not build refinement section: {e}")
+
     # ── summary cards (M-3: compare Section A GCP against Section A AWS mapped baseline) ──
     def card(label, value, sub="", accent=False):
         a = ' card-accent' if accent else ''
@@ -2309,6 +2392,8 @@ def main():
 {discounts_block_html}
 
 {assumptions_block_html}
+
+{refinement_summary_block_html}
 
 <h2>Methodology</h2>
 <ul class="method">

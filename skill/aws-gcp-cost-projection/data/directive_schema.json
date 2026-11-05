@@ -24,6 +24,7 @@
         "service": { "type": ["string", "null"] },
         "product_code": { "type": ["string", "null"] },
         "arch": { "type": ["string", "null"] },
+        "vendor": { "type": ["string", "null"] },
         "instance_family": {
           "type": ["string", "array", "null"],
           "items": { "type": "string" }
@@ -50,7 +51,12 @@
             "set_strategy",
             "set_is_workload",
             "set_assumption",
-            "annotate"
+            "annotate",
+            "set_field",
+            "set_target_family",
+            "set_target_shape",
+            "set_region",
+            "set_pricing_basis"
           ]
         },
         "value": {},

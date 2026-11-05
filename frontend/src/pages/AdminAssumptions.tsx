@@ -374,25 +374,25 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                   }}
                 >
                   <div className="min-h-0 overflow-x-auto">
-                    <table className="w-full text-left border-collapse min-w-[960px] table-fixed">
+                    <table className="w-full text-left border-collapse min-w-[1040px] table-fixed">
                       <colgroup>
-                        <col className="w-[30%]" />
-                        <col className="w-[21%]" />
-                        <col className="w-[9%]" />
-                        <col className="w-[7%]" />
-                        <col className="w-[9%]" />
-                        <col className="w-[10%]" />
-                        <col className="w-[14%]" />
+                        <col className="w-[28%]" />
+                        <col className="w-[13%]" />
+                        <col className="w-[8%]" />
+                        <col className="w-[13%]" />
+                        <col className="w-[11%]" />
+                        <col className="w-[15%]" />
+                        <col className="w-[12%]" />
                       </colgroup>
                       <thead>
                         <tr className="border-b border-[var(--fcp-border-subtle)] bg-[var(--fcp-table-header-bg)] text-[var(--fcp-text-tertiary)] text-xs uppercase tracking-wider font-semibold">
                           <th className="py-3 px-5 text-left">Assumption</th>
-                          <th className="py-3 px-4 text-center">Current Value</th>
+                          <th className="py-3 px-3 text-center">Current Value</th>
                           <th className="py-3 px-3 text-center">Default</th>
                           <th className="py-3 px-3 text-center">Unit</th>
                           <th className="py-3 px-3 text-center">Allowed Range</th>
                           <th className="py-3 px-3 text-left">Last Updated</th>
-                          <th className="py-3 px-5 text-right whitespace-nowrap min-w-[150px]">Action</th>
+                          <th className="py-3 px-5 text-right whitespace-nowrap min-w-[140px]">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[var(--fcp-border-subtle)] text-xs">
@@ -442,9 +442,9 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                               </td>
 
                               {/* Current Value - Centered */}
-                              <td className="py-4 px-4 align-top text-center">
+                              <td className="py-4 px-3 align-top text-center">
                                 {isEditing ? (
-                                  <div className="flex items-center justify-center w-full max-w-[210px] mx-auto">
+                                  <div className="flex items-center justify-center w-full max-w-[150px] mx-auto">
                                     {a.key === 'aurora_acu_ram_gib' ? (
                                       <div className="relative w-full">
                                         <select
@@ -455,7 +455,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                             if (e.key === 'Escape') handleCancel(a.key)
                                           }}
                                           autoFocus
-                                          className="w-full appearance-none rounded-lg border border-[var(--fcp-border-strong)] bg-[var(--fcp-input-bg)] py-1.5 pl-3 pr-8 text-xs font-medium text-[var(--fcp-text-primary)] shadow-2xs focus:border-[#645DF6] focus:outline-none focus:ring-2 focus:ring-[#645DF6]/20 transition-all cursor-pointer"
+                                          className="w-full appearance-none rounded-lg border border-[var(--fcp-border-strong)] bg-[var(--fcp-input-bg)] py-1.5 pl-2.5 pr-7 text-xs font-medium text-[var(--fcp-text-primary)] shadow-2xs focus:border-[#645DF6] focus:outline-none focus:ring-2 focus:ring-[#645DF6]/20 transition-all cursor-pointer"
                                         >
                                           {RATIO_OPTIONS.map(opt => (
                                             <option
@@ -467,7 +467,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                             </option>
                                           ))}
                                         </select>
-                                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-[var(--fcp-text-tertiary)]">
+                                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-[var(--fcp-text-tertiary)]">
                                           <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
                                             <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
                                           </svg>
@@ -487,7 +487,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                             if (e.key === 'Escape') handleCancel(a.key)
                                           }}
                                           autoFocus
-                                          className="w-28 text-center font-mono text-xs font-semibold rounded-lg border border-[var(--fcp-border-strong)] bg-[var(--fcp-input-bg)] px-2.5 py-1.5 text-[var(--fcp-text-primary)] shadow-2xs focus:border-[#645DF6] focus:outline-none focus:ring-2 focus:ring-[#645DF6]/20 transition-all"
+                                          className="w-24 text-center font-mono text-xs font-semibold rounded-lg border border-[var(--fcp-border-strong)] bg-[var(--fcp-input-bg)] px-2 py-1.5 text-[var(--fcp-text-primary)] shadow-2xs focus:border-[#645DF6] focus:outline-none focus:ring-2 focus:ring-[#645DF6]/20 transition-all"
                                         />
                                         {editVal && !inRange && (
                                           <span className="text-[10px] text-rose-500 font-medium mt-1">
@@ -528,7 +528,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                               {/* Unit Column */}
                               <td className="py-4 px-3 align-top text-center">
                                 <div className="pt-1">
-                                  <span className="inline-block text-xs text-[var(--fcp-text-secondary)] font-mono">
+                                  <span className="inline-block text-xs text-[var(--fcp-text-secondary)] font-mono whitespace-nowrap">
                                     {a.unit || '—'}
                                   </span>
                                 </div>
@@ -545,9 +545,9 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
 
                               {/* Last Updated Column */}
                               <td className="py-4 px-3 align-top text-left">
-                                <div className="space-y-0.5 pt-0.5 max-w-[120px] overflow-hidden">
-                                  <div className="text-xs font-medium text-[var(--fcp-text-secondary)] truncate" title={a.updated_by || 'Default'}>
-                                    {a.updated_by ? a.updated_by.split('@')[0] : 'System'}
+                                <div className="space-y-0.5 pt-0.5">
+                                  <div className="text-xs font-medium text-[var(--fcp-text-secondary)] truncate" title={a.updated_by || 'System'}>
+                                    {a.updated_by || 'System'}
                                   </div>
                                   <div className="text-[11px] text-[var(--fcp-text-tertiary)] font-mono">
                                     {a.updated_at ? a.updated_at.split(' ')[0] : '—'}
@@ -556,7 +556,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                               </td>
 
                               {/* Action Column */}
-                              <td className="py-4 px-5 align-top text-right whitespace-nowrap min-w-[150px]">
+                              <td className="py-4 px-5 align-top text-right whitespace-nowrap min-w-[140px]">
                                 <div className="flex items-center gap-2 justify-end pt-0.5">
                                   {isEditing ? (
                                     <>
@@ -636,7 +636,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                 Change History
               </h2>
               <p className="text-xs text-[var(--fcp-text-secondary)] mt-0.5">
-                Audit trail of historical value updates and justification logs.
+                Audit trail of historical value updates.
               </p>
             </div>
             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-mono font-medium bg-[var(--fcp-bg-raised)] text-[var(--fcp-text-secondary)] border border-[var(--fcp-border-subtle)]">
@@ -652,13 +652,12 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                   <th className="py-3 px-5">Assumption</th>
                   <th className="py-3 px-5">Old → New</th>
                   <th className="py-3 px-5">Changed By</th>
-                  <th className="py-3 px-5">Reason</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--fcp-border-subtle)] text-xs">
                 {history.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="py-8 px-5 text-center text-[var(--fcp-text-tertiary)]">
+                    <td colSpan={4} className="py-8 px-5 text-center text-[var(--fcp-text-tertiary)]">
                       No changes recorded yet. Assumptions remain on system baseline.
                     </td>
                   </tr>
@@ -684,9 +683,6 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                       </td>
                       <td className="py-3.5 px-5 text-[var(--fcp-text-secondary)] font-medium">
                         {h.changed_by}
-                      </td>
-                      <td className="py-3.5 px-5 text-[var(--fcp-text-primary)] max-w-sm truncate" title={h.reason}>
-                        {h.reason}
                       </td>
                     </tr>
                   ))

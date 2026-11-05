@@ -34,7 +34,6 @@ func setupDataStoreTest(t *testing.T) (*Handler, *db.DB, string, string) {
 	dataDir := filepath.Join(skillDir, "data")
 	_ = os.MkdirAll(dataDir, 0755)
 
-	// Set SKILL_DIR for the test
 	t.Setenv("SKILL_DIR", skillDir)
 
 	// Seed an editable datastore
@@ -70,7 +69,6 @@ func TestAdminDataStore_ReadAndList(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &listRes))
 	assert.NotEmpty(t, listRes.Stores)
 
-	// Verify review_config is marked editable
 	foundReviewConfig := false
 	for _, s := range listRes.Stores {
 		if s.Key == "review_config" {
@@ -110,23 +108,57 @@ func TestAdminDataStore_WriteValidWithBackupAndAudit(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	// Assert updated content on disk
 	diskContent, err := os.ReadFile(filepath.Join(dataDir, "review-config.json"))
 	require.NoError(t, err)
 	assert.Contains(t, string(diskContent), `"catalog_refresh_after_days": 21`)
 
-	// Assert backup was created in dataDir/_backups
 	backupDir := filepath.Join(dataDir, "_backups")
 	entries, err := os.ReadDir(backupDir)
 	require.NoError(t, err)
 	assert.NotEmpty(t, entries)
 	assert.Contains(t, entries[0].Name(), "review_config.")
 
-	// Assert audit log was recorded
 	audit, err := database.ListAuditLog(10, 0, "admin@facets.cloud", "datastore_edit", nil, nil)
 	require.NoError(t, err)
 	assert.Len(t, audit, 1)
 	assert.Equal(t, "review_config", audit[0].TargetID)
+}
+
+func TestAdminDataStore_SavePreservesKeyOrderAndFormatting(t *testing.T) {
+	handler, database, _, dataDir := setupDataStoreTest(t)
+	defer database.Close()
+
+	r := chi.NewRouter()
+	r.Get("/api/admin/datastores/{key}", handler.AdminGetDataStore)
+	r.Put("/api/admin/datastores/{key}", handler.AdminPutDataStore)
+
+	// Seed custom indentation and key order: zeta before alpha, with comments
+	customJSON := "{\n    \"zeta\": 1,\n    \"_comment_a\": \"x\",\n    \"alpha\": 2\n}\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "review-config.json"), []byte(customJSON), 0644))
+
+	// 1. GET returns exact raw file
+	reqGet := httptest.NewRequest("GET", "/api/admin/datastores/review_config", nil)
+	reqGet = reqGet.WithContext(ctxWithSession(reqGet.Context(), &auth.Session{Email: "admin@facets.cloud", Role: "admin"}))
+	wGet := httptest.NewRecorder()
+	r.ServeHTTP(wGet, reqGet)
+	assert.Equal(t, http.StatusOK, wGet.Code)
+
+	var detail DataStoreDetailDTO
+	require.NoError(t, json.Unmarshal(wGet.Body.Bytes(), &detail))
+	assert.Equal(t, customJSON, detail.Content)
+
+	// 2. PUT with zeta changed to 9 — sent raw
+	updatedJSON := "{\n    \"zeta\": 9,\n    \"_comment_a\": \"x\",\n    \"alpha\": 2\n}\n"
+	reqPut := httptest.NewRequest("PUT", "/api/admin/datastores/review_config", bytes.NewBufferString(updatedJSON))
+	reqPut = reqPut.WithContext(ctxWithSession(reqPut.Context(), &auth.Session{Email: "admin@facets.cloud", Role: "admin"}))
+	wPut := httptest.NewRecorder()
+	r.ServeHTTP(wPut, reqPut)
+	assert.Equal(t, http.StatusOK, wPut.Code)
+
+	// Assert on-disk content matches byte-for-byte, preserving zeta before alpha
+	diskBytes, err := os.ReadFile(filepath.Join(dataDir, "review-config.json"))
+	require.NoError(t, err)
+	assert.Equal(t, updatedJSON, string(diskBytes))
 }
 
 func TestAdminDataStore_WriteInvalidJSON_Rejected(t *testing.T) {
@@ -146,9 +178,8 @@ func TestAdminDataStore_WriteInvalidJSON_Rejected(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "invalid JSON")
+	assert.Contains(t, w.Body.String(), "isn't valid JSON")
 
-	// Ensure file on disk was untouched
 	afterBytes, err := os.ReadFile(filepath.Join(dataDir, "review-config.json"))
 	require.NoError(t, err)
 	assert.Equal(t, originalBytes, afterBytes)
@@ -167,7 +198,7 @@ func TestAdminDataStore_RejectNonEditableAndPathTraversal(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "read-only or unrecognized")
+	assert.Contains(t, w.Body.String(), "This file is read-only here.")
 
 	// Path traversal key
 	req = httptest.NewRequest("PUT", "/api/admin/datastores/..%2Fetc%2Fpasswd", bytes.NewBufferString(`{}`))
@@ -175,6 +206,73 @@ func TestAdminDataStore_RejectNonEditableAndPathTraversal(t *testing.T) {
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestAdminDataStore_BackupsListAndRestore(t *testing.T) {
+	handler, database, _, dataDir := setupDataStoreTest(t)
+	defer database.Close()
+
+	r := chi.NewRouter()
+	r.Put("/api/admin/datastores/{key}", handler.AdminPutDataStore)
+	r.Get("/api/admin/datastores/{key}/backups", handler.AdminListDataStoreBackups)
+	r.Post("/api/admin/datastores/{key}/restore", handler.AdminRestoreDataStoreBackup)
+
+	// Step 1: Write an edit (generates backup of original 14 days)
+	v2 := "{\n  \"catalog_refresh_after_days\": 45\n}\n"
+	reqPut := httptest.NewRequest("PUT", "/api/admin/datastores/review_config", bytes.NewBufferString(v2))
+	reqPut = reqPut.WithContext(ctxWithSession(reqPut.Context(), &auth.Session{Email: "admin@facets.cloud", Role: "admin"}))
+	wPut := httptest.NewRecorder()
+	r.ServeHTTP(wPut, reqPut)
+	require.Equal(t, http.StatusOK, wPut.Code)
+
+	// Step 2: List backups
+	reqList := httptest.NewRequest("GET", "/api/admin/datastores/review_config/backups", nil)
+	reqList = reqList.WithContext(ctxWithSession(reqList.Context(), &auth.Session{Email: "admin@facets.cloud", Role: "admin"}))
+	wList := httptest.NewRecorder()
+	r.ServeHTTP(wList, reqList)
+	assert.Equal(t, http.StatusOK, wList.Code)
+
+	var bList struct {
+		Backups []BackupInfo `json:"backups"`
+	}
+	require.NoError(t, json.Unmarshal(wList.Body.Bytes(), &bList))
+	require.NotEmpty(t, bList.Backups)
+	backupName := bList.Backups[0].Name
+	assert.Contains(t, backupName, "review_config.")
+	assert.Equal(t, "before-edit", bList.Backups[0].Kind)
+
+	// Step 3: Reject path traversal in restore
+	badReq := httptest.NewRequest("POST", "/api/admin/datastores/review_config/restore", bytes.NewBufferString(`{"name":"../secret.json"}`))
+	badReq = badReq.WithContext(ctxWithSession(badReq.Context(), &auth.Session{Email: "admin@facets.cloud", Role: "admin"}))
+	wBad := httptest.NewRecorder()
+	r.ServeHTTP(wBad, badReq)
+	assert.Equal(t, http.StatusBadRequest, wBad.Code)
+
+	// Step 4: Reject restore with a backup name for another key
+	otherKeyReq := httptest.NewRequest("POST", "/api/admin/datastores/review_config/restore", bytes.NewBufferString(`{"name":"service_map.2026.json"}`))
+	otherKeyReq = otherKeyReq.WithContext(ctxWithSession(otherKeyReq.Context(), &auth.Session{Email: "admin@facets.cloud", Role: "admin"}))
+	wOther := httptest.NewRecorder()
+	r.ServeHTTP(wOther, otherKeyReq)
+	assert.Equal(t, http.StatusBadRequest, wOther.Code)
+
+	// Step 5: Restore valid backup
+	bodyRestore, _ := json.Marshal(map[string]string{"name": backupName})
+	reqRestore := httptest.NewRequest("POST", "/api/admin/datastores/review_config/restore", bytes.NewReader(bodyRestore))
+	reqRestore = reqRestore.WithContext(ctxWithSession(reqRestore.Context(), &auth.Session{Email: "admin@facets.cloud", Role: "admin"}))
+	wRestore := httptest.NewRecorder()
+	r.ServeHTTP(wRestore, reqRestore)
+	assert.Equal(t, http.StatusOK, wRestore.Code)
+
+	// Confirm restored back to original v1 (14 days)
+	diskRestored, _ := os.ReadFile(filepath.Join(dataDir, "review-config.json"))
+	assert.Contains(t, string(diskRestored), `"catalog_refresh_after_days": 14`)
+
+	// Assert audit log for restore
+	audit, err := database.ListAuditLog(10, 0, "admin@facets.cloud", "datastore_restore", nil, nil)
+	require.NoError(t, err)
+	assert.Len(t, audit, 1)
+	assert.Equal(t, "review_config", audit[0].TargetID)
+	assert.Equal(t, backupName, audit[0].Details)
 }
 
 func TestAdminDataStore_Revert(t *testing.T) {

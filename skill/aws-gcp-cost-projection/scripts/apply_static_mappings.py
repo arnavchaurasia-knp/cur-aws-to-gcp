@@ -8238,6 +8238,50 @@ def _resolve_instance_type(r):
     return None
 
 
+def derive_identity(product: str = "", usage_type: str = "", instance_type: str = "") -> dict:
+    """Pure helper deriving compute identity: {arch, instance_family, vendor, workload}.
+    arch: 'arm64' | 'x86_64'
+    vendor: 'intel' | 'amd' | 'graviton' | 'aws'
+    instance_family: 'm7g' | 'c7i' | 'r5' | ...
+    """
+    itype = (instance_type or "").strip()
+    if not itype:
+        mock_r = {"product": product, "usage_type": usage_type, "operation": ""}
+        itype = _resolve_instance_type(mock_r) or ""
+
+    if not itype and usage_type:
+        m = re.search(r'(?:BoxUsage:|InstanceUsage:|Fargate-)?([a-z][0-9][a-z0-9]*(?:\.[a-z0-9]+)?)', usage_type, re.IGNORECASE)
+        if m:
+            itype = m.group(1)
+
+    if not itype:
+        blob = f"{product} {usage_type}".lower()
+        if "graviton" in blob or "fargate-arm" in blob or "arm64" in blob:
+            return {"arch": "arm64", "instance_family": "fargate", "vendor": "graviton", "workload": "general"}
+        return {"arch": "", "instance_family": "", "vendor": "", "workload": ""}
+
+    clean = re.sub(r'^(?:db\.|cache\.|kafka\.)', '', itype.strip().lower())
+    fam = clean.split(".")[0]
+    raw_arch, workload = family_arch(fam)
+
+    if raw_arch == "arm":
+        arch = "arm64"
+        vendor = "graviton"
+    elif raw_arch == "amd":
+        arch = "x86_64"
+        vendor = "amd"
+    else:
+        arch = "x86_64"
+        vendor = "intel"
+
+    return {
+        "arch": arch,
+        "instance_family": fam,
+        "vendor": vendor,
+        "workload": workload,
+    }
+
+
 def _backfill_specs_from_ec2_types(r, itype):
     if r.get("instance_vcpus") and r.get("instance_ram_gb"):
         return

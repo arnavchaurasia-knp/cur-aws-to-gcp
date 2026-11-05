@@ -228,6 +228,14 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 		}
 		w.recordEquivalenceUsage(jobID, jobDir)
 		w.recordReviewFindings(jobID, jobDir)
+		// Materialize analytics rollup for the corpus analytics platform
+		if updatedJob, err := w.db.GetJob(jobID); err == nil && updatedJob != nil {
+			if rollup, breakdowns, err := ComputeJobAnalytics(updatedJob, jobDir, w.db); err == nil && rollup != nil {
+				if err := w.db.UpsertJobAnalytics(rollup, breakdowns); err != nil {
+					log.Printf("watcher %s: UpsertJobAnalytics: %v", jobID, err)
+				}
+			}
+		}
 		metrics.JobsDone.Add(1)
 		slog.Info("job done", "job_id", jobID, "prospect", job.Prospect, "aws_spend", spend, "gcp_od", gcpOD, "attempts", job.Attempts)
 

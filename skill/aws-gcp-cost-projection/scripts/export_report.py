@@ -43,6 +43,67 @@ def _augment_aws_license_split(headers, rows, cur_sym):
         out_rows.append(r)
     return headers, out_rows
 
+
+def _augment_applied_directives(headers, rows, job_dir, conn):
+    """Insert 'Refinement' column disclosing applied directive provenance per row (mirroring license-split symmetry)."""
+    headers = list(headers)
+    out_rows = [list(r) for r in rows]
+    if conn is None:
+        return headers, out_rows
+
+    try:
+        m_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+        if "applied_directives" not in m_cols:
+            return headers, out_rows
+
+        dir_map = {}
+        directives_file = os.path.join(job_dir, "directives.json")
+        if os.path.exists(directives_file):
+            try:
+                with open(directives_file, "r", encoding="utf-8") as f:
+                    d_list = json.load(f)
+                for d in d_list:
+                    if isinstance(d, dict) and d.get("id"):
+                        dir_map[d["id"]] = d.get("source_utterance") or d.get("id")
+            except Exception:
+                pass
+
+        key_dirs = conn.execute("""
+            SELECT aws_li_key, applied_directives
+            FROM aws_li_to_gcp_li
+            WHERE applied_directives IS NOT NULL AND applied_directives != '[]'
+        """).fetchall()
+
+        key_to_prov = {}
+        for k, ad_json in key_dirs:
+            try:
+                ids = json.loads(ad_json) if isinstance(ad_json, str) else (ad_json or [])
+                clauses = []
+                for did in ids:
+                    utt = dir_map.get(did, did)
+                    clauses.append(f"Changed by your request: {utt} [id: {did}]")
+                if clauses:
+                    key_to_prov[k] = "; ".join(clauses)
+            except Exception:
+                pass
+
+        if not key_to_prov:
+            return headers, out_rows
+
+        key_idx = headers.index("AWS Key") if "AWS Key" in headers else None
+
+        headers.append("Refinement")
+        for r in out_rows:
+            prov = ""
+            if key_idx is not None and key_idx < len(r):
+                k = r[key_idx]
+                prov = key_to_prov.get(k, "")
+            r.append(prov)
+
+        return headers, out_rows
+    except Exception:
+        return headers, out_rows
+
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 
@@ -523,6 +584,7 @@ def main():
         li_result = conn.execute(li_query)
         headers = [d[0] for d in li_result.description]
         rows = li_result.fetchall()
+        headers, rows = _augment_applied_directives(headers, rows, job_dir, conn)
         headers, rows = _filter_columns_by_settings(headers, rows, settings)
     else:
         query = _build_query(fx_rate, curr_code, aws_fx_rate, conn=conn)
@@ -533,12 +595,14 @@ def main():
         headers = [d[0] for d in result.description]
         rows = result.fetchall()
         headers, rows = _augment_aws_license_split(headers, rows, cur_sym)
+        headers, rows = _augment_applied_directives(headers, rows, job_dir, conn)
         headers, rows = _filter_columns_by_settings(headers, rows, settings)
 
         inst_result = conn.execute(inst_query)
         inst_headers = [d[0] for d in inst_result.description]
         inst_rows = inst_result.fetchall()
         inst_headers, inst_rows = _augment_aws_license_split(inst_headers, inst_rows, cur_sym)
+        inst_headers, inst_rows = _augment_applied_directives(inst_headers, inst_rows, job_dir, conn)
         inst_headers, inst_rows = _filter_columns_by_settings(inst_headers, inst_rows, settings)
 
         try:

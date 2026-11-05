@@ -14,6 +14,8 @@ import { useTitle } from '../lib/useTitle'
 import { BackButton } from '../components/BackButton'
 import { triggerNotificationRefresh } from '../lib/notificationsContext'
 import { toast } from 'sonner'
+import { ToggleSwitch } from '../components/ToggleSwitch'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 
 type TestState = { status: 'idle' | 'sending' | 'ok' | 'error'; msg?: string }
 
@@ -36,6 +38,7 @@ export function AdminIntegrations({ user }: Readonly<{ user: UserInfo }>) {
 
   const [emailTest, setEmailTest] = useState<TestState>({ status: 'idle' })
   const [slackTest, setSlackTest] = useState<TestState>({ status: 'idle' })
+  const [deleteConfirm, setDeleteConfirm] = useState<'email' | 'slack' | null>(null)
 
   const refresh = async () => {
     setLoading(true)
@@ -93,11 +96,31 @@ export function AdminIntegrations({ user }: Readonly<{ user: UserInfo }>) {
       setEmailKey('')
       setSlackWebhook('')
       triggerNotificationRefresh()
-      toast.success('Saved')
+      toast.success('Settings saved successfully')
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'save failed'
       setError(msg)
       toast.error(msg)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDeleteSecret = async (channel: 'email' | 'slack') => {
+    setSaving(true)
+    try {
+      const payload = channel === 'email'
+        ? { email: { api_key: '__DELETE__' } }
+        : { slack: { webhook_url: '__DELETE__' } }
+      const d = await updateIntegrations(payload)
+      setCfg(d)
+      if (channel === 'email') setEmailKey('')
+      if (channel === 'slack') setSlackWebhook('')
+      setDeleteConfirm(null)
+      triggerNotificationRefresh()
+      toast.success(`${channel === 'email' ? 'Resend API Key' : 'Slack Webhook URL'} deleted`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete credential')
     } finally {
       setSaving(false)
     }
@@ -133,156 +156,249 @@ export function AdminIntegrations({ user }: Readonly<{ user: UserInfo }>) {
 
   return (
     <Layout user={user}>
-      <div className="max-w-3xl mx-auto px-4 py-6">
+      <div className="max-w-4xl mx-auto px-4 py-8 space-y-6">
         <BackButton fallback="/admin" />
-        <h1 className="text-2xl font-semibold text-[color:var(--fcp-text-primary)] mb-1">Pricing Catalog &amp; Notifications</h1>
-        <p className="text-sm text-[color:var(--fcp-text-secondary)] mb-6">
-          Freshness of the GCP SKU pricing catalog used for projections, and notification delivery channel configurations.
-        </p>
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-[var(--fcp-text-primary)]">
+            Pricing Catalog &amp; Delivery Channels
+          </h1>
+          <p className="text-sm text-[var(--fcp-text-secondary)] mt-1">
+            GCP SKU pricing catalog status used for projections, and organization notification delivery channels.
+          </p>
+        </div>
 
-        {loading && <p className="text-[color:var(--fcp-text-tertiary)] py-4">Loading…</p>}
-        {error && <div className="mb-4 rounded-xl bg-red-900/40 border border-red-700 text-red-200 px-4 py-3 text-sm">{error}</div>}
+        {loading && <p className="text-[var(--fcp-text-tertiary)] py-4">Loading…</p>}
+        {error && (
+          <div className="rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-700 text-rose-800 dark:text-rose-200 px-4 py-3 text-sm">
+            {error}
+          </div>
+        )}
 
         {/* Pricing Catalog Freshness */}
         {catalogStatus && (
-          <section className="mb-6 rounded-xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] p-5 shadow-[var(--fcp-card-shadow)] anim-fade-in-up">
+          <section className="rounded-2xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] p-6 shadow-sm">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h2 className="text-lg font-medium text-[color:var(--fcp-text-primary)]">GCP Pricing Catalog</h2>
-                <p className="text-xs text-[color:var(--fcp-text-secondary)]">Freshness of the GCP SKU catalog used for cost projections.</p>
+                <h2 className="text-base font-bold text-[var(--fcp-text-primary)]">GCP Pricing Catalog</h2>
+                <p className="text-xs text-[var(--fcp-text-secondary)]">Freshness of indexed GCP SKUs queried during estimation.</p>
               </div>
-              <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${catalogStatus.stale ? 'bg-orange-950/30 text-orange-400 border border-orange-500/30' : 'bg-[#00C2BB]/10 text-[#00C2BB] border border-[#00C2BB]/30'}`}>
+              <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${
+                catalogStatus.stale
+                  ? 'bg-amber-500/10 text-amber-500 border border-amber-500/30'
+                  : 'bg-[#00C2BB]/10 text-[#00C2BB] border border-[#00C2BB]/30'
+              }`}>
                 {catalogStatus.stale ? 'Stale' : 'Fresh'}
               </span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="rounded-xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-base)]/50 p-4 shadow-[var(--fcp-card-shadow)] anim-fade-in-up">
-                <div className="text-xs uppercase tracking-wider text-[color:var(--fcp-text-tertiary)] mb-1">Last refreshed</div>
-                <div className="text-lg font-semibold tabular-nums text-[color:var(--fcp-text-primary)]">
-                  {catalogStatus.age_days >= 9999 ? 'unknown' : `${catalogStatus.age_days} day${catalogStatus.age_days === 1 ? '' : 's'} ago`}
+              <div className="rounded-xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface-hover)] p-4">
+                <div className="text-xs uppercase tracking-wider text-[var(--fcp-text-tertiary)] mb-1">Last Refreshed</div>
+                <div className="text-lg font-bold tabular-nums text-[var(--fcp-text-primary)]">
+                  {catalogStatus.age_days >= 9999 ? 'Unknown' : `${catalogStatus.age_days} day${catalogStatus.age_days === 1 ? '' : 's'} ago`}
                 </div>
               </div>
-              <div className="rounded-xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-base)]/50 p-4 shadow-[var(--fcp-card-shadow)] anim-fade-in-up" style={{ animationDelay: '60ms' }}>
-                <div className="text-xs uppercase tracking-wider text-[color:var(--fcp-text-tertiary)] mb-1">Status</div>
-                <div className={`text-lg font-semibold ${catalogStatus.stale ? 'text-orange-400' : 'text-[#00C2BB]'}`}>
-                  {catalogStatus.stale ? 'Stale' : 'Fresh'}
+              <div className="rounded-xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface-hover)] p-4">
+                <div className="text-xs uppercase tracking-wider text-[var(--fcp-text-tertiary)] mb-1">Catalog State</div>
+                <div className={`text-lg font-bold ${catalogStatus.stale ? 'text-amber-500' : 'text-[#00C2BB]'}`}>
+                  {catalogStatus.stale ? 'Needs Refresh' : 'Up to date'}
                 </div>
               </div>
             </div>
 
-            {catalogActionError && <p className="text-xs text-orange-400 mt-3">{catalogActionError}</p>}
+            {catalogActionError && <p className="text-xs text-rose-500 mt-3">{catalogActionError}</p>}
 
             <div className="mt-4">
               <button
                 type="button"
                 onClick={handleCatalogRefresh}
                 disabled={refreshingCatalog}
-                className="btn-shimmer px-4 py-2 rounded-lg font-medium text-white text-xs disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                className="btn-shimmer px-4 py-2 rounded-xl font-medium text-white text-xs disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
               >
-                {refreshingCatalog ? 'Starting refresh…' : 'Refresh catalog now'}
+                {refreshingCatalog ? 'Starting refresh…' : 'Refresh Catalog Now'}
               </button>
             </div>
           </section>
         )}
 
+        {/* High-Contrast, Professional Encryption Warning */}
         {cfg && !cfg.encryption_available && (
-          <div className="mb-6 rounded-xl bg-amber-900/40 border border-amber-700 text-amber-200 px-4 py-3 text-sm">
-            <strong>SETTINGS_ENCRYPTION_KEY is not set on the server.</strong> You can toggle channels and edit the
-            From address, but API keys and webhook URLs cannot be saved until it is configured (base64 of 32 random bytes).
+          <div className="rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700/60 p-4 sm:p-5 flex items-start gap-3.5 shadow-sm">
+            <div className="w-9 h-9 rounded-xl bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0 mt-0.5">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-amber-950 dark:text-amber-100">
+                SETTINGS_ENCRYPTION_KEY Not Configured
+              </h3>
+              <p className="text-xs text-amber-900/90 dark:text-amber-200/90 leading-relaxed">
+                <code className="font-mono bg-amber-100/90 dark:bg-amber-900/80 px-1.5 py-0.5 rounded text-amber-950 dark:text-amber-100 font-semibold border border-amber-300 dark:border-amber-700">
+                  SETTINGS_ENCRYPTION_KEY
+                </code>{' '}
+                is not set on the server environment. API keys and webhook URLs cannot be saved to the database until it is configured.
+              </p>
+            </div>
           </div>
         )}
 
         {cfg && (
           <>
-            {/* Email card */}
-            <section className="mb-6 rounded-xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] p-5 shadow-[var(--fcp-card-shadow)] anim-fade-in-up">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-medium text-[color:var(--fcp-text-primary)]">Email (Resend)</h2>
-                <label className="flex items-center gap-2 text-sm text-[color:var(--fcp-text-secondary)] cursor-pointer">
-                  <input type="checkbox" checked={emailEnabled} onChange={e => setEmailEnabled(e.target.checked)} />
-                  Enabled
-                </label>
+            {/* Email (Resend) Card */}
+            <section className="rounded-2xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] p-6 shadow-sm space-y-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-base font-bold text-[var(--fcp-text-primary)]">Email Delivery (Resend)</h2>
+                  <p className="text-xs text-[var(--fcp-text-secondary)] mt-0.5">Automated job completion emails and report links.</p>
+                </div>
+                <ToggleSwitch
+                  checked={emailEnabled}
+                  onChange={setEmailEnabled}
+                />
               </div>
-              <label className="block text-sm text-[color:var(--fcp-text-secondary)] mb-1">From address</label>
-              <input
-                className="w-full mb-3 rounded-lg bg-[var(--fcp-input-bg)] border border-[var(--fcp-input-border)] px-3 py-2 text-[color:var(--fcp-text-primary)] text-sm focus:outline-none focus:border-[#645DF6]"
-                value={emailFrom}
-                onChange={e => setEmailFrom(e.target.value)}
-                placeholder="Facets Cloud <no-reply@facets.cloud>"
-              />
-              <label className="block text-sm text-[color:var(--fcp-text-secondary)] mb-1">Resend API key</label>
-              <input
-                type="password"
-                autoComplete="off"
-                className="w-full rounded-lg bg-[var(--fcp-input-bg)] border border-[var(--fcp-input-border)] px-3 py-2 text-[color:var(--fcp-text-primary)] text-sm focus:outline-none focus:border-[#645DF6]"
-                value={emailKey}
-                onChange={e => setEmailKey(e.target.value)}
-                placeholder="Leave blank to keep current"
-              />
-              <p className="mt-1 text-xs text-[color:var(--fcp-text-tertiary)]">{secretLabel(cfg.email.api_key, cfg.email.env_fallback)}</p>
-              <div className="mt-4 flex items-center gap-3">
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-[var(--fcp-text-secondary)] mb-1.5">From Address</label>
+                <input
+                  className="w-full rounded-xl bg-[var(--fcp-input-bg)] border border-[var(--fcp-input-border)] px-3.5 py-2.5 text-[var(--fcp-text-primary)] text-xs focus:outline-none focus:border-[#645DF6]"
+                  value={emailFrom}
+                  onChange={e => setEmailFrom(e.target.value)}
+                  placeholder="Facets Cloud <no-reply@facets.cloud>"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-[var(--fcp-text-secondary)]">Resend API Key</label>
+                  <span className="text-[11px] font-mono text-[var(--fcp-text-tertiary)]">
+                    {secretLabel(cfg.email.api_key, cfg.email.env_fallback)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    className="flex-1 rounded-xl bg-[var(--fcp-input-bg)] border border-[var(--fcp-input-border)] px-3.5 py-2.5 text-[var(--fcp-text-primary)] text-xs focus:outline-none focus:border-[#645DF6]"
+                    value={emailKey}
+                    onChange={e => setEmailKey(e.target.value)}
+                    placeholder="Enter new key or leave blank"
+                  />
+                  {cfg.email.api_key.configured && (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteConfirm('email')}
+                      className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 border border-rose-500/20 transition-colors cursor-pointer shrink-0"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                      <span>Delete Key</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 pt-2">
                 <button
                   type="button"
                   onClick={() => runTest('email')}
                   disabled={emailTest.status === 'sending'}
-                  className="rounded-lg border border-[var(--fcp-border-subtle)] px-3 py-1.5 text-xs text-[color:var(--fcp-text-secondary)] hover:bg-[var(--fcp-bg-hover)] disabled:opacity-50 cursor-pointer"
+                  className="rounded-xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface-hover)] px-4 py-2 text-xs font-medium text-[var(--fcp-text-primary)] hover:border-gray-400 disabled:opacity-50 cursor-pointer"
                 >
-                  {emailTest.status === 'sending' ? 'Sending…' : 'Send test email'}
+                  {emailTest.status === 'sending' ? 'Sending…' : 'Send Test Email'}
                 </button>
-                {emailTest.status === 'ok' && <span className="text-xs text-green-400">{emailTest.msg}</span>}
-                {emailTest.status === 'error' && <span className="text-xs text-red-400">{emailTest.msg}</span>}
+                {emailTest.status === 'ok' && <span className="text-xs text-emerald-500 font-medium">{emailTest.msg}</span>}
+                {emailTest.status === 'error' && <span className="text-xs text-rose-500 font-medium">{emailTest.msg}</span>}
               </div>
             </section>
 
-            {/* Slack card */}
-            <section className="mb-6 rounded-xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] p-5 shadow-[var(--fcp-card-shadow)] anim-fade-in-up">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-medium text-[color:var(--fcp-text-primary)]">Slack</h2>
-                <label className="flex items-center gap-2 text-sm text-[color:var(--fcp-text-secondary)] cursor-pointer">
-                  <input type="checkbox" checked={slackEnabled} onChange={e => setSlackEnabled(e.target.checked)} />
-                  Enabled
-                </label>
+            {/* Slack Card */}
+            <section className="rounded-2xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] p-6 shadow-sm space-y-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-base font-bold text-[var(--fcp-text-primary)]">Slack Delivery Channel</h2>
+                  <p className="text-xs text-[var(--fcp-text-secondary)] mt-0.5">Post team notifications to an incoming webhook.</p>
+                </div>
+                <ToggleSwitch
+                  checked={slackEnabled}
+                  onChange={setSlackEnabled}
+                />
               </div>
-              <label className="block text-sm text-[color:var(--fcp-text-secondary)] mb-1">Incoming webhook URL</label>
-              <input
-                type="password"
-                autoComplete="off"
-                className="w-full rounded-lg bg-[var(--fcp-input-bg)] border border-[var(--fcp-input-border)] px-3 py-2 text-[color:var(--fcp-text-primary)] text-sm focus:outline-none focus:border-[#645DF6]"
-                value={slackWebhook}
-                onChange={e => setSlackWebhook(e.target.value)}
-                placeholder="Leave blank to keep current"
-              />
-              <p className="mt-1 text-xs text-[color:var(--fcp-text-tertiary)]">{secretLabel(cfg.slack.webhook_url, cfg.slack.env_fallback)}</p>
-              <p className="mt-1 text-xs text-[color:var(--fcp-text-tertiary)]">
-                The webhook determines the target channel — create one per channel in Slack and paste its URL here.
-              </p>
-              <div className="mt-4 flex items-center gap-3">
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-[var(--fcp-text-secondary)]">Incoming Webhook URL</label>
+                  <span className="text-[11px] font-mono text-[var(--fcp-text-tertiary)]">
+                    {secretLabel(cfg.slack.webhook_url, cfg.slack.env_fallback)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    className="flex-1 rounded-xl bg-[var(--fcp-input-bg)] border border-[var(--fcp-input-border)] px-3.5 py-2.5 text-[var(--fcp-text-primary)] text-xs focus:outline-none focus:border-[#645DF6]"
+                    value={slackWebhook}
+                    onChange={e => setSlackWebhook(e.target.value)}
+                    placeholder="Enter new webhook URL or leave blank"
+                  />
+                  {cfg.slack.webhook_url.configured && (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteConfirm('slack')}
+                      className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 border border-rose-500/20 transition-colors cursor-pointer shrink-0"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                      <span>Delete URL</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 pt-2">
                 <button
                   type="button"
                   onClick={() => runTest('slack')}
                   disabled={slackTest.status === 'sending'}
-                  className="rounded-lg border border-[var(--fcp-border-subtle)] px-3 py-1.5 text-xs text-[color:var(--fcp-text-secondary)] hover:bg-[var(--fcp-bg-hover)] disabled:opacity-50 cursor-pointer"
+                  className="rounded-xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface-hover)] px-4 py-2 text-xs font-medium text-[var(--fcp-text-primary)] hover:border-gray-400 disabled:opacity-50 cursor-pointer"
                 >
-                  {slackTest.status === 'sending' ? 'Sending…' : 'Send test message'}
+                  {slackTest.status === 'sending' ? 'Sending…' : 'Send Test Slack Message'}
                 </button>
-                {slackTest.status === 'ok' && <span className="text-xs text-green-400">{slackTest.msg}</span>}
-                {slackTest.status === 'error' && <span className="text-xs text-red-400">{slackTest.msg}</span>}
+                {slackTest.status === 'ok' && <span className="text-xs text-emerald-500 font-medium">{slackTest.msg}</span>}
+                {slackTest.status === 'error' && <span className="text-xs text-rose-500 font-medium">{slackTest.msg}</span>}
               </div>
             </section>
 
-            <div className="flex items-center gap-3">
+            <div className="flex justify-end pt-2">
               <button
                 type="button"
                 onClick={save}
                 disabled={saving}
-                className="rounded-lg bg-[#645DF6] hover:bg-[#645DF6]/85 px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 cursor-pointer"
+                className="btn-shimmer px-6 py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer disabled:opacity-40"
               >
-                {saving ? 'Saving…' : 'Save changes'}
+                {saving ? 'Saving…' : 'Save Settings'}
               </button>
             </div>
           </>
         )}
+
+        {/* Delete Confirmation Dialog */}
+        <ConfirmDialog
+          open={Boolean(deleteConfirm)}
+          onOpenChange={(o) => { if (!o) setDeleteConfirm(null) }}
+          title={`Delete ${deleteConfirm === 'email' ? 'Resend API Key' : 'Slack Webhook URL'}?`}
+          description="This credential will be removed from the database and revert to environment defaults."
+          confirmLabel="Delete Credential"
+          destructive
+          loading={saving}
+          onConfirm={() => {
+            if (deleteConfirm) {
+              handleDeleteSecret(deleteConfirm)
+            }
+          }}
+        />
       </div>
     </Layout>
   )

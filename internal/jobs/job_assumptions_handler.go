@@ -254,6 +254,7 @@ func (h *Handler) RerunJobAssumptions(w http.ResponseWriter, r *http.Request) {
 		filepath.Join(jobDir, projectionAuditDir, "projection.baseline.duckdb"),
 	)
 	copyFileIfNotExists(filepath.Join(jobDir, "assumptions.json"), filepath.Join(jobDir, "assumptions.baseline.json"))
+	copyFileIfNotExists(filepath.Join(jobDir, "directives.json"), filepath.Join(jobDir, "directives.baseline.json"))
 
 	// Build effective merged values
 	values := make(map[string]float64, len(globalAssumptions))

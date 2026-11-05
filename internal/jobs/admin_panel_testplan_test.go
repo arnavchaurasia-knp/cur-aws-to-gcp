@@ -76,6 +76,11 @@ func buildTestRouter(database *db.DB, jobsDir string, adminEmails []string) http
 			r.Post("/api/admin/catalog/refresh", jobHandler.AdminCatalogRefresh)
 			r.Get("/api/admin/audit", jobHandler.AdminAuditLog)
 			r.Get("/api/admin/analytics", jobHandler.AdminAnalytics)
+			r.Get("/api/admin/analytics/composition", jobHandler.AdminAnalyticsComposition)
+			r.Get("/api/admin/analytics/quality", jobHandler.AdminAnalyticsQuality)
+			r.Get("/api/admin/analytics/methodology", jobHandler.AdminAnalyticsMethodology)
+			r.Post("/api/admin/analytics/rebuild", jobHandler.AdminAnalyticsRebuild)
+			r.Post("/api/admin/analytics/jobs/{id}/refresh", jobHandler.AdminAnalyticsRefreshJob)
 			r.Get("/api/admin/assumptions", jobHandler.AdminGetAssumptions)
 			r.Post("/api/admin/assumptions", jobHandler.AdminCreateAssumption)
 			r.Put("/api/admin/assumptions/{key}", jobHandler.AdminPutAssumption)
@@ -102,10 +107,16 @@ func buildTestRouter(database *db.DB, jobsDir string, adminEmails []string) http
 			r.Get("/api/admin/bills/{hash}/preview", jobHandler.AdminPreviewUploadedBill)
 			r.Get("/api/admin/health", jobHandler.AdminHealthSummary)
 			r.Post("/api/admin/engine/test", jobHandler.AdminTestEngine)
+			r.Get("/api/admin/env", jobHandler.AdminListEnv)
+			r.Put("/api/admin/env/{key}", jobHandler.AdminSetEnv)
+			r.Delete("/api/admin/env/{key}", jobHandler.AdminClearEnv)
+			r.Post("/api/admin/env/{key}/test", jobHandler.AdminTestEnv)
 			r.Get("/api/admin/datastores", jobHandler.AdminListDataStores)
 			r.Get("/api/admin/datastores/{key}", jobHandler.AdminGetDataStore)
 			r.Put("/api/admin/datastores/{key}", jobHandler.AdminPutDataStore)
 			r.Post("/api/admin/datastores/{key}/revert", jobHandler.AdminRevertDataStore)
+			r.Get("/api/admin/datastores/{key}/backups", jobHandler.AdminListDataStoreBackups)
+			r.Post("/api/admin/datastores/{key}/restore", jobHandler.AdminRestoreDataStoreBackup)
 		})
 	})
 
@@ -180,10 +191,16 @@ func TestSection3_AuthorizationMatrix(t *testing.T) {
 		{"POST", "/api/admin/users/c@gmail.com/role"},
 		{"GET", "/api/admin/health"},
 		{"POST", "/api/admin/engine/test"},
+		{"GET", "/api/admin/env"},
+		{"PUT", "/api/admin/env/LOG_LEVEL"},
+		{"DELETE", "/api/admin/env/LOG_LEVEL"},
+		{"POST", "/api/admin/env/LOG_LEVEL/test"},
 		{"GET", "/api/admin/datastores"},
 		{"GET", "/api/admin/datastores/review_config"},
 		{"PUT", "/api/admin/datastores/review_config"},
 		{"POST", "/api/admin/datastores/review_config/revert"},
+		{"GET", "/api/admin/datastores/review_config/backups"},
+		{"POST", "/api/admin/datastores/review_config/restore"},
 	}
 
 	for _, rc := range routes {

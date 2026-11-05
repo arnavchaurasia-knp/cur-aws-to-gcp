@@ -2,7 +2,6 @@ import facetsFIcon from '../assets/facets-logo-f.svg'
 import type { UserInfo } from '../api/auth'
 import { Link, useLocation } from 'react-router-dom'
 import { useState, useRef, useEffect } from 'react'
-import { useTheme } from '../lib/themeContext'
 
 export function Nav({ user }: Readonly<{ user: UserInfo }>) {
   const location = useLocation()
@@ -24,6 +23,7 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
     '/admin/audit',
     '/admin/assumptions',
     '/admin/report-settings',
+    '/settings/notifications',
   ].some(p => location.pathname === p) || (location.pathname === '/admin' && location.search.includes('tab=shares'))
 
   // Close dropdown on outside click
@@ -64,19 +64,19 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
   }, [mobileMenuOpen])
 
   return (
-    <nav className="flex items-center justify-between px-6 py-3 border-b border-white/10 anim-slide-down backdrop-blur-md bg-[#0a0a0f]/85 sticky top-0 z-30">
+    <nav className="flex items-center justify-between px-6 py-3 border-b border-[var(--fcp-border-subtle)] anim-slide-down backdrop-blur-md bg-[var(--fcp-bg-base)]/85 sticky top-0 z-30">
       <div className="flex items-center gap-3">
         <Link to="/" className="flex items-center gap-3 transition-opacity duration-150 hover:opacity-85">
           <img src={facetsFIcon} alt="Facets" className="h-5" />
           <span className="hidden sm:inline text-white/30">|</span>
-          <span className="text-sm font-semibold tracking-tight">
+          <span className="text-sm font-semibold tracking-tight text-[var(--fcp-text-primary)]">
             <span className="hidden sm:inline">AWS → GCP Cost Estimator</span>
             <span className="sm:hidden">Estimator</span>
           </span>
         </Link>
       </div>
 
-      <div className="flex items-center gap-4 text-sm text-gray-400">
+      <div className="flex items-center gap-4 text-sm text-[var(--fcp-text-secondary)]">
         {/* Desktop Nav */}
         <div className="hidden sm:flex items-center gap-4">
           {isAdmin && (
@@ -91,7 +91,7 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
               <div className="relative" ref={settingsRef}>
                 <button
                   onClick={() => setSettingsOpen(v => !v)}
-                  className={`flex items-center gap-1.5 py-1 px-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer ${
+                  className={`flex items-center gap-1.5 py-1.5 px-2.5 rounded-lg hover:bg-white/5 transition-colors cursor-pointer ${
                     isSettingsActive ? 'text-[#00C2BB] font-medium' : 'text-gray-400 hover:text-white'
                   }`}
                   aria-haspopup="true"
@@ -99,7 +99,7 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
                 >
                   <span>Settings</span>
                   <svg
-                    className={`h-3 w-3 text-gray-500 transition-transform duration-150 ${settingsOpen ? 'rotate-180' : ''}`}
+                    className={`h-3 w-3 text-gray-400 transition-transform duration-150 ${settingsOpen ? 'rotate-180' : ''}`}
                     viewBox="0 0 12 12"
                     fill="none"
                   >
@@ -108,62 +108,72 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
                 </button>
 
                 {settingsOpen && (
-                  <div className="absolute right-0 mt-2 w-52 z-50 rounded-lg border border-white/10 bg-[#13131a] shadow-2xl py-1 overflow-hidden anim-scale-in text-xs">
+                  <div className="absolute right-0 mt-2 w-56 z-50 rounded-2xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] shadow-2xl p-1.5 overflow-hidden anim-scale-in text-xs">
                     <Link
                       to="/admin/analytics"
                       onClick={() => setSettingsOpen(false)}
-                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                      className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-surface-hover)] transition-colors"
                     >
-                      <span>📈</span>
-                      <span>Analytics</span>
+                      <svg className="w-4 h-4 text-[#00C2BB]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                      </svg>
+                      <span className="font-medium">Analytics &amp; Math</span>
                     </Link>
+
                     <Link
                       to="/admin/audit"
                       onClick={() => setSettingsOpen(false)}
-                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                      className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-surface-hover)] transition-colors"
                     >
-                      <span>📋</span>
-                      <span>Audit</span>
+                      <svg className="w-4 h-4 text-[#645DF6]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                      </svg>
+                      <span className="font-medium">Audit Trail</span>
                     </Link>
+
                     <Link
                       to="/admin/assumptions"
                       onClick={() => setSettingsOpen(false)}
-                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                      className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-surface-hover)] transition-colors"
                     >
-                      <span>⚙️</span>
-                      <span>Assumptions</span>
+                      <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      </svg>
+                      <span className="font-medium">Pricing Assumptions</span>
                     </Link>
+
                     <Link
                       to="/admin/report-settings"
                       onClick={() => setSettingsOpen(false)}
-                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                      className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-surface-hover)] transition-colors"
                     >
-                      <span>📑</span>
-                      <span>Report Settings</span>
+                      <svg className="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      <span className="font-medium">Report Configuration</span>
                     </Link>
+
                     <Link
-                      to="/admin/notifications?tab=integrations"
+                      to="/settings/notifications"
                       onClick={() => setSettingsOpen(false)}
-                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                      className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-surface-hover)] transition-colors"
                     >
-                      <span>🔔</span>
-                      <span>Notifications &amp; Delivery</span>
+                      <svg className="w-4 h-4 text-sky-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                      </svg>
+                      <span className="font-medium">Delivery Channels</span>
                     </Link>
+
                     <Link
-                      to="/admin/tickets"
+                      to="/tickets"
                       onClick={() => setSettingsOpen(false)}
-                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                      className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-surface-hover)] transition-colors"
                     >
-                      <span>🎫</span>
-                      <span>Support Tickets</span>
-                    </Link>
-                    <Link
-                      to="/admin?tab=shares"
-                      onClick={() => setSettingsOpen(false)}
-                      className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
-                    >
-                      <span>🔗</span>
-                      <span>Shares</span>
+                      <svg className="w-4 h-4 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
+                      </svg>
+                      <span className="font-medium">Support Tickets</span>
                     </Link>
                   </div>
                 )}
@@ -176,7 +186,7 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
         <div className="sm:hidden flex items-center gap-2 text-xs" ref={mobileRef}>
           <button
             onClick={() => setMobileMenuOpen(v => !v)}
-            className="p-1.5 rounded-lg border border-white/10 text-gray-300 hover:text-white hover:bg-white/5 cursor-pointer"
+            className="p-2 rounded-xl border border-[var(--fcp-border-subtle)] text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-surface-hover)] cursor-pointer"
             aria-label="Toggle Navigation Menu"
             aria-expanded={mobileMenuOpen}
           >
@@ -190,44 +200,38 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
           </button>
 
           {mobileMenuOpen && (
-            <div className="absolute top-full left-0 right-0 bg-[#13131a] border-b border-white/10 p-4 shadow-2xl flex flex-col gap-2 anim-slide-down">
-              <Link to="/" onClick={() => setMobileMenuOpen(false)} className="text-gray-300 hover:text-white py-1">
+            <div className="absolute top-full left-0 right-0 bg-[var(--fcp-bg-surface)] border-b border-[var(--fcp-border-subtle)] p-4 shadow-2xl flex flex-col gap-2 anim-slide-down">
+              <Link to="/" onClick={() => setMobileMenuOpen(false)} className="text-[var(--fcp-text-primary)] hover:text-[#00C2BB] py-1.5 font-medium">
                 Upload New CUR
               </Link>
               {isAdmin && (
                 <>
-                  <Link to="/admin" onClick={() => setMobileMenuOpen(false)} className="text-gray-300 hover:text-white py-1 font-medium">
+                  <Link to="/admin" onClick={() => setMobileMenuOpen(false)} className="text-[var(--fcp-text-primary)] hover:text-[#00C2BB] py-1.5 font-medium">
                     All Reports
                   </Link>
-                  <Link to="/admin/users" onClick={() => setMobileMenuOpen(false)} className="text-gray-300 hover:text-white py-1">
+                  <Link to="/admin/users" onClick={() => setMobileMenuOpen(false)} className="text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)] py-1.5">
                     Users
                   </Link>
-                  <Link to="/admin/health" onClick={() => setMobileMenuOpen(false)} className="text-gray-300 hover:text-white py-1">
+                  <Link to="/admin/health" onClick={() => setMobileMenuOpen(false)} className="text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)] py-1.5">
                     System Health
                   </Link>
-                  <div className="pt-2 border-t border-white/10">
-                    <p className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">Settings &amp; Tools</p>
-                    <Link to="/admin/analytics" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
-                      Analytics
+                  <div className="pt-2 border-t border-[var(--fcp-border-subtle)] space-y-1">
+                    <p className="text-[10px] uppercase font-bold tracking-wider text-[var(--fcp-text-tertiary)] mb-1">Settings &amp; Tools</p>
+                    <Link to="/profile" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)]">
+                      User Profile
                     </Link>
-                    <Link to="/admin/audit" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
-                      Audit
+                    <Link to="/profile/tokens" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)]">
+                      API Tokens
                     </Link>
-                    <Link to="/admin/assumptions" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
-                      Assumptions
+                    <Link to="/settings/notifications" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)]">
+                      Delivery &amp; Notifications
                     </Link>
-                    <Link to="/admin/report-settings" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
+                    <Link to="/admin/report-settings" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)]">
                       Report Settings
-                    </Link>
-                    <Link to="/admin/tickets" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
-                      Support Tickets
-                    </Link>
-                    <Link to="/admin?tab=shares" onClick={() => setMobileMenuOpen(false)} className="block py-1 text-gray-300 hover:text-white">
-                      Shares
                     </Link>
                   </div>
                 </>
-              )} 
+              )}
             </div>
           )}
         </div>
@@ -238,12 +242,15 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
   )
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   UserMenu: Professional, Industry-Grade Dropdown (Zero Cheap Emojis)
+   ───────────────────────────────────────────────────────────────────────────── */
+
 export function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const initial = (user.name || user.email || '?').trim().charAt(0).toUpperCase()
-  const { theme } = useTheme()
-  const isDark = theme === 'dark'
+  const isAdmin = Boolean(user?.is_admin)
 
   useEffect(() => {
     if (!open) return
@@ -264,137 +271,207 @@ export function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
     <div className="relative" ref={menuRef}>
       <button
         onClick={() => setOpen(v => !v)}
-        className={`flex items-center gap-2 rounded-full p-0.5 pr-2 transition-colors duration-150 cursor-pointer ${
-          isDark ? 'hover:bg-white/5' : 'hover:bg-gray-100'
-        }`}
+        className="flex items-center gap-2.5 rounded-full p-1 pr-3 transition-all duration-150 cursor-pointer border border-transparent hover:border-[var(--fcp-border-subtle)] hover:bg-[var(--fcp-bg-surface-hover)] focus:outline-none focus:ring-2 focus:ring-[#00C2BB]/20"
         aria-haspopup="true"
         aria-expanded={open}
       >
-        {user.picture ? (
-          <img
-            src={user.picture}
-            alt=""
-            referrerPolicy="no-referrer"
-            className="h-8 w-8 rounded-full object-cover"
-          />
-        ) : (
-          <span className="h-8 w-8 rounded-full bg-[#645DF6] text-white text-sm font-semibold flex items-center justify-center">
-            {initial}
-          </span>
-        )}
-        <span className={`hidden sm:inline text-sm max-w-[160px] truncate font-semibold ${
-          isDark ? 'text-gray-100' : 'text-slate-900'
-        }`}>
+        <div className="relative shrink-0">
+          {user.picture ? (
+            <img
+              src={user.picture}
+              alt=""
+              referrerPolicy="no-referrer"
+              className="h-8 w-8 rounded-full object-cover border border-white/20"
+            />
+          ) : (
+            <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-[#645DF6] to-[#00C2BB] text-white text-xs font-bold flex items-center justify-center shadow-sm">
+              {initial}
+            </div>
+          )}
+          <span className="absolute bottom-0 right-0 h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-[var(--fcp-bg-base)]" />
+        </div>
+
+        <span className="hidden sm:inline text-sm max-w-[150px] truncate font-medium text-[var(--fcp-text-primary)]">
           {user.name || user.email}
         </span>
-        <svg className={`hidden sm:block h-3 w-3 ${isDark ? 'text-gray-400' : 'text-slate-600'} transition-transform duration-150 ${open ? 'rotate-180' : ''}`} viewBox="0 0 12 12" fill="none">
+
+        <svg
+          className={`hidden sm:block h-3.5 w-3.5 text-[var(--fcp-text-tertiary)] transition-transform duration-200 ${
+            open ? 'rotate-180' : ''
+          }`}
+          viewBox="0 0 12 12"
+          fill="none"
+        >
           <path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
 
       {open && (
-        <div className={`absolute right-0 mt-2 w-72 z-50 rounded-2xl border shadow-2xl overflow-hidden anim-scale-in transition-colors duration-150 ${
-          isDark
-            ? 'border-white/10 bg-[#13131a] text-white'
-            : 'border-slate-200 bg-white text-slate-900 shadow-xl'
-        }`}>
-          <div className={`px-4 py-3 border-b ${isDark ? 'border-white/10' : 'border-slate-100'}`}>
-            <p className={`text-sm font-bold truncate ${isDark ? 'text-white' : 'text-slate-900'}`}>{user.name || 'Signed in'}</p>
-            <p className={`text-xs truncate ${isDark ? 'text-gray-400' : 'text-slate-600'}`}>{user.email}</p>
-            {user.is_facets_employee && (
-              <span className="inline-block mt-1.5 px-2 py-0.5 text-[10px] uppercase font-semibold tracking-wider bg-[#00C2BB]/15 text-[#00C2BB] border border-[#00C2BB]/30 rounded">
-                Facets Team Admin
-              </span>
-            )}
-          </div>
-
-          {/* 1. Profile first */}
-          <div className={`py-1 border-b ${isDark ? 'border-white/10' : 'border-gray-100'}`}>
-            <Link
-              to="/settings"
-              onClick={() => setOpen(false)}
-              className={`w-full text-left px-4 py-2 text-xs transition-colors flex items-center justify-between ${
-                isDark ? 'text-gray-300 hover:bg-white/5 hover:text-white' : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <span>👤</span>
-                <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>Profile &amp; Settings</span>
-              </span>
-              <span className={`text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>Edit</span>
-            </Link>
-          </div>
-
-          {/* 2. Notifications (Slack & Email) */}
-          <div className={`py-1 border-b ${isDark ? 'border-white/10' : 'border-gray-100'}`}>
-            <Link
-              to="/settings?tab=notifications"
-              onClick={() => setOpen(false)}
-              className={`w-full text-left px-4 py-2 text-xs transition-colors flex items-center justify-between ${
-                isDark ? 'text-gray-300 hover:bg-white/5 hover:text-white' : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <span>🔔</span>
-                <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>Notifications (Slack &amp; Email)</span>
-              </span>
-              <span className="text-[10px] text-[#00C2BB]">Manage</span>
-            </Link>
-          </div>
-
-          {/* API Tokens */}
-          <div className={`py-2.5 px-4 border-b space-y-1.5 ${isDark ? 'border-white/10' : 'border-gray-100'}`}>
-            <div className="flex items-center justify-between">
-              <span className={`text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5 ${
-                isDark ? 'text-gray-400' : 'text-gray-600'
-              }`}>
-                <span>🔑</span> API Tokens
-              </span>
+        <div className="absolute right-0 mt-2 w-72 z-50 rounded-2xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] text-[var(--fcp-text-primary)] shadow-2xl p-1.5 overflow-hidden anim-scale-in">
+          {/* User Identity Header Card */}
+          <div className="p-3 mb-1 rounded-xl bg-[var(--fcp-bg-surface-hover)]/70 border border-[var(--fcp-border-subtle)]/50">
+            <div className="flex items-center gap-3">
+              {user.picture ? (
+                <img
+                  src={user.picture}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  className="h-10 w-10 rounded-full object-cover border border-white/20 shrink-0"
+                />
+              ) : (
+                <div className="h-10 w-10 rounded-full bg-gradient-to-tr from-[#645DF6] to-[#00C2BB] text-white text-sm font-bold flex items-center justify-center shrink-0 shadow-sm">
+                  {initial}
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-bold text-[var(--fcp-text-primary)] truncate">
+                  {user.name || 'User Profile'}
+                </p>
+                <p className="text-[11px] font-mono text-[var(--fcp-text-secondary)] truncate">
+                  {user.email}
+                </p>
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  {isAdmin ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-[#645DF6]/15 text-[#645DF6] dark:text-[#a5a0ff] border border-[#645DF6]/30">
+                      <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                      </svg>
+                      Admin
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold text-[var(--fcp-text-tertiary)] bg-gray-500/10 border border-gray-500/20">
+                      Member
+                    </span>
+                  )}
+                  {user.is_facets_employee && (
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-[#00C2BB]/15 text-[#00C2BB] border border-[#00C2BB]/30">
+                      Facets Team
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
-            <p className={`text-[10px] leading-tight ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>
-              Personal access tokens authenticate REST API calls (e.g.{' '}
-              <code className="font-mono">GET /api/jobs</code>). Manage them on
-              the API Tokens page.
-            </p>
+          </div>
+
+          {/* Section: Account & Core Configuration */}
+          <div className="space-y-0.5 py-1">
+            <Link
+              to="/profile"
+              onClick={() => setOpen(false)}
+              className="flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-surface-hover)] transition-colors group"
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-[var(--fcp-bg-surface-hover)] border border-[var(--fcp-border-subtle)] text-[#00C2BB] flex items-center justify-center group-hover:scale-105 transition-transform">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                </div>
+                <div>
+                  <span className="font-semibold block text-[var(--fcp-text-primary)]">User Profile</span>
+                  <span className="text-[10px] text-[var(--fcp-text-tertiary)] block">Name, organization &amp; preferences</span>
+                </div>
+              </div>
+              <svg className="w-3.5 h-3.5 text-[var(--fcp-text-tertiary)] group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </Link>
+
+            <Link
+              to="/settings/notifications"
+              onClick={() => setOpen(false)}
+              className="flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-surface-hover)] transition-colors group"
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-[var(--fcp-bg-surface-hover)] border border-[var(--fcp-border-subtle)] text-[#645DF6] flex items-center justify-center group-hover:scale-105 transition-transform">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                  </svg>
+                </div>
+                <div>
+                  <span className="font-semibold block text-[var(--fcp-text-primary)]">Notifications &amp; Delivery</span>
+                  <span className="text-[10px] text-[var(--fcp-text-tertiary)] block">Email &amp; Slack alert channels</span>
+                </div>
+              </div>
+              <svg className="w-3.5 h-3.5 text-[var(--fcp-text-tertiary)] group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </Link>
+
             <Link
               to="/profile/tokens"
               onClick={() => setOpen(false)}
-              className={`w-full text-left px-4 py-2 text-xs text-[#00C2BB] transition-colors flex items-center justify-between rounded ${
-                isDark ? 'hover:bg-white/5 hover:text-white' : 'hover:bg-gray-50 hover:text-gray-900'
-              }`}
+              className="flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-surface-hover)] transition-colors group"
             >
-              <span>Manage API Tokens →</span>
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-[var(--fcp-bg-surface-hover)] border border-[var(--fcp-border-subtle)] text-emerald-500 flex items-center justify-center group-hover:scale-105 transition-transform">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                  </svg>
+                </div>
+                <div>
+                  <span className="font-semibold block text-[var(--fcp-text-primary)]">API Tokens</span>
+                  <span className="text-[10px] text-[var(--fcp-text-tertiary)] block">REST API &amp; MCP access keys</span>
+                </div>
+              </div>
+              <svg className="w-3.5 h-3.5 text-[var(--fcp-text-tertiary)] group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
             </Link>
           </div>
 
-          {/* 3. Currency Preferences Route Link */}
+          {/* Section: Admin Operations (if admin) */}
+          {isAdmin && (
+            <div className="pt-2 mt-1 border-t border-[var(--fcp-border-subtle)] space-y-0.5">
+              <div className="px-3 py-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--fcp-text-tertiary)]">
+                  Admin Operations
+                </span>
+              </div>
 
-          {user.is_facets_employee && (
-            <div className={`py-1 border-b text-xs ${isDark ? 'border-white/10' : 'border-gray-100'}`}>
               <Link
                 to="/admin"
                 onClick={() => setOpen(false)}
-                className={`flex items-center gap-2 px-4 py-2 transition-colors ${
-                  isDark ? 'text-gray-300 hover:bg-white/5 hover:text-white' : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-                }`}
+                className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-surface-hover)] transition-colors group"
               >
-                <span>📊</span>
-                <span>All Reports (Admin)</span>
+                <div className="w-7 h-7 rounded-lg bg-[var(--fcp-bg-surface-hover)] border border-[var(--fcp-border-subtle)] text-[#00C2BB] flex items-center justify-center group-hover:scale-105 transition-transform">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                  </svg>
+                </div>
+                <span className="font-semibold text-[var(--fcp-text-primary)]">All Projections</span>
+              </Link>
+
+              <Link
+                to="/admin/health"
+                onClick={() => setOpen(false)}
+                className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-[var(--fcp-text-primary)] hover:bg-[var(--fcp-bg-surface-hover)] transition-colors group"
+              >
+                <div className="w-7 h-7 rounded-lg bg-[var(--fcp-bg-surface-hover)] border border-[var(--fcp-border-subtle)] text-emerald-500 flex items-center justify-center group-hover:scale-105 transition-transform">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                </div>
+                <span className="font-semibold text-[var(--fcp-text-primary)]">System Health Console</span>
               </Link>
             </div>
           )}
 
-          {/* Sign out */}
-          <div className="py-1">
+          {/* Section: Sign Out */}
+          <div className="pt-2 mt-1 border-t border-[var(--fcp-border-subtle)]">
             <button
               onClick={async () => {
                 setOpen(false)
                 await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
                 window.location.replace('/login')
               }}
-              className="w-full text-left px-4 py-2 text-xs text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
             >
-              Sign Out
+              <div className="w-7 h-7 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-500 flex items-center justify-center">
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
+              </div>
+              <span className="font-semibold">Sign Out</span>
             </button>
           </div>
         </div>

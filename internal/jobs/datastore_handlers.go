@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/facets/cur-web/internal/auth"
 	"github.com/facets/cur-web/internal/skill"
 	"github.com/go-chi/chi/v5"
 )
@@ -30,19 +29,29 @@ var editableDatastores = map[string]string{
 
 // DataStoreDetailDTO is returned for GET /api/admin/datastores/{key}
 type DataStoreDetailDTO struct {
-	Key          string      `json:"key"`
-	File         string      `json:"file"`
-	Editable     bool        `json:"editable"`
-	IsDBBacked   bool        `json:"is_db_backed"`
-	ManageURL    string      `json:"manage_url,omitempty"`
-	SizeBytes    int64       `json:"size_bytes"`
-	AgeDays      int         `json:"age_days"`
-	Status       string      `json:"status"`
-	Detail       string      `json:"detail"`
-	Count        int         `json:"count"`
-	Content      string      `json:"content,omitempty"`
-	LastBackupAt string      `json:"last_backup_at,omitempty"`
-	BackupCount  int         `json:"backup_count"`
+	Key          string `json:"key"`
+	Title        string `json:"title,omitempty"`
+	Description  string `json:"description,omitempty"`
+	File         string `json:"file"`
+	Editable     bool   `json:"editable"`
+	IsDBBacked   bool   `json:"is_db_backed"`
+	ManageURL    string `json:"manage_url,omitempty"`
+	SizeBytes    int64  `json:"size_bytes"`
+	AgeDays      int    `json:"age_days"`
+	Status       string `json:"status"`
+	Detail       string `json:"detail"`
+	Count        int    `json:"count"`
+	Content      string `json:"content,omitempty"`
+	LastBackupAt string `json:"last_backup_at,omitempty"`
+	BackupCount  int    `json:"backup_count"`
+}
+
+// BackupInfo describes a single datastore backup.
+type BackupInfo struct {
+	Name      string `json:"name"`
+	CreatedAt string `json:"created_at"`
+	SizeBytes int64  `json:"size_bytes"`
+	Kind      string `json:"kind"` // "pre-revert" | "pre-restore" | "before-edit"
 }
 
 // pruneBackups keeps at most maxKeep backups for a given store key.
@@ -84,7 +93,6 @@ func latestBackupFor(backupDir, key string) (string, time.Time, int) {
 	if len(matches) == 0 {
 		return "", time.Time{}, 0
 	}
-	// Sort by mod time descending
 	sort.Slice(matches, func(i, j int) bool {
 		iInfo, _ := matches[i].Info()
 		jInfo, _ := matches[j].Info()
@@ -104,20 +112,14 @@ func latestBackupFor(backupDir, key string) (string, time.Time, int) {
 
 // AdminListDataStores returns all managed file-backed and DB-backed datastores.
 func (h *Handler) AdminListDataStores(w http.ResponseWriter, r *http.Request) {
-	sess := auth.SessionFromCtx(r.Context())
+	sess := h.adminOnly(w, r)
 	if sess == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-	if !sess.IsAdmin(h.adminEmails) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
 
 	skillDir := skill.ResolveDir()
 	stores, dataStatus := CheckDataStores(skillDir)
 
-	// Enrich with DB-backed config summaries
 	var allStores []StoreHealth
 	allStores = append(allStores, stores...)
 
@@ -128,6 +130,8 @@ func (h *Handler) AdminListDataStores(w http.ResponseWriter, r *http.Request) {
 	}
 	allStores = append(allStores, StoreHealth{
 		Key:        "db_assumptions",
+		Title:      "Pricing Assumptions",
+		Description: "Baseline sizing overrides stored in SQLite.",
 		File:       "SQLite: assumptions",
 		Status:     "ok",
 		Detail:     fmt.Sprintf("%d active baseline assumption entries", assumpCount),
@@ -144,6 +148,8 @@ func (h *Handler) AdminListDataStores(w http.ResponseWriter, r *http.Request) {
 	}
 	allStores = append(allStores, StoreHealth{
 		Key:        "db_report_settings",
+		Title:      "Report & Quota Settings",
+		Description: "Engine defaults and concurrent job limits stored in SQLite.",
 		File:       "SQLite: report_settings",
 		Status:     "ok",
 		Detail:     fmt.Sprintf("%d system & quota parameters", reportSettingsCount),
@@ -156,6 +162,8 @@ func (h *Handler) AdminListDataStores(w http.ResponseWriter, r *http.Request) {
 	// 3. Integrations (DB-backed)
 	allStores = append(allStores, StoreHealth{
 		Key:        "db_integrations",
+		Title:      "Notification Integrations",
+		Description: "Email and Slack channels stored in SQLite.",
 		File:       "SQLite: integration_settings",
 		Status:     "ok",
 		Detail:     "Outbound notification channels (Email & Slack)",
@@ -165,22 +173,16 @@ func (h *Handler) AdminListDataStores(w http.ResponseWriter, r *http.Request) {
 		ManageURL:  "/admin/integrations",
 	})
 
-	w.Header().Set(contentTypeHeader, contentTypeJSON)
-	json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, map[string]any{
 		"stores":      allStores,
 		"data_status": dataStatus,
 	})
 }
 
-// AdminGetDataStore retrieves the content and metadata of a specific datastore.
+// AdminGetDataStore retrieves the raw byte content and metadata of a specific datastore.
 func (h *Handler) AdminGetDataStore(w http.ResponseWriter, r *http.Request) {
-	sess := auth.SessionFromCtx(r.Context())
+	sess := h.adminOnly(w, r)
 	if sess == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-	if !sess.IsAdmin(h.adminEmails) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
 
@@ -196,16 +198,17 @@ func (h *Handler) AdminGetDataStore(w http.ResponseWriter, r *http.Request) {
 		if assump, err := h.db.GetAssumptions(); err == nil {
 			count = len(assump)
 		}
-		w.Header().Set(contentTypeHeader, contentTypeJSON)
-		json.NewEncoder(w).Encode(DataStoreDetailDTO{
-			Key:        key,
-			File:       "SQLite: assumptions",
-			Editable:   false,
-			IsDBBacked: true,
-			ManageURL:  "/admin/assumptions",
-			Status:     "ok",
-			Detail:     "DB-backed assumptions table",
-			Count:      count,
+		writeJSON(w, DataStoreDetailDTO{
+			Key:         key,
+			Title:       "Pricing Assumptions",
+			Description: "Baseline sizing overrides stored in SQLite.",
+			File:        "SQLite: assumptions",
+			Editable:    false,
+			IsDBBacked:  true,
+			ManageURL:   "/admin/assumptions",
+			Status:      "ok",
+			Detail:      "DB-backed assumptions table",
+			Count:       count,
 		})
 		return
 	case "db_report_settings":
@@ -213,29 +216,31 @@ func (h *Handler) AdminGetDataStore(w http.ResponseWriter, r *http.Request) {
 		if settings, err := h.db.GetReportSettings(); err == nil {
 			count = len(settings)
 		}
-		w.Header().Set(contentTypeHeader, contentTypeJSON)
-		json.NewEncoder(w).Encode(DataStoreDetailDTO{
-			Key:        key,
-			File:       "SQLite: report_settings",
-			Editable:   false,
-			IsDBBacked: true,
-			ManageURL:  "/admin/report-settings",
-			Status:     "ok",
-			Detail:     "DB-backed report and quota settings",
-			Count:      count,
+		writeJSON(w, DataStoreDetailDTO{
+			Key:         key,
+			Title:       "Report & Quota Settings",
+			Description: "Engine defaults and concurrent job limits stored in SQLite.",
+			File:        "SQLite: report_settings",
+			Editable:    false,
+			IsDBBacked:  true,
+			ManageURL:   "/admin/report-settings",
+			Status:      "ok",
+			Detail:      "DB-backed report and quota settings",
+			Count:       count,
 		})
 		return
 	case "db_integrations":
-		w.Header().Set(contentTypeHeader, contentTypeJSON)
-		json.NewEncoder(w).Encode(DataStoreDetailDTO{
-			Key:        key,
-			File:       "SQLite: integration_settings",
-			Editable:   false,
-			IsDBBacked: true,
-			ManageURL:  "/admin/integrations",
-			Status:     "ok",
-			Detail:     "DB-backed integration settings",
-			Count:      2,
+		writeJSON(w, DataStoreDetailDTO{
+			Key:         key,
+			Title:       "Notification Integrations",
+			Description: "Email and Slack channels stored in SQLite.",
+			File:        "SQLite: integration_settings",
+			Editable:    false,
+			IsDBBacked:  true,
+			ManageURL:   "/admin/integrations",
+			Status:      "ok",
+			Detail:      "DB-backed integration settings",
+			Count:       2,
 		})
 		return
 	case "catalog_artifact":
@@ -244,82 +249,74 @@ func (h *Handler) AdminGetDataStore(w http.ResponseWriter, r *http.Request) {
 		if info != nil {
 			size = info.Size()
 		}
-		w.Header().Set(contentTypeHeader, contentTypeJSON)
-		json.NewEncoder(w).Encode(DataStoreDetailDTO{
-			Key:       key,
-			File:      "catalog.duckdb",
-			Editable:  false,
-			SizeBytes: size,
-			Status:    "ok",
-			Detail:    "Binary DuckDB catalog artifact; managed via catalog refresh",
+		writeJSON(w, DataStoreDetailDTO{
+			Key:         key,
+			Title:       storeManifest["catalog_artifact"].Title,
+			Description: storeManifest["catalog_artifact"].Description,
+			File:        "catalog.duckdb",
+			Editable:    false,
+			SizeBytes:   size,
+			Status:      "ok",
+			Detail:      "Binary DuckDB catalog artifact; managed via catalog refresh",
 		})
 		return
 	case "catalog_source":
-		w.Header().Set(contentTypeHeader, contentTypeJSON)
-		json.NewEncoder(w).Encode(DataStoreDetailDTO{
-			Key:      key,
-			File:     "skus/*.json.gz",
-			Editable: false,
-			Status:   "ok",
-			Detail:   "Compressed SKU archives; managed via catalog refresh",
+		writeJSON(w, DataStoreDetailDTO{
+			Key:         key,
+			Title:       storeManifest["catalog_source"].Title,
+			Description: storeManifest["catalog_source"].Description,
+			File:        "skus/*.json.gz",
+			Editable:    false,
+			Status:      "ok",
+			Detail:      "Compressed SKU archives; managed via catalog refresh",
 		})
 		return
 	}
 
 	fileName, ok := editableDatastores[key]
 	if !ok {
-		http.Error(w, `{"error":"unrecognized datastore key"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "Unknown datastore file.")
 		return
 	}
 
 	fullPath := filepath.Clean(filepath.Join(dataDir, fileName))
 	cleanDataDir := filepath.Clean(dataDir)
 	if !strings.HasPrefix(fullPath, cleanDataDir+string(filepath.Separator)) {
-		http.Error(w, `{"error":"path traversal rejected"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Path traversal rejected.")
 		return
 	}
 
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			http.Error(w, `{"error":"datastore file does not exist"}`, http.StatusNotFound)
+			writeJSONError(w, http.StatusNotFound, "Datastore file does not exist.")
 			return
 		}
-		http.Error(w, `{"error":"failed to stat datastore file: `+jsonEscape(err.Error())+`"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "Couldn't read file info: "+err.Error())
 		return
 	}
 
 	if info.Size() > 2*1024*1024 {
-		http.Error(w, `{"error":"file exceeds 2MB viewing limit"}`, http.StatusRequestEntityTooLarge)
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "File exceeds 2MB viewing limit.")
 		return
 	}
 
 	contentBytes, err := os.ReadFile(fullPath)
 	if err != nil {
-		http.Error(w, `{"error":"failed to read datastore file: `+jsonEscape(err.Error())+`"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "Couldn't read the datastore file.")
 		return
 	}
 
-	// Format pretty JSON if valid
-	var parsed any
-	var formattedContent string
-	if err := json.Unmarshal(contentBytes, &parsed); err == nil {
-		if pretty, err := json.MarshalIndent(parsed, "", "  "); err == nil {
-			formattedContent = string(pretty)
-		} else {
-			formattedContent = string(contentBytes)
-		}
-	} else {
-		formattedContent = string(contentBytes)
-	}
-
-	// Item count
+	// Count items with a separate unmarshal only
 	count := 0
-	switch v := parsed.(type) {
-	case map[string]any:
-		count = len(v)
-	case []any:
-		count = len(v)
+	var parsed any
+	if json.Unmarshal(contentBytes, &parsed) == nil {
+		switch v := parsed.(type) {
+		case map[string]any:
+			count = len(v)
+		case []any:
+			count = len(v)
+		}
 	}
 
 	// Backup metadata
@@ -331,9 +328,13 @@ func (h *Handler) AdminGetDataStore(w http.ResponseWriter, r *http.Request) {
 
 	ageDays := int(time.Since(info.ModTime()).Hours() / 24)
 
-	w.Header().Set(contentTypeHeader, contentTypeJSON)
-	json.NewEncoder(w).Encode(DataStoreDetailDTO{
+	title := storeManifest[key].Title
+	description := storeManifest[key].Description
+
+	writeJSON(w, DataStoreDetailDTO{
 		Key:          key,
+		Title:        title,
+		Description:  description,
 		File:         fileName,
 		Editable:     true,
 		SizeBytes:    info.Size(),
@@ -341,34 +342,78 @@ func (h *Handler) AdminGetDataStore(w http.ResponseWriter, r *http.Request) {
 		Status:       "ok",
 		Detail:       fmt.Sprintf("valid (%d items)", count),
 		Count:        count,
-		Content:      formattedContent,
+		Content:      string(contentBytes),
 		LastBackupAt: lastBackupAt,
 		BackupCount:  backupCount,
 	})
 }
 
-// AdminPutDataStore updates the content of an editable datastore with guardrails.
-func (h *Handler) AdminPutDataStore(w http.ResponseWriter, r *http.Request) {
-	sess := auth.SessionFromCtx(r.Context())
-	if sess == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
+// unwrapContent accepts either the raw file, or {"content": "<raw file>"}
+// (what the frontend sends). Only an object with exactly one key "content"
+// holding a JSON string is treated as the wrapper.
+func unwrapContent(body []byte) []byte {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) == nil && len(m) == 1 {
+		if c, ok := m["content"]; ok {
+			var s string
+			if json.Unmarshal(c, &s) == nil {
+				return []byte(s)
+			}
+		}
 	}
-	if !sess.IsAdmin(h.adminEmails) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+	return body
+}
+
+// validateStoreJSON checks syntax (with line/column on error) and the
+// top-level shape. It never re-encodes, so key order and formatting survive.
+func validateStoreJSON(key string, raw []byte) error {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		if se, ok := err.(*json.SyntaxError); ok {
+			line, col := lineCol(raw, se.Offset)
+			return fmt.Errorf("This isn't valid JSON — %s (line %d, column %d).", se.Error(), line, col)
+		}
+		return fmt.Errorf("This isn't valid JSON — %s.", err.Error())
+	}
+	switch key {
+	case "service_map", "review_config", "fx_rates", "service_specs", "assumption_defaults", "pricing_matrix", "refresh_store":
+		if _, ok := v.(map[string]any); !ok {
+			return fmt.Errorf("The file must be a JSON object ({ … }) at the top level.")
+		}
+	}
+	return nil
+}
+
+func lineCol(b []byte, off int64) (int, int) {
+	line, col := 1, 1
+	for i := int64(0); i < off && i < int64(len(b)); i++ {
+		if b[i] == '\n' {
+			line++
+			col = 1
+		} else {
+			col++
+		}
+	}
+	return line, col
+}
+
+// AdminPutDataStore updates the content of an editable datastore preserving raw formatting.
+func (h *Handler) AdminPutDataStore(w http.ResponseWriter, r *http.Request) {
+	sess := h.adminOnly(w, r)
+	if sess == nil {
 		return
 	}
 
 	key := chi.URLParam(r, "key")
 	fileName, ok := editableDatastores[key]
 	if !ok {
-		http.Error(w, `{"error":"datastore is read-only or unrecognized"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "This file is read-only here.")
 		return
 	}
 
 	skillDir := skill.ResolveDir()
 	if isImageBaked(skillDir) {
-		http.Error(w, `{"error":"skill data is baked into container image layer; runtime modifications cannot persist across redeploys"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Skill data is baked into container image layer; runtime modifications cannot persist across redeploys.")
 		return
 	}
 
@@ -376,64 +421,33 @@ func (h *Handler) AdminPutDataStore(w http.ResponseWriter, r *http.Request) {
 	cleanDataDir := filepath.Clean(dataDir)
 	fullPath := filepath.Clean(filepath.Join(dataDir, fileName))
 	if !strings.HasPrefix(fullPath, cleanDataDir+string(filepath.Separator)) {
-		http.Error(w, `{"error":"path traversal rejected"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Path traversal rejected.")
 		return
 	}
 
 	// 1. Read request body (cap at 2MB)
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 2*1024*1024))
 	if err != nil {
-		http.Error(w, `{"error":"failed to read body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Failed to read request body.")
 		return
 	}
 
-	// If body was wrapped in JSON struct e.g. {"content": "..."}
-	var wrapper struct {
-		Content string `json:"content"`
-	}
-	rawJSON := bodyBytes
-	if err := json.Unmarshal(bodyBytes, &wrapper); err == nil && wrapper.Content != "" {
-		rawJSON = []byte(wrapper.Content)
-	}
-
-	// 2. Validate JSON structure & light schema check
-	var parsed any
-	if err := json.Unmarshal(rawJSON, &parsed); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"invalid JSON: %s"}`, jsonEscape(err.Error())), http.StatusBadRequest)
+	raw := unwrapContent(bodyBytes)
+	if err := validateStoreJSON(key, raw); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	// Light schema/sanity checks
-	switch key {
-	case "service_map", "review_config", "fx_rates":
-		if _, ok := parsed.(map[string]any); !ok {
-			http.Error(w, fmt.Sprintf(`{"error":"%s must be a top-level JSON object"}`, fileName), http.StatusBadRequest)
-			return
-		}
-	case "pricing_matrix", "service_specs", "assumption_defaults":
-		if _, isMap := parsed.(map[string]any); !isMap {
-			if _, isSlice := parsed.([]any); !isSlice {
-				http.Error(w, fmt.Sprintf(`{"error":"%s must be a JSON object or array"}`, fileName), http.StatusBadRequest)
-				return
-			}
-		}
+	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+		raw = append(raw, '\n')
 	}
 
-	formattedJSON, err := json.MarshalIndent(parsed, "", "  ")
-	if err != nil {
-		http.Error(w, `{"error":"failed to serialize JSON"}`, http.StatusInternalServerError)
-		return
-	}
-	formattedJSON = append(formattedJSON, '\n')
-
-	// 3. Backup current file
+	// 2. Backup current file
 	backupDir := filepath.Join(dataDir, "_backups")
 	_ = os.MkdirAll(backupDir, 0755)
 
 	var oldSize int64
 	if currentData, err := os.ReadFile(fullPath); err == nil {
 		oldSize = int64(len(currentData))
-		// Format timestamp with hyphens to be legal across both Windows and Unix
 		ts := time.Now().UTC().Format("2006-01-02T15-04-05Z07-00")
 		backupPath := filepath.Join(backupDir, fmt.Sprintf("%s.%s.json", key, ts))
 		if bErr := os.WriteFile(backupPath, currentData, 0644); bErr != nil {
@@ -443,37 +457,17 @@ func (h *Handler) AdminPutDataStore(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. Atomic write via temp file + rename (Windows safe)
-	tmp, err := os.CreateTemp(dataDir, fmt.Sprintf("%s_*.tmp", key))
-	if err != nil {
-		http.Error(w, `{"error":"failed to create temp file: `+jsonEscape(err.Error())+`"}`, http.StatusInternalServerError)
+	// 3. Atomic write of raw bytes
+	if err := atomicWriteFile(fullPath, raw); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to save datastore file: "+err.Error())
 		return
 	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(formattedJSON); err != nil {
-		tmp.Close()
-		_ = os.Remove(tmpName)
-		http.Error(w, `{"error":"failed to write temp file"}`, http.StatusInternalServerError)
-		return
-	}
-	_ = tmp.Close()
 
-	_ = os.Remove(fullPath) // Remove existing target for Windows os.Rename compatibility
-	if err := os.Rename(tmpName, fullPath); err != nil {
-		// Fallback direct write
-		if wErr := os.WriteFile(fullPath, formattedJSON, 0644); wErr != nil {
-			_ = os.Remove(tmpName)
-			http.Error(w, `{"error":"failed to replace datastore file: `+jsonEscape(err.Error())+`"}`, http.StatusInternalServerError)
-			return
-		}
-		_ = os.Remove(tmpName)
-	}
-
-	// 5. Audit
-	sizeDelta := len(formattedJSON) - int(oldSize)
+	// 4. Audit
+	sizeDelta := len(raw) - int(oldSize)
 	_ = h.db.LogAdminAction(sess.Email, "datastore_edit", key, fmt.Sprintf("size_delta=%d bytes", sizeDelta))
 
-	// 6. Return refreshed StoreHealth
+	// 5. Return refreshed StoreHealth
 	stores, _ := CheckDataStores(skillDir)
 	var updatedStore StoreHealth
 	for _, s := range stores {
@@ -483,35 +477,165 @@ func (h *Handler) AdminPutDataStore(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set(contentTypeHeader, contentTypeJSON)
-	json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, map[string]any{
 		"message": "datastore updated successfully",
 		"store":   updatedStore,
 	})
 }
 
-// AdminRevertDataStore restores the most recent backup for an editable datastore.
-func (h *Handler) AdminRevertDataStore(w http.ResponseWriter, r *http.Request) {
-	sess := auth.SessionFromCtx(r.Context())
+// AdminListDataStoreBackups returns the version history for an editable datastore.
+func (h *Handler) AdminListDataStoreBackups(w http.ResponseWriter, r *http.Request) {
+	sess := h.adminOnly(w, r)
 	if sess == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if !sess.IsAdmin(h.adminEmails) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+
+	key := chi.URLParam(r, "key")
+	if _, ok := editableDatastores[key]; !ok {
+		writeJSONError(w, http.StatusBadRequest, "This file is read-only here.")
+		return
+	}
+
+	skillDir := skill.ResolveDir()
+	backupDir := filepath.Join(skillDir, "data", "_backups")
+	entries, err := os.ReadDir(backupDir)
+	if err != nil && !os.IsNotExist(err) {
+		writeJSONError(w, http.StatusInternalServerError, "Couldn't read backups.")
+		return
+	}
+
+	var backups []BackupInfo
+	prefix := key + "."
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), prefix) || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		kind := "before-edit"
+		if strings.Contains(e.Name(), ".pre-revert.") {
+			kind = "pre-revert"
+		} else if strings.Contains(e.Name(), ".pre-restore.") {
+			kind = "pre-restore"
+		}
+		backups = append(backups, BackupInfo{
+			Name:      e.Name(),
+			CreatedAt: info.ModTime().UTC().Format(time.RFC3339),
+			SizeBytes: info.Size(),
+			Kind:      kind,
+		})
+	}
+	if backups == nil {
+		backups = []BackupInfo{}
+	}
+
+	sort.Slice(backups, func(i, j int) bool {
+		return backups[i].CreatedAt > backups[j].CreatedAt
+	})
+
+	writeJSON(w, map[string]any{
+		"backups": backups,
+	})
+}
+
+// AdminRestoreDataStoreBackup restores a named backup file for an editable datastore.
+func (h *Handler) AdminRestoreDataStoreBackup(w http.ResponseWriter, r *http.Request) {
+	sess := h.adminOnly(w, r)
+	if sess == nil {
 		return
 	}
 
 	key := chi.URLParam(r, "key")
 	fileName, ok := editableDatastores[key]
 	if !ok {
-		http.Error(w, `{"error":"datastore is read-only or unrecognized"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "This file is read-only here.")
 		return
 	}
 
 	skillDir := skill.ResolveDir()
 	if isImageBaked(skillDir) {
-		http.Error(w, `{"error":"skill data is baked into container image layer; runtime modifications cannot persist across redeploys"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Skill data is baked into container image layer; runtime modifications cannot persist across redeploys.")
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body.")
+		return
+	}
+
+	if filepath.Base(req.Name) != req.Name || !strings.HasPrefix(req.Name, key+".") || !strings.HasSuffix(req.Name, ".json") {
+		writeJSONError(w, http.StatusBadRequest, "That backup doesn't exist.")
+		return
+	}
+
+	dataDir := filepath.Join(skillDir, "data")
+	backupDir := filepath.Join(dataDir, "_backups")
+	backupPath := filepath.Join(backupDir, req.Name)
+
+	backupData, err := os.ReadFile(backupPath)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "That backup doesn't exist.")
+		return
+	}
+
+	if err := validateStoreJSON(key, backupData); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Backup contains invalid JSON: "+err.Error())
+		return
+	}
+
+	fullPath := filepath.Clean(filepath.Join(dataDir, fileName))
+
+	// Backup current file as <key>.<ts>.pre-restore.json
+	if currentData, err := os.ReadFile(fullPath); err == nil && !bytes.Equal(currentData, backupData) {
+		ts := time.Now().UTC().Format("2006-01-02T15-04-05Z07-00")
+		preRestoreBackup := filepath.Join(backupDir, fmt.Sprintf("%s.%s.pre-restore.json", key, ts))
+		_ = os.WriteFile(preRestoreBackup, currentData, 0644)
+	}
+
+	if err := atomicWriteFile(fullPath, backupData); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Couldn't restore backup: "+err.Error())
+		return
+	}
+
+	_ = h.db.LogAdminAction(sess.Email, "datastore_restore", key, req.Name)
+
+	stores, _ := CheckDataStores(skillDir)
+	var updatedStore StoreHealth
+	for _, s := range stores {
+		if s.Key == key {
+			updatedStore = s
+			break
+		}
+	}
+
+	writeJSON(w, map[string]any{
+		"message": fmt.Sprintf("Restored backup %s successfully.", req.Name),
+		"store":   updatedStore,
+	})
+}
+
+// AdminRevertDataStore restores the most recent backup for an editable datastore.
+func (h *Handler) AdminRevertDataStore(w http.ResponseWriter, r *http.Request) {
+	sess := h.adminOnly(w, r)
+	if sess == nil {
+		return
+	}
+
+	key := chi.URLParam(r, "key")
+	fileName, ok := editableDatastores[key]
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "This file is read-only here.")
+		return
+	}
+
+	skillDir := skill.ResolveDir()
+	if isImageBaked(skillDir) {
+		writeJSONError(w, http.StatusBadRequest, "Skill data is baked into container image layer; runtime modifications cannot persist across redeploys.")
 		return
 	}
 
@@ -520,51 +644,37 @@ func (h *Handler) AdminRevertDataStore(w http.ResponseWriter, r *http.Request) {
 
 	latestBackup, modTime, _ := latestBackupFor(backupDir, key)
 	if latestBackup == "" {
-		http.Error(w, `{"error":"no backups found to revert for this store"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "No backups found to revert for this store.")
 		return
 	}
 
 	backupData, err := os.ReadFile(latestBackup)
 	if err != nil {
-		http.Error(w, `{"error":"failed to read backup file: `+jsonEscape(err.Error())+`"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to read backup file.")
 		return
 	}
 
-	var parsed any
-	if err := json.Unmarshal(backupData, &parsed); err != nil {
-		http.Error(w, `{"error":"backup contains corrupt JSON"}`, http.StatusInternalServerError)
+	if err := validateStoreJSON(key, backupData); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Backup contains corrupt JSON.")
 		return
 	}
 
 	fullPath := filepath.Clean(filepath.Join(dataDir, fileName))
 
-	// Backup the current file before restoring
+	// Backup current file before reverting
 	if currentData, err := os.ReadFile(fullPath); err == nil && !bytes.Equal(currentData, backupData) {
 		ts := time.Now().UTC().Format("2006-01-02T15-04-05Z07-00")
 		preRevertBackup := filepath.Join(backupDir, fmt.Sprintf("%s.%s.pre-revert.json", key, ts))
 		_ = os.WriteFile(preRevertBackup, currentData, 0644)
 	}
 
-	// Atomic write backupData to fullPath
-	tmp, err := os.CreateTemp(dataDir, fmt.Sprintf("%s_revert_*.tmp", key))
-	if err != nil {
-		http.Error(w, `{"error":"failed to create temp file"}`, http.StatusInternalServerError)
+	if err := atomicWriteFile(fullPath, backupData); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to restore backup: "+err.Error())
 		return
 	}
-	tmpName := tmp.Name()
-	_, _ = tmp.Write(backupData)
-	_ = tmp.Close()
 
-	_ = os.Remove(fullPath)
-	if err := os.Rename(tmpName, fullPath); err != nil {
-		_ = os.WriteFile(fullPath, backupData, 0644)
-		_ = os.Remove(tmpName)
-	}
-
-	// Audit
 	_ = h.db.LogAdminAction(sess.Email, "datastore_revert", key, fmt.Sprintf("restored from %s (timestamp: %s)", filepath.Base(latestBackup), modTime.UTC().Format(time.RFC3339)))
 
-	// Return updated store
 	stores, _ := CheckDataStores(skillDir)
 	var updatedStore StoreHealth
 	for _, s := range stores {
@@ -574,8 +684,7 @@ func (h *Handler) AdminRevertDataStore(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set(contentTypeHeader, contentTypeJSON)
-	json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, map[string]any{
 		"message": fmt.Sprintf("reverted to backup from %s", modTime.UTC().Format(time.RFC3339)),
 		"store":   updatedStore,
 	})

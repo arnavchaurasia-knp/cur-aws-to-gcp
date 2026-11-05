@@ -35,20 +35,20 @@ export function Layout({ user, children }: LayoutProps) {
     <div className="min-h-screen bg-[var(--fcp-bg-base)] text-[var(--fcp-text-primary)] transition-colors duration-200">
       {/* Top Navbar */}
       <header
-        className={`fixed top-0 right-0 h-16 z-30 border-b border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-base)]/90 backdrop-blur-md transition-all duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
+        className={`fixed top-0 right-0 h-16 z-30 border-b border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-base)]/90 backdrop-blur-md transition-all duration-200 ease-in-out ${
           sidebarCollapsed ? 'left-16' : 'left-64'
         }`}
       >
-        <div className="flex items-center justify-between px-6 h-full">
+        <div className="flex items-center justify-between px-4 sm:px-6 h-full gap-4">
           {/* Left: AWS → GCP Cost Projection */}
-          <div className="flex items-center">
-            <span className="text-sm font-semibold tracking-wide">
+          <div className="flex items-center shrink-0 min-w-0">
+            <span className="text-sm font-semibold tracking-wide whitespace-nowrap">
               AWS → GCP Cost Projection
             </span>
           </div>
 
           {/* Right: Ticket Header Button + Notification Bell (admin) + Theme Toggle + User Dropdown */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             {/* Quick Support Tickets Header Button */}
             <TicketHeaderButton />
 
@@ -68,7 +68,7 @@ export function Layout({ user, children }: LayoutProps) {
       </header>
 
       {/* Main content layout with universal sidebar */}
-      <div className={`flex transition-all duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${sidebarCollapsed ? 'pl-16' : 'pl-64'}`}>
+      <div className={`flex transition-all duration-200 ease-in-out ${sidebarCollapsed ? 'pl-16' : 'pl-64'}`}>
         <Sidebar
           user={user}
           collapsed={sidebarCollapsed}

@@ -4,7 +4,6 @@ package jobs
 import (
 	"bufio"
 	"compress/gzip"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"database/sql"
@@ -597,16 +596,6 @@ func (h *Handler) AdminAuditLog(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(entries)
 }
 
-func (h *Handler) AdminAnalytics(w http.ResponseWriter, r *http.Request) {
-	stats, err := h.db.GetUsageStats()
-	if err != nil {
-		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set(contentTypeHeader, contentTypeJSON)
-	json.NewEncoder(w).Encode(stats)
-}
-
 // ─────────────────────────────────────────────────────────────────────────
 // Admin: pricing assumptions
 // ─────────────────────────────────────────────────────────────────────────
@@ -1048,11 +1037,16 @@ func (h *Handler) AdminPutIntegrations(w http.ResponseWriter, r *http.Request) {
 			changed = append(changed, "email.from")
 		}
 		if body.Email.APIKey != nil && *body.Email.APIKey != "" {
-			if err := set(keyEmailAPIKey, *body.Email.APIKey, true); err != nil {
-				writeIntegrationErr(w, err)
-				return
+			if *body.Email.APIKey == "__DELETE__" || *body.Email.APIKey == "__CLEAR__" {
+				_ = h.db.DeleteIntegrationSetting(keyEmailAPIKey)
+				changed = append(changed, "email.api_key.deleted")
+			} else {
+				if err := set(keyEmailAPIKey, *body.Email.APIKey, true); err != nil {
+					writeIntegrationErr(w, err)
+					return
+				}
+				changed = append(changed, "email.api_key")
 			}
-			changed = append(changed, "email.api_key")
 		}
 	}
 	if body.Slack != nil {
@@ -1064,11 +1058,16 @@ func (h *Handler) AdminPutIntegrations(w http.ResponseWriter, r *http.Request) {
 			changed = append(changed, "slack.enabled")
 		}
 		if body.Slack.WebhookURL != nil && *body.Slack.WebhookURL != "" {
-			if err := set(keySlackWebhook, *body.Slack.WebhookURL, true); err != nil {
-				writeIntegrationErr(w, err)
-				return
+			if *body.Slack.WebhookURL == "__DELETE__" || *body.Slack.WebhookURL == "__CLEAR__" {
+				_ = h.db.DeleteIntegrationSetting(keySlackWebhook)
+				changed = append(changed, "slack.webhook_url.deleted")
+			} else {
+				if err := set(keySlackWebhook, *body.Slack.WebhookURL, true); err != nil {
+					writeIntegrationErr(w, err)
+					return
+				}
+				changed = append(changed, "slack.webhook_url")
 			}
-			changed = append(changed, "slack.webhook_url")
 		}
 	}
 
@@ -2449,334 +2448,6 @@ func (h *Handler) AdminDeleteUploadedBill(w http.ResponseWriter, r *http.Request
 }
 
 
-// ─────────────────────────────────────────────────────────────────────────
-// System Health Handlers (Phase 3)
-// ─────────────────────────────────────────────────────────────────────────
-
-type HealthResponse struct {
-	OverallReason string         `json:"overall_reason"`
-	Engine        HealthEngine   `json:"engine"`
-	Catalog       HealthCatalog  `json:"catalog"`
-	Tokens        HealthTokens   `json:"tokens"`
-	Pipeline      HealthPipeline `json:"pipeline"`
-	Stores        []StoreHealth  `json:"stores"`
-	DataStatus    string         `json:"data_status"`
-	Env           []DepHealth    `json:"env"`
-	EnvStatus     string         `json:"env_status"`
-	Status        string         `json:"status"`
-}
-
-type HealthEngine struct {
-	ActiveEngine     string       `json:"active_engine"`
-	Version          string       `json:"version"`
-	ConcurrencyLimit int          `json:"concurrency_limit"`
-	Phases           []string     `json:"phases"`
-	Status           string       `json:"status"`
-	Probe            *EngineProbe `json:"probe,omitempty"`
-}
-
-type HealthCatalog struct {
-	TotalSKUs     int    `json:"sku_count"`
-	TotalServices int    `json:"service_count"`
-	Vintage       string `json:"vintage"`
-	AgeDays       int    `json:"age_days"`
-	Stale         bool   `json:"stale"`
-	Status        string `json:"status"`
-}
-
-type HealthTokens struct {
-	TotalJobsAnalyzed int     `json:"total_jobs_analyzed"`
-	AvgJobDurationSec float64 `json:"avg_job_duration_seconds"`
-}
-
-type HealthPipeline struct {
-	QueueDepth     int     `json:"queue_depth"`
-	RunningJobs    int     `json:"running_jobs"`
-	CompletedJobs  int     `json:"completed_jobs"`
-	FailedJobs     int     `json:"failed_jobs"`
-	FailureRatePct float64 `json:"failure_rate_pct"`
-	Halted         bool    `json:"halted"`
-	LastJobAt      string  `json:"last_job_at,omitempty"`
-	LastFailureAt  string  `json:"last_failure_at,omitempty"`
-}
-
-type catalogHealthJSON struct {
-	GeneratedAt  string `json:"generated_at"`
-	AgeDays      int    `json:"age_days"`
-	Stale        bool   `json:"stale"`
-	ArtifactOK   bool   `json:"artifact_ok"`
-	Source       struct {
-		Total    int `json:"total"`
-		OK       int `json:"ok"`
-		Problems int `json:"problems"`
-	} `json:"source"`
-	SKUCount     int    `json:"sku_count"`
-	ServiceCount int    `json:"service_count"`
-	Overall      string `json:"overall"`
-}
-
-var (
-	catHealthCacheMu sync.Mutex
-	catHealthCacheAt time.Time
-	catHealthCached  *catalogHealthJSON
-)
-
-func getCatalogHealthCheck(skillDir string) (*catalogHealthJSON, error) {
-	catHealthCacheMu.Lock()
-	if catHealthCached != nil && time.Since(catHealthCacheAt) < 60*time.Second {
-		cached := catHealthCached
-		catHealthCacheMu.Unlock()
-		return cached, nil
-	}
-	catHealthCacheMu.Unlock()
-
-	python := "python3"
-	if _, err := exec.LookPath(python); err != nil {
-		python = "python"
-	}
-
-	script := filepath.Join(skillDir, "scripts", "catalog_manager.py")
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, python, script, "check", "--json", "--skill-dir", skillDir)
-	cmd.Dir = skillDir
-	out, err := cmd.Output()
-	if err != nil && len(out) == 0 {
-		return nil, fmt.Errorf("check failed: %w", err)
-	}
-
-	var res catalogHealthJSON
-	if jsonErr := json.Unmarshal(out, &res); jsonErr != nil {
-		return nil, fmt.Errorf("unmarshal error: %w (output: %s)", jsonErr, string(out))
-	}
-
-	catHealthCacheMu.Lock()
-	catHealthCached = &res
-	catHealthCacheAt = time.Now()
-	catHealthCacheMu.Unlock()
-
-	return &res, nil
-}
-
-func (h *Handler) AdminHealthSummary(w http.ResponseWriter, r *http.Request) {
-	sess := auth.SessionFromCtx(r.Context())
-	if sess == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-	if !sess.IsAdmin(h.adminEmails) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
-		return
-	}
-
-	// 1. Engine
-	engineChoice, _, _ := h.db.GetEngineSettings()
-	if engineChoice == "" {
-		engineChoice = "gemini-3.8-flash"
-	}
-	_, maxConcurrent, _ := h.db.GetQuotaSettings()
-	if maxConcurrent <= 0 {
-		maxConcurrent = 2
-	}
-
-	// Derive probe without blocking on slow cold round-trip (cached or instant local)
-	probe := h.spawner.ProbeEngine(r.Context(), false)
-	engineVer := probe.Version
-	if engineVer == "" || engineVer == "unknown" {
-		engineVer = h.spawner.EngineVersion()
-	}
-
-	engineHealth := HealthEngine{
-		ActiveEngine:     engineChoice,
-		Version:          engineVer,
-		ConcurrencyLimit: maxConcurrent,
-		Phases: []string{
-			"1. Ingestion & Schema Normalization",
-			"2. Mechanics Classification",
-			"3. AI Mapping & Family Normalization",
-			"4. GCP Rate Application",
-			"5. Materiality & Logic Validation",
-			"6. Multi-Format Report Generation",
-		},
-		Status: probe.State,
-		Probe:  &probe,
-	}
-
-	// 2. Catalog (derived dynamically without hardcoded constants)
-	skillDir := skill.ResolveDir()
-	catStatus := GetCatalogStatus()
-
-	totalSKUs := 0
-	totalServices := 0
-	vintage := "unknown"
-	ageDays := catStatus.AgeDays
-	stale := catStatus.Stale
-	catHealthStatus := "unknown"
-
-	metaFile := filepath.Join(skillDir, "data", "CATALOG_META.json")
-	if data, err := os.ReadFile(metaFile); err == nil {
-		var meta struct {
-			FetchedAt    string `json:"fetched_at"`
-			ServiceCount int    `json:"service_count"`
-			SKUCount     int    `json:"sku_count"`
-		}
-		if json.Unmarshal(data, &meta) == nil {
-			totalSKUs = meta.SKUCount
-			totalServices = meta.ServiceCount
-			if meta.FetchedAt != "" {
-				vintage = meta.FetchedAt
-			}
-		}
-	}
-
-	// Deep source + artifact integrity from catalog_manager.py check --json
-	if checkRes, err := getCatalogHealthCheck(skillDir); err == nil && checkRes != nil {
-		if checkRes.SKUCount > 0 {
-			totalSKUs = checkRes.SKUCount
-		}
-		if checkRes.ServiceCount > 0 {
-			totalServices = checkRes.ServiceCount
-		}
-		if checkRes.AgeDays >= 0 {
-			ageDays = checkRes.AgeDays
-		}
-		stale = checkRes.Stale
-		if checkRes.Overall != "" {
-			catHealthStatus = checkRes.Overall
-		} else if stale {
-			catHealthStatus = "warn"
-		} else {
-			catHealthStatus = "ok"
-		}
-	} else {
-		catHealthStatus = "unknown"
-	}
-
-	catalogHealth := HealthCatalog{
-		TotalSKUs:     totalSKUs,
-		TotalServices: totalServices,
-		Vintage:       vintage,
-		AgeDays:       ageDays,
-		Stale:         stale,
-		Status:        catHealthStatus,
-	}
-
-	// 3. Pipeline & Real Throughput (no invented token or cost math)
-	stats, _ := h.db.GetUsageStats()
-	var totalJobs, doneJobs, failedJobs int
-	var failureRate, avgDuration float64
-	if stats != nil {
-		totalJobs = stats.TotalJobs
-		doneJobs = stats.DoneJobs
-		failedJobs = stats.FailedJobs
-		failureRate = stats.FailureRate * 100.0
-		avgDuration = stats.AvgProcessingSec
-	}
-
-	runningJobs, _ := h.db.CountRunningJobs()
-	pendingJobs, _ := h.db.CountPendingJobs()
-	lastJobAt, lastFailureAt, _ := h.db.GetJobTimestamps()
-
-	dataDir := filepath.Dir(h.jobsDir)
-	halted := IsStopAllActive(dataDir)
-
-	pipelineHealth := HealthPipeline{
-		QueueDepth:     pendingJobs,
-		RunningJobs:    runningJobs,
-		CompletedJobs:  doneJobs,
-		FailedJobs:     failedJobs,
-		Halted:         halted,
-		FailureRatePct: failureRate,
-		LastJobAt:      lastJobAt,
-		LastFailureAt:  lastFailureAt,
-	}
-
-	tokensHealth := HealthTokens{
-		TotalJobsAnalyzed: doneJobs,
-		AvgJobDurationSec: avgDuration,
-	}
-
-	// 4. Data Dependencies
-	stores, dataStatus := CheckDataStores(skillDir)
-
-	// 5. Environment & Credentials Dependencies
-	envDeps, envStatus := CheckEnvDependencies(skillDir, h.jobsDir, h.spawner.agyBin())
-
-	// 6. Honest Overall Roll-up Status
-	overallStatus := "ok"
-	overallReason := "All systems, dependencies, and data stores operational"
-
-	if halted {
-		overallStatus = "fail"
-		overallReason = "Pipeline execution is halted (STOP_ALL active)"
-	} else if failureRate > 25.0 && totalJobs >= 4 {
-		overallStatus = "fail"
-		overallReason = fmt.Sprintf("High pipeline failure rate (%.1f%%)", failureRate)
-	} else if dataStatus == "fail" {
-		overallStatus = "fail"
-		overallReason = "Critical data store file missing or corrupt"
-	} else if envStatus == "fail" {
-		overallStatus = "fail"
-		overallReason = "Critical environment dependency or credential missing"
-	} else if probe.State == "fail" {
-		overallStatus = "fail"
-		overallReason = fmt.Sprintf("Reasoning engine failure: %s", probe.Detail)
-	} else if catalogHealth.Status == "fail" {
-		overallStatus = "fail"
-		overallReason = "GCP pricing catalog artifact missing or broken"
-	} else if probe.State == "warn" {
-		overallStatus = "warn"
-		overallReason = fmt.Sprintf("Reasoning engine warning: %s", probe.Detail)
-	} else if catalogHealth.Status == "warn" || catalogHealth.Status == "stale" {
-		overallStatus = "warn"
-		overallReason = "GCP pricing catalog is stale and needs refresh"
-	} else if dataStatus == "warn" {
-		overallStatus = "warn"
-		overallReason = "One or more data stores have integrity warnings"
-	} else if envStatus == "warn" {
-		overallStatus = "warn"
-		overallReason = "One or more environment dependencies unconfigured or degraded"
-	} else if failureRate > 5.0 && totalJobs >= 10 {
-		overallStatus = "warn"
-		overallReason = fmt.Sprintf("Elevated pipeline failure rate (%.1f%%)", failureRate)
-	} else if probe.State == "unknown" {
-		overallReason = "Operational (live engine round-trip not yet performed)"
-	}
-
-	w.Header().Set(contentTypeHeader, contentTypeJSON)
-	json.NewEncoder(w).Encode(HealthResponse{
-		OverallReason: overallReason,
-		Engine:        engineHealth,
-		Catalog:       catalogHealth,
-		Tokens:        tokensHealth,
-		Pipeline:      pipelineHealth,
-		Stores:        stores,
-		DataStatus:    dataStatus,
-		Env:           envDeps,
-		EnvStatus:     envStatus,
-		Status:        overallStatus,
-	})
-}
-
-// AdminTestEngine performs a fresh live round-trip probe against the configured engine model.
-func (h *Handler) AdminTestEngine(w http.ResponseWriter, r *http.Request) {
-	sess := auth.SessionFromCtx(r.Context())
-	if sess == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-	if !sess.IsAdmin(h.adminEmails) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
-		return
-	}
-
-	probe := h.spawner.ProbeEngine(r.Context(), true)
-	_ = h.db.LogAdminAction(sess.Email, "engine_test", probe.Model, fmt.Sprintf("state=%s latency=%dms", probe.State, probe.LatencyMS))
-
-	w.Header().Set(contentTypeHeader, contentTypeJSON)
-	json.NewEncoder(w).Encode(probe)
-}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Report Override Handlers (Phase 4)
@@ -3142,6 +2813,11 @@ func (h *Handler) runRecalculateBackground(id, changedBy string) {
 			"JOB_DIR="+jobDir,
 		)
 		_ = cmd.Run()
+	}
+	if updatedJob, err := h.db.GetJob(id); err == nil && updatedJob != nil {
+		if rollup, breakdowns, err := ComputeJobAnalytics(updatedJob, jobDir, h.db); err == nil && rollup != nil {
+			_ = h.db.UpsertJobAnalytics(rollup, breakdowns)
+		}
 	}
 	_ = h.db.LogAdminAction(changedBy, "recalculated_overrides", id, "")
 }

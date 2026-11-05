@@ -225,7 +225,67 @@ CREATE TABLE IF NOT EXISTS integration_settings (
     is_secret   INTEGER NOT NULL DEFAULT 0,
     updated_by  TEXT NOT NULL DEFAULT '',
     updated_at  DATETIME NOT NULL DEFAULT (datetime('now'))
-);`
+);
+
+-- App-level overrides for operational environment variables, edited in
+-- System Health → Settings & Secrets. Same shape and encryption as
+-- integration_settings. Only keys in internal/envmgr's registry (ModeManaged)
+-- are ever written here.
+CREATE TABLE IF NOT EXISTS runtime_env (
+    key         TEXT PRIMARY KEY,
+    value       TEXT,
+    secret_enc  BLOB,
+    is_secret   INTEGER NOT NULL DEFAULT 0,
+    updated_by  TEXT NOT NULL DEFAULT '',
+    updated_at  DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS job_analytics (
+    job_id              TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    prospect            TEXT,
+    owner               TEXT,
+    created_at          TEXT,
+    currency            TEXT DEFAULT 'USD',
+    aws_spend           REAL,
+    aws_workload        REAL,
+    gcp_od              REAL,
+    gcp_1yr_cud         REAL,
+    gcp_3yr_cud         REAL,
+    savings_od          REAL,
+    savings_pct_od      REAL,
+    total_rows          INTEGER,
+    mapped_rows         INTEGER,
+    passthrough_rows    INTEGER,
+    ignored_rows        INTEGER,
+    llm_rows            INTEGER,
+    deterministic_rows  INTEGER,
+    unmapped_usd        REAL,
+    coverage_pct        REAL,
+    confidence_band     TEXT,
+    sp_ri_exposed_usd   REAL,
+    findings_high       INTEGER,
+    findings_med        INTEGER,
+    findings_low        INTEGER,
+    matrix_decided_pct  REAL,
+    catalog_vintage     TEXT,
+    assumptions_version TEXT,
+    engine_version      TEXT,
+    rolled_up_at        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS job_analytics_breakdown (
+    job_id       TEXT REFERENCES jobs(id) ON DELETE CASCADE,
+    dimension    TEXT,
+    key          TEXT,
+    aws_usd      REAL,
+    gcp_usd      REAL,
+    savings_usd  REAL,
+    rows         INTEGER,
+    PRIMARY KEY (job_id, dimension, key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_analytics_created ON job_analytics(created_at);
+CREATE INDEX IF NOT EXISTS idx_job_analytics_bd_dim ON job_analytics_breakdown(dimension);`
 
 // Open opens a database connection. If remoteURL is provided and non-empty (e.g. Turso libsql://),
 // it connects to the cloud libSQL database. Otherwise, it opens the local SQLite file at path.
@@ -399,6 +459,62 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 				UPDATE report_settings SET value = 'true', default_value = 'true'
 				WHERE key IN ('section_assumptions', 'section_data_gaps');
 				INSERT INTO schema_migrations (name, applied_at) VALUES ('enable_assumption_sections_2026_10', datetime('now'));
+			`)
+			_ = tx.Commit()
+		}
+	}
+
+	// Materialized rollup tables for corpus analytics (WORKORDER_analytics_platform)
+	var analyticsMigrationApplied int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name = 'create_job_analytics_2026_11'`).Scan(&analyticsMigrationApplied); err == nil && analyticsMigrationApplied == 0 {
+		tx, err := conn.Begin()
+		if err == nil {
+			_, _ = tx.Exec(`
+				CREATE TABLE IF NOT EXISTS job_analytics (
+					job_id              TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+					prospect            TEXT,
+					owner               TEXT,
+					created_at          TEXT,
+					currency            TEXT DEFAULT 'USD',
+					aws_spend           REAL,
+					aws_workload        REAL,
+					gcp_od              REAL,
+					gcp_1yr_cud         REAL,
+					gcp_3yr_cud         REAL,
+					savings_od          REAL,
+					savings_pct_od      REAL,
+					total_rows          INTEGER,
+					mapped_rows         INTEGER,
+					passthrough_rows    INTEGER,
+					ignored_rows        INTEGER,
+					llm_rows            INTEGER,
+					deterministic_rows  INTEGER,
+					unmapped_usd        REAL,
+					coverage_pct        REAL,
+					confidence_band     TEXT,
+					sp_ri_exposed_usd   REAL,
+					findings_high       INTEGER,
+					findings_med        INTEGER,
+					findings_low        INTEGER,
+					matrix_decided_pct  REAL,
+					catalog_vintage     TEXT,
+					assumptions_version TEXT,
+					engine_version      TEXT,
+					rolled_up_at        TEXT
+				);
+				CREATE TABLE IF NOT EXISTS job_analytics_breakdown (
+					job_id       TEXT REFERENCES jobs(id) ON DELETE CASCADE,
+					dimension    TEXT,
+					key          TEXT,
+					aws_usd      REAL,
+					gcp_usd      REAL,
+					savings_usd  REAL,
+					rows         INTEGER,
+					PRIMARY KEY (job_id, dimension, key)
+				);
+				CREATE INDEX IF NOT EXISTS idx_job_analytics_created ON job_analytics(created_at);
+				CREATE INDEX IF NOT EXISTS idx_job_analytics_bd_dim ON job_analytics_breakdown(dimension);
+				INSERT INTO schema_migrations (name, applied_at) VALUES ('create_job_analytics_2026_11', datetime('now'));
 			`)
 			_ = tx.Commit()
 		}

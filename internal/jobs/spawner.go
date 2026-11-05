@@ -238,7 +238,14 @@ func (s *Spawner) startDetached(jobDir string, args []string) (int, error) {
 	return pid, nil
 }
 
+// agyBin resolves the agy binary at call time. AGY_PATH is read from the live
+// environment first so a change made in System Health → Settings & Secrets
+// applies to the next job without a restart; the startup config value and
+// plain "agy" (on PATH) are fallbacks.
 func (s *Spawner) agyBin() string {
+	if p := strings.TrimSpace(os.Getenv("AGY_PATH")); p != "" {
+		return p
+	}
 	if s.cfg.AGYPath != "" {
 		return s.cfg.AGYPath
 	}

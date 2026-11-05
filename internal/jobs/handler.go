@@ -1040,7 +1040,8 @@ func (h *Handler) Recalculate(w http.ResponseWriter, r *http.Request) {
 		{filepath.Join(scriptsDir, "merge_mappings.py"), dbPath, filepath.Join(projectionAuditDir, "mappings")},
 		{filepath.Join(scriptsDir, "service_classifier.py"), dbPath},
 		{filepath.Join(scriptsDir, "apply_rates.py")},
-		{filepath.Join(scriptsDir, "apply_overrides.py")},
+		{filepath.Join(scriptsDir, "directives_from_legacy.py"), jobDir, dbPath},
+		{filepath.Join(scriptsDir, "apply_directives.py"), dbPath},
 		{filepath.Join(scriptsDir, "render_report.py")},
 	}
 
@@ -1079,6 +1080,12 @@ func (h *Handler) Recalculate(w http.ResponseWriter, r *http.Request) {
 		changedBy = sess.Email
 	}
 	_ = h.db.LogAdminAction(changedBy, "recalculate_job", id, version)
+
+	if updatedJob, err := h.db.GetJob(id); err == nil && updatedJob != nil {
+		if rollup, breakdowns, err := ComputeJobAnalytics(updatedJob, jobDir, h.db); err == nil && rollup != nil {
+			_ = h.db.UpsertJobAnalytics(rollup, breakdowns)
+		}
+	}
 
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	json.NewEncoder(w).Encode(map[string]any{

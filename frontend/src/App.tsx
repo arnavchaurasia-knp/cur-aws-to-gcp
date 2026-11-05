@@ -14,6 +14,9 @@ import { AdminHealth } from './pages/AdminHealth'
 import { SharedReport } from './pages/SharedReport'
 import { Tickets } from './pages/Tickets'
 import { Settings } from './pages/Settings'
+import { Profile } from './pages/Profile'
+import { ApiTokens } from './pages/ApiTokens'
+import { NotificationPreferences } from './pages/NotificationPreferences'
 import { Bills } from './pages/Bills'
 import { Docs } from './pages/Docs'
 import { useEffect, useState } from 'react'
@@ -104,6 +107,12 @@ export default function App() {
             <Route path="/releases" element={<Navigate to="/admin" replace />} />
             <Route path="/bills" element={user ? <Bills user={user} /> : <Navigate to="/login" />} />
             <Route path="/tickets" element={user ? <Tickets user={user} /> : <Navigate to="/login" />} />
+            <Route path="/profile" element={user ? <Profile user={user} /> : <Navigate to="/login" />} />
+            <Route path="/profile/tokens" element={user ? <ApiTokens user={user} /> : <Navigate to="/login" />} />
+            <Route path="/tokens" element={<Navigate to="/profile/tokens" replace />} />
+            <Route path="/settings/tokens" element={<Navigate to="/profile/tokens" replace />} />
+            <Route path="/settings/notifications" element={user ? <NotificationPreferences user={user} /> : <Navigate to="/login" />} />
+            <Route path="/notifications" element={<Navigate to="/settings/notifications" replace />} />
             <Route path="/settings" element={user ? <Settings user={user} /> : <Navigate to="/login" />} />
             <Route path="/docs" element={user ? <Docs user={user} /> : <Navigate to="/login" />} />
 
@@ -122,15 +131,13 @@ export default function App() {
             <Route path="/admin/report-settings" element={user && isAdmin ? <AdminReportSettings user={user} /> : <Navigate to="/" />} />
             <Route path="/admin/audit" element={user && isAdmin ? <AdminAudit user={user} /> : <Navigate to="/" />} />
             <Route path="/admin/analytics" element={user && isAdmin ? <AdminAnalytics user={user} /> : <Navigate to="/" />} />
-            <Route path="/admin/notifications" element={<Navigate to="/settings?tab=notifications" replace />} />
-            <Route path="/admin/integrations" element={<Navigate to="/settings?tab=notifications" replace />} />
+            <Route path="/admin/notifications" element={user && isAdmin ? <NotificationPreferences user={user} /> : <Navigate to="/settings/notifications" />} />
+            <Route path="/admin/integrations" element={user && isAdmin ? <NotificationPreferences user={user} /> : <Navigate to="/settings/notifications" />} />
 
             {/* Backward-compatibility redirects */}
             <Route path="/admin/catalog" element={<Navigate to="/admin/health" replace />} />
             <Route path="/admin/bills" element={<Navigate to="/bills" replace />} />
             <Route path="/admin/tickets" element={<Navigate to="/tickets" replace />} />
-            <Route path="/profile" element={<Navigate to="/settings?tab=preferences" replace />} />
-            <Route path="/profile/tokens" element={<Navigate to="/settings?tab=tokens" replace />} />
 
             {/* Public report shares */}
             <Route path="/reports/:token" element={<SharedReport />} />

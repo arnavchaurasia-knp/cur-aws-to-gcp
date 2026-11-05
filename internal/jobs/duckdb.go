@@ -67,7 +67,7 @@ func runDuckDB(dbPath, sql string) ([]byte, error) {
 c=duckdb.connect(sys.argv[1],read_only=True)
 rows=c.execute(sys.argv[2]).fetchall()
 cols=[d[0] for d in c.description]
-print(json.dumps([dict(zip(cols,r)) for r in rows]))
+print(json.dumps([dict(zip(cols,r)) for r in rows], default=str))
 c.close()`
 	cmd := exec.Command(py, "-c", pyScript, dbPath, sql)
 	out, err := cmd.Output()
@@ -88,6 +88,8 @@ var allowedTables = map[string]bool{
 	"run_results":      true,
 	"aws_li_catalog":   true,
 	"bill_currency":    true,
+	"aws_li_to_gcp_li": true,
+	"gcp_projection":   true,
 }
 
 func tableExists(dbPath, table string) (bool, error) {

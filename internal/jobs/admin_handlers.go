@@ -2454,21 +2454,25 @@ func (h *Handler) AdminDeleteUploadedBill(w http.ResponseWriter, r *http.Request
 // ─────────────────────────────────────────────────────────────────────────
 
 type HealthResponse struct {
-	Engine     HealthEngine   `json:"engine"`
-	Catalog    HealthCatalog  `json:"catalog"`
-	Tokens     HealthTokens   `json:"tokens"`
-	Pipeline   HealthPipeline `json:"pipeline"`
-	Stores     []StoreHealth  `json:"stores"`
-	DataStatus string         `json:"data_status"`
-	Status     string         `json:"status"`
+	OverallReason string         `json:"overall_reason"`
+	Engine        HealthEngine   `json:"engine"`
+	Catalog       HealthCatalog  `json:"catalog"`
+	Tokens        HealthTokens   `json:"tokens"`
+	Pipeline      HealthPipeline `json:"pipeline"`
+	Stores        []StoreHealth  `json:"stores"`
+	DataStatus    string         `json:"data_status"`
+	Env           []DepHealth    `json:"env"`
+	EnvStatus     string         `json:"env_status"`
+	Status        string         `json:"status"`
 }
 
 type HealthEngine struct {
-	ActiveEngine     string   `json:"active_engine"`
-	Version          string   `json:"version"`
-	ConcurrencyLimit int      `json:"concurrency_limit"`
-	Phases           []string `json:"phases"`
-	Status           string   `json:"status"`
+	ActiveEngine     string       `json:"active_engine"`
+	Version          string       `json:"version"`
+	ConcurrencyLimit int          `json:"concurrency_limit"`
+	Phases           []string     `json:"phases"`
+	Status           string       `json:"status"`
+	Probe            *EngineProbe `json:"probe,omitempty"`
 }
 
 type HealthCatalog struct {
@@ -2482,8 +2486,7 @@ type HealthCatalog struct {
 
 type HealthTokens struct {
 	TotalJobsAnalyzed int     `json:"total_jobs_analyzed"`
-	TotalTokensEst    int64   `json:"total_tokens_est"`
-	EstimatedCostUSD  float64 `json:"estimated_cost_usd"`
+	AvgJobDurationSec float64 `json:"avg_job_duration_seconds"`
 }
 
 type HealthPipeline struct {
@@ -2493,6 +2496,8 @@ type HealthPipeline struct {
 	FailedJobs     int     `json:"failed_jobs"`
 	FailureRatePct float64 `json:"failure_rate_pct"`
 	Halted         bool    `json:"halted"`
+	LastJobAt      string  `json:"last_job_at,omitempty"`
+	LastFailureAt  string  `json:"last_failure_at,omitempty"`
 }
 
 type catalogHealthJSON struct {
@@ -2566,15 +2571,26 @@ func (h *Handler) AdminHealthSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Engine
-	engineChoice, allowed, _ := h.db.GetEngineSettings()
+	engineChoice, _, _ := h.db.GetEngineSettings()
 	if engineChoice == "" {
 		engineChoice = "gemini-3.8-flash"
 	}
-	engineVer := h.spawner.EngineVersion()
+	_, maxConcurrent, _ := h.db.GetQuotaSettings()
+	if maxConcurrent <= 0 {
+		maxConcurrent = 2
+	}
+
+	// Derive probe without blocking on slow cold round-trip (cached or instant local)
+	probe := h.spawner.ProbeEngine(r.Context(), false)
+	engineVer := probe.Version
+	if engineVer == "" || engineVer == "unknown" {
+		engineVer = h.spawner.EngineVersion()
+	}
+
 	engineHealth := HealthEngine{
 		ActiveEngine:     engineChoice,
 		Version:          engineVer,
-		ConcurrencyLimit: 5,
+		ConcurrencyLimit: maxConcurrent,
 		Phases: []string{
 			"1. Ingestion & Schema Normalization",
 			"2. Mechanics Classification",
@@ -2583,9 +2599,9 @@ func (h *Handler) AdminHealthSummary(w http.ResponseWriter, r *http.Request) {
 			"5. Materiality & Logic Validation",
 			"6. Multi-Format Report Generation",
 		},
-		Status: "healthy",
+		Status: probe.State,
+		Probe:  &probe,
 	}
-	_ = allowed
 
 	// 2. Catalog (derived dynamically without hardcoded constants)
 	skillDir := skill.ResolveDir()
@@ -2646,58 +2662,120 @@ func (h *Handler) AdminHealthSummary(w http.ResponseWriter, r *http.Request) {
 		Status:        catHealthStatus,
 	}
 
-	// 3. Pipeline & Tokens
+	// 3. Pipeline & Real Throughput (no invented token or cost math)
 	stats, _ := h.db.GetUsageStats()
 	var totalJobs, doneJobs, failedJobs int
-	var failureRate float64
+	var failureRate, avgDuration float64
 	if stats != nil {
 		totalJobs = stats.TotalJobs
 		doneJobs = stats.DoneJobs
 		failedJobs = stats.FailedJobs
 		failureRate = stats.FailureRate * 100.0
+		avgDuration = stats.AvgProcessingSec
 	}
+
+	runningJobs, _ := h.db.CountRunningJobs()
+	pendingJobs, _ := h.db.CountPendingJobs()
+	lastJobAt, lastFailureAt, _ := h.db.GetJobTimestamps()
+
 	dataDir := filepath.Dir(h.jobsDir)
 	halted := IsStopAllActive(dataDir)
 
 	pipelineHealth := HealthPipeline{
-		QueueDepth:     totalJobs - doneJobs - failedJobs,
-		RunningJobs:    0,
+		QueueDepth:     pendingJobs,
+		RunningJobs:    runningJobs,
 		CompletedJobs:  doneJobs,
 		FailedJobs:     failedJobs,
 		Halted:         halted,
 		FailureRatePct: failureRate,
-	}
-	if pipelineHealth.QueueDepth < 0 {
-		pipelineHealth.QueueDepth = 0
+		LastJobAt:      lastJobAt,
+		LastFailureAt:  lastFailureAt,
 	}
 
 	tokensHealth := HealthTokens{
 		TotalJobsAnalyzed: doneJobs,
-		TotalTokensEst:    int64(doneJobs) * 35000,
-		EstimatedCostUSD:  float64(doneJobs) * 0.05,
+		AvgJobDurationSec: avgDuration,
 	}
 
 	// 4. Data Dependencies
 	stores, dataStatus := CheckDataStores(skillDir)
 
-	// Derive overall status
+	// 5. Environment & Credentials Dependencies
+	envDeps, envStatus := CheckEnvDependencies(skillDir, h.jobsDir, h.spawner.agyBin())
+
+	// 6. Honest Overall Roll-up Status
 	overallStatus := "ok"
-	if dataStatus == "fail" || catalogHealth.Status == "fail" || failureRate > 25.0 {
+	overallReason := "All systems, dependencies, and data stores operational"
+
+	if halted {
 		overallStatus = "fail"
-	} else if dataStatus == "warn" || catalogHealth.Status == "warn" || catalogHealth.Status == "stale" || failureRate > 5.0 {
+		overallReason = "Pipeline execution is halted (STOP_ALL active)"
+	} else if failureRate > 25.0 && totalJobs >= 4 {
+		overallStatus = "fail"
+		overallReason = fmt.Sprintf("High pipeline failure rate (%.1f%%)", failureRate)
+	} else if dataStatus == "fail" {
+		overallStatus = "fail"
+		overallReason = "Critical data store file missing or corrupt"
+	} else if envStatus == "fail" {
+		overallStatus = "fail"
+		overallReason = "Critical environment dependency or credential missing"
+	} else if probe.State == "fail" {
+		overallStatus = "fail"
+		overallReason = fmt.Sprintf("Reasoning engine failure: %s", probe.Detail)
+	} else if catalogHealth.Status == "fail" {
+		overallStatus = "fail"
+		overallReason = "GCP pricing catalog artifact missing or broken"
+	} else if probe.State == "warn" {
 		overallStatus = "warn"
+		overallReason = fmt.Sprintf("Reasoning engine warning: %s", probe.Detail)
+	} else if catalogHealth.Status == "warn" || catalogHealth.Status == "stale" {
+		overallStatus = "warn"
+		overallReason = "GCP pricing catalog is stale and needs refresh"
+	} else if dataStatus == "warn" {
+		overallStatus = "warn"
+		overallReason = "One or more data stores have integrity warnings"
+	} else if envStatus == "warn" {
+		overallStatus = "warn"
+		overallReason = "One or more environment dependencies unconfigured or degraded"
+	} else if failureRate > 5.0 && totalJobs >= 10 {
+		overallStatus = "warn"
+		overallReason = fmt.Sprintf("Elevated pipeline failure rate (%.1f%%)", failureRate)
+	} else if probe.State == "unknown" {
+		overallReason = "Operational (live engine round-trip not yet performed)"
 	}
 
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	json.NewEncoder(w).Encode(HealthResponse{
-		Engine:     engineHealth,
-		Catalog:    catalogHealth,
-		Tokens:     tokensHealth,
-		Pipeline:   pipelineHealth,
-		Stores:     stores,
-		DataStatus: dataStatus,
-		Status:     overallStatus,
+		OverallReason: overallReason,
+		Engine:        engineHealth,
+		Catalog:       catalogHealth,
+		Tokens:        tokensHealth,
+		Pipeline:      pipelineHealth,
+		Stores:        stores,
+		DataStatus:    dataStatus,
+		Env:           envDeps,
+		EnvStatus:     envStatus,
+		Status:        overallStatus,
 	})
+}
+
+// AdminTestEngine performs a fresh live round-trip probe against the configured engine model.
+func (h *Handler) AdminTestEngine(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if !sess.IsAdmin(h.adminEmails) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	probe := h.spawner.ProbeEngine(r.Context(), true)
+	_ = h.db.LogAdminAction(sess.Email, "engine_test", probe.Model, fmt.Sprintf("state=%s latency=%dms", probe.State, probe.LatencyMS))
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(probe)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -2930,6 +3008,113 @@ func (h *Handler) syncJobOverridesFile(jobID string) {
 	filePath := filepath.Join(jobDir, "job_overrides.json")
 	data, _ := json.MarshalIndent(overrides, "", "  ")
 	_ = os.WriteFile(filePath, data, 0644)
+	h.syncDirectivesFromOverrides(jobDir, overrides)
+}
+
+func (h *Handler) syncDirectivesFromOverrides(jobDir string, overrides []db.LineItemOverride) {
+	directivesPath := filepath.Join(jobDir, "directives.json")
+	var existing []map[string]any
+	if data, err := os.ReadFile(directivesPath); err == nil {
+		_ = json.Unmarshal(data, &existing)
+	}
+
+	var kept []map[string]any
+	for _, d := range existing {
+		id, _ := d["id"].(string)
+		if !strings.HasPrefix(id, "manual_ov_") {
+			kept = append(kept, d)
+		}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, ov := range overrides {
+		key := ov.RowKey
+		if key == "" {
+			continue
+		}
+		user := ov.UpdatedBy
+		if user == "" {
+			user = "admin"
+		}
+		selector := map[string]any{"aws_li_keys": []string{key}}
+
+		if ov.Suppressed {
+			kept = append(kept, map[string]any{
+				"id":               "manual_ov_supp_" + key,
+				"created_at":       now,
+				"author":           user,
+				"source_utterance": fmt.Sprintf("Suppressed via admin override for %s", key),
+				"selector":         selector,
+				"action":           map[string]any{"type": "set_strategy", "value": "ignore"},
+				"status":           "applied",
+				"confidence":       1.0,
+			})
+			kept = append(kept, map[string]any{
+				"id":               "manual_ov_note_supp_" + key,
+				"created_at":       now,
+				"author":           user,
+				"source_utterance": fmt.Sprintf("Suppressed note for %s", key),
+				"selector":         selector,
+				"action":           map[string]any{"type": "annotate", "value": "Suppressed via admin override"},
+				"status":           "applied",
+				"confidence":       1.0,
+			})
+		} else {
+			if ov.GCPTarget != "" {
+				kept = append(kept, map[string]any{
+					"id":               "manual_ov_tgt_" + key,
+					"created_at":       now,
+					"author":           user,
+					"source_utterance": fmt.Sprintf("GCP target set to %s for %s", ov.GCPTarget, key),
+					"selector":         selector,
+					"action":           map[string]any{"type": "set_target_service", "value": ov.GCPTarget},
+					"status":           "applied",
+					"confidence":       1.0,
+				})
+			}
+			if ov.OverrideRate >= 0 {
+				kept = append(kept, map[string]any{
+					"id":               "manual_ov_rate_" + key,
+					"created_at":       now,
+					"author":           user,
+					"source_utterance": fmt.Sprintf("Override rate %g for %s", ov.OverrideRate, key),
+					"selector":         selector,
+					"action":           map[string]any{"type": "set_field", "field": "override_rate", "value": ov.OverrideRate},
+					"status":           "applied",
+					"confidence":       1.0,
+				})
+			}
+			if ov.PinnedKey != "" && ov.PinnedVal != "" {
+				kept = append(kept, map[string]any{
+					"id":               "manual_ov_pin_" + key,
+					"created_at":       now,
+					"author":           user,
+					"source_utterance": fmt.Sprintf("Pinned %s=%s for %s", ov.PinnedKey, ov.PinnedVal, key),
+					"selector":         selector,
+					"action":           map[string]any{"type": "set_field", "field": ov.PinnedKey, "value": ov.PinnedVal},
+					"status":           "applied",
+					"confidence":       1.0,
+				})
+			}
+			if ov.Note != "" {
+				kept = append(kept, map[string]any{
+					"id":               "manual_ov_note_" + key,
+					"created_at":       now,
+					"author":           user,
+					"source_utterance": fmt.Sprintf("Note: %s", ov.Note),
+					"selector":         selector,
+					"action":           map[string]any{"type": "annotate", "value": ov.Note},
+					"status":           "applied",
+					"confidence":       1.0,
+				})
+			}
+		}
+	}
+
+	data, err := json.MarshalIndent(kept, "", "  ")
+	if err == nil {
+		_ = os.WriteFile(directivesPath, append(data, '\n'), 0644)
+	}
 }
 
 func (h *Handler) runRecalculateBackground(id, changedBy string) {
@@ -2943,7 +3128,8 @@ func (h *Handler) runRecalculateBackground(id, changedBy string) {
 		{filepath.Join(scriptsDir, "merge_mappings.py"), dbPath, filepath.Join(projectionAuditDir, "mappings")},
 		{filepath.Join(scriptsDir, "service_classifier.py"), dbPath},
 		{filepath.Join(scriptsDir, "apply_rates.py")},
-		{filepath.Join(scriptsDir, "apply_overrides.py")},
+		{filepath.Join(scriptsDir, "directives_from_legacy.py"), jobDir, dbPath},
+		{filepath.Join(scriptsDir, "apply_directives.py"), dbPath},
 		{filepath.Join(scriptsDir, "render_report.py")},
 	}
 	python := pythonBin()

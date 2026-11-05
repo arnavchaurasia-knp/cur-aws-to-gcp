@@ -100,6 +100,12 @@ func buildTestRouter(database *db.DB, jobsDir string, adminEmails []string) http
 			r.Get("/api/admin/bills/{hash}/download", jobHandler.AdminDownloadUploadedBill)
 			r.Get("/api/admin/bills/{hash}/view", jobHandler.AdminViewUploadedBill)
 			r.Get("/api/admin/bills/{hash}/preview", jobHandler.AdminPreviewUploadedBill)
+			r.Get("/api/admin/health", jobHandler.AdminHealthSummary)
+			r.Post("/api/admin/engine/test", jobHandler.AdminTestEngine)
+			r.Get("/api/admin/datastores", jobHandler.AdminListDataStores)
+			r.Get("/api/admin/datastores/{key}", jobHandler.AdminGetDataStore)
+			r.Put("/api/admin/datastores/{key}", jobHandler.AdminPutDataStore)
+			r.Post("/api/admin/datastores/{key}/revert", jobHandler.AdminRevertDataStore)
 		})
 	})
 
@@ -172,6 +178,12 @@ func TestSection3_AuthorizationMatrix(t *testing.T) {
 		{"PUT", "/api/admin/tickets/1"},
 		{"GET", "/api/admin/users"},
 		{"POST", "/api/admin/users/c@gmail.com/role"},
+		{"GET", "/api/admin/health"},
+		{"POST", "/api/admin/engine/test"},
+		{"GET", "/api/admin/datastores"},
+		{"GET", "/api/admin/datastores/review_config"},
+		{"PUT", "/api/admin/datastores/review_config"},
+		{"POST", "/api/admin/datastores/review_config/revert"},
 	}
 
 	for _, rc := range routes {

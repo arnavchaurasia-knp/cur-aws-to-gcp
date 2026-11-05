@@ -13,21 +13,25 @@ import (
 
 // StoreHealth represents the integrity status of a data dependency file.
 type StoreHealth struct {
-	Key       string `json:"key"`
-	File      string `json:"file"`
-	Status    string `json:"status"` // ok | warn | fail | unknown
-	Detail    string `json:"detail"` // human reason
-	SizeBytes int64  `json:"size_bytes"`
-	AgeDays   int    `json:"age_days"` // -1 if n/a
-	Count     int    `json:"count"`    // rows/keys where meaningful, else 0
+	Key        string `json:"key"`
+	File       string `json:"file"`
+	Status     string `json:"status"` // ok | warn | fail | unknown
+	Detail     string `json:"detail"` // human reason
+	SizeBytes  int64  `json:"size_bytes"`
+	AgeDays    int    `json:"age_days"` // -1 if n/a
+	Count      int    `json:"count"`    // rows/keys where meaningful, else 0
+	Editable   bool   `json:"editable"`
+	IsDBBacked bool   `json:"is_db_backed,omitempty"`
+	ManageURL  string `json:"manage_url,omitempty"`
 }
 
 // checkJSONStore inspects a JSON file on disk, validates parseability, computes age and top-level item count.
 func checkJSONStore(path, key, relFile string, warnIfMissing bool, minCountFloor int) StoreHealth {
 	res := StoreHealth{
-		Key:     key,
-		File:    relFile,
-		AgeDays: -1,
+		Key:      key,
+		File:     relFile,
+		AgeDays:  -1,
+		Editable: true,
 	}
 
 	info, err := os.Stat(path)

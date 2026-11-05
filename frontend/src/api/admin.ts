@@ -201,6 +201,26 @@ export interface DayCount {
   count: number
 }
 
+export interface SpendDay {
+  day: string
+  aws: number
+  gcp: number
+}
+
+export interface ProspectSaving {
+  prospect: string
+  aws_spend: number
+  gcp_od: number
+  savings: number
+  savings_pct: number
+  created_at: string
+}
+
+export interface SavingsBucket {
+  label: string
+  count: number
+}
+
 export interface UsageStats {
   total_jobs: number
   done_jobs: number
@@ -208,6 +228,18 @@ export interface UsageStats {
   failure_rate: number
   avg_processing_seconds: number
   jobs_by_day: DayCount[] | null
+
+  // migration economics
+  analyzed_jobs: number
+  total_aws_spend: number
+  total_gcp_od: number
+  total_savings: number
+  savings_pct: number
+  avg_savings_pct: number
+  avg_bill_size: number
+  spend_by_day: SpendDay[] | null
+  top_prospects: ProspectSaving[] | null
+  savings_buckets: SavingsBucket[] | null
 }
 
 export async function getAnalytics(): Promise<UsageStats> {
@@ -767,6 +799,26 @@ export async function testNotify(channel: 'email' | 'slack'): Promise<{ status: 
 }
 
 // ── System Health ──────────────────────────────────────────────────────────
+export interface EngineProbe {
+  state: 'ok' | 'warn' | 'fail' | 'unknown'
+  model: string
+  binary_found: boolean
+  binary_path: string
+  version: string
+  auth_present: boolean
+  round_trip: boolean
+  latency_ms: number
+  checked_at: string
+  detail: string
+}
+
+export interface DepHealth {
+  key: string
+  status: 'ok' | 'warn' | 'fail'
+  detail: string
+  present: boolean
+}
+
 export interface StoreHealth {
   key: string
   file: string
@@ -775,15 +827,36 @@ export interface StoreHealth {
   size_bytes: number
   age_days: number
   count: number
+  editable: boolean
+  is_db_backed?: boolean
+  manage_url?: string
+}
+
+export interface DataStoreDetail {
+  key: string
+  file: string
+  editable: boolean
+  is_db_backed: boolean
+  manage_url?: string
+  size_bytes: number
+  age_days: number
+  status: string
+  detail: string
+  count: number
+  content?: string
+  last_backup_at?: string
+  backup_count: number
 }
 
 export interface HealthSummary {
+  overall_reason?: string
   engine: {
     active_engine: string
     version: string
     concurrency_limit: number
     phases: string[]
     status: string
+    probe?: EngineProbe
   }
   catalog: {
     sku_count: number
@@ -800,19 +873,78 @@ export interface HealthSummary {
     failed_jobs: number
     halted: boolean
     failure_rate_pct: number
+    last_job_at?: string
+    last_failure_at?: string
   }
   tokens: {
     total_jobs_analyzed: number
-    total_tokens_est: number
-    estimated_cost_usd: number
+    avg_job_duration_seconds?: number
   }
   stores: StoreHealth[]
   data_status: 'ok' | 'warn' | 'fail' | 'unknown'
+  env: DepHealth[]
+  env_status: 'ok' | 'warn' | 'fail'
   status: string
 }
 
 export async function getAdminHealth(): Promise<HealthSummary> {
   return getJSON<HealthSummary>('/api/admin/health')
+}
+
+export async function testEngine(): Promise<EngineProbe> {
+  const res = await fetch('/api/admin/engine/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `engine test failed (${res.status})`)
+  }
+  return res.json()
+}
+
+export async function getDataStores(): Promise<{ stores: StoreHealth[]; data_status: string }> {
+  return getJSON<{ stores: StoreHealth[]; data_status: string }>('/api/admin/datastores')
+}
+
+export async function getDataStore(key: string): Promise<DataStoreDetail> {
+  return getJSON<DataStoreDetail>(`/api/admin/datastores/${encodeURIComponent(key)}`)
+}
+
+export async function updateDataStore(key: string, content: string): Promise<{ message: string; store: StoreHealth }> {
+  const res = await fetch(`/api/admin/datastores/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    try {
+      const errObj = JSON.parse(text)
+      throw new Error(errObj.error || `save failed (${res.status})`)
+    } catch {
+      throw new Error(text || `save failed (${res.status})`)
+    }
+  }
+  return res.json()
+}
+
+export async function revertDataStore(key: string): Promise<{ message: string; store: StoreHealth }> {
+  const res = await fetch(`/api/admin/datastores/${encodeURIComponent(key)}/revert`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    try {
+      const errObj = JSON.parse(text)
+      throw new Error(errObj.error || `revert failed (${res.status})`)
+    } catch {
+      throw new Error(text || `revert failed (${res.status})`)
+    }
+  }
+  return res.json()
 }
 
 // ── Line item overrides ───────────────────────────────────────────────────

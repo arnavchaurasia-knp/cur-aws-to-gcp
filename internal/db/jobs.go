@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -526,16 +527,51 @@ func (d *DB) ListAuditLog(limit, offset int, actor, action string, from, to *tim
 }
 
 type UsageStats struct {
-	TotalJobs        int                `json:"total_jobs"`
-	DoneJobs         int                `json:"done_jobs"`
-	FailedJobs       int                `json:"failed_jobs"`
-	FailureRate      float64            `json:"failure_rate"`
-	AvgProcessingSec float64            `json:"avg_processing_seconds"`
-	JobsByDay        []DayCount         `json:"jobs_by_day"`
+	TotalJobs        int        `json:"total_jobs"`
+	DoneJobs         int        `json:"done_jobs"`
+	FailedJobs       int        `json:"failed_jobs"`
+	FailureRate      float64    `json:"failure_rate"`
+	AvgProcessingSec float64    `json:"avg_processing_seconds"`
+	JobsByDay        []DayCount `json:"jobs_by_day"`
+
+	// ── Migration economics (the product's actual value) ──
+	// Computed over "done" jobs that carry both an AWS spend and a GCP
+	// projected cost. These are the numbers a sales/SE team cares about.
+	AnalyzedJobs   int     `json:"analyzed_jobs"`    // done jobs with both aws_spend + gcp_od
+	TotalAWSSpend  float64 `json:"total_aws_spend"`  // Σ AWS spend across analyzed bills
+	TotalGCPOD     float64 `json:"total_gcp_od"`     // Σ GCP on-demand projection
+	TotalSavings   float64 `json:"total_savings"`    // AWS − GCP
+	SavingsPct     float64 `json:"savings_pct"`      // portfolio-weighted savings %
+	AvgSavingsPct  float64 `json:"avg_savings_pct"`  // mean per-bill savings %
+	AvgBillSize    float64 `json:"avg_bill_size"`    // mean analyzed AWS spend
+
+	SpendByDay      []SpendDay      `json:"spend_by_day"`      // AWS vs GCP $ over 30d
+	TopProspects    []ProspectSaving `json:"top_prospects"`    // leaderboard by savings $
+	SavingsBuckets  []SavingsBucket `json:"savings_buckets"`   // distribution of savings %
 }
 
 type DayCount struct {
 	Day   string `json:"day"`
+	Count int    `json:"count"`
+}
+
+type SpendDay struct {
+	Day string  `json:"day"`
+	AWS float64 `json:"aws"`
+	GCP float64 `json:"gcp"`
+}
+
+type ProspectSaving struct {
+	Prospect   string  `json:"prospect"`
+	AWSSpend   float64 `json:"aws_spend"`
+	GCPOD      float64 `json:"gcp_od"`
+	Savings    float64 `json:"savings"`
+	SavingsPct float64 `json:"savings_pct"`
+	CreatedAt  string  `json:"created_at"`
+}
+
+type SavingsBucket struct {
+	Label string `json:"label"` // e.g. "20–40%"
 	Count int    `json:"count"`
 }
 
@@ -584,7 +620,118 @@ func (d *DB) GetUsageStats() (*UsageStats, error) {
 		}
 		stats.JobsByDay = append(stats.JobsByDay, dc)
 	}
+
+	if err := d.loadMigrationEconomics(stats); err != nil {
+		return nil, err
+	}
 	return stats, nil
+}
+
+// loadMigrationEconomics fills the savings/portfolio fields of UsageStats from
+// "done" jobs that carry both an AWS spend and a GCP projection. Jobs missing
+// either figure, or with a non-positive AWS spend, are skipped so a single bad
+// row can't skew the ratios.
+func (d *DB) loadMigrationEconomics(stats *UsageStats) error {
+	rows, err := d.conn.Query(
+		`SELECT prospect, aws_spend, gcp_od, created_at
+		   FROM jobs
+		  WHERE status='done' AND aws_spend IS NOT NULL AND gcp_od IS NOT NULL
+		    AND aws_spend > 0`,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	// Savings-% distribution buckets (upper bound exclusive, last is open).
+	type bucket struct {
+		label string
+		lo    float64
+		hi    float64
+	}
+	buckets := []bucket{
+		{"<0% (costs more)", -1e18, 0},
+		{"0–20%", 0, 20},
+		{"20–40%", 20, 40},
+		{"40–60%", 40, 60},
+		{"60%+", 60, 1e18},
+	}
+	counts := make([]int, len(buckets))
+
+	var sumPct float64
+	type ps = ProspectSaving
+	var all []ps
+
+	for rows.Next() {
+		var prospect, createdAt string
+		var aws, gcp float64
+		if err := rows.Scan(&prospect, &aws, &gcp, &createdAt); err != nil {
+			return err
+		}
+		savings := aws - gcp
+		pct := savings / aws * 100
+		stats.AnalyzedJobs++
+		stats.TotalAWSSpend += aws
+		stats.TotalGCPOD += gcp
+		sumPct += pct
+		for i, b := range buckets {
+			if pct >= b.lo && pct < b.hi {
+				counts[i]++
+				break
+			}
+		}
+		all = append(all, ps{
+			Prospect: prospect, AWSSpend: aws, GCPOD: gcp,
+			Savings: savings, SavingsPct: pct, CreatedAt: createdAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	stats.TotalSavings = stats.TotalAWSSpend - stats.TotalGCPOD
+	if stats.TotalAWSSpend > 0 {
+		stats.SavingsPct = stats.TotalSavings / stats.TotalAWSSpend * 100
+	}
+	if stats.AnalyzedJobs > 0 {
+		stats.AvgSavingsPct = sumPct / float64(stats.AnalyzedJobs)
+		stats.AvgBillSize = stats.TotalAWSSpend / float64(stats.AnalyzedJobs)
+	}
+
+	for i, b := range buckets {
+		stats.SavingsBuckets = append(stats.SavingsBuckets, SavingsBucket{Label: b.label, Count: counts[i]})
+	}
+
+	// Leaderboard: top prospects by absolute savings $.
+	sort.Slice(all, func(i, j int) bool { return all[i].Savings > all[j].Savings })
+	if len(all) > 8 {
+		all = all[:8]
+	}
+	stats.TopProspects = all
+
+	// AWS vs GCP $ per day over the last 30 days.
+	srows, err := d.conn.Query(
+		`SELECT date(created_at) AS day,
+		        COALESCE(SUM(aws_spend),0),
+		        COALESCE(SUM(gcp_od),0)
+		   FROM jobs
+		  WHERE status='done' AND aws_spend IS NOT NULL AND gcp_od IS NOT NULL
+		    AND aws_spend > 0
+		    AND created_at >= datetime('now','-30 days')
+		  GROUP BY day ORDER BY day`,
+	)
+	if err != nil {
+		return err
+	}
+	defer srows.Close()
+	for srows.Next() {
+		var sd SpendDay
+		if err := srows.Scan(&sd.Day, &sd.AWS, &sd.GCP); err != nil {
+			return err
+		}
+		stats.SpendByDay = append(stats.SpendByDay, sd)
+	}
+	return srows.Err()
 }
 
 type scanner interface {
@@ -680,4 +827,37 @@ func (d *DB) CountUserActiveJobs(owner string) (int, error) {
 	`, owner).Scan(&count)
 	return count, err
 }
+
+// CountRunningJobs counts total currently executing jobs across all users.
+func (d *DB) CountRunningJobs() (int, error) {
+	var count int
+	err := d.conn.QueryRow(`SELECT COUNT(*) FROM jobs WHERE status = 'running'`).Scan(&count)
+	return count, err
+}
+
+// CountPendingJobs counts total queued/pending jobs across all users.
+func (d *DB) CountPendingJobs() (int, error) {
+	var count int
+	err := d.conn.QueryRow(`SELECT COUNT(*) FROM jobs WHERE status = 'pending'`).Scan(&count)
+	return count, err
+}
+
+// GetJobTimestamps retrieves the ISO timestamps of the most recent job and most recent failure.
+func (d *DB) GetJobTimestamps() (lastJobAt, lastFailureAt string, err error) {
+	var lastJob, lastFailure sql.NullString
+	if err := d.conn.QueryRow(`SELECT MAX(created_at) FROM jobs`).Scan(&lastJob); err != nil {
+		return "", "", err
+	}
+	if err := d.conn.QueryRow(`SELECT MAX(updated_at) FROM jobs WHERE status = 'failed'`).Scan(&lastFailure); err != nil {
+		return "", "", err
+	}
+	if lastJob.Valid {
+		lastJobAt = lastJob.String
+	}
+	if lastFailure.Valid {
+		lastFailureAt = lastFailure.String
+	}
+	return lastJobAt, lastFailureAt, nil
+}
+
 

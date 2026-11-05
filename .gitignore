@@ -49,6 +49,8 @@ NOTES.md
 /tmp/
 *.tmp
 catalog_refresh_status.json
+_backups/
+**/_backups/
 __pycache__/
 *.pyc
 personal_intelligence_agent/

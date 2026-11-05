@@ -385,8 +385,14 @@ func main() {
 			r.Get("/api/admin/bills/{hash}/view", jobHandler.AdminViewUploadedBill)
 			r.Get("/api/admin/bills/{hash}/preview", jobHandler.AdminPreviewUploadedBill)
 			r.Delete("/api/admin/bills/{hash}", jobHandler.AdminDeleteUploadedBill)
-			// System health summary
+			// System health summary & engine test probe
 			r.Get("/api/admin/health", jobHandler.AdminHealthSummary)
+			r.Post("/api/admin/engine/test", jobHandler.AdminTestEngine)
+			// Managed Data Stores
+			r.Get("/api/admin/datastores", jobHandler.AdminListDataStores)
+			r.Get("/api/admin/datastores/{key}", jobHandler.AdminGetDataStore)
+			r.Put("/api/admin/datastores/{key}", jobHandler.AdminPutDataStore)
+			r.Post("/api/admin/datastores/{key}/revert", jobHandler.AdminRevertDataStore)
 			// Line item overrides
 			r.Get("/api/admin/jobs/{id}/line-items", jobHandler.AdminGetLineItems)
 			r.Post("/api/admin/jobs/{id}/line-items/{row}/override", jobHandler.AdminOverrideLineItem)

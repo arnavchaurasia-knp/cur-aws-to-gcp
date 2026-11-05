@@ -150,8 +150,17 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// mapping files. agy is spawned ONLY for the three LLM groups.
 			PreLLMScripts: func() []string {
 				if isDirectiveLayerEnabled() {
+					// apply_commitment_ignores.py INSERTS ignore mapping rows for
+					// commitment_discount/negative_cost. It must run even with the
+					// directive layer on: the legacy_shim directive for these rows is
+					// set_strategy=ignore, which apply_directives applies via an INNER
+					// JOIN on aws_li_to_gcp_li — it can only UPDATE an existing mapping
+					// row, never create one. Without this script those rows never enter
+					// aws_li_to_gcp_li, so the mapping_coverage gate fails on them and
+					// forces a full (and futile) Phase-2 LLM re-run.
 					return []string{
 						"scripts/classify_mechanics.py $DB",
+						"?scripts/apply_commitment_ignores.py $DB",
 						"?scripts/apply_static_mappings.py $DB",
 					}
 				}
@@ -700,6 +709,11 @@ func (s *Spawner) StartOrchestrated(jobDir, inputExt string, engine ...string) (
 		"PYTHON_BIN="+pyBin,
 		"PRINT_TIMEOUT="+config.AGYPrintTimeout(),
 		"TOTAL_PHASES="+strconv.Itoa(config.TotalPhases),
+		// Force UTF-8 for run_all.py and every child script it spawns. On Windows
+		// the default console encoding is cp1252, so any script that prints a
+		// non-latin1 char (e.g. directives_from_legacy.py's "→") dies with
+		// UnicodeEncodeError and exits 1. UTF-8 mode removes that whole class.
+		"PYTHONUTF8=1",
 	)
 	cmd.Env = env
 	cmd.SysProcAttr = sysProcAttr

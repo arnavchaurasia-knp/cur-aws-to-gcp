@@ -218,7 +218,7 @@ export function HealthPage({ user }: Readonly<{ user: UserInfo }>) {
         {/* Tab Content */}
         {loading && !health ? (
           <div className="py-20 text-center text-xs text-[color:var(--fcp-text-muted)]">
-            Loading system health telemetry...
+            Checking the system…
           </div>
         ) : (
           health && (

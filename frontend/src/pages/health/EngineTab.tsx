@@ -11,6 +11,38 @@ interface EngineTabProps {
   onRefreshHealth: () => void
 }
 
+const modelSourceLabel = (src: string) => {
+  switch (src) {
+    case 'report_settings':
+      return 'set in Report Settings'
+    case 'env':
+      return 'from the AGY_MODEL server setting'
+    case 'default':
+      return 'built-in default'
+    default:
+      return src
+  }
+}
+
+const testResultStyles: Record<string, { label: string; className: string }> = {
+  ok: {
+    label: 'Test passed',
+    className: 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 text-emerald-900 dark:text-emerald-200',
+  },
+  warn: {
+    label: 'Answered, but slowly',
+    className: 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 text-amber-900 dark:text-amber-200',
+  },
+  unknown: {
+    label: 'Test not run',
+    className: 'bg-gray-50 dark:bg-gray-800 border-[var(--fcp-border-subtle)] text-[color:var(--fcp-text-secondary)]',
+  },
+  fail: {
+    label: 'Test failed',
+    className: 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 text-rose-900 dark:text-rose-200',
+  },
+}
+
 export function EngineTab({ engine, onSelectTab, onRefreshHealth }: Readonly<EngineTabProps>) {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<EngineProbe | null>(null)
@@ -60,7 +92,7 @@ export function EngineTab({ engine, onSelectTab, onRefreshHealth }: Readonly<Eng
             <div className="text-sm font-semibold text-[color:var(--fcp-text-primary)] font-mono">
               {engine.model}{' '}
               <span className="text-xs font-normal text-[color:var(--fcp-text-muted)]">
-                (source: {engine.model_source})
+                ({modelSourceLabel(engine.model_source)})
               </span>
             </div>
           </div>
@@ -158,28 +190,27 @@ export function EngineTab({ engine, onSelectTab, onRefreshHealth }: Readonly<Eng
 
         {engine.live_test_disabled && (
           <div className="p-3 rounded-lg bg-gray-50 dark:bg-gray-800 text-xs text-gray-600 dark:text-gray-300">
-            Live test probe is turned off (AGY_HEALTH_PROBE_DISABLED=1).
+            Live test is turned off (AGY_HEALTH_PROBE_DISABLED=1).
           </div>
         )}
 
-        {testResult && (
-          <div
-            className={`p-4 rounded-xl border text-xs space-y-1 ${
-              testResult.state === 'ok'
-                ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 text-emerald-900 dark:text-emerald-200'
-                : 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 text-rose-900 dark:text-rose-200'
-            }`}
-          >
-            <div className="flex items-center gap-2 font-semibold">
-              <StatusBadge status={testResult.state} />
-              <span>{testResult.state === 'ok' ? 'Test Passed' : 'Test Failed'}</span>
-              {testResult.latency_ms !== undefined && (
-                <span className="text-[11px] opacity-75 font-mono">({testResult.latency_ms}ms)</span>
-              )}
+        {testResult && (() => {
+          const style = testResultStyles[testResult.state] || testResultStyles.fail
+          return (
+            <div className={`p-4 rounded-xl border text-xs space-y-1 ${style.className}`}>
+              <div className="flex items-center gap-2 font-semibold">
+                <StatusBadge status={testResult.state} />
+                <span>{style.label}</span>
+                {testResult.latency_ms !== undefined && testResult.latency_ms > 0 && (
+                  <span className="text-[11px] opacity-75 font-mono">
+                    ({(testResult.latency_ms / 1000).toFixed(1)}s)
+                  </span>
+                )}
+              </div>
+              <p className="opacity-90">{testResult.detail}</p>
             </div>
-            <p className="opacity-90">{testResult.detail}</p>
-          </div>
-        )}
+          )
+        })()}
 
         {testError && (
           <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 text-rose-700 text-xs">
@@ -216,7 +247,9 @@ export function EngineTab({ engine, onSelectTab, onRefreshHealth }: Readonly<Eng
                     <td className="py-2.5 px-4">
                       <StatusBadge status={rec.state} />
                     </td>
-                    <td className="py-2.5 px-4 font-mono">{rec.latency_ms}ms</td>
+                    <td className="py-2.5 px-4 font-mono">
+                      {rec.latency_ms > 0 ? `${(rec.latency_ms / 1000).toFixed(1)}s` : '—'}
+                    </td>
                     <td className="py-2.5 px-4 text-[color:var(--fcp-text-secondary)]">{rec.actor || 'system'}</td>
                     <td className="py-2.5 px-4 text-[color:var(--fcp-text-secondary)] max-w-md truncate" title={rec.detail}>
                       {rec.detail}

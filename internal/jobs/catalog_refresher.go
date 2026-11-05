@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/facets/cur-web/internal/db"
+	"github.com/facets/cur-web/internal/notify"
 	"github.com/facets/cur-web/internal/skill"
 )
 
@@ -308,6 +311,10 @@ func runCatalogRefreshNow(trigger, actor string) {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				exitCode = exitErr.ExitCode()
 			}
+			reason = fmt.Sprintf("The refresh script stopped with an error (exit code %d).", exitCode)
+			if msg := lastMeaningfulLine(logTail); msg != "" {
+				reason += " Last message: " + msg
+			}
 			slog.Warn("catalog refresh finished with error", "err", err, "exit_code", exitCode)
 		}
 		writeRefreshRun(CatalogRefreshRun{
@@ -385,4 +392,117 @@ func TriggerCatalogRefresh(actor string) (bool, string) {
 
 	go runCatalogRefreshNow("manual", actor)
 	return true, ""
+}
+
+// StalePinResult represents an invalidated directive detected during catalog refresh.
+type StalePinResult struct {
+	JobID        string   `json:"job_id"`
+	UserID       string   `json:"user_id"`
+	DirectiveID  string   `json:"directive_id"`
+	PinnedItem   string   `json:"pinned_item"`
+	Region       string   `json:"region"`
+	Question     string   `json:"question"`
+	AffectedKeys []string `json:"affected_keys"`
+}
+
+// RevalidateDirectivesAfterRefresh runs the check_stale_pins script across all jobs in jobsDir,
+// raises blocking clarifications for stale pins, and sends batched email alerts respecting NotificationPreferences.
+func RevalidateDirectivesAfterRefresh(jobsDir string, database *db.DB, emailCfg notify.EmailConfig) ([]StalePinResult, error) {
+	if jobsDir == "" {
+		return nil, nil
+	}
+	skillDir := skill.ResolveDir()
+	script := filepath.Join(skillDir, "scripts", "check_stale_pins.py")
+	if _, err := os.Stat(script); err != nil {
+		return nil, fmt.Errorf("check_stale_pins.py not found: %w", err)
+	}
+
+	python := pythonBin()
+	cmd := exec.Command(python, script, jobsDir, "--skill-dir", skillDir)
+	cmd.Dir = skillDir
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Warn("check_stale_pins failed", "err", err, "out", string(out))
+		return nil, fmt.Errorf("check_stale_pins failed: %w", err)
+	}
+
+	var results []StalePinResult
+	trimmed := out
+	if start := bytes.IndexByte(trimmed, '['); start >= 0 {
+		if end := bytes.LastIndexByte(trimmed, ']'); end > start {
+			trimmed = trimmed[start : end+1]
+		}
+	}
+	if err := json.Unmarshal(trimmed, &results); err != nil {
+		slog.Warn("check_stale_pins JSON parse error", "err", err, "raw", string(out))
+		return nil, nil
+	}
+
+	if len(results) == 0 {
+		return nil, nil
+	}
+
+	// Group stale pins by user
+	byUser := make(map[string][]StalePinResult)
+	for _, res := range results {
+		u := res.UserID
+		if u == "" || u == "agy" || u == "system" {
+			u = "user"
+		}
+		byUser[u] = append(byUser[u], res)
+	}
+
+	// Dispatch notifications per user, respecting NotificationPreferences
+	for userEmail, items := range byUser {
+		if database != nil && strings.Contains(userEmail, "@") {
+			prefs, err := database.GetUserPreferences(userEmail)
+			if err == nil && prefs != nil && !prefs.EmailNotifications {
+				slog.Info("stale pin email alert skipped: user disabled email notifications", "user", userEmail, "stale_pins", len(items))
+				continue
+			}
+		}
+
+		var alertItems []notify.StalePinAlertItem
+		for _, it := range items {
+			alertItems = append(alertItems, notify.StalePinAlertItem{
+				JobID:       it.JobID,
+				DirectiveID: it.DirectiveID,
+				PinnedItem:  it.PinnedItem,
+				Region:      it.Region,
+				Question:    it.Question,
+			})
+		}
+
+		if emailCfg.APIKey != "" {
+			if err := notify.SendStalePinAlert(emailCfg, userEmail, userEmail, alertItems); err != nil {
+				slog.Warn("failed to send stale pin email alert", "user", userEmail, "err", err)
+			} else {
+				slog.Info("sent stale pin alert email", "user", userEmail, "stale_pins", len(alertItems))
+			}
+		}
+	}
+
+	return results, nil
+}
+
+// RevalidateDirectivesAfterRefresh runs stale pin detection for this handler's jobsDir.
+func (h *Handler) RevalidateDirectivesAfterRefresh() ([]StalePinResult, error) {
+	return RevalidateDirectivesAfterRefresh(h.jobsDir, h.db, h.notify.Email)
+}
+
+// lastMeaningfulLine returns the last log line that is not a separator
+// (=====, -----) or blank, trimmed to 200 characters.
+func lastMeaningfulLine(lines []string) string {
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(lines[i])
+		if l == "" || strings.Trim(l, "=-") == "" {
+			continue
+		}
+		if len(l) > 200 {
+			l = l[:200] + "…"
+		}
+		return l
+	}
+	return ""
 }

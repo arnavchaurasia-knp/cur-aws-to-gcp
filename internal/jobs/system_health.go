@@ -253,6 +253,26 @@ func formatDurationAgo(d time.Duration) string {
 	return fmt.Sprintf("%d days ago", days)
 }
 
+// componentStatus is the ONLY way a component's status is decided:
+// any critical issue → fail, any warning → warn, otherwise ok — except a
+// component that reports "unknown" (e.g. AI engine not verified yet) keeps
+// "unknown" when it has no critical/warning issue.
+func componentStatus(base string, issues []HealthIssue) string {
+	status := "ok"
+	for _, iss := range issues {
+		switch iss.Severity {
+		case "critical":
+			return "fail"
+		case "warning":
+			status = "warn"
+		}
+	}
+	if status == "ok" && base == "unknown" {
+		return "unknown"
+	}
+	return status
+}
+
 // engineHealth inspects the AI engine and returns its component health and issues.
 func (h *Handler) engineHealth(ctx context.Context) (EngineHealth, []HealthIssue) {
 	dataDir := filepath.Dir(h.jobsDir)
@@ -324,6 +344,7 @@ func (h *Handler) engineHealth(ctx context.Context) (EngineHealth, []HealthIssue
 	}
 
 	issues := buildEngineIssues(eng, p)
+	eng.Status = componentStatus(eng.Status, issues)
 	return eng, issues
 }
 
@@ -512,6 +533,7 @@ func (h *Handler) catalogHealth() (CatalogHealth, []HealthIssue) {
 	}
 
 	issues := buildCatalogIssues(cat)
+	cat.Status = componentStatus(cat.Status, issues)
 	return cat, issues
 }
 
@@ -550,16 +572,18 @@ func buildCatalogIssues(cat CatalogHealth) []HealthIssue {
 	if cat.LastRun.State == "failed" {
 		detail := cat.LastRun.Reason
 		if !cat.APIKeyPresent {
-			if detail != "" {
-				detail += " "
-			}
-			detail += "No GOOGLE_CLOUD_API_KEY is set — that is the usual cause."
+			detail = "Prices couldn't be downloaded because no Google Cloud pricing API key is set."
+		} else if detail == "" {
+			detail = "The refresh stopped with an error. Open the Pricing Catalog tab to see the log."
 		}
 		var action *IssueAction
+		var fix string
 		if !cat.APIKeyPresent {
 			action = &IssueAction{Kind: "edit_env", Target: "GOOGLE_CLOUD_API_KEY", Label: "Add pricing API key"}
+			fix = "Add GOOGLE_CLOUD_API_KEY in Settings & Secrets, then refresh the catalog."
 		} else {
 			action = &IssueAction{Kind: "open_tab", Target: "catalog", Label: "See the log"}
+			fix = "Open the Pricing Catalog tab, read the log of the last run, then refresh again."
 		}
 		issues = append(issues, HealthIssue{
 			ID:       "catalog.refresh_failed",
@@ -567,7 +591,7 @@ func buildCatalogIssues(cat CatalogHealth) []HealthIssue {
 			Area:     "catalog",
 			Title:    "The last catalog refresh failed",
 			Detail:   detail,
-			Fix:      "Check the pricing API key and network connectivity, then try refreshing again.",
+			Fix:      fix,
 			Action:   action,
 		})
 	}
@@ -673,6 +697,7 @@ func (h *Handler) jobsHealth() (JobsHealth, []HealthIssue) {
 	}
 
 	issues := buildJobsIssues(jh, recentTotal)
+	jh.Status = componentStatus(jh.Status, issues)
 	return jh, issues
 }
 
@@ -749,6 +774,7 @@ func (h *Handler) dataHealth() (DataHealth, []HealthIssue) {
 	}
 
 	issues := buildDataIssues(stores)
+	dh.Status = componentStatus(dh.Status, issues)
 	return dh, issues
 }
 
@@ -824,13 +850,12 @@ func (h *Handler) settingsHealth() (SettingsHealth, []HealthIssue) {
 	if len(missingRequired) > 0 {
 		status = "fail"
 		summary = fmt.Sprintf("%d required setting(s) are missing.", len(missingRequired))
-	} else if !encryptionAvail || len(ignored) > 0 {
+	} else if !encryptionAvail {
 		status = "warn"
-		if !encryptionAvail {
-			summary = "Secrets cannot be saved because no encryption key is available."
-		} else {
-			summary = "Some ignored environment variables are present."
-		}
+		summary = "Secrets cannot be saved because no encryption key is available."
+	}
+	if status == "ok" && len(ignored) > 0 {
+		summary = fmt.Sprintf("Settings are fine. %d unused variable(s) found — see tips.", len(ignored))
 	}
 
 	sh := SettingsHealth{
@@ -845,11 +870,13 @@ func (h *Handler) settingsHealth() (SettingsHealth, []HealthIssue) {
 
 	appBaseURL := os.Getenv("APP_BASE_URL")
 	devAuthBypass := os.Getenv("DEV_AUTH_BYPASS")
-	issues := buildSettingsIssues(sh, appBaseURL, devAuthBypass, src, problem, encryptionAvail)
+	allowedDomains := os.Getenv("ALLOWED_DOMAINS")
+	issues := buildSettingsIssues(sh, appBaseURL, devAuthBypass, allowedDomains, src, problem, encryptionAvail)
+	sh.Status = componentStatus(sh.Status, issues)
 	return sh, issues
 }
 
-func buildSettingsIssues(sh SettingsHealth, appBaseURL, devAuthBypass string, keySource, keyProblem string, encryptionAvail bool) []HealthIssue {
+func buildSettingsIssues(sh SettingsHealth, appBaseURL, devAuthBypass, allowedDomains string, keySource, keyProblem string, encryptionAvail bool) []HealthIssue {
 	var issues []HealthIssue
 
 	for _, k := range sh.MissingRequired {
@@ -953,15 +980,38 @@ func buildSettingsIssues(sh SettingsHealth, appBaseURL, devAuthBypass string, ke
 		})
 	}
 
-	if devAuthBypass == "true" {
-		u, err := url.Parse(appBaseURL)
-		isLocal := false
-		if err == nil {
-			h := u.Hostname()
-			if h == "localhost" || h == "127.0.0.1" || h == "" {
-				isLocal = true
-			}
+	u, err := url.Parse(appBaseURL)
+	isLocal := false
+	if err == nil {
+		h := u.Hostname()
+		if h == "localhost" || h == "127.0.0.1" || h == "" {
+			isLocal = true
 		}
+	}
+
+	anyDomain := false
+	for _, part := range strings.Split(allowedDomains, ",") {
+		if strings.TrimSpace(part) == "*" {
+			anyDomain = true
+			break
+		}
+	}
+	if anyDomain {
+		sev := "critical"
+		if isLocal {
+			sev = "info"
+		}
+		issues = append(issues, HealthIssue{
+			ID:       "settings.any_domain",
+			Severity: sev,
+			Area:     "settings",
+			Title:    "Any Google account can sign in",
+			Detail:   "ALLOWED_DOMAINS is set to * , so sign-in is not limited to your company's domain.",
+			Fix:      "Set ALLOWED_DOMAINS to your domain (e.g. facets.cloud) in the server's .env and restart.",
+		})
+	}
+
+	if devAuthBypass == "true" {
 		if !isLocal {
 			issues = append(issues, HealthIssue{
 				ID:       "settings.dev_bypass",
@@ -1014,6 +1064,7 @@ func (h *Handler) runtimeHealth() (RuntimeHealth, []HealthIssue) {
 	}
 
 	issues := buildRuntimeIssues(checks)
+	rh.Status = componentStatus(rh.Status, issues)
 	return rh, issues
 }
 
@@ -1055,6 +1106,14 @@ func deriveOverallHealth(issues []HealthIssue) (status string, summary string) {
 		if iss.Severity != "info" {
 			nonInfoCount++
 		}
+	}
+
+	if status == "ok" {
+		tips := len(issues)
+		if tips == 0 {
+			return status, "Everything is working."
+		}
+		return status, fmt.Sprintf("Everything is working. %d tip(s) below.", tips)
 	}
 
 	summary = "Everything is working."

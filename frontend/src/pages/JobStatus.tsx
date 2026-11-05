@@ -11,7 +11,7 @@ import { shareJob } from '../api/admin'
 import type { Job, Progress, RunResult } from '../api/jobs'
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
-import { TOTAL_PHASES } from '../lib/phases'
+import { PHASES, TOTAL_PHASES } from '../lib/phases'
 import { toast } from 'sonner'
 import { JobHealth } from '../components/JobHealth'
 import { ConfirmDialog } from '../components/ConfirmDialog'
@@ -296,21 +296,36 @@ function JobActivityCard({ job, progress }: Readonly<{ job: Job; progress: Progr
       </div>
       {durations && Object.keys(durations).length > 0 && (
         <div className="pt-2 border-t border-white/5 space-y-1.5">
-          <span className="text-gray-500 block text-[10px] uppercase font-semibold">Phase Durations</span>
+          <span className="text-gray-500 block text-[10px] uppercase font-semibold">Phase Tracking</span>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {Object.entries(durations)
-              .sort(([a], [b]) => Number(a) - Number(b))
-              .map(([phaseNum, info]) => {
-                const p = info as { name?: string; duration_seconds?: number }
-                return (
-                  <div key={phaseNum} className="bg-white/[0.02] border border-white/5 rounded px-2 py-1.5 flex items-center justify-between">
-                    <span className="text-gray-400 truncate pr-1">P{phaseNum}: {p.name || PHASE_LABELS[Number(phaseNum)] || 'Phase'}</span>
-                    <span className="text-gray-200 font-mono text-[10px] shrink-0">
-                      {p.duration_seconds !== undefined ? `${p.duration_seconds}s` : '✓'}
-                    </span>
-                  </div>
-                )
-              })}
+            {PHASES.map(({ n, name }) => {
+              const info = durations[String(n)] as
+                | { name?: string; duration_seconds?: number; status?: string }
+                | undefined
+              // Terminal state per phase: reached (in checkpoint) → its status;
+              // not in checkpoint → pending (job running) or not-run (job ended).
+              const reached = !!info
+              const status = info?.status ?? (reached ? 'ok' : 'pending')
+              const running = job.status === 'running' || job.status === 'pending'
+              const mark =
+                status === 'ok' ? { icon: '✓', cls: 'text-emerald-400', title: 'Completed' }
+                : status === 'warning' ? { icon: '⚠', cls: 'text-amber-400', title: 'Completed with warnings' }
+                : status === 'skipped' ? { icon: '⊘', cls: 'text-rose-400', title: 'Skipped (e.g. quota limit)' }
+                : running ? { icon: '…', cls: 'text-gray-500 animate-pulse', title: 'Pending' }
+                : { icon: '—', cls: 'text-gray-600', title: 'Not run' }
+              return (
+                <div key={n} title={mark.title}
+                  className={`bg-white/[0.02] border border-white/5 rounded px-2 py-1.5 flex items-center justify-between ${reached ? '' : 'opacity-60'}`}>
+                  <span className="text-gray-400 truncate pr-1">
+                    <span className={`${mark.cls} mr-1`}>{mark.icon}</span>
+                    P{n}: {info?.name || name || PHASE_LABELS[n] || 'Phase'}
+                  </span>
+                  <span className="text-gray-200 font-mono text-[10px] shrink-0">
+                    {info?.duration_seconds !== undefined ? `${info.duration_seconds}s` : ''}
+                  </span>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}

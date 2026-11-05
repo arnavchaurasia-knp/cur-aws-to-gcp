@@ -1914,27 +1914,58 @@ def main():
     refinement_summary_block_html = ""
     try:
         if "applied_directives" in _m2g_cols:
-            refine_rows = conn.execute(f"""
-                SELECT m.applied_directives, c.aws_amortized_cost * {aws_fx_rate}
-                FROM aws_li_to_gcp_li m
-                JOIN aws_li_catalog c USING (aws_li_key)
-                WHERE m.applied_directives IS NOT NULL AND m.applied_directives != '[]'
-            """).fetchall()
+            # The Refinement Audit Summary must report only USER-initiated
+            # refinements (conversational/manual directives), not the pipeline's
+            # own auto-generated bookkeeping. The legacy shim stamps
+            # author="legacy_shim" directives (negative_cost/commitment ignores,
+            # assumption overrides) with ids prefixed "legacy_" on every run;
+            # counting those made a job with zero user refinement report dozens
+            # of "modified" rows. Standard audit-trail practice separates
+            # system-generated events from user actions — here we keep only the
+            # latter.
+            dir_list = []
+            directives_file = os.path.join(JOB_DIR, "directives.json")
+            if os.path.exists(directives_file):
+                try:
+                    with open(directives_file, "r", encoding="utf-8") as f:
+                        dir_list = json.load(f)
+                except Exception:
+                    pass
+
+            def _is_user_directive(d):
+                if not isinstance(d, dict):
+                    return False
+                if str(d.get("author") or "").lower() == "legacy_shim":
+                    return False
+                if str(d.get("id") or "").startswith("legacy_"):
+                    return False
+                return True
+
+            user_directives = [d for d in dir_list if _is_user_directive(d)]
+            user_ids = {str(d.get("id")) for d in user_directives if d.get("id")}
+
+            refine_rows = []
+            if user_ids:
+                raw_rows = conn.execute(f"""
+                    SELECT m.applied_directives, c.aws_amortized_cost * {aws_fx_rate}
+                    FROM aws_li_to_gcp_li m
+                    JOIN aws_li_catalog c USING (aws_li_key)
+                    WHERE m.applied_directives IS NOT NULL AND m.applied_directives != '[]'
+                """).fetchall()
+                for applied, cost in raw_rows:
+                    try:
+                        ids = json.loads(applied) if isinstance(applied, str) else (applied or [])
+                    except Exception:
+                        ids = []
+                    if any(str(i) in user_ids for i in (ids or [])):
+                        refine_rows.append((applied, cost))
+
             if refine_rows:
                 n_changed = len(refine_rows)
                 affected_spend = sum(r[1] or 0.0 for r in refine_rows)
 
-                dir_list = []
-                directives_file = os.path.join(JOB_DIR, "directives.json")
-                if os.path.exists(directives_file):
-                    try:
-                        with open(directives_file, "r", encoding="utf-8") as f:
-                            dir_list = json.load(f)
-                    except Exception:
-                        pass
-
                 table_rows_html = ""
-                for d in dir_list:
+                for d in user_directives:
                     if not isinstance(d, dict):
                         continue
                     did = _html.escape(str(d.get("id") or ""))

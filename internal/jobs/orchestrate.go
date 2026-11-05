@@ -909,7 +909,13 @@ def write_progress(num, name, activity):
     with open(os.path.join(JOB_DIR, "progress.json"), "w") as f:
         json.dump({"phase": num, "phase_name": name, "last_activity": activity}, f)
 
-def write_phase_checkpoint(num, duration=None, phase_name=None):
+def write_phase_checkpoint(num, duration=None, phase_name=None, status="ok"):
+    # status is the phase's TERMINAL state for the UI tracker:
+    #   "ok"      — completed and gate passed
+    #   "warning" — completed but a non-critical gate/quota issue remained
+    #   "skipped" — produced nothing usable (e.g. quota wall) and was skipped
+    # Every phase the pipeline leaves behind MUST reach one of these so the
+    # phase timeline can resolve instead of showing an endless spinner.
     ckpt_file = os.path.join(JOB_DIR, "phase_checkpoint.json")
     existing = {}
     try:
@@ -926,6 +932,7 @@ def write_phase_checkpoint(num, duration=None, phase_name=None):
         if duration is not None:
             p_info["duration_seconds"] = duration
         p_info["completed_at"] = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
+        p_info["status"] = status
         phases_map[str(num)] = p_info
 
     data = {
@@ -1737,6 +1744,8 @@ def run_phase(ph):
             sys.exit(0)
         else:
             log("WARNING: quota/auth block on non-critical Phase %%d — skipping phase, report will still be generated" %% ph["num"])
+            write_phase_checkpoint(ph["num"], duration=int(time.time() - _phase_start_t),
+                                   phase_name=ph["name"], status="skipped")
             return
 
     # Deterministic post-LLM scripts always run (zero LLM tokens). For a script
@@ -1774,7 +1783,10 @@ def run_phase(ph):
             sys.exit(0)
         else:
             log("WARNING: quota/auth block on non-critical Phase %%d — continuing to report" %% ph["num"])
+            write_phase_checkpoint(ph["num"], duration=phase_entry["duration_seconds"],
+                                   phase_name=ph["name"], status="warning")
             return
+    phase_status = "ok"
     sql = ph.get("check_sql")
     if sql:
         v, gerr = gate(sql)
@@ -1813,6 +1825,8 @@ def run_phase(ph):
                     sys.exit(0)
                 else:
                     log("WARNING: quota/auth block on non-critical Phase %%d retry — continuing to report" %% ph["num"])
+                    write_phase_checkpoint(ph["num"], duration=phase_entry["duration_seconds"],
+                                           phase_name=ph["name"], status="warning")
                     return
 
             # Re-run post-LLM recompute/repair before re-checking, so the
@@ -1867,11 +1881,14 @@ def run_phase(ph):
                     # Non-critical phases (review, outlier triage) — log the
                     # violation count and continue to generate the report.
                     log("gate WARNING (non-critical phase, continuing): " + msg)
+                    phase_status = "warning"
         else:
             log("gate %%s PASS" %% ph.get("check_name","?"))
 
-    # Record this phase as successfully completed so a retry can resume here.
-    write_phase_checkpoint(ph["num"], duration=phase_entry["duration_seconds"], phase_name=ph["name"])
+    # Record this phase's terminal state so the UI tracker resolves and a
+    # retry can resume here.
+    write_phase_checkpoint(ph["num"], duration=phase_entry["duration_seconds"],
+                           phase_name=ph["name"], status=phase_status)
 
 
 for ph in PHASES:

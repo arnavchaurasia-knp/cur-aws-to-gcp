@@ -53,31 +53,31 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
 
   if (loading) {
     return (
-      <div className="bg-white/[0.02] border border-white/10 rounded-lg p-5">
+      <div className="bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-subtle)] rounded-xl p-6 shadow-xs">
         <div className="flex items-center justify-center py-8">
           <div className="flex gap-2">
             {[0, 1, 2, 3].map((i, idx) => (
               <div
                 key={i}
-                className="w-2 h-2 rounded-full bg-[#00C2BB] animate-pulse"
-                style={{ animationDelay: `${idx * 100}ms` }}
+                className="w-2.5 h-2.5 rounded-full bg-[var(--facets-teal)] animate-pulse"
+                style={{ animationDelay: `${idx * 120}ms` }}
               />
             ))}
           </div>
         </div>
-        <p className="text-xs text-gray-500 text-center">Loading job assumptions…</p>
+        <p className="text-xs text-[var(--fcp-text-secondary)] text-center font-medium">Loading job assumptions…</p>
       </div>
     )
   }
 
   if (error && !data) {
     return (
-      <div className="bg-white/[0.02] border border-white/10 rounded-lg p-5">
+      <div className="bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-subtle)] rounded-xl p-6 shadow-xs">
         <div className="text-center py-4">
-          <p className="text-xs text-orange-400">{error}</p>
+          <p className="text-xs text-rose-500 font-medium">{error}</p>
           <button
             onClick={loadData}
-            className="mt-2 text-xs text-[#00C2BB] hover:text-white underline cursor-pointer"
+            className="mt-3 text-xs text-[var(--facets-purple)] dark:text-[var(--facets-teal)] hover:underline font-semibold cursor-pointer"
           >
             Retry
           </button>
@@ -149,21 +149,21 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
   }
 
   return (
-    <div className="bg-white/[0.02] border border-white/10 rounded-lg p-5 anim-fade-in-up">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4 pb-3 border-b border-white/10">
+    <div className="bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-subtle)] rounded-xl p-6 shadow-xs anim-fade-in-up">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-5 pb-4 border-b border-[var(--fcp-border-subtle)]">
         <div>
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold text-[#00C2BB] uppercase tracking-wider">
+            <h3 className="text-sm font-bold text-[var(--fcp-text-primary)] uppercase tracking-wider">
               Pricing Assumptions &amp; Sizing Knobs
             </h3>
             {data.version && (
-              <span className="text-[10px] font-mono text-gray-400 bg-white/5 px-2 py-0.5 rounded border border-white/10">
+              <span className="text-[10px] font-mono text-[var(--fcp-text-secondary)] bg-[var(--fcp-bg-raised)] px-2 py-0.5 rounded border border-[var(--fcp-border-subtle)]">
                 v{data.version.slice(0, 14)}
               </span>
             )}
           </div>
-          <p className="text-xs text-gray-400 mt-1">
-            Override conversion values (e.g. NAT VM-count, Glue vCPU, discount percentages) for <b>this job only</b>.
+          <p className="text-xs text-[var(--fcp-text-secondary)] mt-1 leading-relaxed">
+            Override conversion values for <b>this job only</b>.
             Re-running will re-execute the pricing pipeline and regenerate the report.
           </p>
         </div>
@@ -171,8 +171,8 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
         {canEdit && (
           <button
             onClick={handleRerun}
-            disabled={rerunning || !!validationError}
-            className="px-4 py-2 rounded-lg bg-[#645DF6] hover:bg-[#645DF6]/90 text-white text-xs font-medium disabled:opacity-40 transition-colors cursor-pointer shrink-0"
+            disabled={rerunning || Boolean(validationError)}
+            className="px-4 py-2 rounded-lg bg-[var(--facets-purple)] hover:bg-[var(--facets-purple-hover)] text-white text-xs font-semibold disabled:opacity-40 transition-all cursor-pointer shrink-0 shadow-xs hover:shadow"
           >
             {rerunning ? 'Launching Re-run…' : 'Re-run with my assumptions'}
           </button>
@@ -180,20 +180,21 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
       </div>
 
       {error && (
-        <div className="mb-4 p-3 rounded-lg bg-orange-950/40 border border-orange-500/40 text-orange-400 text-xs">
+        <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-500 text-xs">
           {error}
         </div>
       )}
 
       {validationError && (
-        <div className="mb-4 p-2.5 rounded-lg bg-orange-950/30 border border-orange-500/30 text-orange-400 text-xs">
-          ⚠️ {validationError}
+        <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-xs flex items-center gap-2">
+          <span>⚠️</span>
+          <span>{validationError}</span>
         </div>
       )}
 
       {canEdit && (
-        <div className="mb-4 bg-white/[0.01] border border-white/5 rounded-lg p-3">
-          <label className="block text-xs text-gray-400 mb-1" htmlFor="rerun-reason">
+        <div className="mb-5 bg-[var(--fcp-bg-raised)] border border-[var(--fcp-border-subtle)] rounded-xl p-3.5">
+          <label className="block text-xs font-medium text-[var(--fcp-text-secondary)] mb-1.5" htmlFor="rerun-reason">
             Optional rationale / notes for this re-run:
           </label>
           <input
@@ -202,63 +203,86 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
             placeholder="e.g. Adjusted NAT VM count to match 32 microservices topology"
             value={reason}
             onChange={e => setReason(e.target.value)}
-            className="w-full bg-black/40 border border-white/10 rounded px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-[#00C2BB]"
+            className="w-full bg-[var(--fcp-input-bg)] border border-[var(--fcp-border-subtle)] rounded-lg px-3 py-1.5 text-xs text-[var(--fcp-text-primary)] placeholder:text-[var(--fcp-text-tertiary)] focus:outline-none focus:border-[#645DF6] focus:ring-2 focus:ring-[#645DF6]/20 transition-all"
           />
         </div>
       )}
 
-      <div className="space-y-4">
+      <div className="space-y-3">
         {categoriesList.map((catKey) => {
-          const meta = CATEGORY_META[catKey] ?? { label: catKey.replace('_', ' '), desc: '' }
+          const meta = CATEGORY_META[catKey] ?? { label: catKey.replace(/_/g, ' '), desc: '' }
           const groupAssumptions = assumptionsList.filter(
             a => (a.category || 'other') === catKey
           )
           if (groupAssumptions.length === 0) return null
 
-          const isCollapsed = collapsed[catKey]
+          const isCollapsed = Boolean(collapsed[catKey])
 
           return (
-            <div key={catKey} className="border border-white/10 rounded-lg overflow-hidden bg-white/[0.01]">
+            <div
+              key={catKey}
+              className="border border-[var(--fcp-border-subtle)] rounded-xl overflow-hidden bg-[var(--fcp-bg-surface)] shadow-2xs transition-all"
+            >
               <button
                 type="button"
                 onClick={() => toggleCollapse(catKey)}
-                className="w-full px-4 py-3 bg-white/[0.03] hover:bg-white/[0.05] border-b border-white/10 flex items-center justify-between text-left transition-colors cursor-pointer"
+                className="w-full px-4 py-3 bg-[var(--fcp-bg-surface)] hover:bg-[var(--fcp-bg-hover)] border-b border-[var(--fcp-border-subtle)] flex items-center justify-between text-left transition-colors duration-150 cursor-pointer select-none"
               >
                 <div className="flex items-center gap-2.5">
-                  <span className="text-xs text-[#00C2BB] font-mono">
-                    {isCollapsed ? '▶' : '▼'}
-                  </span>
+                  <div className="w-5 h-5 rounded bg-[var(--fcp-bg-raised)] border border-[var(--fcp-border-subtle)] flex items-center justify-center transition-all">
+                    <svg
+                      className={`w-3 h-3 text-[var(--facets-purple)] dark:text-[var(--facets-teal)] transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                        isCollapsed ? '-rotate-90' : 'rotate-0'
+                      }`}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                  </div>
                   <div>
-                    <span className="text-xs font-semibold text-white tracking-wide">
+                    <span className="text-xs font-semibold text-[var(--fcp-text-primary)] tracking-wide">
                       {meta.label}
                     </span>
-                    <span className="ml-2 text-[10px] text-gray-400 font-mono bg-white/5 px-1.5 py-0.5 rounded-full border border-white/10">
+                    <span className="ml-2 text-[10px] text-[var(--fcp-text-secondary)] font-mono bg-[var(--fcp-bg-raised)] px-1.5 py-0.5 rounded-full border border-[var(--fcp-border-subtle)]">
                       {groupAssumptions.length}
                     </span>
                     {meta.desc && (
-                      <span className="ml-2 text-[11px] text-gray-500 hidden sm:inline">{meta.desc}</span>
+                      <span className="ml-2 text-[11px] text-[var(--fcp-text-tertiary)] hidden sm:inline">{meta.desc}</span>
                     )}
                   </div>
                 </div>
-                <span className="text-[10px] text-gray-500">
+                <span className="text-[11px] text-[var(--fcp-text-tertiary)] font-medium">
                   {isCollapsed ? 'Expand' : 'Collapse'}
                 </span>
               </button>
 
-              {!isCollapsed && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-xs">
+              <div
+                className="grid transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]"
+                style={{
+                  gridTemplateRows: isCollapsed ? '0fr' : '1fr',
+                  opacity: isCollapsed ? 0 : 1,
+                  visibility: isCollapsed ? 'hidden' : 'visible',
+                  transition: 'grid-template-rows 300ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms ease, visibility 300ms',
+                }}
+              >
+                <div className="min-h-0 overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs min-w-[700px]">
                     <thead>
-                      <tr className="border-b border-white/10 bg-white/[0.01]">
-                        <th className="py-2.5 px-4 text-gray-400 font-medium">Assumption</th>
-                        <th className="py-2.5 px-4 text-gray-400 font-medium">Effective Value</th>
-                        <th className="py-2.5 px-4 text-gray-400 font-medium">Default</th>
-                        <th className="py-2.5 px-4 text-gray-400 font-medium">Allowed Range</th>
-                        <th className="py-2.5 px-4 text-gray-400 font-medium">Unit</th>
-                        {canEdit && <th className="py-2.5 px-4 text-gray-400 font-medium text-right">Action</th>}
+                      <tr className="border-b border-[var(--fcp-border-subtle)] bg-[var(--fcp-table-header-bg)] text-[var(--fcp-text-tertiary)] font-semibold">
+                        <th className="py-2.5 px-4">Assumption</th>
+                        <th className="py-2.5 px-4 text-center">Effective Value</th>
+                        <th className="py-2.5 px-4 text-center">Default</th>
+                        <th className="py-2.5 px-4 text-center">Allowed Range</th>
+                        <th className="py-2.5 px-4 text-center">Unit</th>
+                        {canEdit && <th className="py-2.5 px-4 text-right">Action</th>}
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-white/5">
+                    <tbody className="divide-y divide-[var(--fcp-border-subtle)]">
                       {groupAssumptions.map((a) => {
                         const key = a.key
                         const title = a.title
@@ -274,24 +298,26 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
                         const isModified = Number.isFinite(num) && num !== defaultVal
 
                         return (
-                          <tr key={key} className="hover:bg-white/[0.01] transition-colors">
+                          <tr key={key} className="hover:bg-[var(--fcp-table-row-hover)] transition-colors duration-150">
                             <td className="py-3 px-4">
-                              <div className="font-medium text-white flex items-center gap-1.5">
+                              <div className="font-semibold text-[var(--fcp-text-primary)] flex items-center gap-1.5">
                                 {title}
                                 {(isOverridden || isModified) && (
-                                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#645DF6]/20 text-[#a5a1f8] border border-[#645DF6]/30">
+                                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
                                     custom
                                   </span>
                                 )}
                               </div>
-                              <div className="text-[10px] text-gray-500 font-mono mt-0.5">{key}</div>
+                              <code className="text-[10px] text-[var(--fcp-text-tertiary)] font-mono mt-0.5 inline-block bg-[var(--fcp-bg-raised)] px-1 rounded border border-[var(--fcp-border-subtle)]">
+                                {key}
+                              </code>
                               {rationale && (
-                                <div className="text-[11px] text-gray-500 mt-1 max-w-sm truncate" title={rationale}>
+                                <p className="text-[11px] text-[var(--fcp-text-secondary)] mt-1 max-w-sm truncate" title={rationale}>
                                   {rationale}
-                                </div>
+                                </p>
                               )}
                             </td>
-                            <td className="py-3 px-4">
+                            <td className="py-3 px-4 text-center">
                               {canEdit ? (
                                 <input
                                   type="number"
@@ -300,22 +326,26 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
                                   max={maxVal}
                                   value={currentValStr}
                                   onChange={e => handleValueChange(key, e.target.value)}
-                                  className={`w-28 px-2 py-1 rounded bg-black/40 border text-white font-mono text-xs focus:outline-none focus:border-[#00C2BB] ${
-                                    isOutOfRange ? 'border-orange-500 bg-orange-950/20 text-orange-300' : 'border-white/10'
+                                  className={`w-24 text-center px-2 py-1 rounded-lg border font-mono text-xs focus:outline-none focus:border-[#645DF6] focus:ring-2 focus:ring-[#645DF6]/20 bg-[var(--fcp-input-bg)] text-[var(--fcp-text-primary)] ${
+                                    isOutOfRange
+                                      ? 'border-rose-500 text-rose-500'
+                                      : 'border-[var(--fcp-border-strong)]'
                                   }`}
                                 />
                               ) : (
-                                <span className="font-mono text-white">{currentValStr}</span>
+                                <span className="font-mono font-semibold text-xs text-[var(--facets-purple)] dark:text-[var(--facets-teal)]">
+                                  {currentValStr}
+                                </span>
                               )}
                             </td>
-                            <td className="py-3 px-4 font-mono text-gray-400">
+                            <td className="py-3 px-4 text-center font-mono text-xs text-[var(--fcp-text-secondary)]">
                               {defaultVal}
                             </td>
-                            <td className="py-3 px-4 font-mono text-gray-500">
+                            <td className="py-3 px-4 text-center font-mono text-[11px] text-[var(--fcp-text-tertiary)]">
                               [{minVal}, {maxVal}]
                             </td>
-                            <td className="py-3 px-4 text-gray-400">
-                              {unit}
+                            <td className="py-3 px-4 text-center text-xs text-[var(--fcp-text-secondary)]">
+                              {unit || '—'}
                             </td>
                             {canEdit && (
                               <td className="py-3 px-4 text-right">
@@ -323,7 +353,7 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
                                   <button
                                     type="button"
                                     onClick={() => handleResetToDefault(a)}
-                                    className="text-[11px] text-gray-400 hover:text-white underline cursor-pointer"
+                                    className="text-xs text-[var(--facets-purple)] dark:text-[var(--facets-teal)] hover:underline font-medium cursor-pointer"
                                   >
                                     Reset
                                   </button>
@@ -336,7 +366,7 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
                     </tbody>
                   </table>
                 </div>
-              )}
+              </div>
             </div>
           )
         })}

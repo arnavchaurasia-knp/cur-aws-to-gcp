@@ -32,8 +32,54 @@ export interface LogResponse {
   }
 }
 
-export function JobLogsViewer({ jobId, isRunning }: { jobId: string; isRunning: boolean }) {
-  const [stream, setStream] = useState<'pipeline' | 'engine' | 'diagnostics'>('pipeline')
+function highlightJson(json: string): string {
+  return json.replace(
+    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+    match => {
+      let cls = 'text-purple-300'
+      if (/^"/.test(match)) {
+        if (/:$/.test(match)) {
+          cls = 'text-sky-300 font-semibold'
+        } else {
+          cls = 'text-amber-200'
+        }
+      } else if (/true|false/.test(match)) {
+        cls = 'text-emerald-400 font-medium'
+      } else if (/null/.test(match)) {
+        cls = 'text-rose-300 italic'
+      }
+      return `<span class="${cls}">${match}</span>`
+    }
+  )
+}
+
+function renderEngineLine(line: string) {
+  if (/error|exception|traceback|fatal|failed/i.test(line)) {
+    return <span className="text-rose-400 font-medium bg-rose-950/40 border border-rose-800/40 rounded px-1.5 py-0.5 inline-block">{line}</span>
+  }
+  if (/warn|warning/i.test(line)) {
+    return <span className="text-amber-300 font-medium bg-amber-950/30 rounded px-1.5 py-0.5 inline-block">{line}</span>
+  }
+  if (/\b(done|success|completed|ok)\b/i.test(line)) {
+    return <span className="text-emerald-400 font-medium">{line}</span>
+  }
+  if (/(?:^|\s)(?:\[?(?:phase|step)\s*\d+\]?|phase\s*\d+|step\s*\d+)/i.test(line)) {
+    return <span className="text-[#a5a0ff] font-semibold bg-[#645DF6]/20 border border-[#645DF6]/30 rounded px-1.5 py-0.5 inline-block">{line}</span>
+  }
+  if (/^(?:thinking|thought|prompt):/i.test(line)) {
+    return <span className="text-indigo-300 italic">{line}</span>
+  }
+  if (/^(?:tool call|tool|action|calling|executing):/i.test(line)) {
+    return <span className="text-[#00C2BB] font-medium">{line}</span>
+  }
+  if (/info|notice/i.test(line)) {
+    return <span className="text-sky-300">{line}</span>
+  }
+  return <span className="text-slate-200">{line}</span>
+}
+
+export function JobLogsViewer({ jobId, isRunning, initialStream = 'pipeline' }: { jobId: string; isRunning: boolean; initialStream?: 'pipeline' | 'engine' | 'diagnostics' }) {
+  const [stream, setStream] = useState<'pipeline' | 'engine' | 'diagnostics'>(initialStream)
   const [level, setLevel] = useState<string>('info')
   const [script, setScript] = useState<string>('')
   const [search, setSearch] = useState<string>('')
@@ -91,25 +137,30 @@ export function JobLogsViewer({ jobId, isRunning }: { jobId: string; isRunning: 
   }
 
   return (
-    <div className="bg-white/[0.02] border border-white/10 rounded-lg p-5 space-y-4">
+    <div className="bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-subtle)] rounded-xl p-5 space-y-4 shadow-[var(--fcp-card-shadow)]">
       {/* Header controls */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--fcp-border-subtle)] pb-4">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-white">Stream:</span>
-          <div className="inline-flex rounded-lg bg-white/5 p-1 border border-white/10 text-xs">
-            {(['pipeline', 'engine', 'diagnostics'] as const).map(s => (
-              <button
-                key={s}
-                onClick={() => setStream(s)}
-                className={`px-3.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 cursor-pointer ${
-                  stream === s
-                    ? 'bg-[#645DF6] !text-white shadow-md'
-                    : 'text-slate-400 hover:!text-white hover:bg-white/10'
-                }`}
-              >
-                {s.charAt(0).toUpperCase() + s.slice(1)}
-              </button>
-            ))}
+          <span className="text-sm font-semibold text-[color:var(--fcp-text-primary)]">Stream:</span>
+          <div className="inline-flex rounded-lg bg-[var(--fcp-bg-canvas)] p-1 border border-[var(--fcp-border-subtle)] text-xs gap-1">
+            {(['pipeline', 'engine', 'diagnostics'] as const).map(s => {
+              const active = stream === s
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setStream(s)}
+                  style={active ? { color: '#ffffff', backgroundColor: '#645DF6' } : undefined}
+                  className={`px-3.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 cursor-pointer border ${
+                    active
+                      ? 'bg-[#645DF6] !text-white border-[#645DF6] shadow-sm'
+                      : 'text-[color:var(--fcp-text-secondary)] border-transparent hover:text-[color:var(--fcp-text-primary)] hover:bg-[var(--fcp-hover-overlay)] hover:border-[var(--fcp-border-subtle)]'
+                  }`}
+                >
+                  {s.charAt(0).toUpperCase() + s.slice(1)}
+                </button>
+              )
+            })}
           </div>
         </div>
 
@@ -119,8 +170,8 @@ export function JobLogsViewer({ jobId, isRunning }: { jobId: string; isRunning: 
             onClick={copyLogs}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all duration-150 cursor-pointer ${
               copied
-                ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                : 'border-white/10 text-gray-300 hover:text-white hover:bg-white/5'
+                ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 font-semibold'
+                : 'border-[var(--fcp-border-subtle)] text-[color:var(--fcp-text-secondary)] hover:text-[color:var(--fcp-text-primary)] hover:bg-[var(--fcp-hover-overlay)]'
             }`}
             title="Copy logs to clipboard"
           >
@@ -144,7 +195,7 @@ export function JobLogsViewer({ jobId, isRunning }: { jobId: string; isRunning: 
             href={`/api/jobs/${jobId}/logs?stream=${stream}&limit=2000`}
             target="_blank"
             rel="noreferrer"
-            className="px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
+            className="px-3 py-1.5 rounded-lg border border-[var(--fcp-border-subtle)] text-xs font-medium text-[color:var(--fcp-text-secondary)] hover:text-[color:var(--fcp-text-primary)] hover:bg-[var(--fcp-hover-overlay)] transition-colors cursor-pointer"
           >
             Download full
           </a>
@@ -155,11 +206,11 @@ export function JobLogsViewer({ jobId, isRunning }: { jobId: string; isRunning: 
       {stream === 'pipeline' && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
-            <label className="block text-[11px] uppercase tracking-wider text-gray-400 mb-1">Min Level</label>
+            <label className="block text-[11px] uppercase tracking-wider text-[color:var(--fcp-text-tertiary)] mb-1 font-semibold">Min Level</label>
             <select
               value={level}
               onChange={e => setLevel(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-[#645DF6]"
+              className="w-full bg-[var(--fcp-bg-canvas)] border border-[var(--fcp-border-subtle)] rounded-lg px-2.5 py-1.5 text-xs text-[color:var(--fcp-text-primary)] outline-none focus:border-[#645DF6] cursor-pointer"
             >
               <option value="debug">DEBUG &amp; above</option>
               <option value="info">INFO &amp; above</option>
@@ -169,24 +220,24 @@ export function JobLogsViewer({ jobId, isRunning }: { jobId: string; isRunning: 
           </div>
 
           <div>
-            <label className="block text-[11px] uppercase tracking-wider text-gray-400 mb-1">Script filter</label>
+            <label className="block text-[11px] uppercase tracking-wider text-[color:var(--fcp-text-tertiary)] mb-1 font-semibold">Script filter</label>
             <input
               type="text"
               placeholder="e.g. ingest.py"
               value={script}
               onChange={e => setScript(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-[#645DF6]"
+              className="w-full bg-[var(--fcp-bg-canvas)] border border-[var(--fcp-border-subtle)] rounded-lg px-2.5 py-1.5 text-xs text-[color:var(--fcp-text-primary)] placeholder-[color:var(--fcp-text-tertiary)] outline-none focus:border-[#645DF6]"
             />
           </div>
 
           <div>
-            <label className="block text-[11px] uppercase tracking-wider text-gray-400 mb-1">Search text</label>
+            <label className="block text-[11px] uppercase tracking-wider text-[color:var(--fcp-text-tertiary)] mb-1 font-semibold">Search text</label>
             <input
               type="text"
               placeholder="Filter by keyword..."
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-[#645DF6]"
+              className="w-full bg-[var(--fcp-bg-canvas)] border border-[var(--fcp-border-subtle)] rounded-lg px-2.5 py-1.5 text-xs text-[color:var(--fcp-text-primary)] placeholder-[color:var(--fcp-text-tertiary)] outline-none focus:border-[#645DF6]"
             />
           </div>
         </div>
@@ -242,49 +293,52 @@ export function JobLogsViewer({ jobId, isRunning }: { jobId: string; isRunning: 
         {/* Engine / raw lines with intelligent syntax coloring */}
         {stream === 'engine' && data?.lines && data.lines.length > 0 && (
           <div className="space-y-0.5">
-            {data.lines.map((line, idx) => {
-              const isError = /error|exception|traceback|fatal|failed/i.test(line)
-              const isWarn = /warn|warning/i.test(line)
-              const isInfo = /info|notice|step|phase/i.test(line)
-              const isSuccess = /done|success|completed|ok\b/i.test(line)
-
-              let lineClass = 'text-slate-300'
-              if (isError) lineClass = 'text-rose-400 font-medium bg-rose-950/30 rounded px-1.5'
-              else if (isWarn) lineClass = 'text-amber-300 font-medium'
-              else if (isSuccess) lineClass = 'text-emerald-400'
-              else if (isInfo) lineClass = 'text-cyan-300'
-
-              return (
-                <div key={idx} className="flex items-start gap-2.5 py-1 px-2 rounded hover:bg-white/[0.08] hover:border-l-2 hover:border-l-[#645DF6] pl-1.5 transition-all duration-100 font-mono text-xs leading-relaxed group">
-                  <span className="text-slate-500 group-hover:text-slate-300 select-none text-[11px] w-9 text-right shrink-0 font-mono">{idx + 1}</span>
-                  <span className={`break-all flex-1 ${lineClass}`}>{line}</span>
-                </div>
-              )
-            })}
+            {data.lines.map((line, idx) => (
+              <div key={idx} className="flex items-start gap-2.5 py-1 px-2 rounded hover:bg-white/[0.08] hover:border-l-2 hover:border-l-[#645DF6] pl-1.5 transition-all duration-100 font-mono text-xs leading-relaxed group">
+                <span className="text-slate-500 group-hover:text-slate-300 select-none text-[11px] w-9 text-right shrink-0 font-mono">{idx + 1}</span>
+                <span className="break-all flex-1">{renderEngineLine(line)}</span>
+              </div>
+            ))}
           </div>
         )}
 
         {/* Diagnostics structured JSONL cards */}
         {stream === 'diagnostics' && data?.records && data.records.length > 0 && (
-          <div className="space-y-2.5">
-            {data.records.map((rec, idx) => (
-              <div key={idx} className="border border-slate-800 bg-[#0d1017] rounded-xl p-3.5 space-y-1.5">
-                <div className="flex items-center justify-between text-xs border-b border-slate-800/80 pb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-slate-500 text-[11px]">#{idx + 1}</span>
-                    <span className="px-2 py-0.5 rounded bg-[#645DF6]/20 text-[#a5a0ff] font-semibold text-[11px] border border-[#645DF6]/30 uppercase">
-                      {rec.phase || rec.event || rec.type || 'Event'}
-                    </span>
+          <div className="space-y-3">
+            {data.records.map((rec, idx) => {
+              const eventType = rec.phase || rec.event || rec.type || 'Event'
+              const status = rec.status || (rec.error ? 'error' : rec.success ? 'success' : undefined)
+              const jsonHtml = highlightJson(JSON.stringify(rec, null, 2))
+
+              return (
+                <div key={idx} className="border border-slate-800 bg-[#0c0e14] rounded-xl p-3.5 space-y-2 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs border-b border-slate-800/80 pb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-slate-500 text-[11px]">#{idx + 1}</span>
+                      <span className="px-2 py-0.5 rounded bg-[#645DF6]/25 text-[#a5a0ff] font-semibold text-[11px] border border-[#645DF6]/40 uppercase tracking-wide">
+                        {eventType}
+                      </span>
+                      {status && (
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${
+                          status === 'error' || status === 'failed'
+                            ? 'bg-rose-950/60 text-rose-400 border border-rose-800/40'
+                            : 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/40'
+                        }`}>
+                          {status}
+                        </span>
+                      )}
+                    </div>
+                    {rec.timestamp && (
+                      <span className="text-slate-400 font-mono text-[11px]">{rec.timestamp}</span>
+                    )}
                   </div>
-                  {rec.timestamp && (
-                    <span className="text-slate-400 font-mono text-[11px]">{rec.timestamp}</span>
-                  )}
+                  <pre
+                    className="text-xs font-mono overflow-x-auto whitespace-pre-wrap leading-relaxed pt-1"
+                    dangerouslySetInnerHTML={{ __html: jsonHtml }}
+                  />
                 </div>
-                <pre className="text-xs font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap leading-relaxed pt-1">
-                  {JSON.stringify(rec, null, 2)}
-                </pre>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>

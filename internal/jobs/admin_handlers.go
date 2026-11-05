@@ -699,9 +699,12 @@ func (h *Handler) AdminPutAssumption(w http.ResponseWriter, r *http.Request) {
 		Reason   string  `json:"reason"`
 		Category string  `json:"category"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Reason == "" {
-		http.Error(w, `{"error":"value and non-empty reason are required"}`, http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
+	}
+	if body.Reason == "" {
+		body.Reason = "Direct change"
 	}
 	if body.Category != "" && !db.IsValidAssumptionCategory(body.Category) {
 		http.Error(w, `{"error":"invalid category"}`, http.StatusBadRequest)
@@ -784,9 +787,12 @@ func (h *Handler) AdminPutReportSetting(w http.ResponseWriter, r *http.Request) 
 		Value  string `json:"value"`
 		Reason string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Reason == "" {
-		http.Error(w, `{"error":"value and non-empty reason are required"}`, http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
+	}
+	if body.Reason == "" {
+		body.Reason = "Direct change"
 	}
 
 	changedBy := ""

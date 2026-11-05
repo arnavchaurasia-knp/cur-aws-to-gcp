@@ -15,11 +15,11 @@ import { toast } from 'sonner'
 import { BackButton } from '../components/BackButton'
 
 const statusColor: Record<string, string> = {
-  pending:   'text-gray-400',
-  running:   'text-[#00C2BB]',
-  done:      'text-[#00C2BB]',
-  failed:    'text-orange-400',
-  cancelled: 'text-gray-500',
+  pending:   'text-slate-600 dark:text-gray-400',
+  running:   'text-[#009b95] dark:text-[#00C2BB]',
+  done:      'text-[#009b95] dark:text-[#00C2BB]',
+  failed:    'text-orange-500 dark:text-orange-400',
+  cancelled: 'text-slate-500 dark:text-gray-500',
 }
 
 const statusIcon: Record<string, string> = {
@@ -39,20 +39,20 @@ function fmtWhen(iso: string) {
 }
 
 type StatCardProps = Readonly<{ label: string; value: string | number; color?: string; delay?: number }>
-export function StatCard({ label, value, color = 'text-white', delay = 0 }: StatCardProps) {
+export function StatCard({ label, value, color = 'text-slate-900 dark:text-white', delay = 0 }: StatCardProps) {
   return (
     <div
-      className="bg-white/[0.03] border border-white/10 rounded-xl px-5 py-4 card-lift anim-fade-in-up"
+      className="bg-white dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 rounded-xl px-5 py-4 card-lift anim-fade-in-up shadow-sm dark:shadow-none"
       style={{ animationDelay: `${delay}ms` }}
     >
-      <p className="text-xs uppercase tracking-wider text-gray-400 mb-1.5">{label}</p>
+      <p className="text-xs uppercase tracking-wider text-slate-500 dark:text-gray-400 mb-1.5 font-medium">{label}</p>
       <p className={`text-2xl font-bold tabular-nums ${color}`}>{value}</p>
     </div>
   )
 }
 
 // Standardized log line: parses timestamp + level, color-codes output.
-function LogLine({ line }: Readonly<{ line: string }>) {
+function LogLine({ line, lineNum }: Readonly<{ line: string; lineNum?: number }>) {
   const tsMatch = line.match(/^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})/)
   const levelMatch = line.match(/\b(ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\b/i)
 
@@ -64,19 +64,32 @@ function LogLine({ line }: Readonly<{ line: string }>) {
     .trim()
 
   const levelStyles: Record<string, string> = {
-    ERROR: 'text-red-400',
-    WARN: 'text-orange-400',
-    WARNING: 'text-orange-400',
-    INFO: 'text-[#00C2BB]',
-    DEBUG: 'text-gray-400',
-    TRACE: 'text-gray-500',
+    ERROR: 'text-rose-400 bg-rose-950/60 border-rose-800/40',
+    WARN: 'text-amber-400 bg-amber-950/60 border-amber-800/40',
+    WARNING: 'text-amber-400 bg-amber-950/60 border-amber-800/40',
+    INFO: 'text-[#00C2BB] bg-teal-950/40 border-teal-800/40',
+    DEBUG: 'text-slate-400 bg-slate-900 border-slate-700',
+    TRACE: 'text-slate-500 bg-slate-900 border-slate-800',
   }
 
   return (
-    <div className="flex items-start gap-2.5 text-xs font-mono leading-relaxed py-1 px-2 rounded hover:bg-white/[0.08] hover:border-l-2 hover:border-l-[#00C2BB] pl-1.5 transition-all duration-100 group">
-      {timestamp && <span className="text-slate-400 group-hover:text-slate-200 select-none text-[11px] shrink-0 font-mono w-24">{timestamp}</span>}
-      <span className={`font-bold shrink-0 text-[11px] w-14 ${levelStyles[level] || levelStyles.INFO}`}>[{level}]</span>
-      <span className="text-slate-200 break-all leading-relaxed flex-1 select-text">{message || line}</span>
+    <div className="flex items-start gap-2.5 text-xs font-mono leading-relaxed py-1 px-2 rounded hover:bg-slate-800/60 hover:border-l-2 hover:border-l-[#00C2BB] pl-1.5 transition-all duration-100 group">
+      {lineNum != null && (
+        <span className="text-slate-600 group-hover:text-slate-400 select-none text-[11px] shrink-0 font-mono w-9 text-right pr-2 border-r border-slate-800/80">
+          {lineNum}
+        </span>
+      )}
+      {timestamp && (
+        <span className="text-slate-400 group-hover:text-slate-300 select-none text-[11px] shrink-0 font-mono w-[150px] min-w-[150px]">
+          {timestamp}
+        </span>
+      )}
+      <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase font-bold shrink-0 border ${levelStyles[level] || levelStyles.INFO}`}>
+        {level}
+      </span>
+      <span className="text-slate-200 break-all leading-relaxed flex-1 select-text">
+        {message || line}
+      </span>
     </div>
   )
 }
@@ -191,6 +204,8 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   const [logCopied, setLogCopied] = useState(false)
   const [logLines, setLogLines] = useState<string[] | null>(null)
   const [logsLoading, setLogsLoading] = useState(false)
+  const [logSearch, setLogSearch] = useState('')
+  const [logLevelFilter, setLogLevelFilter] = useState('ALL')
 
   const toggleGroup = (owner: string) => setCollapsed(prev => {
     const next = new Set(prev)
@@ -251,6 +266,9 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     setActiveLogJob(j)
     setLogsLoading(true)
     setLogLines(null)
+    setLogCopied(false)
+    setLogSearch('')
+    setLogLevelFilter('ALL')
     try {
       const lines = await facetsGetLogs(j.id)
       setLogLines(lines)
@@ -259,6 +277,48 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     } finally {
       setLogsLoading(false)
     }
+  }
+
+  const filteredModalLogs = useMemo(() => {
+    if (!logLines) return []
+    return logLines.filter(line => {
+      if (logLevelFilter !== 'ALL') {
+        const match = line.match(/\b(ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\b/i)
+        const lvl = match ? match[1].toUpperCase() : 'INFO'
+        if (logLevelFilter === 'WARN' && (lvl !== 'WARN' && lvl !== 'WARNING')) return false
+        if (logLevelFilter === 'ERROR' && lvl !== 'ERROR') return false
+        if (logLevelFilter === 'INFO' && lvl !== 'INFO') return false
+        if (logLevelFilter === 'DEBUG' && lvl !== 'DEBUG') return false
+      }
+      if (logSearch.trim()) {
+        if (!line.toLowerCase().includes(logSearch.toLowerCase().trim())) return false
+      }
+      return true
+    })
+  }, [logLines, logLevelFilter, logSearch])
+
+  const handleCopyModalLogs = () => {
+    if (!logLines || logLines.length === 0) return
+    const linesToCopy = filteredModalLogs.length > 0 ? filteredModalLogs : logLines
+    navigator.clipboard.writeText(linesToCopy.join('\n'))
+    setLogCopied(true)
+    toast.success(`Logs copied to clipboard (${linesToCopy.length} lines)`)
+    setTimeout(() => setLogCopied(false), 2500)
+  }
+
+  const handleDownloadModalLogs = () => {
+    if (!logLines || !activeLogJob) return
+    const textToDownload = filteredModalLogs.length > 0 ? filteredModalLogs.join('\n') : logLines.join('\n')
+    const blob = new Blob([textToDownload], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `job-${activeLogJob.id}.log`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    toast.success(`Downloaded job-${activeLogJob.id.slice(0, 8)}.log`)
   }
 
   const executeStopAll = async () => {
@@ -558,7 +618,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
           <button
             onClick={() => setTab('deleted')}
             className={`pb-3 px-4 text-sm font-semibold transition-colors relative cursor-pointer ${
-              tab === 'deleted' ? 'text-[#00C2BB]' : 'text-gray-400 hover:text-white'
+              tab === 'deleted' ? 'text-[#009b95] dark:text-[#00C2BB]' : 'text-slate-500 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
             Archived / Deleted Runs ({deletedJobs ? deletedJobs.length : '…'})
@@ -569,7 +629,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
           <button
             onClick={() => setTab('shares')}
             className={`pb-3 px-4 text-sm font-semibold transition-colors relative cursor-pointer ${
-              tab === 'shares' ? 'text-[#00C2BB]' : 'text-gray-400 hover:text-white'
+              tab === 'shares' ? 'text-[#009b95] dark:text-[#00C2BB]' : 'text-slate-500 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
             Shared Links ({shares ? shares.length : '…'})
@@ -595,14 +655,14 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                     }
                   }}
                   placeholder="Search & hit Enter to add tag…"
-                  className="w-full sm:w-80 bg-white/5 border border-white/10 rounded-lg px-3 py-2 pr-16 text-sm
-                    placeholder:text-gray-500 transition-colors duration-150 focus:border-[#645DF6]"
+                  className="w-full sm:w-80 bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 pr-16 text-sm text-slate-900 dark:text-gray-100
+                    placeholder:text-slate-400 dark:placeholder:text-gray-500 transition-colors duration-150 focus:border-[#645DF6] shadow-sm dark:shadow-none"
                 />
                 {query.trim() && (
                   <button
                     type="button"
                     onClick={() => addSearchTag(query)}
-                    className="absolute right-1.5 px-2 py-1 bg-[#645DF6]/20 hover:bg-[#645DF6]/40 text-[#a5a0ff] text-xs font-semibold rounded cursor-pointer transition-colors"
+                    className="absolute right-1.5 px-2 py-1 bg-[#645DF6]/15 hover:bg-[#645DF6]/30 text-[#645DF6] dark:text-[#a5a0ff] text-xs font-semibold rounded cursor-pointer transition-colors"
                     title="Add filter tag"
                   >
                     + Add
@@ -612,7 +672,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
               <select
                 value={statusFilter}
                 onChange={e => { setStatusFilter(e.target.value); setOffset(0) }}
-                className="bg-[#12121a] border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-200"
+                className="bg-white dark:bg-[#12121a] border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm text-slate-800 dark:text-gray-200 shadow-sm dark:shadow-none cursor-pointer"
               >
                 <option value="">All statuses</option>
                 <option value="pending">Pending</option>
@@ -621,15 +681,10 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                 <option value="failed">Failed</option>
                 <option value="cancelled">Cancelled</option>
               </select>
-              <label className="text-xs text-gray-400 flex items-center gap-1.5">
-                From:
-                <input type="date" value={fromDate} onChange={e => { setFromDate(e.target.value); setOffset(0) }}
-                  className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" />
-              </label>
               <select
                 value={ownerFilter}
                 onChange={e => { setOwnerFilter(e.target.value); setOffset(0) }}
-                className="bg-[#12121a] border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-200 cursor-pointer"
+                className="bg-white dark:bg-[#12121a] border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm text-slate-800 dark:text-gray-200 shadow-sm dark:shadow-none cursor-pointer"
                 title="Filter by job owner / user"
               >
                 <option value="">All Owners / Users</option>
@@ -637,15 +692,15 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                   <option key={o} value={o}>{o}</option>
                 ))}
               </select>
-              <label className="text-xs text-gray-400 flex items-center gap-1.5">
+              <label className="text-xs text-slate-600 dark:text-gray-400 flex items-center gap-1.5 font-medium">
                 From:
                 <input type="date" value={fromDate} onChange={e => { setFromDate(e.target.value); setOffset(0) }}
-                  className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" />
+                  className="bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-lg px-2 py-1.5 text-xs text-slate-800 dark:text-gray-300 shadow-sm dark:shadow-none" />
               </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1.5">
+              <label className="text-xs text-slate-600 dark:text-gray-400 flex items-center gap-1.5 font-medium">
                 To:
                 <input type="date" value={toDate} onChange={e => { setToDate(e.target.value); setOffset(0) }}
-                  className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" />
+                  className="bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-lg px-2 py-1.5 text-xs text-slate-800 dark:text-gray-300 shadow-sm dark:shadow-none" />
               </label>
               {hasActiveFilters && (
                 <button
@@ -733,64 +788,64 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                   const isCollapsed = collapsed.has(g.owner)
                   return (
                     <Reveal key={g.owner} delay={gi * 30}>
-                      <div className="border border-white/10 rounded-xl overflow-hidden bg-white/[0.01]">
+                      <div className="border border-slate-200 dark:border-white/10 rounded-xl overflow-hidden bg-white dark:bg-white/[0.01] shadow-sm dark:shadow-none">
                         <button
                           onClick={() => toggleGroup(g.owner)}
-                          className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-white/[0.03]
-                            hover:bg-white/[0.05] transition-colors duration-100 text-left cursor-pointer"
+                          className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-slate-50/70 dark:bg-white/[0.03]
+                            hover:bg-slate-100/80 dark:hover:bg-white/[0.05] transition-colors duration-100 text-left cursor-pointer"
                         >
                           <span className="flex items-center gap-2.5 min-w-0">
-                            <span className={`text-gray-500 text-xs transition-transform duration-150 ${isCollapsed ? '' : 'rotate-90'}`}>▶</span>
-                            <span className="font-semibold text-gray-100 truncate">{g.owner}</span>
-                            <span className="text-xs px-2 py-0.5 rounded-full bg-white/5 text-gray-400">
+                            <span className={`text-slate-500 dark:text-gray-400 text-xs transition-transform duration-150 ${isCollapsed ? '' : 'rotate-90'}`}>▶</span>
+                            <span className="font-semibold text-slate-900 dark:text-gray-100 truncate">{g.owner}</span>
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-200/70 dark:bg-white/5 text-slate-700 dark:text-gray-300 font-medium">
                               {g.jobs.length} run{g.jobs.length === 1 ? '' : 's'}
                             </span>
                           </span>
                           <span className="flex items-center gap-4 text-xs whitespace-nowrap">
-                            <span className="text-[#00C2BB] font-medium">{g.done} done</span>
-                            {g.failed > 0 && <span className="text-orange-400 font-medium">{g.failed} failed</span>}
-                            <span className="text-gray-400 tabular-nums">Total AWS: {fmtMoney(g.spend)}</span>
+                            <span className="text-[#009b95] dark:text-[#00C2BB] font-semibold">{g.done} done</span>
+                            {g.failed > 0 && <span className="text-orange-500 dark:text-orange-400 font-semibold">{g.failed} failed</span>}
+                            <span className="text-slate-600 dark:text-gray-400 font-medium tabular-nums">Total AWS: {fmtMoney(g.spend)}</span>
                           </span>
                         </button>
 
                         {!isCollapsed && (
                           <div className="overflow-x-auto">
                             <table className="w-full text-sm">
-                              <thead className="bg-white/[0.02] text-[11px] uppercase tracking-wider text-gray-400 border-b border-white/5 select-none">
+                              <thead className="bg-slate-50 dark:bg-white/[0.02] text-[11px] uppercase tracking-wider text-slate-600 dark:text-gray-400 border-b border-slate-200 dark:border-white/5 select-none font-semibold">
                                 <tr>
                                   <th
                                     onClick={() => handleSort('created_at')}
-                                    className="text-left px-4 py-2.5 cursor-pointer hover:text-white transition-colors"
+                                    className="text-left px-4 py-2.5 cursor-pointer hover:text-slate-900 dark:hover:text-white transition-colors"
                                   >
                                     When {sortField === 'created_at' && (sortDir === 'asc' ? '▲' : '▼')}
                                   </th>
                                   <th
                                     onClick={() => handleSort('prospect')}
-                                    className="text-left px-4 py-2.5 cursor-pointer hover:text-white transition-colors"
+                                    className="text-left px-4 py-2.5 cursor-pointer hover:text-slate-900 dark:hover:text-white transition-colors"
                                   >
                                     Prospect {sortField === 'prospect' && (sortDir === 'asc' ? '▲' : '▼')}
                                   </th>
                                   <th
                                     onClick={() => handleSort('owner')}
-                                    className="text-left px-4 py-2.5 cursor-pointer hover:text-white transition-colors"
+                                    className="text-left px-4 py-2.5 cursor-pointer hover:text-slate-900 dark:hover:text-white transition-colors"
                                   >
                                     Owner {sortField === 'owner' && (sortDir === 'asc' ? '▲' : '▼')}
                                   </th>
                                   <th
                                     onClick={() => handleSort('status')}
-                                    className="text-left px-4 py-2.5 cursor-pointer hover:text-white transition-colors"
+                                    className="text-left px-4 py-2.5 cursor-pointer hover:text-slate-900 dark:hover:text-white transition-colors"
                                   >
                                     Status {sortField === 'status' && (sortDir === 'asc' ? '▲' : '▼')}
                                   </th>
                                   <th
                                     onClick={() => handleSort('aws_spend')}
-                                    className="text-right px-4 py-2.5 cursor-pointer hover:text-white transition-colors"
+                                    className="text-right px-4 py-2.5 cursor-pointer hover:text-slate-900 dark:hover:text-white transition-colors"
                                   >
                                     AWS Spend {sortField === 'aws_spend' && (sortDir === 'asc' ? '▲' : '▼')}
                                   </th>
                                   <th
                                     onClick={() => handleSort('gcp_od')}
-                                    className="text-right px-4 py-2.5 cursor-pointer hover:text-white transition-colors"
+                                    className="text-right px-4 py-2.5 cursor-pointer hover:text-slate-900 dark:hover:text-white transition-colors"
                                   >
                                     GCP (OD) {sortField === 'gcp_od' && (sortDir === 'asc' ? '▲' : '▼')}
                                   </th>
@@ -799,7 +854,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                                   <th className="text-right px-4 py-2.5">Actions</th>
                                 </tr>
                               </thead>
-                              <tbody className="divide-y divide-white/5">
+                              <tbody className="divide-y divide-slate-100 dark:divide-white/5">
                                 {g.jobs.map(j => {
                                   const hasRatio = j.aws_spend != null && j.aws_spend > 0 && j.gcp_od != null && j.gcp_od > 0
                                   const ratio = hasRatio ? j.gcp_od! / j.aws_spend! : null
@@ -809,38 +864,38 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                                     <tr
                                       key={j.id}
                                       onClick={() => nav(`/jobs/${j.id}`)}
-                                      className="cursor-pointer hover:bg-white/[0.04] transition-colors duration-100"
+                                      className="cursor-pointer hover:bg-slate-50/80 dark:hover:bg-white/[0.04] transition-colors duration-100"
                                     >
-                                      <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">
+                                      <td className="px-4 py-3 text-slate-500 dark:text-gray-400 whitespace-nowrap text-xs">
                                         {fmtWhen(j.created_at)}
                                       </td>
                                       <td className="px-4 py-3">
-                                        <p className="text-gray-200 font-medium">{j.prospect}</p>
-                                        <p className="text-[11px] text-gray-500 font-mono mt-0.5">{j.id.slice(0, 8)}</p>
+                                        <p className="text-slate-900 dark:text-gray-200 font-semibold">{j.prospect}</p>
+                                        <p className="text-[11px] text-slate-500 dark:text-gray-500 font-mono mt-0.5">{j.id.slice(0, 8)}</p>
                                       </td>
-                                      <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                                      <td className="px-4 py-3 text-xs text-slate-800 dark:text-gray-300 whitespace-nowrap font-medium">
                                         {j.owner || '—'}
                                       </td>
-                                      <td className={`px-4 py-3 ${statusColor[j.status] ?? 'text-gray-400'}`}>
-                                        <span className="flex items-center gap-1.5 font-medium">
-                                          <span className={`text-xs ${j.status === 'running' ? 'animate-pulse' : ''}`}>
+                                      <td className={`px-4 py-3 ${statusColor[j.status] ?? 'text-slate-600 dark:text-gray-400'}`}>
+                                        <span className="flex items-center gap-1.5 font-semibold text-xs">
+                                          <span className={j.status === 'running' ? 'animate-pulse' : ''}>
                                             {statusIcon[j.status] ?? ''}
                                           </span>
                                           {j.status.charAt(0).toUpperCase() + j.status.slice(1)}
                                         </span>
                                         {j.status === 'failed' && j.error && (
-                                          <p className="text-xs text-orange-400/80 mt-0.5 max-w-xs truncate" title={j.error}>
+                                          <p className="text-xs text-orange-500/90 mt-0.5 max-w-xs truncate" title={j.error}>
                                             {j.error}
                                           </p>
                                         )}
                                         {rowError[j.id] && (
-                                          <p className="text-xs text-orange-400 mt-0.5">{rowError[j.id]}</p>
+                                          <p className="text-xs text-orange-500 mt-0.5">{rowError[j.id]}</p>
                                         )}
                                       </td>
-                                      <td className="px-4 py-3 text-right text-gray-300 tabular-nums font-medium">
+                                      <td className="px-4 py-3 text-right text-slate-800 dark:text-gray-200 tabular-nums font-semibold">
                                         {fmtMoney(j.aws_spend)}
                                       </td>
-                                      <td className="px-4 py-3 text-right text-gray-300 tabular-nums font-medium">
+                                      <td className="px-4 py-3 text-right text-slate-800 dark:text-gray-200 tabular-nums font-semibold">
                                         {fmtMoney(j.gcp_od ?? null)}
                                       </td>
                                       <td className="px-4 py-3 text-right tabular-nums text-xs whitespace-nowrap">
@@ -848,18 +903,18 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                                           isImplausible ? (
                                             <span
                                               title={`Ratio ${ratio.toFixed(2)}x is outside expected 0.5x–1.5x range`}
-                                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
                                             >
                                               <span>⚠️</span>
                                               <span>{ratio.toFixed(2)}x</span>
                                             </span>
                                           ) : (
-                                            <span className="text-gray-300 font-medium">
+                                            <span className="text-slate-800 dark:text-gray-200 font-semibold">
                                               {ratio.toFixed(2)}x
                                             </span>
                                           )
                                         ) : (
-                                          <span className="text-gray-500">—</span>
+                                          <span className="text-slate-400 dark:text-gray-500">—</span>
                                         )}
                                       </td>
 
@@ -870,44 +925,44 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                                             <a
                                               href={downloadURL(j.id)}
                                               title="Download HTML Report"
-                                              className="px-2 py-1 rounded bg-white/5 hover:bg-[#645DF6]/30 text-gray-300 hover:text-white transition-colors"
+                                              className="px-2 py-1 rounded bg-slate-100 hover:bg-[#645DF6]/15 dark:bg-white/5 dark:hover:bg-[#645DF6]/30 text-slate-700 hover:text-[#645DF6] dark:text-gray-300 dark:hover:text-white border border-slate-200 dark:border-white/10 font-medium transition-colors"
                                             >
                                               HTML
                                             </a>
                                             <a
                                               href={downloadURL(j.id, undefined, 'xlsx')}
                                               title="Download Excel Spreadsheet"
-                                              className="px-2 py-1 rounded bg-white/5 hover:bg-[#00C2BB]/30 text-gray-300 hover:text-white transition-colors"
+                                              className="px-2 py-1 rounded bg-slate-100 hover:bg-[#00C2BB]/20 dark:bg-white/5 dark:hover:bg-[#00C2BB]/30 text-slate-700 hover:text-[#009b95] dark:text-gray-300 dark:hover:text-white border border-slate-200 dark:border-white/10 font-medium transition-colors"
                                             >
                                               XLSX
                                             </a>
                                             <a
                                               href={downloadURL(j.id, undefined, 'csv')}
                                               title="Download CSV"
-                                              className="px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white transition-colors"
+                                              className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-slate-700 hover:text-slate-900 dark:text-gray-300 dark:hover:text-white border border-slate-200 dark:border-white/10 font-medium transition-colors"
                                             >
                                               CSV
                                             </a>
                                             <a
                                               href={downloadURL(j.id, undefined, 'bill')}
                                               title="Download Original Input Bill"
-                                              className="px-2 py-1 rounded bg-[#00C2BB]/10 hover:bg-[#00C2BB]/25 text-[#00C2BB] font-medium transition-colors border border-[#00C2BB]/30"
+                                              className="px-2 py-1 rounded bg-[#00C2BB]/15 hover:bg-[#00C2BB]/30 text-[#009b95] dark:text-[#00C2BB] font-semibold transition-colors border border-[#00C2BB]/40"
                                             >
                                               Bill
                                             </a>
                                           </div>
                                         ) : (
-                                          <span className="text-xs text-gray-600">—</span>
+                                          <span className="text-xs text-slate-400 dark:text-gray-600">—</span>
                                         )}
                                       </td>
 
-                                      {/* Action Buttons */}
+                                      {/* Action Buttons: Only [Logs] and [Delete] (or Retry / Cancel), no redundant Bill/HTML links */}
                                       <td className="px-4 py-3 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                                        <div className="flex items-center justify-end gap-2.5">
+                                        <div className="flex items-center justify-end gap-2">
                                           <button
                                             onClick={e => handleOpenLogs(e, j)}
                                             title="View Live Execution Logs"
-                                            className="text-xs px-2 py-1 rounded border border-white/10 hover:border-white/30 text-gray-300 hover:text-white transition-colors cursor-pointer"
+                                            className="text-xs px-2.5 py-1 rounded border border-slate-200 dark:border-white/10 hover:border-slate-400 dark:hover:border-white/30 text-slate-700 dark:text-gray-300 hover:text-slate-900 dark:hover:text-white bg-slate-50 dark:bg-transparent transition-colors cursor-pointer font-medium"
                                           >
                                             Logs
                                           </button>
@@ -916,7 +971,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                                             <button
                                               onClick={e => handleRetry(e, j.id)}
                                               disabled={busy.has(j.id)}
-                                              className="text-xs font-semibold px-2 py-1 rounded bg-[#645DF6]/20 hover:bg-[#645DF6]/40 text-[#8981ff] transition-colors cursor-pointer disabled:opacity-40"
+                                              className="text-xs font-semibold px-2.5 py-1 rounded bg-[#645DF6]/20 hover:bg-[#645DF6]/40 text-[#645DF6] dark:text-[#8981ff] transition-colors cursor-pointer disabled:opacity-40"
                                             >
                                               {busy.has(j.id) ? '…' : 'Retry'}
                                             </button>
@@ -926,7 +981,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                                             <button
                                               onClick={e => handleCancelClick(e, j.id)}
                                               disabled={busy.has(j.id)}
-                                              className="text-xs font-semibold px-2 py-1 rounded bg-orange-500/20 hover:bg-orange-500/40 text-orange-400 transition-colors cursor-pointer disabled:opacity-40"
+                                              className="text-xs font-semibold px-2.5 py-1 rounded bg-orange-500/20 hover:bg-orange-500/40 text-orange-600 dark:text-orange-400 transition-colors cursor-pointer disabled:opacity-40"
                                             >
                                               {busy.has(j.id) ? '…' : 'Cancel'}
                                             </button>
@@ -937,7 +992,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                                               onClick={e => handleDeleteClick(e, j.id, j.prospect)}
                                               disabled={busy.has(j.id)}
                                               title="Move to Deleted Jobs Archive"
-                                              className="text-xs px-2 py-1 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer disabled:opacity-40"
+                                              className="text-xs px-2.5 py-1 rounded text-slate-500 dark:text-gray-500 hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer disabled:opacity-40 font-medium"
                                             >
                                               {busy.has(j.id) ? '…' : 'Delete'}
                                             </button>
@@ -959,7 +1014,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
             )}
 
             <div className="flex flex-wrap items-center justify-between gap-4 mt-8 text-sm">
-              <div className="flex items-center gap-2 text-xs text-gray-400">
+              <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-gray-400">
                 <span>Rows per page:</span>
                 <select
                   value={pageSize}
@@ -968,7 +1023,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                     setPageSize(newSize)
                     setOffset(0)
                   }}
-                  className="bg-[#12121a] border border-white/10 rounded px-2 py-1 text-xs text-gray-200 cursor-pointer"
+                  className="bg-white dark:bg-[#12121a] border border-slate-200 dark:border-white/10 rounded px-2 py-1 text-xs text-slate-800 dark:text-gray-200 cursor-pointer shadow-sm dark:shadow-none"
                 >
                   <option value={25}>25</option>
                   <option value={50}>50</option>
@@ -981,17 +1036,17 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                 <button
                   onClick={() => setOffset(o => Math.max(0, o - pageSize))}
                   disabled={offset === 0}
-                  className="px-3 py-1.5 rounded-lg border border-white/10 text-gray-300 disabled:opacity-30 hover:bg-white/5 cursor-pointer"
+                  className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/10 text-slate-700 dark:text-gray-300 disabled:opacity-30 hover:bg-slate-100 dark:hover:bg-white/5 cursor-pointer font-medium"
                 >
                   ← Prev
                 </button>
-                <span className="text-gray-400 text-xs tabular-nums">
+                <span className="text-slate-600 dark:text-gray-400 text-xs tabular-nums font-medium">
                   Page {page} of {pageCount} · {total} jobs
                 </span>
                 <button
                   onClick={() => setOffset(o => o + pageSize)}
                   disabled={offset + pageSize >= total}
-                  className="px-3 py-1.5 rounded-lg border border-white/10 text-gray-300 disabled:opacity-30 hover:bg-white/5 cursor-pointer"
+                  className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/10 text-slate-700 dark:text-gray-300 disabled:opacity-30 hover:bg-slate-100 dark:hover:bg-white/5 cursor-pointer font-medium"
                 >
                   Next →
                 </button>
@@ -1208,37 +1263,46 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                 </div>
                 <div className="flex items-center gap-2">
                   {logLines && logLines.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigator.clipboard.writeText(logLines.join('\n'))
-                        setLogCopied(true)
-                        toast.success('Logs copied to clipboard')
-                        setTimeout(() => setLogCopied(false), 2000)
-                      }}
-                      className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border font-medium transition-all duration-150 cursor-pointer ${
-                        logCopied
-                          ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                          : 'bg-white/5 hover:bg-white/10 border-white/10 text-slate-200 hover:text-white'
-                      }`}
-                      title="Copy complete log to clipboard"
-                    >
-                      {logCopied ? (
-                        <>
-                          <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                          </svg>
-                          <span>Copied!</span>
-                        </>
-                      ) : (
-                        <>
-                          <svg className="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-                          </svg>
-                          <span>Copy Log</span>
-                        </>
-                      )}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleCopyModalLogs}
+                        className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border font-semibold transition-all duration-150 cursor-pointer ${
+                          logCopied
+                            ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400'
+                            : 'bg-white/5 hover:bg-white/10 border-white/15 text-slate-200 hover:text-white'
+                        }`}
+                        title="Copy logs to clipboard"
+                      >
+                        {logCopied ? (
+                          <>
+                            <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                            </svg>
+                            <span>Copied!</span>
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                            </svg>
+                            <span>Copy Log</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleDownloadModalLogs}
+                        className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-slate-200 hover:text-white transition-colors cursor-pointer font-medium"
+                        title="Download raw log file"
+                      >
+                        <svg className="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        <span>Download</span>
+                      </button>
+                    </>
                   )}
                   <button
                     type="button"
@@ -1251,10 +1315,49 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                 </div>
               </div>
 
+              {/* In-modal Filter Toolbar */}
+              {logLines && logLines.length > 0 && (
+                <div className="px-6 py-2.5 bg-[#090d16] border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-slate-400 font-semibold mr-1">Level:</span>
+                    {(['ALL', 'INFO', 'WARN', 'ERROR', 'DEBUG'] as const).map(lvl => {
+                      const active = logLevelFilter === lvl
+                      return (
+                        <button
+                          key={lvl}
+                          type="button"
+                          onClick={() => setLogLevelFilter(lvl)}
+                          className={`px-2.5 py-1 rounded text-[11px] font-semibold transition cursor-pointer border ${
+                            active
+                              ? 'bg-[#645DF6] text-white border-[#645DF6]'
+                              : 'text-slate-400 border-slate-800 hover:border-slate-700 hover:text-slate-200 bg-slate-900/60'
+                          }`}
+                        >
+                          {lvl}
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  <div className="flex items-center gap-3 flex-1 max-w-sm ml-auto">
+                    <input
+                      type="text"
+                      placeholder="Filter log lines…"
+                      value={logSearch}
+                      onChange={e => setLogSearch(e.target.value)}
+                      className="w-full bg-[#0d121f] border border-slate-800 rounded-lg px-3 py-1 text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-[#645DF6]"
+                    />
+                    <span className="text-[11px] text-slate-400 whitespace-nowrap tabular-nums">
+                      {filteredModalLogs.length} / {logLines.length}
+                    </span>
+                  </div>
+                </div>
+              )}
+
               <div
                 data-terminal
-                style={{ backgroundColor: '#07090e' }}
-                className="dark-console p-4 sm:p-5 overflow-auto flex-1 font-mono text-xs leading-relaxed select-text"
+                style={{ backgroundColor: '#07090e', color: '#f8fafc' }}
+                className="dark-console p-4 sm:p-5 overflow-auto flex-1 font-mono text-xs leading-relaxed select-text shadow-inner"
               >
                 {logsLoading && (
                   <div className="text-slate-400 flex items-center gap-2 p-3">
@@ -1265,10 +1368,13 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
                 {!logsLoading && (!logLines || logLines.length === 0) && (
                   <p className="text-slate-500 p-3 italic">No logs generated for this run yet.</p>
                 )}
-                {!logsLoading && logLines && logLines.length > 0 && (
+                {!logsLoading && logLines && logLines.length > 0 && filteredModalLogs.length === 0 && (
+                  <p className="text-slate-500 p-3 italic">No log entries matched your filter &ldquo;{logSearch || logLevelFilter}&rdquo;.</p>
+                )}
+                {!logsLoading && filteredModalLogs.length > 0 && (
                   <div className="space-y-0.5 p-1">
-                    {logLines.map((line, i) => (
-                      <LogLine key={i} line={line} />
+                    {filteredModalLogs.map((line, i) => (
+                      <LogLine key={i} line={line} lineNum={i + 1} />
                     ))}
                   </div>
                 )}

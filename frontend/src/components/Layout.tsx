@@ -4,6 +4,7 @@ import { Sidebar } from './Sidebar'
 import { ThemeToggle } from './ThemeToggle'
 import { UserMenu } from './Nav'
 import { NotificationDropdown } from './NotificationDropdown'
+import { TicketHeaderButton } from './TicketHeaderButton'
 import type { UserInfo } from '../api/auth'
 
 interface LayoutProps {
@@ -28,7 +29,6 @@ export function Layout({ user, children }: LayoutProps) {
   // Redirect unauthenticated users
   if (!user) return <Navigate to="/login" replace />
 
-  // Only show menu bar (Sidebar) for admins
   const isAdmin = Boolean(user?.is_admin)
 
   return (
@@ -36,7 +36,7 @@ export function Layout({ user, children }: LayoutProps) {
       {/* Top Navbar */}
       <header
         className={`fixed top-0 right-0 h-16 z-30 border-b border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-base)]/90 backdrop-blur-md transition-all duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
-          !isAdmin ? 'left-0' : sidebarCollapsed ? 'left-16' : 'left-64'
+          sidebarCollapsed ? 'left-16' : 'left-64'
         }`}
       >
         <div className="flex items-center justify-between px-6 h-full">
@@ -47,8 +47,11 @@ export function Layout({ user, children }: LayoutProps) {
             </span>
           </div>
 
-          {/* Right: Notification Dropdown (for admins) + Theme Toggle + User Dropdown */}
-          <div className="flex items-center gap-2.5">
+          {/* Right: Ticket Header Button + Notification Bell (admin) + Theme Toggle + User Dropdown */}
+          <div className="flex items-center gap-2">
+            {/* Quick Support Tickets Header Button */}
+            <TicketHeaderButton />
+
             {/* Admin Interactive Notification Bell with Dropdown */}
             {isAdmin && <NotificationDropdown />}
 
@@ -56,28 +59,25 @@ export function Layout({ user, children }: LayoutProps) {
             <ThemeToggle />
 
             {/* Separator */}
-            <div className="h-5 w-px bg-white/10" />
+            <div className="h-5 w-px bg-gray-300 dark:bg-white/10" />
 
-            {/* Round User Dropdown Thing */}
+            {/* Round User Dropdown */}
             <UserMenu user={user} />
           </div>
         </div>
       </header>
 
-      {/* Main content layout */}
-      <div className={`flex transition-all duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${!isAdmin ? 'pl-0' : sidebarCollapsed ? 'pl-16' : 'pl-64'}`}>
-        {/* Sidebar matching Facets Control Plane specifications (Admins only) */}
-        {isAdmin && (
-          <Sidebar
-            user={user}
-            collapsed={sidebarCollapsed}
-            onToggle={toggleSidebar}
-          />
-        )}
+      {/* Main content layout with universal sidebar */}
+      <div className={`flex transition-all duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${sidebarCollapsed ? 'pl-16' : 'pl-64'}`}>
+        <Sidebar
+          user={user}
+          collapsed={sidebarCollapsed}
+          onToggle={toggleSidebar}
+        />
 
         {/* Page Content: occupies full page smoothly */}
-        <main className="flex-1 pt-16 min-h-screen overflow-x-hidden">
-          <div key={location.pathname} className="page-enter">
+        <main className="flex-1 min-w-0 pt-16 min-h-screen overflow-x-hidden">
+          <div key={location.pathname} className="page-enter min-w-0 w-full">
             {children}
           </div>
         </main>

@@ -63,6 +63,14 @@ type phaseSpec struct {
 }
 
 // phaseSpecs returns the six per-phase prompts + their deterministic gates.
+func isDirectiveLayerEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("DIRECTIVE_LAYER")))
+	if v == "" {
+		return true // Section 6: default on
+	}
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
 func phaseSpecs(inputExt string) []phaseSpec {
 	return []phaseSpec{
 		{
@@ -140,33 +148,41 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// classify_mechanics.py stamps mechanic_group + writes phase2_manifest.json.
 			// apply_commitment_ignores.py + apply_static_mappings.py write their
 			// mapping files. agy is spawned ONLY for the three LLM groups.
-			PreLLMScripts: []string{
-				"scripts/classify_mechanics.py $DB",
-				"?scripts/apply_commitment_ignores.py $DB",
-				"?scripts/apply_static_mappings.py $DB",
-			},
-			// Post-merge deterministic passes (zero LLM tokens):
-			//   1. merge_mappings.py  — bulk-INSERT all group files into aws_li_to_gcp_li
-			//   2. reconcile_capacity.py — upsize any break_down rows where GCP vCPU/RAM
-			//      < AWS spec to enforce the never-underprovision guarantee
-			PostLLMScripts: []string{
-				"?scripts/merge_mappings.py $DB projection-audit/mappings",
-				// Service Classification Engine: force the canonical GCP target per
-				// data/service_map.json so mappings are deterministic, not per-row
-				// LLM guesses (CloudTrail->Cloud Logging, EMR->Dataproc, etc.).
-				"?scripts/service_classifier.py $DB",
-				// Generic backstop: reroute any OTHER non-object-storage service the
-				// LLM dropped onto Cloud Storage to passthrough + manual-review flag.
-				"?scripts/fix_storage_misroute.py $DB",
-				// Modelling disclosures for services whose GCP target or topology
-				// a CUR cannot reveal (OpenSearch, MSK, RDS/Aurora, ElastiCache).
-				// These notes previously rode along with calibrate_confidence.py and
-				// were lost when the confidence subsystem was removed; they are not
-				// about confidence and belong in the pipeline on their own.
-				"?scripts/apply_architecture_notes.py $DB",
-				"?scripts/reconcile_capacity.py $DB",
-				"?scripts/verify_golden_mappings.py $DB",
-			},
+			PreLLMScripts: func() []string {
+				if isDirectiveLayerEnabled() {
+					return []string{
+						"scripts/classify_mechanics.py $DB",
+						"?scripts/apply_static_mappings.py $DB",
+					}
+				}
+				return []string{
+					"scripts/classify_mechanics.py $DB",
+					"?scripts/apply_commitment_ignores.py $DB",
+					"?scripts/apply_static_mappings.py $DB",
+				}
+			}(),
+			PostLLMScripts: func() []string {
+				scripts := []string{
+					"?scripts/merge_mappings.py $DB projection-audit/mappings",
+					"?scripts/service_classifier.py $DB",
+					"?scripts/fix_storage_misroute.py $DB",
+				}
+				if isDirectiveLayerEnabled() {
+					scripts = append(scripts,
+						"?scripts/directives_from_legacy.py",
+						"?scripts/apply_directives.py $DB",
+					)
+				} else {
+					scripts = append(scripts,
+						"?scripts/apply_architecture_notes.py $DB",
+					)
+				}
+				scripts = append(scripts,
+					"?scripts/reconcile_capacity.py $DB",
+					"?scripts/verify_golden_mappings.py $DB",
+				)
+				return scripts
+			}(),
 			Prompt: "Phase 2 — LLM mapping only. Strict protocol, no deviations.\n\n" +
 				"WORKING DIRECTORY: your job's absolute directory is <<JOB_DIR>>. Every\n" +
 				"relative path mentioned anywhere below (projection-audit/..., scripts/...,\n" +
@@ -294,7 +310,15 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// apply_review_fixes.py reads review_fixes.json from the LLM and
 			// review_candidates.json from auto_review.py, then applies confirm/override/veto
 			// decisions with schema validation. It is the ONLY script that writes to the DB.
-			PostLLMScripts: []string{"?scripts/apply_review_fixes.py"},
+			PostLLMScripts: func() []string {
+				if isDirectiveLayerEnabled() {
+					return []string{
+						"?scripts/directives_from_legacy.py",
+						"?scripts/apply_directives.py $DB",
+					}
+				}
+				return []string{"?scripts/apply_review_fixes.py"}
+			}(),
 			Prompt: "Phase 3 — Review. Strict protocol, no deviations.\n\n" +
 				"WORKING DIRECTORY: your job's absolute directory is <<JOB_DIR>>. Every\n" +
 				"relative path mentioned below (review_flags.md, review_fixes.json, etc.) means\n" +
@@ -439,13 +463,26 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			// schema validation. LLM never touches the DB directly.
 			// incremental_rerate.py after LLM: fills rates for new SKU IDs introduced by fixes.
 			// outlier_gate.py: advisory outlier checks (prefixed with ?; Go CheckSQL enforces hard threshold).
-			PostLLMScripts: []string{
-				"?scripts/apply_outlier_fixes.py",
-				"?scripts/incremental_rerate.py",
-				"?scripts/validate_fix.py $JOBDIR",
-				"?scripts/outlier_gate.py $DB",
-				"?scripts/render_notes.py $DB",
-			},
+			PostLLMScripts: func() []string {
+				var scripts []string
+				if isDirectiveLayerEnabled() {
+					scripts = append(scripts,
+						"?scripts/directives_from_legacy.py",
+						"?scripts/apply_directives.py $DB",
+					)
+				} else {
+					scripts = append(scripts,
+						"?scripts/apply_outlier_fixes.py",
+					)
+				}
+				scripts = append(scripts,
+					"?scripts/incremental_rerate.py",
+					"?scripts/validate_fix.py $JOBDIR",
+					"?scripts/outlier_gate.py $DB",
+					"?scripts/render_notes.py $DB",
+				)
+				return scripts
+			}(),
 			Prompt: "Phase 5 — Outlier Triage. Strict protocol, no deviations.\n\n" +
 				"WORKING DIRECTORY: your job's absolute directory is <<JOB_DIR>>. Every\n" +
 				"relative path mentioned below (triage_suggestions.md, outlier_fixes.json, etc.)\n" +

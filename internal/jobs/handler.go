@@ -1040,6 +1040,7 @@ func (h *Handler) Recalculate(w http.ResponseWriter, r *http.Request) {
 		{filepath.Join(scriptsDir, "merge_mappings.py"), dbPath, filepath.Join(projectionAuditDir, "mappings")},
 		{filepath.Join(scriptsDir, "service_classifier.py"), dbPath},
 		{filepath.Join(scriptsDir, "apply_rates.py")},
+		{filepath.Join(scriptsDir, "apply_overrides.py")},
 		{filepath.Join(scriptsDir, "render_report.py")},
 	}
 
@@ -1832,19 +1833,22 @@ func (h *Handler) RegenerateUserAPIToken(w http.ResponseWriter, r *http.Request)
 // Uploaded bills listing
 // ─────────────────────────────────────────────────────────────────────────
 
-// ListUploadedBills returns all uploaded bills (admin only).
+// ListUploadedBills returns all uploaded bills (for admins) or user-scoped bills (for non-admins).
 func (h *Handler) ListUploadedBills(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())
 	if sess == nil {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if !sess.IsAdmin(h.adminEmails) {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
-		return
-	}
+	isAdmin := sess.IsAdmin(h.adminEmails)
 	h.syncBillsFromJobsDir()
-	bills, err := h.db.ListUploadedBills()
+	var bills []db.UploadedBill
+	var err error
+	if isAdmin {
+		bills, err = h.db.ListUploadedBills()
+	} else {
+		bills, err = h.db.ListUploadedBillsForOwner(sess.Email)
+	}
 	if err != nil {
 		http.Error(w, `{"error":"failed to list bills"}`, http.StatusInternalServerError)
 		return

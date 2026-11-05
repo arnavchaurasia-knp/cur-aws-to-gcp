@@ -209,6 +209,13 @@
       "writable_by": ["render_notes"],
       "readable_as_logic": false,
       "description": "Generated from state by scripts/render_notes.py. Output only."
+    },
+    "applied_directives": {
+      "sql_type": "TEXT",
+      "kind": "free_text",
+      "writable_by": ["pipeline"],
+      "readable_as_logic": false,
+      "description": "JSON array of directive ids that touched this row (Directive Layer provenance). Written by scripts/apply_directives.py; never matched against."
     }
   },
   "note_order": [

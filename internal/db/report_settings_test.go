@@ -166,3 +166,32 @@ func TestReportSettingsReset(t *testing.T) {
 		}
 	}
 }
+
+func TestReportSettingsHistoryCapAt10(t *testing.T) {
+	d := newReportSettingsTestDB(t)
+
+	// Make 15 setting updates in sequence
+	for i := 1; i <= 15; i++ {
+		val := "true"
+		if i%2 == 0 {
+			val = "false"
+		}
+		_, err := d.UpdateReportSetting("col_gcp_cud_1yr", val, "tester@test.com")
+		require.NoError(t, err)
+	}
+
+	history, err := d.GetReportSettingHistory()
+	require.NoError(t, err)
+
+	// Exactly 10 rows should be returned
+	assert.Len(t, history, 10, "audit log should strictly retain at most 10 records")
+
+	// Verify descending order (newest change first)
+	for i := 0; i < len(history)-1; i++ {
+		assert.GreaterOrEqual(t, history[i].ID, history[i+1].ID, "newer changes must have higher ID")
+	}
+
+	// 15th change was i=15 (val="true")
+	assert.Equal(t, "true", history[0].NewValue)
+}
+

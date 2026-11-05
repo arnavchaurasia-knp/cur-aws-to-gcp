@@ -66,13 +66,41 @@ func (d *DB) GetReportSettings() ([]*ReportSetting, error) {
 	return settings, nil
 }
 
-// GetReportSettingHistory returns report setting changes, newest first.
+// MaxReportSettingHistory is the maximum number of audit log records retained in report_setting_changes.
+const MaxReportSettingHistory = 10
+
+// pruneReportSettingChanges keeps only the newest MaxReportSettingHistory records, deleting older ones.
+func pruneReportSettingChanges(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+		DELETE FROM report_setting_changes
+		WHERE id NOT IN (
+			SELECT id FROM report_setting_changes
+			ORDER BY changed_at DESC, id DESC
+			LIMIT ?
+		)
+	`, MaxReportSettingHistory)
+	return err
+}
+
+// GetReportSettingHistory returns up to the top 10 report setting changes, newest first,
+// and ensures any older records beyond the top 10 are deleted from the database.
 func (d *DB) GetReportSettingHistory() ([]*ReportSettingChange, error) {
+	// Prune any legacy changes exceeding the top 10 limit
+	_, _ = d.conn.Exec(`
+		DELETE FROM report_setting_changes
+		WHERE id NOT IN (
+			SELECT id FROM report_setting_changes
+			ORDER BY changed_at DESC, id DESC
+			LIMIT ?
+		)
+	`, MaxReportSettingHistory)
+
 	rows, err := d.conn.Query(`
 		SELECT id, key, old_value, new_value, changed_by, changed_at
 		FROM report_setting_changes
-		ORDER BY changed_at DESC
-	`)
+		ORDER BY changed_at DESC, id DESC
+		LIMIT ?
+	`, MaxReportSettingHistory)
 	if err != nil {
 		return nil, err
 	}
@@ -191,6 +219,9 @@ func (d *DB) UpdateReportSetting(key, value, changedBy string) (string, error) {
 		VALUES (?, ?, ?, ?)`, key, oldValue, value, changedBy); err != nil {
 		return "", err
 	}
+	if err := pruneReportSettingChanges(tx); err != nil {
+		return "", err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return "", err
@@ -232,6 +263,9 @@ func (d *DB) ResetReportSettings(changedBy string) (string, error) {
 			VALUES (?, ?, ?, ?)`, p.key, p.val, p.val, changedBy); err != nil {
 			return "", err
 		}
+	}
+	if err := pruneReportSettingChanges(tx); err != nil {
+		return "", err
 	}
 
 	if err := tx.Commit(); err != nil {

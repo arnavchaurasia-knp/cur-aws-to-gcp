@@ -275,6 +275,31 @@ func (d *DB) ListUploadedBills() ([]UploadedBill, error) {
 	return bills, rows.Err()
 }
 
+// ListUploadedBillsForOwner returns bills uploaded by or associated with a specific user.
+func (d *DB) ListUploadedBillsForOwner(owner string) ([]UploadedBill, error) {
+	rows, err := d.conn.Query(`
+		SELECT content_hash, input_ext, file_size, COALESCE(file_name, ''), created_at
+		FROM uploaded_bills
+		WHERE owner = ? OR owner = ''
+		ORDER BY created_at DESC
+	`, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var bills []UploadedBill
+	for rows.Next() {
+		var b UploadedBill
+		err := rows.Scan(&b.ContentHash, &b.InputExt, &b.FileSize, &b.FileName, &b.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		bills = append(bills, b)
+	}
+	return bills, rows.Err()
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1

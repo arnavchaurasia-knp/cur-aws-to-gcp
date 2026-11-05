@@ -299,18 +299,18 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
                                 <button
                                   type="button"
                                   onClick={() => handleSave(s, isChecked ? 'false' : 'true', `Toggled ${s.key} to ${isChecked ? 'false' : 'true'}`)}
-                                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border transition-colors duration-200 ease-in-out focus:outline-none ${
+                                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 transition-colors duration-200 ease-in-out focus:outline-none shadow-sm ${
                                     isChecked
-                                      ? 'bg-[#00C2BB] border-[#00C2BB]'
-                                      : 'bg-slate-300 dark:bg-white/20 border-slate-400 dark:border-white/20'
+                                      ? 'bg-[#00C2BB] border-[#009b95]'
+                                      : 'bg-slate-200 border-slate-400 dark:bg-slate-800 dark:border-slate-600'
                                   }`}
                                   role="switch"
                                   aria-checked={isChecked}
                                   title={isChecked ? 'Click to disable' : 'Click to enable'}
                                 >
                                   <span
-                                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-1 ring-black/10 transition duration-200 ease-in-out ${
-                                      isChecked ? 'translate-x-4' : 'translate-x-0'
+                                    className={`pointer-events-none inline-block h-4.5 w-4.5 transform rounded-full bg-white shadow-md border border-slate-300 dark:border-transparent transition duration-200 ease-in-out mt-0.5 ${
+                                      isChecked ? 'translate-x-5' : 'translate-x-0.5'
                                     }`}
                                   />
                                 </button>
@@ -359,7 +359,11 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
                                   <RefreshIcon className="w-3 h-3 animate-spin" /> Saving…
                                 </span>
                               ) : isBool ? (
-                                <span className={`text-[11px] font-medium ${isChecked ? 'text-[#00C2BB]' : 'text-gray-500'}`}>
+                                <span className={`inline-block text-[11px] font-semibold px-2.5 py-0.5 rounded-full border ${
+                                  isChecked
+                                    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                                    : 'bg-slate-200 dark:bg-white/5 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-white/10'
+                                }`}>
                                   {isChecked ? 'Enabled' : 'Disabled'}
                                 </span>
                               ) : isEditing ? (
@@ -408,7 +412,9 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
                     Change Audit Log
                   </h2>
                 </div>
-                <span className="text-[11px] text-gray-500">{history.length} records</span>
+                <span className="text-[11px] text-gray-500 font-mono">
+                  {history.length > 0 ? `Showing top ${Math.min(history.length, 10)} records (rolling limit: 10)` : '0 records'}
+                </span>
               </div>
 
               {history.length === 0 ? (
@@ -431,7 +437,7 @@ export function AdminReportSettings({ user }: Readonly<{ user: UserInfo }>) {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[var(--fcp-border-subtle)]">
-                      {history.map((h) => {
+                      {history.slice(0, 10).map((h) => {
                         const ts = formatReportTimestamp(h.changed_at)
                         return (
                           <tr key={h.id} className="hover:bg-[var(--fcp-bg-hover)] transition-colors group">

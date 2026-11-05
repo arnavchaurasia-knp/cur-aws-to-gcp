@@ -46,10 +46,10 @@ export function ContactCard() {
 
   return (
     <>
-      <div className="bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-default)] rounded-xl p-4 space-y-3 card-lift w-full overflow-hidden shadow-sm min-w-0">
+      <div className="bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-subtle)] rounded-xl p-4 space-y-3 card-lift w-full overflow-hidden shadow-sm min-w-0">
         <div>
           <p className="text-xs uppercase tracking-wider text-[#645DF6] mb-1 font-semibold">Need help?</p>
-          <p className="text-xs text-[var(--fcp-text-secondary)] leading-relaxed break-words">
+          <p className="text-xs text-[var(--fcp-text-secondary)] leading-relaxed break-words max-w-full">
             Need help understanding your cost analysis or want a more detailed infrastructure and cost assessment? Drop a note and our team will get in touch with you.
           </p>
         </div>
@@ -57,10 +57,13 @@ export function ContactCard() {
           type="button"
           data-contact-btn
           onClick={() => setOpen(true)}
-          style={{ color: '#ffffff' }}
-          className="btn-shimmer w-full py-2.5 rounded-lg text-xs font-semibold !text-white cursor-pointer shadow-sm hover:opacity-95 transition-all flex items-center justify-center gap-1.5"
+          style={{ color: '#ffffff', cursor: 'pointer' }}
+          className="btn-shimmer w-full py-2.5 rounded-lg text-xs font-semibold !text-white cursor-pointer shadow-sm hover:opacity-95 transition-all flex items-center justify-center gap-1.5 select-none"
         >
-          <span style={{ color: '#ffffff' }} className="!text-white font-semibold">Contact Us</span>
+          <svg className="w-3.5 h-3.5 shrink-0 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          </svg>
+          <span style={{ color: '#ffffff' }} className="!text-white font-semibold pointer-events-none">Contact Us</span>
         </button>
       </div>
 
@@ -74,7 +77,7 @@ export function ContactCard() {
             role="dialog"
             aria-modal="true"
             aria-label="Contact us"
-            className="w-full max-w-xl bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-default)] rounded-2xl shadow-2xl p-6 space-y-4 anim-scale-in text-[var(--fcp-text-primary)]"
+            className="w-full max-w-xl bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-subtle)] rounded-2xl shadow-2xl p-6 space-y-4 anim-scale-in text-[var(--fcp-text-primary)]"
             onClick={e => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-4">
               <div>

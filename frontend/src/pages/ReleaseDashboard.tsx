@@ -26,6 +26,7 @@ export function ReleaseDashboard({ user }: Readonly<{ user: UserInfo }>) {
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [ownerFilter, setOwnerFilter] = useState<string>('all')
   const [sortBy, setSortBy] = useState<string>('created_desc')
 
   useEffect(() => {
@@ -35,15 +36,26 @@ export function ReleaseDashboard({ user }: Readonly<{ user: UserInfo }>) {
       .finally(() => setLoading(false))
   }, [])
 
+  const uniqueOwners = useMemo(() => {
+    return Array.from(new Set(jobs.map(j => j.owner).filter(Boolean)))
+  }, [jobs])
+
   const filteredAndSorted = useMemo(() => {
     let result = jobs.filter(j => {
       const q = query.toLowerCase().trim()
-      const matchesQuery = !q ||
-        j.prospect.toLowerCase().includes(q) ||
-        j.owner.toLowerCase().includes(q) ||
-        j.id.toLowerCase().includes(q)
+      let matchesQuery = true
+      if (q) {
+        const terms = q.split(/[\s,]+/).filter(Boolean)
+        matchesQuery = terms.every(term =>
+          j.prospect.toLowerCase().includes(term) ||
+          j.owner.toLowerCase().includes(term) ||
+          j.id.toLowerCase().includes(term) ||
+          (j.status && j.status.toLowerCase().includes(term))
+        )
+      }
       const matchesStatus = statusFilter === 'all' || j.status === statusFilter
-      return matchesQuery && matchesStatus
+      const matchesOwner = ownerFilter === 'all' || j.owner.toLowerCase() === ownerFilter.toLowerCase()
+      return matchesQuery && matchesStatus && matchesOwner
     })
 
     result.sort((a, b) => {
@@ -63,9 +75,9 @@ export function ReleaseDashboard({ user }: Readonly<{ user: UserInfo }>) {
     })
 
     return result
-  }, [jobs, query, statusFilter, sortBy])
+  }, [jobs, query, statusFilter, ownerFilter, sortBy])
 
-  const hasActiveFilters = query.trim() !== '' || statusFilter !== 'all' || sortBy !== 'created_desc'
+  const hasActiveFilters = query.trim() !== '' || statusFilter !== 'all' || ownerFilter !== 'all' || sortBy !== 'created_desc'
 
   return (
     <Layout user={user}>
@@ -126,6 +138,20 @@ export function ReleaseDashboard({ user }: Readonly<{ user: UserInfo }>) {
           </div>
 
           <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-400">Owner:</label>
+            <select
+              value={ownerFilter}
+              onChange={e => setOwnerFilter(e.target.value)}
+              className="bg-[#12131d] border border-white/10 rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-[#645DF6] cursor-pointer"
+            >
+              <option value="all">All Owners</option>
+              {uniqueOwners.map(o => (
+                <option key={o} value={o}>{o}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2">
             <label className="text-xs text-gray-400">Sort:</label>
             <select
               value={sortBy}
@@ -146,6 +172,7 @@ export function ReleaseDashboard({ user }: Readonly<{ user: UserInfo }>) {
               onClick={() => {
                 setQuery('')
                 setStatusFilter('all')
+                setOwnerFilter('all')
                 setSortBy('created_desc')
               }}
               className="text-xs px-2.5 py-1.5 rounded-lg border border-white/10 text-gray-400 hover:text-white hover:bg-white/5 transition-colors cursor-pointer"

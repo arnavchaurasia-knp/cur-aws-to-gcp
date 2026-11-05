@@ -215,6 +215,12 @@ def build(region: str = "us-east-1", offline: str | None = None) -> dict:
         with urllib.request.urlopen(req, timeout=600) as resp:
             consume(resp)
 
+    try:
+        from license_split import max_license_fraction
+    except ImportError:
+        sys.path.insert(0, _HERE)
+        from license_split import max_license_fraction
+
     # Compute license_fraction for each instance type with available rates
     for itype, spec in specs.items():
         r = type_rates.get(itype, {})
@@ -225,9 +231,35 @@ def build(region: str = "us-east-1", offline: str | None = None) -> dict:
         for os_name in ("windows", "rhel", "suse", "ubuntu_pro"):
             os_od = r.get(os_name)
             if os_od and os_od > linux_od:
-                fractions[os_name] = round((os_od - linux_od) / os_od, 4)
+                frac = round((os_od - linux_od) / os_od, 4)
+                limit = max_license_fraction(os_name)
+                if 0 < frac <= limit:
+                    fractions[os_name] = frac
+                else:
+                    print(
+                        f"refresh_ec2_specs: license_fraction {frac} for {itype} ({os_name}) "
+                        f"exceeds max allowed {limit} — skipped",
+                        file=sys.stderr,
+                    )
         if fractions:
             spec["license_fraction"] = fractions
+
+    # Borrow fractions for .metal shapes that lack their own OD pair (A-2)
+    for itype, spec in specs.items():
+        if (".metal" in itype or "-metal" in itype) and "license_fraction" not in spec:
+            fam = itype.split(".")[0]
+            candidates = []
+            for k, v in specs.items():
+                if k.startswith(fam + ".") and ".metal" not in k and "-metal" not in k and "license_fraction" in v:
+                    candidates.append((v.get("vcpus", 0), k, v["license_fraction"]))
+            if candidates:
+                candidates.sort(key=lambda c: c[0], reverse=True)
+                best_sibling, best_fracs = candidates[0][1], candidates[0][2]
+                spec["license_fraction"] = dict(best_fracs)
+                print(
+                    f"refresh_ec2_specs: borrowed license_fraction from {best_sibling} for {itype}",
+                    file=sys.stderr,
+                )
 
     return specs
 

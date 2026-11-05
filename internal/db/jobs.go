@@ -49,6 +49,7 @@ type UploadedBill struct {
 	FileSize    int64     `json:"file_size"`
 	FileName    string    `json:"file_name"`
 	CreatedAt   time.Time `json:"created_at"`
+	Owner       string    `json:"owner"`
 }
 
 func (d *DB) UpsertUploadedBill(hash, ext, fileName string, fileSize int64) error {
@@ -64,9 +65,9 @@ func (d *DB) UpsertUploadedBill(hash, ext, fileName string, fileSize int64) erro
 func (d *DB) GetUploadedBill(hash string) (*UploadedBill, error) {
 	var b UploadedBill
 	err := d.conn.QueryRow(
-		`SELECT content_hash, input_ext, file_size, COALESCE(file_name, ''), created_at FROM uploaded_bills WHERE content_hash = ?`,
+		`SELECT content_hash, input_ext, file_size, COALESCE(file_name, ''), created_at, COALESCE(owner, '') FROM uploaded_bills WHERE content_hash = ?`,
 		hash,
-	).Scan(&b.ContentHash, &b.InputExt, &b.FileSize, &b.FileName, &b.CreatedAt)
+	).Scan(&b.ContentHash, &b.InputExt, &b.FileSize, &b.FileName, &b.CreatedAt, &b.Owner)
 	if err != nil {
 		return nil, err
 	}
@@ -359,9 +360,21 @@ func (d *DB) ListAllJobsFiltered(limit, offset int, status string, from, to *tim
 		args = append(args, to.UTC().Format("2006-01-02 15:04:05"))
 	}
 	if strings.TrimSpace(searchQuery) != "" {
-		term := strings.TrimSpace(searchQuery)
-		q += ` AND (LOWER(prospect) LIKE '%' || LOWER(?) || '%' OR LOWER(owner) LIKE '%' || LOWER(?) || '%' OR LOWER(id) LIKE '%' || LOWER(?) || '%' OR LOWER(status) LIKE '%' || LOWER(?) || '%')`
-		args = append(args, term, term, term, term)
+		raw := strings.TrimSpace(searchQuery)
+		var tokens []string
+		if strings.Contains(raw, ",") {
+			for _, part := range strings.Split(raw, ",") {
+				if t := strings.TrimSpace(part); t != "" {
+					tokens = append(tokens, t)
+				}
+			}
+		} else {
+			tokens = []string{raw}
+		}
+		for _, token := range tokens {
+			q += ` AND (LOWER(prospect) LIKE '%' || LOWER(?) || '%' OR LOWER(owner) LIKE '%' || LOWER(?) || '%' OR LOWER(id) LIKE '%' || LOWER(?) || '%' OR LOWER(status) LIKE '%' || LOWER(?) || '%')`
+			args = append(args, token, token, token, token)
+		}
 	}
 
 	// Validate sort column against strict allow-list
@@ -421,9 +434,21 @@ func (d *DB) CountAllJobs(status string, from, to *time.Time, searchQuery ...str
 		args = append(args, to.UTC().Format("2006-01-02 15:04:05"))
 	}
 	if len(searchQuery) > 0 && strings.TrimSpace(searchQuery[0]) != "" {
-		term := strings.TrimSpace(searchQuery[0])
-		q += ` AND (LOWER(prospect) LIKE '%' || LOWER(?) || '%' OR LOWER(owner) LIKE '%' || LOWER(?) || '%' OR LOWER(id) LIKE '%' || LOWER(?) || '%' OR LOWER(status) LIKE '%' || LOWER(?) || '%')`
-		args = append(args, term, term, term, term)
+		raw := strings.TrimSpace(searchQuery[0])
+		var tokens []string
+		if strings.Contains(raw, ",") {
+			for _, part := range strings.Split(raw, ",") {
+				if t := strings.TrimSpace(part); t != "" {
+					tokens = append(tokens, t)
+				}
+			}
+		} else {
+			tokens = []string{raw}
+		}
+		for _, token := range tokens {
+			q += ` AND (LOWER(prospect) LIKE '%' || LOWER(?) || '%' OR LOWER(owner) LIKE '%' || LOWER(?) || '%' OR LOWER(id) LIKE '%' || LOWER(?) || '%' OR LOWER(status) LIKE '%' || LOWER(?) || '%')`
+			args = append(args, token, token, token, token)
+		}
 	}
 	var count int
 	err := d.conn.QueryRow(q, args...).Scan(&count)

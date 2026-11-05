@@ -47,7 +47,11 @@
     "arch": "arm64",
     "chip": "AWS Graviton",
     "ram_gb": 32.0,
-    "vcpus": 16
+    "vcpus": 16,
+    "license_fraction": {
+      "rhel": 0.2975,
+      "suse": 0.2345
+    }
   },
   "a1.xlarge": {
     "vcpus": 4,
@@ -291,7 +295,13 @@
     "arch": "x86_64",
     "chip": "Intel",
     "ram_gb": 192.0,
-    "vcpus": 96
+    "vcpus": 96,
+    "license_fraction": {
+      "windows": 0.5198,
+      "rhel": 0.2027,
+      "suse": 0.0239,
+      "ubuntu_pro": 0.0395
+    }
   },
   "c5.xlarge": {
     "vcpus": 4,
@@ -601,7 +611,13 @@
     "chip": "Intel",
     "ram_gb": 192.0,
     "vcpus": 96,
-    "storage_gb": 3600.0
+    "storage_gb": 3600.0,
+    "license_fraction": {
+      "windows": 0.4894,
+      "rhel": 0.1837,
+      "suse": 0.0212,
+      "ubuntu_pro": 0.0352
+    }
   },
   "c5d.xlarge": {
     "vcpus": 4,
@@ -680,7 +696,13 @@
     "arch": "x86_64",
     "chip": "Intel",
     "ram_gb": 192.0,
-    "vcpus": 72
+    "vcpus": 72,
+    "license_fraction": {
+      "windows": 0.46,
+      "rhel": 0.1667,
+      "suse": 0.0311,
+      "ubuntu_pro": 0.0314
+    }
   },
   "c5n.xlarge": {
     "vcpus": 4,
@@ -806,7 +828,13 @@
     "arch": "x86_64",
     "chip": "AMD",
     "ram_gb": 384.0,
-    "vcpus": 192
+    "vcpus": 192,
+    "license_fraction": {
+      "windows": 0.546,
+      "rhel": 0.2006,
+      "suse": 0.0167,
+      "ubuntu_pro": 0.0437
+    }
   },
   "c6a.xlarge": {
     "vcpus": 4,
@@ -901,7 +929,12 @@
     "arch": "arm64",
     "chip": "Graviton2",
     "ram_gb": 128.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.2411,
+      "suse": 0.0543,
+      "ubuntu_pro": 0.049
+    }
   },
   "c6g.xlarge": {
     "vcpus": 4,
@@ -1003,7 +1036,12 @@
     "chip": "Graviton2",
     "ram_gb": 128.0,
     "vcpus": 64,
-    "storage_gb": 3800.0
+    "storage_gb": 3800.0,
+    "license_fraction": {
+      "rhel": 0.2195,
+      "suse": 0.0484,
+      "ubuntu_pro": 0.0436
+    }
   },
   "c6gd.xlarge": {
     "vcpus": 4,
@@ -1205,7 +1243,13 @@
     "arch": "x86_64",
     "chip": "Intel",
     "ram_gb": 256.0,
-    "vcpus": 128
+    "vcpus": 128,
+    "license_fraction": {
+      "windows": 0.5198,
+      "rhel": 0.1843,
+      "suse": 0.0225,
+      "ubuntu_pro": 0.0395
+    }
   },
   "c6i.xlarge": {
     "vcpus": 4,
@@ -1568,7 +1612,13 @@
     "arch": "x86_64",
     "chip": "AMD EPYC Genoa",
     "ram_gb": 384.0,
-    "vcpus": 192
+    "vcpus": 192,
+    "license_fraction": {
+      "windows": 0.4727,
+      "rhel": 0.1576,
+      "suse": 0.0125,
+      "ubuntu_pro": 0.033
+    }
   },
   "c7a.xlarge": {
     "vcpus": 4,
@@ -1663,7 +1713,12 @@
     "arch": "arm64",
     "chip": "Graviton3",
     "ram_gb": 128.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.2295,
+      "suse": 0.0511,
+      "ubuntu_pro": 0.0461
+    }
   },
   "c7g.xlarge": {
     "vcpus": 4,
@@ -1765,7 +1820,12 @@
     "chip": "Graviton3",
     "ram_gb": 128.0,
     "vcpus": 64,
-    "storage_gb": 3800.0
+    "storage_gb": 3800.0,
+    "license_fraction": {
+      "rhel": 0.1923,
+      "suse": 0.0413,
+      "ubuntu_pro": 0.0371
+    }
   },
   "c7gd.xlarge": {
     "vcpus": 4,
@@ -2051,13 +2111,25 @@
     "arch": "x86_64",
     "chip": "Intel Sapphire Rapids",
     "ram_gb": 192.0,
-    "vcpus": 96
+    "vcpus": 96,
+    "license_fraction": {
+      "windows": 0.5076,
+      "rhel": 0.177,
+      "suse": 0.0144,
+      "ubuntu_pro": 0.0377
+    }
   },
   "c7i.metal-48xl": {
     "arch": "x86_64",
     "chip": "Intel Sapphire Rapids",
     "ram_gb": 384.0,
-    "vcpus": 192
+    "vcpus": 192,
+    "license_fraction": {
+      "windows": 0.5076,
+      "rhel": 0.177,
+      "suse": 0.0144,
+      "ubuntu_pro": 0.0377
+    }
   },
   "c7i.xlarge": {
     "vcpus": 4,
@@ -2294,7 +2366,12 @@
     "arch": "arm64",
     "chip": "Graviton4",
     "ram_gb": 128.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.194,
+      "suse": 0.0161,
+      "ubuntu_pro": 0.042
+    }
   },
   "c8g.xlarge": {
     "vcpus": 4,
@@ -2529,7 +2606,12 @@
     "arch": "arm64",
     "chip": "Graviton4",
     "ram_gb": 128.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.1639,
+      "suse": 0.0131,
+      "ubuntu_pro": 0.0345
+    }
   },
   "c8gd.xlarge": {
     "vcpus": 4,
@@ -4067,7 +4149,13 @@
     "chip": "Intel",
     "ram_gb": 384.0,
     "vcpus": 96,
-    "storage_gb": 1800.0
+    "storage_gb": 1800.0,
+    "license_fraction": {
+      "windows": 0.4035,
+      "rhel": 0.137,
+      "suse": 0.0279,
+      "ubuntu_pro": 0.0251
+    }
   },
   "g4dn.xlarge": {
     "vcpus": 4,
@@ -4235,7 +4323,12 @@
     "arch": "arm64",
     "chip": "AWS Graviton2",
     "ram_gb": 128.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.2012,
+      "suse": 0.0436,
+      "ubuntu_pro": 0.0392
+    }
   },
   "g5g.xlarge": {
     "vcpus": 4,
@@ -4934,7 +5027,13 @@
     "chip": "Intel",
     "ram_gb": 512.0,
     "vcpus": 72,
-    "storage_gb": 15200.0
+    "storage_gb": 15200.0,
+    "license_fraction": {
+      "windows": 0.371,
+      "rhel": 0.1216,
+      "suse": 0.0196,
+      "ubuntu_pro": 0.0219
+    }
   },
   "i3.xlarge": {
     "vcpus": 4,
@@ -5032,7 +5131,13 @@
     "chip": "Intel",
     "ram_gb": 768.0,
     "vcpus": 96,
-    "storage_gb": 60000.0
+    "storage_gb": 60000.0,
+    "license_fraction": {
+      "windows": 0.2893,
+      "rhel": 0.0873,
+      "suse": 0.0114,
+      "ubuntu_pro": 0.0153
+    }
   },
   "i3en.xlarge": {
     "vcpus": 4,
@@ -5228,7 +5333,13 @@
     "chip": "Intel",
     "ram_gb": 1024.0,
     "vcpus": 128,
-    "storage_gb": 30000.0
+    "storage_gb": 30000.0,
+    "license_fraction": {
+      "windows": 0.349,
+      "rhel": 0.1006,
+      "suse": 0.0113,
+      "ubuntu_pro": 0.02
+    }
   },
   "i4i.xlarge": {
     "vcpus": 4,
@@ -6207,7 +6318,13 @@
     "arch": "x86_64",
     "chip": "Intel",
     "ram_gb": 384.0,
-    "vcpus": 96
+    "vcpus": 96,
+    "license_fraction": {
+      "windows": 0.4894,
+      "rhel": 0.1837,
+      "suse": 0.0212,
+      "ubuntu_pro": 0.0352
+    }
   },
   "m5.xlarge": {
     "vcpus": 4,
@@ -6517,7 +6634,13 @@
     "chip": "Intel",
     "ram_gb": 384.0,
     "vcpus": 96,
-    "storage_gb": 3600.0
+    "storage_gb": 3600.0,
+    "license_fraction": {
+      "windows": 0.4488,
+      "rhel": 0.1605,
+      "suse": 0.0181,
+      "ubuntu_pro": 0.03
+    }
   },
   "m5d.xlarge": {
     "vcpus": 4,
@@ -6621,7 +6744,12 @@
     "chip": "Intel",
     "ram_gb": 384.0,
     "vcpus": 96,
-    "storage_gb": 3600.0
+    "storage_gb": 3600.0,
+    "license_fraction": {
+      "windows": 0.4035,
+      "rhel": 0.1371,
+      "ubuntu_pro": 0.0251
+    }
   },
   "m5dn.xlarge": {
     "vcpus": 4,
@@ -6723,7 +6851,13 @@
     "arch": "x86_64",
     "chip": "Intel",
     "ram_gb": 384.0,
-    "vcpus": 96
+    "vcpus": 96,
+    "license_fraction": {
+      "windows": 0.436,
+      "rhel": 0.1537,
+      "suse": 0.0214,
+      "ubuntu_pro": 0.0286
+    }
   },
   "m5n.xlarge": {
     "vcpus": 4,
@@ -6921,7 +7055,13 @@
     "arch": "x86_64",
     "chip": "AMD",
     "ram_gb": 768.0,
-    "vcpus": 192
+    "vcpus": 192,
+    "license_fraction": {
+      "windows": 0.5157,
+      "rhel": 0.1818,
+      "suse": 0.0148,
+      "ubuntu_pro": 0.0389
+    }
   },
   "m6a.xlarge": {
     "vcpus": 4,
@@ -7016,7 +7156,12 @@
     "arch": "arm64",
     "chip": "Graviton2",
     "ram_gb": 256.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.2191,
+      "suse": 0.0483,
+      "ubuntu_pro": 0.0435
+    }
   },
   "m6g.xlarge": {
     "vcpus": 4,
@@ -7118,7 +7263,12 @@
     "chip": "Graviton2",
     "ram_gb": 256.0,
     "vcpus": 64,
-    "storage_gb": 3800.0
+    "storage_gb": 3800.0,
+    "license_fraction": {
+      "rhel": 0.1929,
+      "suse": 0.0414,
+      "ubuntu_pro": 0.0373
+    }
   },
   "m6gd.xlarge": {
     "vcpus": 4,
@@ -7232,7 +7382,13 @@
     "arch": "x86_64",
     "chip": "Intel",
     "ram_gb": 512.0,
-    "vcpus": 128
+    "vcpus": 128,
+    "license_fraction": {
+      "windows": 0.4894,
+      "rhel": 0.1667,
+      "suse": 0.0199,
+      "ubuntu_pro": 0.0352
+    }
   },
   "m6i.xlarge": {
     "vcpus": 4,
@@ -7712,7 +7868,13 @@
     "arch": "x86_64",
     "chip": "AMD EPYC Genoa",
     "ram_gb": 768.0,
-    "vcpus": 192
+    "vcpus": 192,
+    "license_fraction": {
+      "windows": 0.4425,
+      "rhel": 0.1421,
+      "suse": 0.0111,
+      "ubuntu_pro": 0.0293
+    }
   },
   "m7a.xlarge": {
     "vcpus": 4,
@@ -7807,7 +7969,12 @@
     "arch": "arm64",
     "chip": "Graviton3",
     "ram_gb": 256.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.2093,
+      "suse": 0.0457,
+      "ubuntu_pro": 0.0411
+    }
   },
   "m7g.xlarge": {
     "vcpus": 4,
@@ -7909,7 +8076,12 @@
     "chip": "Graviton3",
     "ram_gb": 256.0,
     "vcpus": 64,
-    "storage_gb": 3800.0
+    "storage_gb": 3800.0,
+    "license_fraction": {
+      "rhel": 0.1682,
+      "suse": 0.0353,
+      "ubuntu_pro": 0.0317
+    }
   },
   "m7gd.xlarge": {
     "vcpus": 4,
@@ -8107,13 +8279,25 @@
     "arch": "x86_64",
     "chip": "Intel Sapphire Rapids",
     "ram_gb": 384.0,
-    "vcpus": 96
+    "vcpus": 96,
+    "license_fraction": {
+      "windows": 0.4772,
+      "rhel": 0.16,
+      "suse": 0.0128,
+      "ubuntu_pro": 0.0336
+    }
   },
   "m7i.metal-48xl": {
     "arch": "x86_64",
     "chip": "Intel Sapphire Rapids",
     "ram_gb": 768.0,
-    "vcpus": 192
+    "vcpus": 192,
+    "license_fraction": {
+      "windows": 0.4772,
+      "rhel": 0.16,
+      "suse": 0.0128,
+      "ubuntu_pro": 0.0336
+    }
   },
   "m7i.xlarge": {
     "vcpus": 4,
@@ -8434,7 +8618,12 @@
     "arch": "arm64",
     "chip": "Graviton4",
     "ram_gb": 256.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.1762,
+      "suse": 0.0143,
+      "ubuntu_pro": 0.0375
+    }
   },
   "m8g.xlarge": {
     "vcpus": 4,
@@ -8669,7 +8858,12 @@
     "arch": "arm64",
     "chip": "Graviton4",
     "ram_gb": 256.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.1427,
+      "suse": 0.0112,
+      "ubuntu_pro": 0.0295
+    }
   },
   "m8gd.xlarge": {
     "vcpus": 4,
@@ -10376,7 +10570,13 @@
     "arch": "x86_64",
     "chip": "Intel",
     "ram_gb": 768.0,
-    "vcpus": 96
+    "vcpus": 96,
+    "license_fraction": {
+      "windows": 0.422,
+      "rhel": 0.1464,
+      "suse": 0.0202,
+      "ubuntu_pro": 0.027
+    }
   },
   "r5.xlarge": {
     "vcpus": 4,
@@ -10678,7 +10878,13 @@
     "arch": "x86_64",
     "chip": "Intel",
     "ram_gb": 768.0,
-    "vcpus": 96
+    "vcpus": 96,
+    "license_fraction": {
+      "windows": 0.3817,
+      "rhel": 0.1266,
+      "suse": 0.0172,
+      "ubuntu_pro": 0.023
+    }
   },
   "r5b.xlarge": {
     "vcpus": 4,
@@ -10788,7 +10994,13 @@
     "chip": "Intel",
     "ram_gb": 768.0,
     "vcpus": 96,
-    "storage_gb": 3600.0
+    "storage_gb": 3600.0,
+    "license_fraction": {
+      "windows": 0.3898,
+      "rhel": 0.1305,
+      "suse": 0.0178,
+      "ubuntu_pro": 0.0237
+    }
   },
   "r5d.xlarge": {
     "vcpus": 4,
@@ -10892,7 +11104,12 @@
     "chip": "Intel",
     "ram_gb": 768.0,
     "vcpus": 96,
-    "storage_gb": 3600.0
+    "storage_gb": 3600.0,
+    "license_fraction": {
+      "windows": 0.3552,
+      "rhel": 0.1145,
+      "ubuntu_pro": 0.0205
+    }
   },
   "r5dn.xlarge": {
     "vcpus": 4,
@@ -10994,7 +11211,13 @@
     "arch": "x86_64",
     "chip": "Intel",
     "ram_gb": 768.0,
-    "vcpus": 96
+    "vcpus": 96,
+    "license_fraction": {
+      "windows": 0.3817,
+      "rhel": 0.1266,
+      "suse": 0.0172,
+      "ubuntu_pro": 0.023
+    }
   },
   "r5n.xlarge": {
     "vcpus": 4,
@@ -11209,7 +11432,12 @@
     "arch": "arm64",
     "chip": "Graviton2",
     "ram_gb": 512.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.1765,
+      "suse": 0.0373,
+      "ubuntu_pro": 0.0336
+    }
   },
   "r6g.xlarge": {
     "vcpus": 4,
@@ -11311,7 +11539,12 @@
     "chip": "Graviton2",
     "ram_gb": 512.0,
     "vcpus": 64,
-    "storage_gb": 3800.0
+    "storage_gb": 3800.0,
+    "license_fraction": {
+      "rhel": 0.1579,
+      "suse": 0.0328,
+      "ubuntu_pro": 0.0295
+    }
   },
   "r6gd.xlarge": {
     "vcpus": 4,
@@ -11425,7 +11658,13 @@
     "arch": "x86_64",
     "chip": "Intel",
     "ram_gb": 1024.0,
-    "vcpus": 128
+    "vcpus": 128,
+    "license_fraction": {
+      "windows": 0.422,
+      "rhel": 0.1322,
+      "suse": 0.0153,
+      "ubuntu_pro": 0.027
+    }
   },
   "r6i.xlarge": {
     "vcpus": 4,
@@ -11905,7 +12144,13 @@
     "arch": "x86_64",
     "chip": "AMD EPYC Genoa",
     "ram_gb": 1536.0,
-    "vcpus": 192
+    "vcpus": 192,
+    "license_fraction": {
+      "windows": 0.3768,
+      "rhel": 0.1121,
+      "suse": 0.0085,
+      "ubuntu_pro": 0.0225
+    }
   },
   "r7a.xlarge": {
     "vcpus": 4,
@@ -12000,7 +12245,12 @@
     "arch": "arm64",
     "chip": "Graviton3",
     "ram_gb": 512.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.1678,
+      "suse": 0.0352,
+      "ubuntu_pro": 0.0316
+    }
   },
   "r7g.xlarge": {
     "vcpus": 4,
@@ -12102,7 +12352,12 @@
     "chip": "Graviton3",
     "ram_gb": 512.0,
     "vcpus": 64,
-    "storage_gb": 3800.0
+    "storage_gb": 3800.0,
+    "license_fraction": {
+      "rhel": 0.137,
+      "suse": 0.0279,
+      "ubuntu_pro": 0.0251
+    }
   },
   "r7gd.xlarge": {
     "vcpus": 4,
@@ -12216,13 +12471,25 @@
     "arch": "x86_64",
     "chip": "Intel Sapphire Rapids",
     "ram_gb": 768.0,
-    "vcpus": 96
+    "vcpus": 96,
+    "license_fraction": {
+      "windows": 0.4102,
+      "rhel": 0.1267,
+      "suse": 0.0097,
+      "ubuntu_pro": 0.0258
+    }
   },
   "r7i.metal-48xl": {
     "arch": "x86_64",
     "chip": "Intel Sapphire Rapids",
     "ram_gb": 1536.0,
-    "vcpus": 192
+    "vcpus": 192,
+    "license_fraction": {
+      "windows": 0.4102,
+      "rhel": 0.1267,
+      "suse": 0.0097,
+      "ubuntu_pro": 0.0258
+    }
   },
   "r7i.xlarge": {
     "vcpus": 4,
@@ -12555,7 +12822,12 @@
     "arch": "arm64",
     "chip": "Graviton4",
     "ram_gb": 512.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.1401,
+      "suse": 0.0109,
+      "ubuntu_pro": 0.0288
+    }
   },
   "r8g.xlarge": {
     "vcpus": 4,
@@ -12790,7 +13062,12 @@
     "arch": "arm64",
     "chip": "Graviton4",
     "ram_gb": 512.0,
-    "vcpus": 64
+    "vcpus": 64,
+    "license_fraction": {
+      "rhel": 0.1156,
+      "suse": 0.0088,
+      "ubuntu_pro": 0.0233
+    }
   },
   "r8gd.xlarge": {
     "vcpus": 4,
@@ -15061,7 +15338,13 @@
     "arch": "x86_64",
     "chip": "Intel",
     "ram_gb": 1536.0,
-    "vcpus": 48
+    "vcpus": 48,
+    "license_fraction": {
+      "windows": 0.1807,
+      "rhel": 0.0492,
+      "suse": 0.0123,
+      "ubuntu_pro": 0.0083
+    }
   },
   "x8g.12xlarge": {
     "vcpus": 48,

@@ -256,11 +256,11 @@ export function NotificationDropdown() {
               Showing top {Math.min(feed.length, 15)} events
             </span>
             <Link
-              to="/admin/notifications"
+              to="/settings?tab=notifications"
               onClick={() => setOpen(false)}
               className="text-[#00C2BB] hover:underline font-medium text-[11px] flex items-center gap-1"
             >
-              Open Full Center →
+              Delivery Settings →
             </Link>
           </div>
         </div>

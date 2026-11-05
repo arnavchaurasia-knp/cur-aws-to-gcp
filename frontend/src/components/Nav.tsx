@@ -2,6 +2,7 @@ import facetsFIcon from '../assets/facets-logo-f.svg'
 import type { UserInfo } from '../api/auth'
 import { Link, useLocation } from 'react-router-dom'
 import { useState, useRef, useEffect } from 'react'
+import { useTheme } from '../lib/themeContext'
 
 export function Nav({ user }: Readonly<{ user: UserInfo }>) {
   const location = useLocation()
@@ -84,7 +85,7 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
           {isAdmin && (
             <>
               <Link to="/admin/users" className={navItemClass('/admin/users')}>Users</Link>
-              <Link to="/admin/catalog" className={navItemClass('/admin/catalog')}>Catalog</Link>
+              <Link to="/admin/health" className={navItemClass('/admin/health')}>System Health</Link>
 
               {/* Settings Dropdown */}
               <div className="relative" ref={settingsRef}>
@@ -141,12 +142,12 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
                       <span>Report Settings</span>
                     </Link>
                     <Link
-                      to="/admin/integrations"
+                      to="/admin/notifications?tab=integrations"
                       onClick={() => setSettingsOpen(false)}
                       className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
                     >
                       <span>🔔</span>
-                      <span>Integrations</span>
+                      <span>Notifications &amp; Delivery</span>
                     </Link>
                     <Link
                       to="/admin/tickets"
@@ -201,8 +202,8 @@ export function Nav({ user }: Readonly<{ user: UserInfo }>) {
                   <Link to="/admin/users" onClick={() => setMobileMenuOpen(false)} className="text-gray-300 hover:text-white py-1">
                     Users
                   </Link>
-                  <Link to="/admin/catalog" onClick={() => setMobileMenuOpen(false)} className="text-gray-300 hover:text-white py-1">
-                    Catalog
+                  <Link to="/admin/health" onClick={() => setMobileMenuOpen(false)} className="text-gray-300 hover:text-white py-1">
+                    System Health
                   </Link>
                   <div className="pt-2 border-t border-white/10">
                     <p className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">Settings &amp; Tools</p>
@@ -241,6 +242,8 @@ export function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const initial = (user.name || user.email || '?').trim().charAt(0).toUpperCase()
+  const { theme } = useTheme()
+  const isDark = theme === 'dark'
 
   useEffect(() => {
     if (!open) return
@@ -261,7 +264,9 @@ export function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
     <div className="relative" ref={menuRef}>
       <button
         onClick={() => setOpen(v => !v)}
-        className="flex items-center gap-2 rounded-full p-0.5 pr-2 hover:bg-white/5 transition-colors duration-150 cursor-pointer"
+        className={`flex items-center gap-2 rounded-full p-0.5 pr-2 transition-colors duration-150 cursor-pointer ${
+          isDark ? 'hover:bg-white/5' : 'hover:bg-gray-100'
+        }`}
         aria-haspopup="true"
         aria-expanded={open}
       >
@@ -277,19 +282,25 @@ export function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
             {initial}
           </span>
         )}
-        <span className="hidden sm:inline text-gray-300 text-sm max-w-[160px] truncate">
+        <span className={`hidden sm:inline text-sm max-w-[160px] truncate font-semibold ${
+          isDark ? 'text-gray-100' : 'text-slate-900'
+        }`}>
           {user.name || user.email}
         </span>
-        <svg className={`hidden sm:block h-3 w-3 text-gray-500 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} viewBox="0 0 12 12" fill="none">
+        <svg className={`hidden sm:block h-3 w-3 ${isDark ? 'text-gray-400' : 'text-slate-600'} transition-transform duration-150 ${open ? 'rotate-180' : ''}`} viewBox="0 0 12 12" fill="none">
           <path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-72 z-50 rounded-lg border border-white/10 bg-[#13131a] shadow-2xl overflow-hidden anim-scale-in">
-          <div className="px-4 py-3 border-b border-white/10">
-            <p className="text-sm font-medium text-white truncate">{user.name || 'Signed in'}</p>
-            <p className="text-xs text-gray-400 truncate">{user.email}</p>
+        <div className={`absolute right-0 mt-2 w-72 z-50 rounded-2xl border shadow-2xl overflow-hidden anim-scale-in transition-colors duration-150 ${
+          isDark
+            ? 'border-white/10 bg-[#13131a] text-white'
+            : 'border-slate-200 bg-white text-slate-900 shadow-xl'
+        }`}>
+          <div className={`px-4 py-3 border-b ${isDark ? 'border-white/10' : 'border-slate-100'}`}>
+            <p className={`text-sm font-bold truncate ${isDark ? 'text-white' : 'text-slate-900'}`}>{user.name || 'Signed in'}</p>
+            <p className={`text-xs truncate ${isDark ? 'text-gray-400' : 'text-slate-600'}`}>{user.email}</p>
             {user.is_facets_employee && (
               <span className="inline-block mt-1.5 px-2 py-0.5 text-[10px] uppercase font-semibold tracking-wider bg-[#00C2BB]/15 text-[#00C2BB] border border-[#00C2BB]/30 rounded">
                 Facets Team Admin
@@ -298,28 +309,49 @@ export function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
           </div>
 
           {/* 1. Profile first */}
-          <div className="py-1 border-b border-white/10">
+          <div className={`py-1 border-b ${isDark ? 'border-white/10' : 'border-gray-100'}`}>
             <Link
-              to="/profile"
+              to="/settings"
               onClick={() => setOpen(false)}
-              className="w-full text-left px-4 py-2 text-xs text-gray-300 hover:bg-white/5 hover:text-white transition-colors flex items-center justify-between"
+              className={`w-full text-left px-4 py-2 text-xs transition-colors flex items-center justify-between ${
+                isDark ? 'text-gray-300 hover:bg-white/5 hover:text-white' : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+              }`}
             >
               <span className="flex items-center gap-2">
                 <span>👤</span>
-                <span className="font-medium text-white">Profile &amp; Settings</span>
+                <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>Profile &amp; Settings</span>
               </span>
-              <span className="text-[10px] text-gray-500">Edit</span>
+              <span className={`text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>Edit</span>
+            </Link>
+          </div>
+
+          {/* 2. Notifications (Slack & Email) */}
+          <div className={`py-1 border-b ${isDark ? 'border-white/10' : 'border-gray-100'}`}>
+            <Link
+              to="/settings?tab=notifications"
+              onClick={() => setOpen(false)}
+              className={`w-full text-left px-4 py-2 text-xs transition-colors flex items-center justify-between ${
+                isDark ? 'text-gray-300 hover:bg-white/5 hover:text-white' : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <span>🔔</span>
+                <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>Notifications (Slack &amp; Email)</span>
+              </span>
+              <span className="text-[10px] text-[#00C2BB]">Manage</span>
             </Link>
           </div>
 
           {/* API Tokens */}
-          <div className="py-2.5 px-4 border-b border-white/10 space-y-1.5">
+          <div className={`py-2.5 px-4 border-b space-y-1.5 ${isDark ? 'border-white/10' : 'border-gray-100'}`}>
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+              <span className={`text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5 ${
+                isDark ? 'text-gray-400' : 'text-gray-600'
+              }`}>
                 <span>🔑</span> API Tokens
               </span>
             </div>
-            <p className="text-[10px] text-gray-500 leading-tight">
+            <p className={`text-[10px] leading-tight ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>
               Personal access tokens authenticate REST API calls (e.g.{' '}
               <code className="font-mono">GET /api/jobs</code>). Manage them on
               the API Tokens page.
@@ -327,7 +359,9 @@ export function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
             <Link
               to="/profile/tokens"
               onClick={() => setOpen(false)}
-              className="w-full text-left px-4 py-2 text-xs text-[#00C2BB] hover:bg-white/5 hover:text-white transition-colors flex items-center justify-between"
+              className={`w-full text-left px-4 py-2 text-xs text-[#00C2BB] transition-colors flex items-center justify-between rounded ${
+                isDark ? 'hover:bg-white/5 hover:text-white' : 'hover:bg-gray-50 hover:text-gray-900'
+              }`}
             >
               <span>Manage API Tokens →</span>
             </Link>
@@ -336,11 +370,13 @@ export function UserMenu({ user }: Readonly<{ user: UserInfo }>) {
           {/* 3. Currency Preferences Route Link */}
 
           {user.is_facets_employee && (
-            <div className="py-1 border-b border-white/10 text-xs">
+            <div className={`py-1 border-b text-xs ${isDark ? 'border-white/10' : 'border-gray-100'}`}>
               <Link
                 to="/admin"
                 onClick={() => setOpen(false)}
-                className="flex items-center gap-2 px-4 py-2 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                className={`flex items-center gap-2 px-4 py-2 transition-colors ${
+                  isDark ? 'text-gray-300 hover:bg-white/5 hover:text-white' : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                }`}
               >
                 <span>📊</span>
                 <span>All Reports (Admin)</span>

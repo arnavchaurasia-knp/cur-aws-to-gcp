@@ -8362,7 +8362,31 @@ _SUSE_VCPU_BANDS = [
 ]
 
 
+def _is_accelerator_instance(r: dict, parsed: dict | None = None) -> bool:
+    """Return True if the instance is a GPU, Trainium, Inferentia, or other accelerator shape."""
+    itype = (r.get("instance_type") or "").strip().lower()
+    p = parsed or parse_instance(itype)
+    prefix = (p.get("prefix") or "").lower() if p else ""
+    if _AWS_WORKLOAD.get(prefix) == "accelerated":
+        return True
+    if _accel_kind(p, itype) == "tpu_mappable":
+        return True
+    if prefix.startswith(("inf", "trn")) or itype.startswith(("inf", "trn")):
+        return True
+    if itype and _aws_gpu_spec(itype):
+        return True
+    entry = _EC2_TYPES.get(itype) or {}
+    if entry.get("accelerator"):
+        return True
+    if prefix and _gpu_profile(prefix, p.get("gen", 1) if p else 1, r.get("instance_vcpus") or 2):
+        return True
+    return False
+
+
 def _license_entries(r, aws_key, gcp_region, vcpus, ram):
+    if _is_accelerator_instance(r):
+        return []
+
     os_name = (r.get("operating_system") or "").strip().lower()
     license_model = (r.get("license_model") or "").strip().lower()
     product_str = (r.get("product") or "").strip().lower()
@@ -8370,12 +8394,22 @@ def _license_entries(r, aws_key, gcp_region, vcpus, ram):
     usage_type_str = (r.get("usage_type") or "").strip().lower()
     db_engine = (r.get("database_engine") or "").strip().lower()
 
-    # Oracle DB: no GCP managed-license equivalent -> emit labeled passthrough note, not fabricated license rate
+    # Oracle DB: branch on license_model (A-4)
     if "oracle" in os_name or "oracle" in db_engine or "oracle" in operation_str or "oracle" in product_str:
+        if "license included" in license_model or "license-included" in license_model:
+            return [{
+                "aws_li_key": aws_key, "gcp_service": "Cloud SQL",
+                "gcp_sku_name": "Oracle Database License (License Included)", "component": "license",
+                "strategy": "passthrough", "unit_multiplier": 1.0, "gcp_region": gcp_region,
+                "passthrough_reason": "no_gcp_equivalent",
+                "projection_note": "Oracle license — License Included; no native GCP managed license equivalent, carry over or renegotiate",
+                "mapping_confidence": 0.50, "is_workload": True, "break_down": True,
+            }]
         return [{
             "aws_li_key": aws_key, "gcp_service": "Cloud SQL",
             "gcp_sku_name": "Oracle Database License (BYOL)", "component": "license",
             "strategy": "passthrough", "unit_multiplier": 1.0, "gcp_region": gcp_region,
+            "passthrough_reason": "no_gcp_equivalent",
             "projection_note": "Oracle license — BYOL; not modeled, add separately",
             "mapping_confidence": 0.50, "is_workload": True, "break_down": True,
         }]
@@ -8638,7 +8672,8 @@ def map_gce_row(r, parsed):
             ssd_entry["gcp_sku_unit"] = ssd_sku.unit
         mappings.append(ssd_entry)
 
-    mappings.extend(_license_entries(r, aws_key, gcp_region, vcpus, ram))
+    if not _is_accelerator_instance(r, parsed):
+        mappings.extend(_license_entries(r, aws_key, gcp_region, vcpus, ram))
     return mappings
 
 

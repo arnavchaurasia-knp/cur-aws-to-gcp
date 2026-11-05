@@ -6,7 +6,8 @@ import os
 import sys
 
 import duckdb
-from config_loader import load_report_settings
+from config_loader import load_report_settings, load_assumptions
+from assumptions_impact import load_assumption_impact
 from currency_utils import load_currency_info
 from license_split import get_aws_license_split
 
@@ -46,6 +47,61 @@ JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 
 
+def _build_assumptions_table(job_dir: str, conn=None):
+    """Build (headers, rows) for the Assumptions sheet/export, sourced from
+    load_assumptions(job_dir) and load_assumption_impact() (C-3a)."""
+    _data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+    defaults_path = os.path.join(_data_dir, "assumption-defaults.json")
+    d_values = {}
+    d_categories = {}
+    if os.path.exists(defaults_path):
+        try:
+            with open(defaults_path, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            d_values = d.get("values", {})
+            d_categories = d.get("categories", {})
+        except Exception:
+            pass
+
+    active_values = load_assumptions(job_dir)
+    impacts = load_assumption_impact()
+
+    all_keys = sorted(set(list(d_values.keys()) + list(active_values.keys()) + list(impacts.keys())))
+    headers = [
+        "Assumption Key",
+        "Category",
+        "Active Value",
+        "Default Value",
+        "Is Custom",
+        "Impacted Services",
+        "Impacted Charge Types",
+        "Modeling Decision / Description",
+    ]
+    rows = []
+    category_labels = {
+        "compute_sizing": "Compute Sizing",
+        "licensing": "Licensing",
+        "storage": "Storage",
+        "networking": "Networking",
+        "commitment": "Commitment",
+        "pricing_policy": "Pricing Policy",
+        "other": "Other",
+    }
+    for k in all_keys:
+        raw_cat = d_categories.get(k, "other")
+        cat = category_labels.get(raw_cat, raw_cat.replace("_", " ").title())
+        act = active_values.get(k, d_values.get(k, ""))
+        dft = d_values.get(k, "")
+        is_custom = "Yes" if (dft != "" and act != "" and act != dft) else "No"
+        imp = impacts.get(k, {})
+        svcs = ", ".join(imp.get("services", []))
+        cts = ", ".join(imp.get("charge_types", []))
+        decision = imp.get("decision_it_changes", "")
+        rows.append([k, cat, act, dft, is_custom, svcs, cts, decision])
+
+    return headers, rows
+
+
 def _build_query_line_item(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=None):
     cur_sym = f" ({curr_code})" if curr_code != "USD" else " ($)"
     sku_name_col = "m.gcp_sku_id"
@@ -53,6 +109,16 @@ def _build_query_line_item(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=N
     machine_type_col = "NULL"
     usage_type_col = "c.usage_type"
     desc_col = "c.line_item_description"
+    assumption_col = "''"
+    if conn is not None:
+        try:
+            m_cols_chk = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+            if "assumption_note" in m_cols_chk:
+                assumption_col = "COALESCE(NULLIF(m.assumption_note, ''), '')"
+            elif "is_assumption" in m_cols_chk:
+                assumption_col = "CASE WHEN m.is_assumption THEN 'Pricing assumption applied' ELSE '' END"
+        except Exception:
+            pass
     if conn is not None:
         try:
             m_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
@@ -88,6 +154,7 @@ def _build_query_line_item(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=N
         ROUND(COALESCE(p.gcp_cost_3yr_cud * {fx_rate}, p.gcp_projected_cost * {fx_rate}, (CASE WHEN m.strategy = 'ignore' THEN 0.0 ELSE c.aws_amortized_cost * {aws_fx_rate} END)), 2) AS "GCP 3yr CUD{cur_sym}",
         COALESCE(m.strategy, '')                              AS "Strategy",
         COALESCE(m.mapping_confidence, '')                    AS "Confidence",
+        COALESCE({assumption_col}, '')                        AS "Assumption",
         COALESCE({desc_col}, '')                              AS "Description"
     FROM aws_li_catalog c
     LEFT JOIN aws_li_to_gcp_li m USING (aws_li_key)
@@ -385,6 +452,7 @@ def main():
     db_path = None
     by_instance = False
     by_discounts = False
+    by_assumptions = False
     level = "summary"
     args = sys.argv[1:]
     i = 0
@@ -407,16 +475,21 @@ def main():
         elif args[i] == "--by-discounts":
             by_discounts = True
             i += 1
+        elif args[i] == "--by-assumptions":
+            by_assumptions = True
+            i += 1
         else:
             i += 1
 
     if not out_path:
         print(
-            "Usage: export_report.py --format [xlsx|csv|json] --out <path> [--db <duckdb_path>] [--level summary|line-item] [--by-instance] [--by-discounts]\n"
+            "Usage: export_report.py --format [xlsx|csv|json] --out <path> [--db <duckdb_path>] [--level summary|line-item] [--by-instance] [--by-discounts] [--by-assumptions]\n"
             "  --level          summary (default) or line-item\n"
             "  --by-instance    CSV: emit the per-instance-type rollup instead of raw line items.\n"
             "  --by-discounts   CSV: emit the discounts-by-service rollup instead of raw line items.\n"
-            "                   XLSX: always included as an extra 'Discounts by Service' sheet.",
+            "                   XLSX: always included as an extra 'Discounts by Service' sheet.\n"
+            "  --by-assumptions CSV: emit the assumptions table instead of raw line items.\n"
+            "                   XLSX: always included as an extra 'Assumptions' sheet.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -476,10 +549,13 @@ def main():
             disc_headers = ["#", "AWS Service", "Discount Type", "Line Items", f"Discount Amount{cur_sym}"]
             disc_rows = []
 
+    assump_headers, assump_rows = _build_assumptions_table(job_dir, conn=conn)
     conn.close()
 
     if fmt == "csv":
-        if level != "line-item":
+        if by_assumptions:
+            headers, rows = assump_headers, assump_rows
+        elif level != "line-item":
             if by_instance:
                 headers, rows = inst_headers, inst_rows
             elif by_discounts:
@@ -512,6 +588,7 @@ def main():
             _write_sheet(wb, "Per-Instance Summary", inst_headers, inst_rows)
             if disc_rows:
                 _write_sheet(wb, "Discounts by Service", disc_headers, disc_rows)
+        _write_sheet(wb, "Assumptions", assump_headers, assump_rows)
         wb.save(out_path)
 
     else:

@@ -315,6 +315,20 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 			resolved_at       DATETIME,
 			created_at        DATETIME DEFAULT (datetime('now'))
 		)`,
+		`ALTER TABLE uploaded_bills ADD COLUMN owner TEXT DEFAULT ''`,
+		`CREATE TABLE IF NOT EXISTS job_line_item_overrides (
+			job_id        TEXT NOT NULL,
+			row_key       TEXT NOT NULL,
+			suppressed    INTEGER DEFAULT 0,
+			gcp_target    TEXT DEFAULT '',
+			override_rate REAL DEFAULT -1,
+			pinned_key    TEXT DEFAULT '',
+			pinned_val    TEXT DEFAULT '',
+			note          TEXT DEFAULT '',
+			updated_by    TEXT NOT NULL,
+			updated_at    DATETIME DEFAULT (datetime('now')),
+			PRIMARY KEY (job_id, row_key)
+		)`,
 	} {
 		if _, err := conn.Exec(ddl); err != nil {
 			msg := err.Error()

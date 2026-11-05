@@ -70,8 +70,8 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
 
   return (
     <Layout user={user}>
-      <div className="max-w-5xl mx-auto px-6 py-10 grid gap-8 lg:grid-cols-[1fr_320px]">
-        <main className="flex flex-col gap-6">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 py-10 grid gap-6 xl:grid-cols-[1fr_260px] 2xl:grid-cols-[1fr_300px] min-w-0">
+        <main className="flex flex-col gap-6 min-w-0">
           <div className="anim-fade-in-up">
             <h1 className="text-2xl font-semibold">New Estimation</h1>
             <p className="text-sm text-gray-500 mt-1">
@@ -167,7 +167,7 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
             </p>
           </Reveal>
         </main>
-        <aside className="lg:border-l lg:border-white/10 lg:pl-8 flex flex-col gap-6">
+        <aside className="xl:border-l xl:border-[var(--fcp-border-subtle)] xl:pl-6 flex flex-col gap-6 min-w-0 w-full">
           <div className="anim-fade-in delay-250">
             <p className="text-xs uppercase tracking-wider text-gray-400 mb-3">Your Reports</p>
             <JobList jobs={jobs} onJobDeleted={deletedId => setJobs(prev => prev.filter(j => j.id !== deletedId))} />

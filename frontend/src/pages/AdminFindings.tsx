@@ -250,11 +250,21 @@ export function AdminFindings({ user }: Readonly<{ user: UserInfo }>) {
                         )}
                       </td>
                       <td className="px-5 py-3 text-right">
-                        {f.status !== 'pending' ? (
-                          <span className="text-[10px] text-gray-500">resolved</span>
-                        ) : (
-                          <div className="flex gap-1">
-                            <button
+                        <div className="flex items-center justify-end gap-1.5">
+                          {f.job_id && (
+                            <Link
+                              to={`/jobs/${f.job_id}/review?row=${encodeURIComponent(f.aws_li_key || '')}`}
+                              className="px-2 py-1 rounded text-[10px] font-medium bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 border border-cyan-500/30 transition-colors"
+                              title="Open review & override console"
+                            >
+                              Review
+                            </Link>
+                          )}
+                          {f.status !== 'pending' ? (
+                            <span className="text-[10px] text-gray-500 ml-1">resolved</span>
+                          ) : (
+                            <div className="flex gap-1">
+                              <button
                               onClick={() => handleAction(f, 'accept')}
                               disabled={rowBusy}
                               className={`px-2 py-1 rounded text-[10px] font-medium transition-colors ${
@@ -283,6 +293,7 @@ export function AdminFindings({ user }: Readonly<{ user: UserInfo }>) {
                             </button>
                           </div>
                         )}
+                        </div>
                       </td>
                     </tr>
                   )

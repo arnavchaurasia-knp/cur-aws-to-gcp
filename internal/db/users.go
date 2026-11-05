@@ -326,7 +326,7 @@ func (d *DB) GetUserPreferences(email string) (*UserPreferences, error) {
 		FROM users WHERE email = ?
 	`, email).Scan(&engine, &exportFmt, &emailNotif)
 	if err == sql.ErrNoRows {
-		return &UserPreferences{DefaultExportFormat: "html", EmailNotifications: true}, nil
+		return &UserPreferences{DefaultEngine: "gemini-3.8-flash", DefaultExportFormat: "html", EmailNotifications: true}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -335,6 +335,9 @@ func (d *DB) GetUserPreferences(email string) (*UserPreferences, error) {
 		DefaultEngine:       engine.String,
 		DefaultExportFormat: exportFmt.String,
 		EmailNotifications:  emailNotif != 0,
+	}
+	if pref.DefaultEngine == "" {
+		pref.DefaultEngine = "gemini-3.8-flash"
 	}
 	if pref.DefaultExportFormat == "" {
 		pref.DefaultExportFormat = "html"

@@ -16,8 +16,24 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 _EC2_SPECS_CACHE = None
+
+_MAX_LICENSE_FRACTION: dict[str, float] = {
+    "windows": 0.60,
+    "ubuntu_pro": 0.60,
+    "rhel": 0.80,
+    "suse": 0.75,
+}
+_DEFAULT_MAX_LICENSE_FRACTION: float = 0.60
+
+
+def max_license_fraction(os_key: str | None) -> float:
+    """Return the calibrated upper clamp for a given OS key."""
+    if not os_key:
+        return _DEFAULT_MAX_LICENSE_FRACTION
+    return _MAX_LICENSE_FRACTION.get(os_key, _DEFAULT_MAX_LICENSE_FRACTION)
 
 
 def load_ec2_specs() -> dict:
@@ -47,6 +63,25 @@ def _os_key_from_license(lic_name: str) -> str | None:
     return None
 
 
+def _borrow_sibling_license_fraction(itype: str, os_key: str, specs: dict) -> float | None:
+    """Borrow license_fraction from the largest sibling in the same instance family for bare metal."""
+    if not itype or (".metal" not in itype and "-metal" not in itype):
+        return None
+    fam = itype.split(".")[0]
+    candidates = []
+    for k, v in specs.items():
+        if not isinstance(v, dict) or k.startswith("_"):
+            continue
+        if k.startswith(fam + ".") and ".metal" not in k and "-metal" not in k:
+            frac = (v.get("license_fraction", {}) or {}).get(os_key)
+            if frac is not None and frac > 0:
+                candidates.append((v.get("vcpus", 0), k, frac))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][2]
+
+
 def get_aws_license_split(itype, lic_name, aws_cost):
     """Return (aws_base_cost, aws_lic_cost, os_key) or None if no authoritative fraction.
 
@@ -60,12 +95,25 @@ def get_aws_license_split(itype, lic_name, aws_cost):
     os_key = _os_key_from_license(lic_name)
     if not os_key:
         return None
-    itype_info = load_ec2_specs().get(itype)
-    if not itype_info or not isinstance(itype_info, dict):
-        return None
-    frac = (itype_info.get("license_fraction", {}) or {}).get(os_key)
+    specs = load_ec2_specs()
+    itype_info = specs.get(itype)
+    frac = None
+    if itype_info and isinstance(itype_info, dict):
+        frac = (itype_info.get("license_fraction", {}) or {}).get(os_key)
+    if frac is None and (".metal" in itype or "-metal" in itype):
+        frac = _borrow_sibling_license_fraction(itype, os_key, specs)
+
     if frac is None or frac <= 0:
         return None
+
+    limit = max_license_fraction(os_key)
+    if frac > limit:
+        print(
+            f"license_split: license_fraction {frac} for {itype} ({os_key}) exceeds max allowed {limit} — ignoring bad fraction",
+            file=sys.stderr,
+        )
+        return None
+
     aws_lic_cost = round(aws_cost * frac, 2)
     aws_base_cost = round(aws_cost - aws_lic_cost, 2)
     return (aws_base_cost, aws_lic_cost, os_key)

@@ -26,6 +26,8 @@
   --fcp-input-bg: #090a10;
   --fcp-input-border: rgba(255, 255, 255, 0.16);
   --fcp-card-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.45);
+  --fcp-bg-canvas: #090a10;
+  --fcp-hover-overlay: rgba(255, 255, 255, 0.06);
 
   /* Unified animation timing — one duration + easing for the whole app */
   --fcp-anim-dur: 0.42s;
@@ -50,6 +52,8 @@ html:not(.dark) {
   --fcp-input-bg: #ffffff;
   --fcp-input-border: #cbd5e1;
   --fcp-card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.07), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+  --fcp-bg-canvas: #f1f5f9;
+  --fcp-hover-overlay: rgba(15, 23, 42, 0.05);
 }
 
 /* ── Global page base & high refresh rate ──────────────────────── */
@@ -80,11 +84,28 @@ html:not(.dark) body {
 
 /* Surfaces: Top Header & Left Sidebar in Light Mode */
 html:not(.dark) header,
-html:not(.dark) aside {
+html:not(.dark) aside[data-sidebar] {
   background-color: #ffffff !important;
   border-color: #e2e8f0 !important;
   color: #0f172a !important;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05) !important;
+}
+
+/* Global Pointer Cursor for all interactive elements across the app */
+button,
+[role="button"],
+a,
+input[type="button"],
+input[type="submit"],
+select {
+  cursor: pointer !important;
+}
+
+button:disabled,
+[role="button"][aria-disabled="true"],
+input[type="button"]:disabled,
+input[type="submit"]:disabled {
+  cursor: not-allowed !important;
 }
 
 html:not(.dark) .bg-\[\#0a0a0f\],
@@ -102,10 +123,29 @@ html:not(.dark) .bg-\[\#090a0f\] {
   box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.08) !important;
 }
 
-/* Typography contrast in Light Mode */
-html:not(.dark) .text-white,
-html:not(.dark) .text-gray-100,
-html:not(.dark) .text-gray-200 {
+/* Typography contrast in Light Mode - only apply to general prose/surfaces, NEVER to buttons, badges, terminals, or colored chips */
+html:not(.dark) .text-white:not(
+  button,
+  button *,
+  a.btn-shimmer,
+  a.btn-shimmer *,
+  [data-contact-btn],
+  [data-contact-btn] *,
+  [data-terminal],
+  [data-terminal] *,
+  .dark-console,
+  .dark-console *,
+  .btn-shimmer,
+  .btn-shimmer *,
+  .bg-\[\#645DF6\],
+  .bg-\[\#645DF6\] *,
+  .bg-\[\#00C2BB\],
+  .bg-\[\#00C2BB\] *,
+  .badge,
+  .badge *
+),
+html:not(.dark) .text-gray-100:not(button *, [data-terminal] *, .dark-console *),
+html:not(.dark) .text-gray-200:not(button *, [data-terminal] *, .dark-console *) {
   color: #0f172a !important;
 }
 
@@ -179,8 +219,27 @@ html:not(.dark) .dark-console .text-amber-300 {
 
 html:not(.dark) [data-terminal] .text-rose-400,
 html:not(.dark) [data-terminal] .text-red-400,
-html:not(.dark) .dark-console .text-rose-400 {
+html:not(.dark) .dark-console .text-rose-400,
+html:not(.dark) .dark-console .text-rose-300,
+html:not(.dark) .dark-console .text-red-400 {
   color: #f87171 !important;
+}
+
+html:not(.dark) [data-terminal] .text-sky-300,
+html:not(.dark) .dark-console .text-sky-300 {
+  color: #7dd3fc !important;
+}
+
+html:not(.dark) [data-terminal] .text-purple-300,
+html:not(.dark) [data-terminal] .text-violet-300,
+html:not(.dark) .dark-console .text-purple-300,
+html:not(.dark) .dark-console .text-violet-300 {
+  color: #d8b4fe !important;
+}
+
+html:not(.dark) [data-terminal] .text-amber-200,
+html:not(.dark) .dark-console .text-amber-200 {
+  color: #fde68a !important;
 }
 
 html:not(.dark) [data-terminal] .border-white\/5,
@@ -601,14 +660,21 @@ select:focus {
 
 /* ── Global Interactive Cursor Guarantees ─────────────────────── */
 button:not(:disabled),
+button:not(:disabled) *,
 [role="button"]:not([aria-disabled="true"]),
+[role="button"]:not([aria-disabled="true"]) *,
+a,
+a *,
 select,
 summary,
+label[for],
 input[type="button"],
 input[type="submit"],
 input[type="reset"],
-a.cursor-pointer,
-button.cursor-pointer {
+input[type="radio"],
+input[type="checkbox"],
+.cursor-pointer,
+.cursor-pointer * {
   cursor: pointer !important;
 }
 
@@ -616,4 +682,15 @@ button:disabled,
 [role="button"][aria-disabled="true"],
 input:disabled {
   cursor: not-allowed !important;
+}
+
+/* Always ensure Contact Us button has pure white text & pointer cursor in both themes */
+.btn-shimmer,
+.btn-shimmer *,
+[data-contact-btn],
+[data-contact-btn] *,
+button.btn-shimmer,
+button[data-contact-btn] {
+  color: #ffffff !important;
+  cursor: pointer !important;
 }

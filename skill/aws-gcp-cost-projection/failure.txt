@@ -1,0 +1,1 @@
+This bill mixes multiple currencies (EUR, USD). Please upload a single-currency bill.

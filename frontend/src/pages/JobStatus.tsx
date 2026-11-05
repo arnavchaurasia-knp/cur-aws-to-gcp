@@ -277,21 +277,21 @@ function JobActivityCard({ job, progress }: Readonly<{ job: Job; progress: Progr
         <span className="text-gray-500 font-mono text-[10px]">{job.id.slice(0, 8)}</span>
       </h3>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-gray-400">
-        <div>
-          <span className="text-gray-500 block text-[10px] uppercase">Creator</span>
+        <div className="min-w-0">
+          <span className="text-gray-500 block text-[10px] uppercase font-semibold">Creator</span>
           <span className="text-gray-200 truncate block font-medium" title={job.owner}>{job.owner}</span>
         </div>
-        <div>
-          <span className="text-gray-500 block text-[10px] uppercase">Created</span>
-          <span className="text-gray-200 block font-mono">{new Date(job.created_at).toLocaleString()}</span>
+        <div className="min-w-0">
+          <span className="text-gray-500 block text-[10px] uppercase font-semibold">Created</span>
+          <span className="text-gray-200 block font-mono truncate">{new Date(job.created_at).toLocaleString()}</span>
         </div>
-        <div>
-          <span className="text-gray-500 block text-[10px] uppercase">Engine</span>
-          <span className="text-[#00C2BB] block font-mono font-medium">{job.engine || 'gemini-3.8-flash'}{job.engine_version ? ` (${job.engine_version})` : ''}</span>
+        <div className="min-w-0">
+          <span className="text-gray-500 block text-[10px] uppercase font-semibold">Engine</span>
+          <span className="text-[#00C2BB] block font-mono font-medium truncate">{job.engine || 'gemini-3.8-flash'}{job.engine_version ? ` (${job.engine_version})` : ''}</span>
         </div>
-        <div>
-          <span className="text-gray-500 block text-[10px] uppercase">Assumptions</span>
-          <span className="text-gray-200 block font-mono">{job.assumptions_version || 'v1-default'}</span>
+        <div className="min-w-0">
+          <span className="text-gray-500 block text-[10px] uppercase font-semibold">Assumptions</span>
+          <span className="text-gray-200 block font-mono truncate">{job.assumptions_version || 'v1-default'}</span>
         </div>
       </div>
       {durations && Object.keys(durations).length > 0 && (
@@ -560,8 +560,8 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
 
   return (
     <Layout user={user}>
-      <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 py-8 flex flex-col xl:flex-row gap-8 items-start min-w-0">
-        <main className="flex-1 min-w-0 w-full flex flex-col gap-6">
+      <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 py-8 flex flex-col xl:flex-row gap-6 items-start min-w-0">
+        <main className="flex-1 min-w-0 w-full xl:w-auto flex flex-col gap-6">
           <BackButton fallback="/" />
           <div className="flex flex-wrap items-center justify-between gap-3 anim-fade-in-up">
             <h1 className="text-2xl font-semibold">
@@ -620,7 +620,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
 
               <div className="flex flex-col gap-2 anim-fade-in-up delay-175">
                 <p className="text-xs uppercase tracking-wider text-gray-500">Download report &amp; Bill</p>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-3 2xl:grid-cols-6 gap-2">
                   <a href={downloadURL(job.id)}
                     className="btn-shimmer py-2.5 rounded-lg font-medium text-white text-center text-sm block">
                     ↓ HTML Report
@@ -896,7 +896,17 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
 
           <Reveal delay={150}>
             <div>
-              <p className="text-xs uppercase tracking-wider text-gray-500 mb-2">Execution Logs</p>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs uppercase tracking-wider text-gray-500 font-semibold">Execution Logs</p>
+                <Link
+                  to={`/jobs/${job.id}/logs`}
+                  className="text-xs text-[#00C2BB] hover:underline font-medium inline-flex items-center gap-1 cursor-pointer"
+                  title="Open logs in full-screen view"
+                >
+                  <span>⤢ Open Full-Page Logs</span>
+                  <span>→</span>
+                </Link>
+              </div>
               <JobLogsViewer jobId={job.id} isRunning={job.status === 'running' || job.status === 'pending'} />
             </div>
           </Reveal>
@@ -918,7 +928,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
             )}
           </div>
         </main>
-        <aside className="w-full xl:w-80 shrink-0 flex flex-col gap-6 xl:border-l xl:border-[var(--fcp-border-subtle)] xl:pl-6 min-w-0">
+        <aside className="w-full xl:w-64 2xl:w-72 shrink-0 flex flex-col gap-6 xl:border-l xl:border-[var(--fcp-border-subtle)] xl:pl-5 min-w-0">
           <div className="anim-fade-in delay-175">
             <p className="text-xs uppercase tracking-wider text-gray-400 mb-3">Your Reports</p>
             <JobList jobs={jobs} />

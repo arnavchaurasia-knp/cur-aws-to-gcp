@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Directive",
+  "type": "object",
+  "required": ["id", "author", "selector", "action"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_utterance": {
+      "type": "string"
+    },
+    "selector": {
+      "type": "object",
+      "properties": {
+        "service": { "type": ["string", "null"] },
+        "product_code": { "type": ["string", "null"] },
+        "arch": { "type": ["string", "null"] },
+        "instance_family": {
+          "type": ["string", "array", "null"],
+          "items": { "type": "string" }
+        },
+        "usage_type_re": { "type": ["string", "null"] },
+        "region": { "type": ["string", "null"] },
+        "account_id": { "type": ["string", "null"] },
+        "tag": { "type": ["object", "null"] },
+        "aws_li_keys": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "action": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "set_target_service",
+            "set_strategy",
+            "set_is_workload",
+            "set_assumption",
+            "annotate"
+          ]
+        },
+        "value": {},
+        "params": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "scope_estimate": {
+      "type": ["object", "null"],
+      "properties": {
+        "rows": { "type": "integer" },
+        "aws_spend": { "type": "number" }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["proposed", "confirmed", "applied", "superseded"]
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "needs_clarification": {
+      "type": ["object", "null"]
+    },
+    "applied_provenance": {
+      "type": ["object", "null"]
+    }
+  },
+  "additionalProperties": true
+}
+

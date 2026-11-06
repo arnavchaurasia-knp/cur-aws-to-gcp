@@ -15,11 +15,26 @@ import { CATEGORY_ORDER, CATEGORY_META } from '../lib/assumptionsConstants'
 import { BackButton } from '../components/BackButton'
 import { triggerNotificationRefresh } from '../lib/notificationsContext'
 
-const RATIO_OPTIONS = [
-  { value: '4', label: '1:4 (compute-optimised, C4/N2D)' },
-  { value: '8', label: '1:8 (balanced, N2/N4/E2)' },
-  { value: '16', label: '1:16 (memory-optimised, M3)' },
-]
+function getDomainOptions(domain?: Assumption['domain']): { value: string; label: string }[] | null {
+  if (!domain || (domain.kind !== 'enum' && domain.kind !== 'flag')) return null
+  const vals = domain.values || []
+  return vals.map((v) => {
+    if (typeof v === 'object' && v !== null && 'value' in v) {
+      return { value: String(v.value), label: v.label || String(v.value) }
+    }
+    return { value: String(v), label: String(v) }
+  })
+}
+
+function formatAllowedRange(a: { min_value: number; max_value: number; domain?: Assumption['domain'] }): string {
+  if (a.domain?.kind === 'enum' || a.domain?.kind === 'flag') {
+    const vals = (a.domain.values || []).map(v => (typeof v === 'object' && v !== null ? (v as any).value : v))
+    return `{${vals.join(', ')}}`
+  }
+  const min = a.domain?.min ?? a.min_value
+  const max = a.domain?.max ?? a.max_value
+  return `[${min} – ${max}]`
+}
 
 export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('Pricing Assumptions — Admin')
@@ -400,7 +415,10 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                           const isEditing = a.key in edits
                           const editVal = getEdit(a.key)
                           const editNum = Number(editVal)
-                          const inRange = !editVal || (Number.isFinite(editNum) && editNum >= a.min_value && editNum <= a.max_value)
+                          const domainOptions = getDomainOptions(a.domain)
+                          const minBound = a.domain?.min ?? a.min_value
+                          const maxBound = a.domain?.max ?? a.max_value
+                          const inRange = !editVal || (domainOptions ? domainOptions.some(opt => Number(opt.value) === editNum) : (Number.isFinite(editNum) && editNum >= minBound && editNum <= maxBound))
                           const isModifiedFromDefault = a.default_value !== undefined && a.value !== a.default_value
 
                           return (
@@ -445,7 +463,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                               <td className="py-4 px-3 align-top text-center">
                                 {isEditing ? (
                                   <div className="flex items-center justify-center w-full max-w-[150px] mx-auto">
-                                    {a.key === 'aurora_acu_ram_gib' ? (
+                                    {domainOptions ? (
                                       <div className="relative w-full">
                                         <select
                                           value={editVal}
@@ -457,7 +475,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                           autoFocus
                                           className="w-full appearance-none rounded-lg border border-[var(--fcp-border-strong)] bg-[var(--fcp-input-bg)] py-1.5 pl-2.5 pr-7 text-xs font-medium text-[var(--fcp-text-primary)] shadow-2xs focus:border-[#645DF6] focus:outline-none focus:ring-2 focus:ring-[#645DF6]/20 transition-all cursor-pointer"
                                         >
-                                          {RATIO_OPTIONS.map(opt => (
+                                          {domainOptions.map(opt => (
                                             <option
                                               key={opt.value}
                                               value={opt.value}
@@ -477,9 +495,9 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                       <div className="w-full flex flex-col items-center">
                                         <input
                                           type="number"
-                                          step="any"
-                                          min={a.min_value}
-                                          max={a.max_value}
+                                          step={a.domain?.step ?? "any"}
+                                          min={minBound}
+                                          max={maxBound}
                                           value={editVal}
                                           onChange={e => handleValueChange(a.key, e.target.value)}
                                           onKeyDown={e => {
@@ -491,7 +509,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                         />
                                         {editVal && !inRange && (
                                           <span className="text-[10px] text-rose-500 font-medium mt-1">
-                                            Range: {a.min_value}–{a.max_value}
+                                            Range: {minBound}–{maxBound}
                                           </span>
                                         )}
                                       </div>
@@ -500,7 +518,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                 ) : (
                                   <div className="flex flex-col items-center justify-center">
                                     <span className="inline-flex items-center justify-center font-mono font-semibold text-xs px-3 py-1 rounded-md bg-[var(--facets-purple)]/10 text-[var(--facets-purple)] dark:bg-[var(--facets-teal)]/10 dark:text-[var(--facets-teal)] border border-[var(--facets-purple)]/20 dark:border-[var(--facets-teal)]/20 tabular-nums shadow-2xs">
-                                      {a.key === 'aurora_acu_ram_gib' ? `1:${a.value} ratio` : a.value}
+                                      {a.value}
                                     </span>
                                   </div>
                                 )}
@@ -510,7 +528,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                               <td className="py-4 px-3 align-top text-center">
                                 <div className="flex flex-col items-center justify-center pt-1">
                                   <span className="font-mono text-xs text-[var(--fcp-text-secondary)] tabular-nums">
-                                    {a.key === 'aurora_acu_ram_gib' ? `1:${a.default_value}` : a.default_value}
+                                    {a.default_value}
                                   </span>
                                   {isEditing && editVal !== String(a.default_value) && (
                                     <button
@@ -538,7 +556,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                               <td className="py-4 px-3 align-top text-center">
                                 <div className="pt-1">
                                   <span className="inline-block font-mono text-[11px] text-[var(--fcp-text-tertiary)] bg-[var(--fcp-bg-raised)] px-2 py-0.5 rounded border border-[var(--fcp-border-subtle)] whitespace-nowrap">
-                                    [{a.min_value} – {a.max_value}]
+                                    {formatAllowedRange(a)}
                                   </span>
                                 </div>
                               </td>

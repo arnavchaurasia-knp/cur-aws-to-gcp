@@ -1,3 +1,5 @@
+import type { AssumptionDomain } from './admin'
+
 export interface Job {
   id: string; owner: string; prospect: string; status: string
   aws_spend: number | null; gcp_od?: number | null; error: string; created_at: string
@@ -360,6 +362,7 @@ export interface JobAssumption {
   rationale: string
   category: string
   scope: string
+  domain?: AssumptionDomain
   is_overridden?: boolean
 }
 

@@ -433,6 +433,27 @@ export async function listDeletedJobs(q?: string): Promise<DeletedJob[]> {
   return getJSON<DeletedJob[]>(`/api/admin/deleted-jobs${queryStr}`)
 }
 
+export interface AssumptionDomainFlagValue {
+  value: number
+  label: string
+}
+
+export interface AssumptionDomain {
+  kind: 'enum' | 'flag' | 'range' | 'scalar_published'
+  values?: (number | AssumptionDomainFlagValue)[]
+  value?: number
+  min?: number
+  max?: number
+  step?: number
+  value_source?: string
+  derived_from?: string
+  source_kind?: string
+  source?: string
+  refreshable?: boolean
+  last_verified?: string
+  needs_human_verification?: boolean
+}
+
 export interface Assumption {
   key: string
   value: number
@@ -444,6 +465,7 @@ export interface Assumption {
   rationale: string
   category: string
   scope: string
+  domain?: AssumptionDomain
   updated_by: string
   updated_at: string
 }

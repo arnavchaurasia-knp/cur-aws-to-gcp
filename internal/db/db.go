@@ -520,6 +520,21 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 		}
 	}
 
+	// Align assumption bounds with authoritative data/assumption_domains.json
+	var domainBoundsApplied int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name = 'align_assumption_domain_bounds_2026_11'`).Scan(&domainBoundsApplied); err == nil && domainBoundsApplied == 0 {
+		tx, err := conn.Begin()
+		if err == nil {
+			_, _ = tx.Exec(`
+				UPDATE assumptions SET min_value = 4.0, max_value = 16.0 WHERE key = 'aurora_acu_ram_gib';
+				UPDATE assumptions SET min_value = 0.5, max_value = 2.0 WHERE key = 'aurora_acu_vcpu';
+				UPDATE assumptions SET max_value = 1.0 WHERE key = 'rds_iops_included_in_storage';
+				INSERT INTO schema_migrations (name, applied_at) VALUES ('align_assumption_domain_bounds_2026_11', datetime('now'));
+			`)
+			_ = tx.Commit()
+		}
+	}
+
 	// Seed assumptions table with today's values (INSERT OR IGNORE — never
 	// overwrite an admin's edit on restart).
 	if _, err := conn.Exec(`
@@ -527,8 +542,8 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 			('glue_dpu_vcpu', 4.0, 4.0, 1.0, 32.0, 'vCPU', 'Glue DPU to vCPU', '1 AWS Glue standard DPU (G.1X worker) = 4 vCPU per AWS Glue worker-type spec', 'compute_sizing'),
 			('glue_dpu_ram_gib', 16.0, 16.0, 1.0, 256.0, 'GiB', 'Glue DPU to RAM', '1 AWS Glue standard DPU (G.1X worker) = 16 GiB per AWS Glue worker-type spec', 'compute_sizing'),
 			('looker_studio_pro_seat_usd', 9.0, 9.0, 0.0, 100.0, 'USD/user/month', 'Looker Studio Pro seat rate', '$9/user/mo is Looker Studio Pro published list price', 'other'),
-			('aurora_acu_vcpu', 2.0, 2.0, 0.1, 4.0, 'vCPU', 'Aurora ACU to vCPU', '1 Aurora Serverless v2 ACU ≈ 2 vCPU (empirical: 16 ACU ≈ 4 vCPU ≈ db.r5.xlarge)', 'compute_sizing'),
-			('aurora_acu_ram_gib', 16.0, 16.0, 0.5, 64.0, 'GiB', 'Aurora ACU to RAM', '1 Aurora Serverless v2 ACU ≈ 16 GiB RAM (empirical: 16 ACU ≈ 32 GiB ≈ db.r5.xlarge)', 'compute_sizing'),
+			('aurora_acu_vcpu', 2.0, 2.0, 0.5, 2.0, 'vCPU', 'Aurora ACU to vCPU', '1 Aurora Serverless v2 ACU ≈ 2 vCPU (empirical: 16 ACU ≈ 4 vCPU ≈ db.r5.xlarge)', 'compute_sizing'),
+			('aurora_acu_ram_gib', 16.0, 16.0, 4.0, 16.0, 'GiB', 'Aurora ACU to RAM', '1 Aurora Serverless v2 ACU ≈ 16 GiB RAM (empirical: 16 ACU ≈ 32 GiB ≈ db.r5.xlarge)', 'compute_sizing'),
 			('lambda_mb_per_vcpu', 1769.0, 1769.0, 512.0, 10240.0, 'MB', 'Lambda MB to vCPU ratio', 'AWS Lambda allocates 1 vCPU per 1,769 MB of memory', 'compute_sizing'),
 			('aws_ri_1yr_discount_pct', 0.38, 0.38, 0.0, 0.90, 'fraction', 'AWS 1-Year RI Discount', 'Published typical AWS 1-year reserved instance discount rate (~38%)', 'commitment'),
 			('aws_ri_3yr_discount_pct', 0.52, 0.52, 0.0, 0.90, 'fraction', 'AWS 3-Year RI Discount', 'Published typical AWS 3-year reserved instance discount rate (~52%)', 'commitment'),
@@ -541,7 +556,8 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 			('trainium_chip_to_tpu', 1.0, 1.0, 0.1, 10.0, 'ratio', 'Trainium chip to Cloud TPU v5e ratio', 'Assumed chip equivalence factor between AWS Trainium and Cloud TPU v5e', 'compute_sizing'),
 			('dynamodb_rcu_to_reads_sec', 1.0, 1.0, 0.1, 100.0, 'ratio', 'DynamoDB RCU to Reads/sec', 'Assumed reads per second per provisioned Read Capacity Unit', 'storage'),
 			('dynamodb_wcu_to_writes_sec', 1.0, 1.0, 0.1, 100.0, 'ratio', 'DynamoDB WCU to Writes/sec', 'Assumed writes per second per provisioned Write Capacity Unit', 'storage'),
-			('rds_iops_included_in_storage', 1.0, 1.0, 0.0, 2.0, 'flag', 'RDS Provisioned IOPS included in storage', '1.0 if provisioned IOPS are treated as included in Cloud SQL storage rate ($0), 0.0 to price separately', 'storage')
+			('rds_iops_included_in_storage', 1.0, 1.0, 0.0, 1.0, 'flag', 'RDS Provisioned IOPS included in storage', '1.0 if provisioned IOPS are treated as included in Cloud SQL storage rate ($0), 0.0 to price separately', 'storage'),
+			('fx_max_staleness_days', 7.0, 7.0, 1.0, 90.0, 'days', 'FX max staleness', 'Maximum age in days before FX rate is considered stale', 'pricing_policy')
 			-- Cognito MAU estimation is LLM-guided with no deterministic call site; re-add this key when a Cognito mapper exists.
 	`); err != nil {
 		return nil, fmt.Errorf("seed assumptions: %w", err)
@@ -621,18 +637,19 @@ func IsValidAssumptionCategory(cat string) bool {
 
 // Assumption represents a single pricing assumption row.
 type Assumption struct {
-	Key          string  `json:"key"`
-	Value        float64 `json:"value"`
-	DefaultValue float64 `json:"default_value"`
-	MinValue     float64 `json:"min_value"`
-	MaxValue     float64 `json:"max_value"`
-	Unit         string  `json:"unit"`
-	Title        string  `json:"title"`
-	Rationale    string  `json:"rationale"`
-	Category     string  `json:"category"`
-	Scope        string  `json:"scope"`
-	UpdatedBy    string  `json:"updated_by,omitempty"`
-	UpdatedAt    string  `json:"updated_at,omitempty"`
+	Key          string            `json:"key"`
+	Value        float64           `json:"value"`
+	DefaultValue float64           `json:"default_value"`
+	MinValue     float64           `json:"min_value"`
+	MaxValue     float64           `json:"max_value"`
+	Unit         string            `json:"unit"`
+	Title        string            `json:"title"`
+	Rationale    string            `json:"rationale"`
+	Category     string            `json:"category"`
+	Scope        string            `json:"scope"`
+	Domain       *AssumptionDomain `json:"domain,omitempty"`
+	UpdatedBy    string            `json:"updated_by,omitempty"`
+	UpdatedAt    string            `json:"updated_at,omitempty"`
 }
 
 // GetAssumptions returns all assumption rows.
@@ -642,11 +659,17 @@ func (d *DB) GetAssumptions() ([]*Assumption, error) {
 		return nil, err
 	}
 	defer rows.Close()
+
+	domains, _ := LoadAssumptionDomains()
+
 	var assumptions []*Assumption
 	for rows.Next() {
 		var a Assumption
 		if err := rows.Scan(&a.Key, &a.Value, &a.DefaultValue, &a.MinValue, &a.MaxValue, &a.Unit, &a.Title, &a.Rationale, &a.Category, &a.Scope, &a.UpdatedBy, &a.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if domains != nil {
+			a.Domain = domains[a.Key]
 		}
 		assumptions = append(assumptions, &a)
 	}

@@ -1,0 +1,236 @@
+{
+  "_meta": {
+    "description": "Legal input domain + provenance for every pricing assumption key. The admin DB seed bounds, the admin editor UI, and the per-job panel all derive from this file. kind=enum has a closed 'values' list; kind=range has [min,max,step]; kind=flag is a two-choice {0,1}; kind=scalar_published is a provider-published single value with a source_url, edited within bounds but flagged if it drifts.",
+    "version": 1
+  },
+  "domains": {
+    "aurora_acu_ram_gib": {
+      "kind": "enum",
+      "values": [
+        4.0,
+        8.0,
+        16.0
+      ],
+      "value_source": "derived",
+      "derived_from": "data/ratio_registry.json:allowed_ram_per_vcpu",
+      "source_kind": "derived_in_repo",
+      "source": "scripts/gen_ratio_registry.py",
+      "refreshable": true,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "aurora_acu_vcpu": {
+      "kind": "enum",
+      "values": [
+        0.5,
+        1.0,
+        2.0
+      ],
+      "value_source": "derived",
+      "derived_from": "data/ratio_registry.json:allowed_ram_per_vcpu",
+      "source_kind": "derived_in_repo",
+      "source": "scripts/gen_ratio_registry.py",
+      "refreshable": true,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "aws_ri_1yr_discount_pct": {
+      "kind": "range",
+      "min": 0.0,
+      "max": 0.9,
+      "step": 0.01,
+      "source_kind": "judgment",
+      "source": "bill-derivable; published typical ~0.38",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "aws_ri_3yr_discount_pct": {
+      "kind": "range",
+      "min": 0.0,
+      "max": 0.9,
+      "step": 0.01,
+      "source_kind": "judgment",
+      "source": "bill-derivable; published typical ~0.52",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "aws_sp_discount_pct": {
+      "kind": "range",
+      "min": 0.0,
+      "max": 0.9,
+      "step": 0.01,
+      "source_kind": "judgment",
+      "source": "bill-derivable; published typical ~0.30",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "aws_spot_discount_pct": {
+      "kind": "range",
+      "min": 0.0,
+      "max": 0.95,
+      "step": 0.01,
+      "source_kind": "judgment",
+      "source": "bill-derivable; published typical ~0.70",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "dax_node_gib": {
+      "kind": "range",
+      "min": 1.0,
+      "max": 512.0,
+      "step": 1.0,
+      "source_kind": "judgment",
+      "source": "fallback when CUR lacks node type",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "dynamodb_rcu_to_reads_sec": {
+      "kind": "range",
+      "min": 0.1,
+      "max": 100.0,
+      "step": 0.1,
+      "source_kind": "judgment",
+      "source": "workload-dependent",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "dynamodb_wcu_to_writes_sec": {
+      "kind": "range",
+      "min": 0.1,
+      "max": 100.0,
+      "step": 0.1,
+      "source_kind": "judgment",
+      "source": "workload-dependent",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "fx_max_staleness_days": {
+      "kind": "range",
+      "min": 1.0,
+      "max": 90.0,
+      "step": 1.0,
+      "source_kind": "judgment",
+      "source": "operational policy",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "glue_dpu_ram_gib": {
+      "kind": "scalar_published",
+      "value": 16.0,
+      "min": 1.0,
+      "max": 256.0,
+      "step": 1.0,
+      "source_kind": "provider_published",
+      "source": "https://aws.amazon.com/glue/pricing/",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "glue_dpu_vcpu": {
+      "kind": "scalar_published",
+      "value": 4.0,
+      "min": 1.0,
+      "max": 32.0,
+      "step": 1.0,
+      "source_kind": "provider_published",
+      "source": "https://aws.amazon.com/glue/pricing/",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "inferentia_chip_to_tpu": {
+      "kind": "range",
+      "min": 0.1,
+      "max": 10.0,
+      "step": 0.1,
+      "source_kind": "judgment",
+      "source": "no benchmark exists (labeled assumption)",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "lambda_mb_per_vcpu": {
+      "kind": "scalar_published",
+      "value": 1769.0,
+      "min": 512.0,
+      "max": 10240.0,
+      "step": 1.0,
+      "source_kind": "provider_published",
+      "source": "https://docs.aws.amazon.com/lambda/latest/dg/configuration-function-common.html",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "looker_studio_pro_seat_usd": {
+      "kind": "scalar_published",
+      "value": 9.0,
+      "min": 0.0,
+      "max": 100.0,
+      "step": 1.0,
+      "source_kind": "provider_published",
+      "source": "https://cloud.google.com/looker-studio/pricing",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "memorydb_node_gib": {
+      "kind": "range",
+      "min": 1.0,
+      "max": 512.0,
+      "step": 1.0,
+      "source_kind": "judgment",
+      "source": "fallback when CUR lacks node type",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "nat_vms_per_gateway": {
+      "kind": "range",
+      "min": 1.0,
+      "max": 200.0,
+      "step": 1.0,
+      "source_kind": "judgment",
+      "source": "topology-dependent; calibration deferred",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "rds_iops_included_in_storage": {
+      "kind": "flag",
+      "values": [
+        {
+          "value": 0.0,
+          "label": "Priced separately (passthrough)"
+        },
+        {
+          "value": 1.0,
+          "label": "Included in Cloud SQL storage ($0)"
+        }
+      ],
+      "source_kind": "judgment",
+      "source": "policy switch",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    },
+    "trainium_chip_to_tpu": {
+      "kind": "range",
+      "min": 0.1,
+      "max": 10.0,
+      "step": 0.1,
+      "source_kind": "judgment",
+      "source": "no benchmark exists",
+      "refreshable": false,
+      "last_verified": "2026-11-06",
+      "needs_human_verification": false
+    }
+  }
+}

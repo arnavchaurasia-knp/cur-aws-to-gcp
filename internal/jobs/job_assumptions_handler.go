@@ -21,17 +21,18 @@ import (
 // JobAssumptionItem represents a single assumption with its effective value for a specific job,
 // matching the admin schema plus an indicator of whether it has been overridden.
 type JobAssumptionItem struct {
-	Key          string  `json:"key"`
-	Value        float64 `json:"value"`
-	DefaultValue float64 `json:"default_value"`
-	MinValue     float64 `json:"min_value"`
-	MaxValue     float64 `json:"max_value"`
-	Unit         string  `json:"unit"`
-	Title        string  `json:"title"`
-	Rationale    string  `json:"rationale"`
-	Category     string  `json:"category"`
-	Scope        string  `json:"scope"`
-	IsOverridden bool    `json:"is_overridden"`
+	Key          string               `json:"key"`
+	Value        float64              `json:"value"`
+	DefaultValue float64              `json:"default_value"`
+	MinValue     float64              `json:"min_value"`
+	MaxValue     float64              `json:"max_value"`
+	Unit         string               `json:"unit"`
+	Title        string               `json:"title"`
+	Rationale    string               `json:"rationale"`
+	Category     string               `json:"category"`
+	Scope        string               `json:"scope"`
+	IsOverridden bool                 `json:"is_overridden"`
+	Domain       *db.AssumptionDomain `json:"domain,omitempty"`
 }
 
 type jobAssumptionsSnapshot struct {
@@ -123,6 +124,7 @@ func (h *Handler) GetJobAssumptions(w http.ResponseWriter, r *http.Request) {
 			Category:     a.Category,
 			Scope:        a.Scope,
 			IsOverridden: overriddenSet[a.Key],
+			Domain:       a.Domain,
 		}
 	}
 

@@ -1,3 +1,16 @@
+## Agent operating policy — pricing truth (READ FIRST)
+
+Before you trust any **rate, unit, free-tier, or billing-policy fact** — whether it comes from the bundled catalog (`data/catalog.duckdb`), the raw SKU dumps (`data/skus/*.json.gz`), a code comment, or a prior note — **verify it against the respective cloud provider's OFFICIAL pricing page** (e.g. `cloud.google.com/vpc/network-pricing`, `aws.amazon.com/ebs/pricing`, `aws.amazon.com/ec2/pricing`). The official page is the tiebreaker and wins over everything else. When you pin a rate in code from a page, cite the URL in a comment.
+
+Why this is mandatory (confirmed example):
+- The bundled catalog mirrors the provider's Billing Catalog API faithfully — but **the provider's own API can publish $0 or otherwise misleading SKUs that do not reflect the real billed price.** GCP publishes `Network Inter Zone Data Transfer Out` as **$0.00** (SKU `C1F1-02CA-F355`, and per-region `...in <City>` variants) *alongside* a `$0.01/GiB` variant (`DE9E-AFBC-A15A`). Inter-zone same-region egress actually bills at **$0.01/GiB** per the official VPC pricing page. Code that trusted the $0 SKU projected free inter-zone transfer — wrong.
+- **A $0 catalog rate on something the provider demonstrably charges for is a red flag, not a green light.** Never project $0 (or carry AWS cost at parity as a substitute) for a charge the provider actually bills — resolve the real rate from the pricing page and pin it.
+- This is a *verification* duty, not a refetch duty: refetching reproduces the same provider-side values. Fix the interpretation in code, don't re-pull the catalog.
+
+See `docs/WORKORDER_region_fidelity_and_parts_dispatch.md` for the open work this policy drives.
+
+---
+
 Here's the audit result — 7 logic inconsistencies found in the Layer 1–4 code, ordered by severity, with the exact fix for each. Hand this to the implementation model as-is.
 
 Plan: Fix logic inconsistencies in Layer 1–4 global logic

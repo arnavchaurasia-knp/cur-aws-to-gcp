@@ -43,6 +43,6 @@
     "dynamodb_rcu_to_reads_sec": "storage",
     "dynamodb_wcu_to_writes_sec": "storage",
     "rds_iops_included_in_storage": "storage",
-    "fx_max_staleness_days": "currency"
+    "fx_max_staleness_days": "pricing_policy"
   }
 }

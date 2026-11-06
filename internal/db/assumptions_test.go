@@ -19,16 +19,16 @@ func TestAssumptionsSeedInsertsMissingRows(t *testing.T) {
 	d := newAssumptionsTestDB(t)
 	assumptions, err := d.GetAssumptions()
 	require.NoError(t, err)
-	require.Len(t, assumptions, 18)
+	require.Len(t, assumptions, 19)
 
 	byKey := make(map[string]*db.Assumption)
 	for _, a := range assumptions {
 		byKey[a.Key] = a
-		// Every seeded assumption must strictly satisfy min_value < value < max_value
-		assert.True(t, a.MinValue < a.Value, "min_value (%v) must be < value (%v) for %s", a.MinValue, a.Value, a.Key)
-		assert.True(t, a.Value < a.MaxValue, "value (%v) must be < max_value (%v) for %s", a.Value, a.MaxValue, a.Key)
-		assert.True(t, a.MinValue < a.DefaultValue, "min_value (%v) must be < default_value (%v) for %s", a.MinValue, a.DefaultValue, a.Key)
-		assert.True(t, a.DefaultValue < a.MaxValue, "default_value (%v) must be < max_value (%v) for %s", a.DefaultValue, a.MaxValue, a.Key)
+		// Every seeded assumption must satisfy min_value <= value <= max_value
+		assert.True(t, a.MinValue <= a.Value, "min_value (%v) must be <= value (%v) for %s", a.MinValue, a.Value, a.Key)
+		assert.True(t, a.Value <= a.MaxValue, "value (%v) must be <= max_value (%v) for %s", a.Value, a.MaxValue, a.Key)
+		assert.True(t, a.MinValue <= a.DefaultValue, "min_value (%v) must be <= default_value (%v) for %s", a.MinValue, a.DefaultValue, a.Key)
+		assert.True(t, a.DefaultValue <= a.MaxValue, "default_value (%v) must be <= max_value (%v) for %s", a.DefaultValue, a.MaxValue, a.Key)
 	}
 
 	// Check glue_dpu_vcpu = 4.0 (matches code constant)
@@ -47,11 +47,49 @@ func TestAssumptionsSeedInsertsMissingRows(t *testing.T) {
 	assert.Equal(t, 9.0, a.Value)
 	assert.Equal(t, "USD/user/month", a.Unit)
 
-	// Check aurora_acu_ram_gib max is 64.0
+	// Check aurora_acu_ram_gib bounds match domain
 	a, ok = byKey["aurora_acu_ram_gib"]
 	require.True(t, ok)
 	assert.Equal(t, 16.0, a.Value)
-	assert.Equal(t, 64.0, a.MaxValue)
+	assert.Equal(t, 4.0, a.MinValue)
+	assert.Equal(t, 16.0, a.MaxValue)
+
+	// Check fx_max_staleness_days is seeded
+	a, ok = byKey["fx_max_staleness_days"]
+	require.True(t, ok)
+	assert.Equal(t, 7.0, a.Value)
+	assert.Equal(t, 1.0, a.MinValue)
+	assert.Equal(t, 90.0, a.MaxValue)
+	assert.Equal(t, "days", a.Unit)
+
+	// Check rds_iops_included_in_storage flag bounds
+	a, ok = byKey["rds_iops_included_in_storage"]
+	require.True(t, ok)
+	assert.Equal(t, 1.0, a.Value)
+	assert.Equal(t, 0.0, a.MinValue)
+	assert.Equal(t, 1.0, a.MaxValue)
+}
+
+func TestAssumptionsBoundsConsistentWithDomains(t *testing.T) {
+	d := newAssumptionsTestDB(t)
+	assumptions, err := d.GetAssumptions()
+	require.NoError(t, err)
+
+	domains, err := db.LoadAssumptionDomains()
+	require.NoError(t, err)
+	require.NotEmpty(t, domains)
+
+	for _, a := range assumptions {
+		dom, ok := domains[a.Key]
+		require.True(t, ok, "key %s missing from assumption_domains.json", a.Key)
+		require.NotNil(t, a.Domain, "assumption %s has nil domain on struct", a.Key)
+
+		expectedMin, expectedMax, err := dom.ExpectedBounds()
+		require.NoError(t, err, "failed to compute expected bounds for %s", a.Key)
+
+		assert.InDelta(t, expectedMin, a.MinValue, 1e-9, "min_value mismatch for %s", a.Key)
+		assert.InDelta(t, expectedMax, a.MaxValue, 1e-9, "max_value mismatch for %s", a.Key)
+	}
 }
 
 func TestAssumptionsSeedingDoesNotOverwriteEditedValue(t *testing.T) {

@@ -372,9 +372,39 @@
           "usage_type_re": "EBS:Volume|EBS:Snapshot|SnapshotCopy|gp2|gp3|io1|io2|sc1|st1"
         },
         "fallback_match": {
-          "operation_re": "\\((?:gp2|gp3|io1|io2|sc1|st1)\\)\\s+provisioned storage|snapshot data stored|provisioned (?:IOPS|MiBps)-month of (?:gp2|gp3|io1|io2)|GB-month provisioned|GB-month of (?:general purpose|provisioned|data stored)|/GB-month provisioned|per GB-month of"
+          "operation_re": "\\((?:gp2|gp3|io1|io2|sc1|st1)\\)\\s+provisioned storage|snapshot|provisioned (?:IOPS|MiBps)-month of (?:gp2|gp3|io1|io2)|GB-month provisioned|GB-month of (?:general purpose|provisioned|data stored)|/GB-month provisioned|per GB-month of"
         },
         "mechanic": "block_storage",
+        "children": [
+          {
+            "id": "ebs_snapshot_archive",
+            "description": "EBS Snapshot Archive -> Regional Archive Snapshot Data Storage.",
+            "match": {
+              "usage_type_re": "SnapshotArchiveStorage|ArchiveStorage"
+            },
+            "fallback_match": {
+              "operation_re": "archive"
+            },
+            "mechanic": "block_storage"
+          },
+          {
+            "id": "ebs_snapshot_standard",
+            "description": "EBS Standard Snapshot -> Storage PD Snapshot.",
+            "match": {
+              "usage_type_re": "EBS:Snapshot(?!Archive)|SnapshotUsage|SnapshotCopy"
+            },
+            "fallback_match": {
+              "operation_re": "snapshot data stored|CreateSnapshot"
+            },
+            "mechanic": "block_storage"
+          },
+          {
+            "id": "ebs_volume",
+            "description": "EBS volume capacity and performance.",
+            "match": {},
+            "mechanic": "block_storage"
+          }
+        ],
         "fields": [
           {
             "name": "volume_type",
@@ -842,6 +872,78 @@
           }
         ],
         "source_rule": "per_request (S3 branch; storage excluded above so only non-storage S3 rows reach here)"
+      }
+    ]
+  },
+  "ebs": {
+    "display": "Amazon Elastic Block Store",
+    "product_codes": [
+      "AmazonEBS",
+      "AmazonElasticBlockStore"
+    ],
+    "charge_types": [
+      {
+        "id": "ebs_storage",
+        "description": "EBS volumes & snapshots (gp2/gp3/io1/io2/sc1/st1) billed GB-Mo.",
+        "match": {},
+        "mechanic": "block_storage",
+        "children": [
+          {
+            "id": "ebs_snapshot_archive",
+            "description": "EBS Snapshot Archive -> Regional Archive Snapshot Data Storage.",
+            "match": {
+              "usage_type_re": "SnapshotArchiveStorage|ArchiveStorage"
+            },
+            "fallback_match": {
+              "operation_re": "archive"
+            },
+            "mechanic": "block_storage"
+          },
+          {
+            "id": "ebs_snapshot_standard",
+            "description": "EBS Standard Snapshot -> Storage PD Snapshot.",
+            "match": {
+              "usage_type_re": "EBS:Snapshot(?!Archive)|SnapshotUsage|SnapshotCopy"
+            },
+            "fallback_match": {
+              "operation_re": "snapshot data stored|CreateSnapshot"
+            },
+            "mechanic": "block_storage"
+          },
+          {
+            "id": "ebs_volume",
+            "description": "EBS volumes & provisioned capacity (gp2/gp3/io1/io2/sc1/st1) billed GB-Mo.",
+            "match": {},
+            "mechanic": "block_storage"
+          }
+        ],
+        "fields": [
+          {
+            "name": "volume_type",
+            "cur_column": "product/volumeType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "storage_media",
+            "cur_column": "product/storageMedia",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "block_storage (EBS branch)"
       }
     ]
   },

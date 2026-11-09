@@ -163,7 +163,7 @@ STATIC_MAPPER_ROW_COLS = [
     "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type",
     "total_usage", "instance_type", "instance_ram_gb", "deployment_option", "database_engine",
     "pricing_model", "product_code", "instance_vcpus", "operating_system", "license_model", "line_item_type",
-    "billing_month", "from_region", "to_region",
+    "billing_month", "from_region", "to_region", "mechanic_rule",
 ]
 
 
@@ -3593,7 +3593,12 @@ def map_block_storage(rows):
             mvol = re.search(r'\b(gp3|gp2|io2|io1|st1|sc1|standard|magnetic)\b', blob)
             if mvol:
                 vol = mvol.group(1)
-        is_snapshot = ("snapshot" in ut) or ("snapshot" in op) or ("snapshot" in blob)
+        is_snapshot = (
+            ("snapshot" in ut)
+            or ("snapshot" in op)
+            or ("snapshot" in blob)
+            or ("snapshot" in str(r.get("mechanic_rule") or "").lower())
+        )
         # gp3/io2 provisioned-IOPS and throughput (MiBps) fees have no separate
         # GCP charge — pd-balanced bundles performance with capacity. Pricing
         # them per-GB against a capacity SKU produced nonsense rows; drop them
@@ -3927,17 +3932,22 @@ def map_block_storage(rows):
         else:
             service = GCP_COMPUTE_ENGINE
             if is_snapshot:
-                # A plain EBS snapshot (this branch) is AWS's default incremental,
-                # S3-backed snapshot — it is NOT instant-restore; that requires
-                # separately enabling and paying for AWS Fast Snapshot Restore,
-                # which bills as its own distinct line item, not this one. GCP's
-                # Instant Snapshot product line is the premium, locally-cached
-                # fast-restore tier and is the wrong product class for an
-                # ordinary archival snapshot. The correct, cheaper, product-
-                # matched target is GCP's regular (non-instant) PD snapshot,
-                # billed under the real catalog SKU "Regional Archive Snapshot
-                # Data Storage".
-                desc = "Regional Archive Snapshot Data Storage"
+                # Discriminate EBS snapshot tier: Standard vs Archive.
+                # Standard EBS snapshot -> Storage PD Snapshot (~$0.05-0.083/GiB per region).
+                # Archive EBS snapshot -> Regional Archive Snapshot Data Storage (~$0.019-0.0234/GiB).
+                # Verified against official GCP pricing: https://cloud.google.com/compute/disks-image-pricing#persistentdisk_snapshots
+                # AWS pricing: https://aws.amazon.com/ebs/pricing/
+                rule = str(r.get("mechanic_rule") or "").lower()
+                is_archive_snapshot = (
+                    "archive" in ut.lower()
+                    or "archive" in op.lower()
+                    or "archive" in blob.lower()
+                    or "ebs_snapshot_archive" in rule
+                )
+                if is_archive_snapshot:
+                    desc = "Regional Archive Snapshot Data Storage"
+                else:
+                    desc = "Storage PD Snapshot"
             elif vol in ("io1", "io2") and "block express" not in blob:
                 # io1 and standard io2 (non-"Block Express") cap at 64,000
                 # IOPS / 1,000 MB/s per volume — both well under Hyperdisk
@@ -9115,13 +9125,14 @@ def main():
     _bm_expr = "billing_month" if "billing_month" in catalog_cols else "NULL AS billing_month"
     _from_expr = "from_region" if "from_region" in catalog_cols else "NULL AS from_region"
     _to_expr = "to_region" if "to_region" in catalog_cols else "NULL AS to_region"
+    _mr_expr = "mechanic_rule" if "mechanic_rule" in catalog_cols else "NULL AS mechanic_rule"
 
     rows = con.execute(f"""
         SELECT aws_li_key, mechanic_group, product, usage_type, pricing_unit AS unit,
                aws_amortized_cost, aws_region AS region, gcp_region, operation, volume_type,
                total_usage, instance_type, instance_ram_gb, deployment_option, database_engine,
                pricing_model, {_pc_expr}, {_vcpu_expr}, {_os_expr}, {_lic_expr}, line_item_type,
-               {_bm_expr}, {_from_expr}, {_to_expr}
+               {_bm_expr}, {_from_expr}, {_to_expr}, {_mr_expr}
         FROM aws_li_catalog
         WHERE mechanic_group IN
               ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer',

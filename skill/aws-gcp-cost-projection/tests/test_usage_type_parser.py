@@ -106,7 +106,7 @@ def test_unknown_service_is_unknown():
 
 def test_empty_inputs_safe():
     r = parse(None, None, None)
-    assert r == {"region": "", "family": "unknown", "sub_type": "usage", "unit": "", "class": "unknown"}, r
+    assert r == {"region": "", "family": "unknown", "sub_type": "usage", "unit": "", "class": "unknown", "direction": ""}, r
 
 
 def test_longer_product_name_wins_over_prefix():

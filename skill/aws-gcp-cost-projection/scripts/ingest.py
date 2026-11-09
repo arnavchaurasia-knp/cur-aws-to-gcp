@@ -40,7 +40,7 @@ import re
 import hashlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from log_utils import get_logger
-from region_prefix import decode_region_prefix
+from region_prefix import decode_region_prefix, decode_region_pair
 from aws_normalizer import canonical_service as _canonical_service
 from config_loader import load_data_config as _cfg
 from config_loader import load_assumptions as _load_assumptions
@@ -103,6 +103,10 @@ def apply_od_basis(conn, assumptions: dict | None = None) -> None:
     conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS commitment_arn VARCHAR")
     conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS public_on_demand_rate DOUBLE")
     conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS savings_plan_rate DOUBLE")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS from_region VARCHAR")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS to_region VARCHAR")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS from_region_raw VARCHAR")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS to_region_raw VARCHAR")
 
     # Reset od_basis fields so reruns are idempotent
     conn.execute("""
@@ -2010,6 +2014,10 @@ def main():
             operation VARCHAR,
             aws_region VARCHAR,
             gcp_region VARCHAR,
+            from_region VARCHAR,
+            to_region VARCHAR,
+            from_region_raw VARCHAR,
+            to_region_raw VARCHAR,
             pricing_model VARCHAR,
             line_item_type VARCHAR,
             is_workload BOOLEAN,
@@ -2055,6 +2063,10 @@ def main():
     conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS commitment_arn VARCHAR")
     conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS public_on_demand_rate DOUBLE")
     conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS savings_plan_rate DOUBLE")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS from_region VARCHAR")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS to_region VARCHAR")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS from_region_raw VARCHAR")
+    conn.execute("ALTER TABLE aws_li_catalog ADD COLUMN IF NOT EXISTS to_region_raw VARCHAR")
 
     # Reconcile sum helper
     if is_raw_cur:
@@ -2137,6 +2149,8 @@ def main():
                     NULLIF(NULLIF({c(['savings_plan_region', 'savingsplan/region'])}, ''), 'Any'),
                     ''
                 ) as aws_region,
+                COALESCE(NULLIF({c(['product_from_region_code', 'product/fromregioncode'])}, ''), '') as from_region_raw,
+                COALESCE(NULLIF({c(['product_to_region_code', 'product/toregioncode'])}, ''), '') as to_region_raw,
                 COALESCE({c(['pricing/term', 'term'])}, 'OnDemand') as pricing_model,
                 COALESCE({c(['lineitem/lineitemtype', 'lineitemtype'])}, '') as line_item_type,
                 CASE WHEN {_workload_expr} THEN TRUE ELSE FALSE END as is_workload,
@@ -2195,6 +2209,7 @@ def main():
         conn.execute("""
             INSERT INTO aws_li_catalog (
                 aws_li_key, product, usage_type, operation, aws_region, gcp_region,
+                from_region_raw, to_region_raw,
                 pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost,
                 public_on_demand_cost,
                 license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,
@@ -2203,7 +2218,10 @@ def main():
             )
             SELECT
                 md5(product || usage_type || operation || aws_region || pricing_model || line_item_type || CAST(is_workload AS VARCHAR) || license_model || operating_system || database_engine || deployment_option || volume_type || pricing_unit || billing_month) as key,
-                product, usage_type, operation, aws_region, NULL as gcp_region, pricing_model, line_item_type, is_workload,
+                product, usage_type, operation, aws_region, NULL as gcp_region,
+                max(from_region_raw) as from_region_raw,
+                max(to_region_raw) as to_region_raw,
+                pricing_model, line_item_type, is_workload,
                 SUM(row_usage) as total_usage,
                 SUM(row_cost) as aws_amortized_cost,
                 SUM(row_public_od) as public_on_demand_cost,
@@ -2874,19 +2892,56 @@ def main():
     apply_od_basis(conn)
 
     # 5. Map Regions
-    catalog_rows = conn.execute("SELECT aws_li_key, aws_region, usage_type FROM aws_li_catalog").fetchall()
+    catalog_rows = conn.execute("""
+        SELECT aws_li_key, aws_region, usage_type,
+               COALESCE(from_region_raw, ''), COALESCE(to_region_raw, ''),
+               COALESCE(product, '')
+        FROM aws_li_catalog
+    """).fetchall()
     region_updates = []
     for row in catalog_rows:
         key = row[0]
         aws_r = row[1]
+        ut = row[2]
+        from_raw = row[3]
+        to_raw = row[4]
+        prod = row[5]
+
         aws_r_clean = aws_r.strip().lower() if aws_r else ""
         gcp_r = REGION_MAP.get(aws_r_clean) or DESCRIPTIVE_REGION_MAP.get(aws_r_clean, "global")
         if gcp_r == "global":
-            gcp_r = decode_region_prefix(row[2], gcp_r)
-        region_updates.append((gcp_r, key))
+            gcp_r = decode_region_prefix(ut or prod, gcp_r)
+
+        # Phase 2: Preserve region fidelity at ingest (from_region & to_region)
+        # Priority:
+        #   from_region: product/fromRegionCode -> region_prefix token 1 -> aws_region (gcp_r)
+        #   to_region: product/toRegionCode -> region_prefix token 2 -> NULL
+        pair_from, pair_to = decode_region_pair(ut, prod)
+
+        from_gcp = None
+        if from_raw:
+            from_clean = from_raw.strip().lower()
+            from_gcp = REGION_MAP.get(from_clean) or DESCRIPTIVE_REGION_MAP.get(from_clean)
+        if not from_gcp:
+            from_gcp = pair_from
+        if not from_gcp:
+            from_gcp = gcp_r
+
+        to_gcp = None
+        if to_raw:
+            to_clean = to_raw.strip().lower()
+            to_gcp = REGION_MAP.get(to_clean) or DESCRIPTIVE_REGION_MAP.get(to_clean)
+        if not to_gcp:
+            to_gcp = pair_to
+
+        region_updates.append((gcp_r, from_gcp, to_gcp, key))
 
     if region_updates:
-        conn.executemany("UPDATE aws_li_catalog SET gcp_region = ? WHERE aws_li_key = ?", region_updates)
+        conn.executemany("""
+            UPDATE aws_li_catalog
+            SET gcp_region = ?, from_region = ?, to_region = ?
+            WHERE aws_li_key = ?
+        """, region_updates)
             
     # 6. Reconcile - let orchestrate.go verification gate handle failure, but check
     # In raw CUR, sometimes totals have slight float differences, we'll ignore for script unless it's huge

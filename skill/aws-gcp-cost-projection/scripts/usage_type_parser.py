@@ -365,6 +365,13 @@ def parse(usage_type: str | None, operation: str | None, product: str | None) ->
     # If the row carries a real pricing_unit, prefer it.
     # (pricing_unit is not passed here; callers may override unit post-hoc.)
     cost_class = _cost_class(family, sub_type)
+    _, direction, _ = transfer_direction({
+        "usage_type": ut,
+        "operation": op,
+        "product": prod,
+        "from_region": region or None,
+        "to_region": None,
+    })
 
     return {
         "region": region,
@@ -372,7 +379,68 @@ def parse(usage_type: str | None, operation: str | None, product: str | None) ->
         "sub_type": sub_type,
         "unit": unit,
         "class": cost_class,
+        "direction": direction or "",
     }
+
+
+# ---------------------------------------------------------------------------
+# Data-transfer direction detection (Phase 3 parts-based dispatch)
+# ---------------------------------------------------------------------------
+def transfer_direction(parts: dict) -> tuple[str, str | None, str]:
+    """Classify AWS data-transfer direction from parsed parts and region pair.
+
+    Returns (strategy, direction, note).
+    direction is a key into EGRESS_SKUS ('interzone', 'interregion', 'internet') or None for ingress.
+
+    Decision table (WORKORDER Phase 3):
+    1. flow == in (or in-bytes / datatransfer-in) -> ingress -> strategy='ignore' (free on GCP)
+    2. vpcpeering -> private inter-VPC traffic -> strategy='map', direction='interzone'
+    3. Flat/PDF operation locality fallback (the $116.51 case):
+       If operation contains 'regional', 'intra', or az..az -> strategy='map', direction='interzone'
+    4. CUR from/to regions (authoritative when available):
+       - from_region == to_region -> strategy='map', direction='interzone'
+       - from_region != to_region (both real GCP regions) -> strategy='map', direction='interregion'
+    5. Fallback on usage_type / text cues:
+       - usage_type has 'regional', 'intra', 'interzone' -> interzone
+       - usage_type has region pair code -> interregion
+       - otherwise (to_is_internet) -> strategy='map', direction='internet'
+    """
+    ut = str(parts.get("usage_type") or "")
+    op = str(parts.get("operation") or "")
+    prod = str(parts.get("product") or "")
+    blob = f"{ut} {op} {prod}".lower()
+
+    if not blob.strip():
+        return ("ignore", None, "empty input")
+
+    if re.search(r"in-bytes|datatransfer-in|\bin[\s-]+bytes\b", blob):
+        return ("ignore", None, "ingress is free on GCP")
+
+    if "vpcpeering" in blob:
+        return ("map", "interzone", "VPC Peering — private inter-VPC traffic, not internet egress")
+
+    # Operation locality fallback for flat/PDF bills where usage_type carries corrupted sibling label
+    op_lower = op.lower()
+    if "regional" in op_lower or "intra" in op_lower or re.search(r"az.*az", op_lower):
+        return ("map", "interzone", "inter-zone (same-region) egress")
+
+    # CUR from_region and to_region (Phase 2 columns) win
+    from_reg = parts.get("from_region")
+    to_reg = parts.get("to_region")
+    if from_reg and to_reg:
+        if from_reg == to_reg:
+            return ("map", "interzone", "inter-zone (same-region) egress")
+        else:
+            return ("map", "interregion", "inter-region egress")
+
+    # Fallback when to_region is absent (internet or single-region usage_type)
+    if "regional" in blob or "intra" in blob or "interzone" in blob or "inter-zone" in blob or re.search(r"az.*az", blob):
+        return ("map", "interzone", "inter-zone (same-region) egress")
+
+    if re.search(r"\b[a-z]{2,4}\d?-[a-z]{2,4}\d?-aws-out", blob) or "inter-region" in blob or "interregion" in blob:
+        return ("map", "interregion", "inter-region egress")
+
+    return ("map", "internet", "internet egress")
 
 
 def parse_with_unit(usage_type: str | None, operation: str | None,

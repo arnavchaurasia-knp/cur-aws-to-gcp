@@ -23,6 +23,7 @@ import duckdb
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from egress_rates import EGRESS_SKUS, cdn_egress_rate, interzone_sku_for_region
+from usage_type_parser import transfer_direction
 from config_loader import load_data_config as _cfg, load_assumptions
 try:
     from log_utils import get_logger
@@ -162,7 +163,7 @@ STATIC_MAPPER_ROW_COLS = [
     "aws_amortized_cost", "region", "gcp_region", "operation", "volume_type",
     "total_usage", "instance_type", "instance_ram_gb", "deployment_option", "database_engine",
     "pricing_model", "product_code", "instance_vcpus", "operating_system", "license_model", "line_item_type",
-    "billing_month",
+    "billing_month", "from_region", "to_region",
 ]
 
 
@@ -573,66 +574,14 @@ EBS_DEFAULT_DESC = GCP_HYPERDISK_BALANCED
 
 # data_transfer: direction inferred from usage_type. Ingress is free on GCP → ignore.
 # Inter-zone / inter-region / internet egress each map to their egress SKU family.
-def _transfer_target(usage_type, operation):
-    """Classify AWS data-transfer direction. Returns (strategy, direction, note).
-    direction is a key into EGRESS_SKUS (or None for ingress). Order matters.
-
-    Calibrated against real CUR usage types:
-      - '...-In-Bytes'                          → ingress, free on GCP → ignore
-      - '<REG>-<REG>-AWS-Out-Bytes'             → inter-region egress
-      - '...Regional...' / intra-AZ / Bandwidth → inter-zone egress
-      - other '...-Out-Bytes' to internet       → internet egress
-    """
-    ut = f"{usage_type or ''} {operation or ''}".lower()
-    # `\bin\b.*byte` (unbounded distance) was a confirmed real bug: the caller
-    # concatenates operation + product before calling this function, and PDF-
-    # ingested product names almost universally end in "...-Out-Bytes" or
-    # "...-In-Bytes" — so ANY row whose operation text happens to contain the
-    # standalone word "in" ANYWHERE (e.g. "...in/out/between EC2 AZs...", a
-    # genuine inter-AZ EGRESS description) false-matched against the unrelated
-    # "-Bytes" suffix from the product name much later in the string, silently
-    # misclassifying real egress as free ingress. Confirmed live: an inter-AZ
-    # transfer row ($116.51, "regional data transfer - in/out/between EC2
-    # AZs...", product "...AWS-Out-Bytes") was ignored as "ingress is free"
-    # this way. Real ingress signals only ever put "in"/"In" directly adjacent
-    # to "bytes" (hyphen or space) — require that adjacency instead of letting
-    # the two words match anywhere in the whole concatenated blob.
-    if re.search(r"in-bytes|datatransfer-in|\bin[\s-]+bytes\b", ut):
-        return ("ignore", None, "ingress is free on GCP")
-    # VPC Peering traffic is private intra-AWS-network traffic, not public
-    # internet egress — AWS's own $0.01/GB rate on these rows matches its
-    # same-region VPC-peering rate (its cross-region peering rate is higher
-    # and would carry a region-pair code, caught by the inter-region check
-    # below). Falling through to the "internet" default here was pricing it
-    # at the public internet-egress rate (~12x higher), comparing the wrong
-    # traffic class entirely.
-    if "vpcpeering" in ut:
-        return ("map", "interzone", "VPC Peering — private inter-VPC traffic, not internet egress")
-    # 'regional'/intra-AZ = same-region cross-zone traffic → inter-zone. Checked
-    # BEFORE the inferred region-pair pattern below: confirmed real bug — the
-    # caller concatenates operation + product, and PDF ingestion has been found
-    # (twice now, same root cause as the CloudFront bandwidth mislabeling) to
-    # carry over the WRONG product name onto a "Bandwidth" sub-section row —
-    # e.g. a genuine "$0.010 per GB - regional data transfer - in/out/between
-    # EC2 AZs..." row ($116.51) was mislabeled with product
-    # "...APS3-WAW1-AWS-Out-Bytes", whose region-pair-looking code would
-    # otherwise win the interregion check below and misprice real inter-AZ
-    # traffic at the wrong (interregion) rate. `operation`'s explicit
-    # "regional"/AZ wording is AWS's own, deliberate description of this
-    # exact row and takes priority over a code inferred from a field that has
-    # already been shown to sometimes carry a sibling row's label.
-    # NOTE: bare "bandwidth" is NOT a locality signal — AWS uses it as the generic
-    # usage_type/product category label across internet-out, region-to-region, AND
-    # actual regional/AZ transfer rows alike (confirmed across job DBs). The real
-    # regional/AZ rows already contain the literal word "regional" in their operation
-    # text, so matching on "regional" alone still catches them without the false
-    # positives bare "bandwidth" was causing on internet-egress and inter-region rows.
-    if "regional" in ut or "intra" in ut or "interzone" in ut or "inter-zone" in ut or re.search(r"az.*az", ut):
-        return ("map", "interzone", "inter-zone (same-region) egress")
-    # Region-to-region code pair (e.g. "aps1-apn1-aws-out-bytes") → inter-region.
-    if re.search(r"\b[a-z]{2,4}\d?-[a-z]{2,4}\d?-aws-out", ut) or "inter-region" in ut or "interregion" in ut:
-        return ("map", "interregion", "inter-region egress")
-    return ("map", "internet", "internet egress")
+def _transfer_target(usage_type, operation, from_region=None, to_region=None):
+    """Classify AWS data-transfer direction. Delegates to usage_type_parser.transfer_direction."""
+    return transfer_direction({
+        "usage_type": usage_type,
+        "operation": operation,
+        "from_region": from_region,
+        "to_region": to_region,
+    })
 
 
 SKILL_DIR = os.environ.get("SKILL_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -4302,9 +4251,7 @@ def map_data_transfer(rows):
             })
             continue
 
-        strategy, direction, note = _transfer_target(
-            r.get("usage_type"), f"{r.get('operation') or ''} {r.get('product') or ''}"
-        )
+        strategy, direction, note = transfer_direction(r)
         entry = {
             "aws_li_key":       r["aws_li_key"],
             "gcp_service":      GCP_COMPUTE_ENGINE,
@@ -6931,8 +6878,11 @@ def map_lambda(rows):
 
             note = (
                 f"Lambda GB-seconds -> Cloud Run functions memory (GiB-s) + CPU (vCPU-s). "
-                f"AWS bundles CPU into the GB-second at 1 vCPU per {_LAMBDA_MB_PER_VCPU:.0f} MB; "
-                f"GCP bills them separately, so one AWS row becomes two GCP components."
+                f"AWS Lambda allocates 1 vCPU per 1769 MB (AWS docs); this projection sizes "
+                f"Cloud Run CPU at 1 vCPU per {_LAMBDA_MB_PER_VCPU:.0f} MB"
+                + (" — a CPU right-sizing assumption on migration (calibrated to AWS-OD/GCP-OD "
+                   "parity; verify for CPU-bound functions)" if _LAMBDA_MB_PER_VCPU > 1769 else "")
+                + ". GCP bills CPU and memory separately, so one AWS row becomes two GCP components."
             )
 
             components = [
@@ -9163,13 +9113,15 @@ def main():
     _os_expr = "operating_system" if "operating_system" in catalog_cols else "NULL AS operating_system"
     _lic_expr = "license_model" if "license_model" in catalog_cols else "NULL AS license_model"
     _bm_expr = "billing_month" if "billing_month" in catalog_cols else "NULL AS billing_month"
+    _from_expr = "from_region" if "from_region" in catalog_cols else "NULL AS from_region"
+    _to_expr = "to_region" if "to_region" in catalog_cols else "NULL AS to_region"
 
     rows = con.execute(f"""
         SELECT aws_li_key, mechanic_group, product, usage_type, pricing_unit AS unit,
                aws_amortized_cost, aws_region AS region, gcp_region, operation, volume_type,
                total_usage, instance_type, instance_ram_gb, deployment_option, database_engine,
                pricing_model, {_pc_expr}, {_vcpu_expr}, {_os_expr}, {_lic_expr}, line_item_type,
-               {_bm_expr}
+               {_bm_expr}, {_from_expr}, {_to_expr}
         FROM aws_li_catalog
         WHERE mechanic_group IN
               ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer',

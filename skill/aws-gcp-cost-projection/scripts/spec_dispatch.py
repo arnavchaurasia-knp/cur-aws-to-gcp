@@ -203,6 +203,8 @@ _CUR_COLUMN_TO_ROW_KEY = {
     "product/databaseEngine": "database_engine",
     "product/deploymentOption": "deployment_option",
     "product/volumeType": "volume_type",
+    "product/fromRegionCode": "from_region",
+    "product/toRegionCode": "to_region",
 }
 
 

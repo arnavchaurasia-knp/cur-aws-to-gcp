@@ -859,8 +859,8 @@
         "fields": [
           {
             "name": "direction",
-            "cur_column": "lineItem/UsageType",
-            "source": "cur",
+            "source": "parsed",
+            "field": "direction",
             "required": true
           },
           {
@@ -882,7 +882,7 @@
             "required": false
           }
         ],
-        "source_rule": "data_transfer (product DataTransfer branch); direction via apply_static_mappings.py:map_data_transfer"
+        "source_rule": "data_transfer (product DataTransfer branch); direction via usage_type_parser.py:transfer_direction"
       }
     ]
   },

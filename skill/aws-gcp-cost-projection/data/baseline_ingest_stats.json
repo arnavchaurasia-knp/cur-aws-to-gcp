@@ -1,0 +1,35 @@
+{
+  "description": "Phase 0 baseline ingest stats across 3 real test bills (CUR Parquet, CUR CSV, PDF)",
+  "bills": {
+    "real_cur_parquet": {
+      "format": "raw_cur",
+      "raw_row_count": 199439,
+      "distinct_dedup_tuples_in": 5363,
+      "catalog_row_count": 5364,
+      "synthetic_discount_rows": 1,
+      "raw_cost_sum": 235918.08,
+      "catalog_cost_sum": 235918.08,
+      "invariant_holds": true
+    },
+    "real_cur_csv": {
+      "format": "raw_cur",
+      "raw_row_count": 199439,
+      "distinct_dedup_tuples_in": 5363,
+      "catalog_row_count": 5364,
+      "synthetic_discount_rows": 1,
+      "raw_cost_sum": 235918.08,
+      "catalog_cost_sum": 235918.08,
+      "invariant_holds": true
+    },
+    "real_bill_pdf": {
+      "format": "flat_csv",
+      "raw_row_count": 338,
+      "distinct_dedup_tuples_in": 338,
+      "catalog_row_count": 338,
+      "synthetic_discount_rows": 0,
+      "raw_cost_sum": 12397.03,
+      "catalog_cost_sum": 12397.03,
+      "invariant_holds": true
+    }
+  }
+}

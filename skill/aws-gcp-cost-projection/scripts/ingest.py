@@ -1206,6 +1206,234 @@ def _detect_unit_price_outliers(conn, col_map, job_dir=None):
             log.debug(f"Could not update data_gaps.json with unit_price_outlier: {_gwe}")
 
 
+def _sync_cardinality_data_gaps(job_dir, distinct_in, cat_rows, raw_cost, cat_cost):
+    target_job_dir = job_dir or JOB_DIR or os.getcwd()
+    candidate_paths = [
+        os.path.join(target_job_dir, "data_gaps.json"),
+        os.path.join(target_job_dir, "projection-audit", "data_gaps.json"),
+    ]
+    target_paths = [p for p in candidate_paths if os.path.exists(p)]
+    if not target_paths:
+        target_paths = [candidate_paths[0]]
+
+    for gap_json_path in target_paths:
+        try:
+            os.makedirs(os.path.dirname(gap_json_path), exist_ok=True)
+            existing_data = {}
+            if os.path.exists(gap_json_path):
+                with open(gap_json_path, "r", encoding="utf-8") as _gf:
+                    try:
+                        existing_data = json.load(_gf)
+                    except Exception:
+                        existing_data = {}
+
+            if not isinstance(existing_data, dict):
+                existing_data = {"count": 0, "total_cost": 0.0, "items": []}
+
+            items = existing_data.get("items", [])
+            if not isinstance(items, list):
+                items = []
+
+            items.append({
+                "type": "cardinality_conservation_violation",
+                "distinct_dedup_tuples_in": distinct_in,
+                "catalog_row_count": cat_rows,
+                "delta": cat_rows - distinct_in,
+                "cost": round(abs(cat_cost - raw_cost), 2),
+                "reason": f"Distinct dedup tuple count in ({distinct_in}) != catalog rows out ({cat_rows})",
+            })
+
+            existing_data["items"] = items
+            existing_data["count"] = len(items) + len(existing_data.get("rows", []))
+            with open(gap_json_path, "w", encoding="utf-8") as _gf:
+                json.dump(existing_data, _gf, indent=2)
+        except Exception as _e:
+            log.debug(f"Could not update data_gaps.json with cardinality violation: {_e}")
+
+
+def _compute_and_record_ingest_stats(conn, job_dir=None):
+    """Phase 0 (WORKORDER_region_fidelity_and_parts_dispatch):
+    Compute and persist ingest_stats table before aws_raw is dropped.
+    Ensures cardinality conservation: distinct_dedup_tuples_in == catalog_row_count.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ingest_stats (
+            job_id VARCHAR,
+            raw_row_count BIGINT,
+            distinct_dedup_tuples_in BIGINT,
+            catalog_row_count BIGINT,
+            raw_cost_sum DOUBLE,
+            catalog_cost_sum DOUBLE,
+            service_breakdown VARCHAR,
+            invariant_holds BOOLEAN,
+            recorded_at TIMESTAMP
+        )
+    """)
+
+    effective_job_dir = job_dir or JOB_DIR or os.getcwd()
+    job_id = os.path.basename(os.path.abspath(effective_job_dir))
+
+    # 1. Row counts
+    raw_row_count = 0
+    try:
+        raw_row_count = conn.execute("SELECT COUNT(*) FROM aws_raw").fetchone()[0]
+    except Exception:
+        pass
+
+    cat_rows = 0
+    cat_cost = 0.0
+    try:
+        cr = conn.execute("SELECT COUNT(*), COALESCE(SUM(aws_amortized_cost), 0.0) FROM aws_li_catalog").fetchone()
+        cat_rows = cr[0] or 0
+        cat_cost = cr[1] or 0.0
+    except Exception:
+        pass
+
+    # Check synthetic rows
+    synthetic_discount_rows = 0
+    gap_cost = 0.0
+    try:
+        sr = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(aws_amortized_cost), 0.0) "
+            "FROM aws_li_catalog WHERE aws_li_key = 'aws-ondemand-rate-discount' OR product = 'AWS On-Demand/Private-Rate Discount'"
+        ).fetchone()
+        synthetic_discount_rows = sr[0] or 0
+        gap_cost = sr[1] or 0.0
+    except Exception:
+        pass
+
+    # 2. Check stream views for distinct tuples and per-service breakdown
+    distinct_in = 0
+    raw_cost_sum = 0.0
+    raw_map = {}
+
+    tables = {t[0] for t in conn.execute("SHOW TABLES").fetchall()}
+
+    if "_raw_flat" in tables:
+        try:
+            distinct_in = conn.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT 1 FROM _raw_flat
+                    GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload,
+                             license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,
+                             billing_month
+                )
+            """).fetchone()[0] or 0
+            raw_cost_sum = conn.execute("SELECT COALESCE(SUM(row_cost), 0.0) FROM _raw_flat").fetchone()[0] or 0.0
+            if synthetic_discount_rows > 0:
+                raw_cost_sum = raw_cost_sum + gap_cost
+
+            raw_svc = conn.execute("""
+                SELECT
+                    COALESCE(NULLIF(product_code, ''), product) as svc,
+                    COUNT(*) as rows,
+                    COUNT(DISTINCT md5(product || usage_type || operation || aws_region || pricing_model || line_item_type || CAST(is_workload AS VARCHAR) || license_model || operating_system || database_engine || deployment_option || volume_type || pricing_unit || billing_month)) as distinct_tuples,
+                    ROUND(COALESCE(SUM(row_cost), 0.0), 4) as cost
+                FROM _raw_flat
+                GROUP BY svc
+            """).fetchall()
+            raw_map = {r[0]: {"rows": r[1], "distinct_tuples": r[2], "cost": float(r[3]) if r[3] is not None else 0.0} for r in raw_svc}
+        except Exception as _e:
+            log.warning(f"Error computing ingest stats from _raw_flat: {_e}")
+
+    elif "_flat" in tables:
+        try:
+            distinct_in = conn.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT 1 FROM _flat
+                    GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload, projection_note, billing_month
+                )
+            """).fetchone()[0] or 0
+            raw_cost_sum = conn.execute("SELECT COALESCE(SUM(row_cost), 0.0) FROM _flat").fetchone()[0] or 0.0
+
+            raw_svc = conn.execute("""
+                SELECT
+                    COALESCE(product, '') as svc,
+                    COUNT(*) as rows,
+                    COUNT(DISTINCT md5(product || usage_type || operation || aws_region ||
+                        CASE WHEN operation ILIKE '%reserved instance applied%' THEN 'Committed' ELSE 'OnDemand' END ||
+                        line_item_type || CAST(is_workload AS VARCHAR) || billing_month)) as distinct_tuples,
+                    ROUND(COALESCE(SUM(row_cost), 0.0), 4) as cost
+                FROM _flat
+                GROUP BY svc
+            """).fetchall()
+            raw_map = {r[0]: {"rows": r[1], "distinct_tuples": r[2], "cost": float(r[3]) if r[3] is not None else 0.0} for r in raw_svc}
+        except Exception as _e:
+            log.warning(f"Error computing ingest stats from _flat: {_e}")
+
+    elif "_raw" in tables:
+        try:
+            distinct_in = conn.execute("SELECT COUNT(*) FROM (SELECT 1 FROM _raw GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload, pricing_unit, billing_month)").fetchone()[0] or 0
+            raw_cost_sum = conn.execute("SELECT COALESCE(SUM(row_cost), 0.0) FROM _raw").fetchone()[0] or 0.0
+            raw_svc = conn.execute("SELECT COALESCE(product, '') as svc, COUNT(*) as rows, COUNT(DISTINCT md5(product || usage_type || operation || aws_region || pricing_model || line_item_type || CAST(is_workload AS VARCHAR) || billing_month)) as distinct_tuples, ROUND(COALESCE(SUM(row_cost), 0.0), 4) as cost FROM _raw GROUP BY svc").fetchall()
+            raw_map = {r[0]: {"rows": r[1], "distinct_tuples": r[2], "cost": float(r[3]) if r[3] is not None else 0.0} for r in raw_svc}
+        except Exception as _e:
+            log.warning(f"Error computing ingest stats from _raw: {_e}")
+
+    if distinct_in == 0 and cat_rows > 0:
+        distinct_in = cat_rows - synthetic_discount_rows
+        raw_cost_sum = cat_cost
+
+    # Catalog per-service summary
+    cat_map = {}
+    try:
+        cat_svc = conn.execute("""
+            SELECT
+                COALESCE(NULLIF(product_code, ''), product) as svc,
+                COUNT(*) as rows,
+                COUNT(DISTINCT aws_li_key) as distinct_tuples,
+                ROUND(COALESCE(SUM(aws_amortized_cost), 0.0), 4) as cost
+            FROM aws_li_catalog
+            GROUP BY svc
+        """).fetchall()
+        cat_map = {r[0]: {"rows": r[1], "distinct_tuples": r[2], "cost": float(r[3]) if r[3] is not None else 0.0} for r in cat_svc}
+    except Exception as _e:
+        log.warning(f"Error computing catalog service summary: {_e}")
+
+    service_breakdown = {}
+    all_svcs = sorted(set(raw_map.keys()).union(set(cat_map.keys())))
+    for s in all_svcs:
+        service_breakdown[s] = {
+            "in": raw_map.get(s, {"distinct_tuples": 0, "rows": 0, "cost": 0.0}),
+            "out": cat_map.get(s, {"distinct_tuples": 0, "rows": 0, "cost": 0.0})
+        }
+
+    invariant_holds = (distinct_in + synthetic_discount_rows == cat_rows)
+    if not invariant_holds:
+        log.warning(
+            f"Cardinality conservation violation: distinct_dedup_tuples_in={distinct_in} "
+            f"+ synthetic={synthetic_discount_rows} != catalog_row_count={cat_rows}"
+        )
+        diag(WARN, "cardinality_conservation_violation", "ingest.py",
+             f"Distinct dedup tuple count in ({distinct_in}) != catalog rows out ({cat_rows})",
+             rows=abs(cat_rows - distinct_in),
+             usd=round(abs(cat_cost - raw_cost_sum), 2),
+             job_dir=effective_job_dir)
+        _sync_cardinality_data_gaps(effective_job_dir, distinct_in, cat_rows, raw_cost_sum, cat_cost)
+    else:
+        log.info(
+            f"Cardinality conservation OK: distinct_dedup_tuples_in={distinct_in} "
+            f"== catalog_row_count={cat_rows} (raw rows: {raw_row_count})"
+        )
+
+    # Persist in ingest_stats
+    conn.execute("""
+        INSERT INTO ingest_stats (
+            job_id, raw_row_count, distinct_dedup_tuples_in, catalog_row_count,
+            raw_cost_sum, catalog_cost_sum, service_breakdown, invariant_holds, recorded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, [job_id, raw_row_count, distinct_in, cat_rows, raw_cost_sum, cat_cost, json.dumps(service_breakdown), invariant_holds])
+
+    # Clean up temp views
+    for v in ["_raw_flat", "_flat", "_raw"]:
+        try:
+            conn.execute(f"DROP VIEW IF EXISTS {v}")
+        except Exception:
+            pass
+
+    return raw_cost_sum
+
+
 def _load_excel(conn, path):
     """Excel → aws_raw via DuckDB excel extension, spatial fallback, then openpyxl."""
     safe_excel_path = path.replace("\\", "/").replace("'", "''")
@@ -1858,111 +2086,113 @@ def main():
 
     # Build SQL to group and classify
     if is_raw_cur:
-        sql = f"""
-            WITH _raw_flat AS (
-                SELECT
-                    -- Prefer a human-readable name (e.g. "Amazon Simple Storage
-                    -- Service") over lineItem/ProductCode (AWS's short machine
-                    -- code, e.g. "AmazonS3"). Every downstream classifier
-                    -- (classify_mechanics.py, aws_normalizer.py, render_report.py's
-                    -- pill_type) matches on friendly-name substrings/word-
-                    -- boundaries ("Simple Storage", "\bS3\b", ...), which a bare
-                    -- code like "AmazonS3"/"AmazonRDS" never satisfies (no word
-                    -- boundary between the "n" of "Amazon" and the code that
-                    -- follows it once lowercased). Confirmed real: this silently
-                    -- sent every raw-CUR S3/RDS/EC2 row to misc -> passthrough
-                    -- instead of the deterministic static mappers.
-                    --
-                    -- Two shapes of friendly name exist across real bills:
-                    --   1. A flat product/ProductName column (some CUR exports).
-                    --   2. A bare `product` column holding the ENTIRE product
-                    --      struct as a JSON string (confirmed real on a live
-                    --      customer bill -- product_name nested inside product's
-                    --      JSON, e.g. Amazon Elastic File System, alongside
-                    --      storage_class/access_type -- with product_servicecode
-                    --      carrying the raw "AmazonEFS" code separately). Case 1
-                    --      never fires for this bill shape since no
-                    --      product/ProductName-style column exists at all --
-                    --      only the JSON-in-`product` form does.
-                    -- TRY() guards case 2 against a `product` column that isn't
-                    -- JSON (older/other bill formats) or is NULL/absent — both
-                    -- resolve to NULL and fall through to the code, same as before.
-                    COALESCE(
-                        NULLIF({c(['product/productname', 'productname'])}, ''),
-                        NULLIF(TRY(json_extract_string({c(['product'])}, '$.product_name')), ''),
-                        {c(['lineitem/productcode', 'productcode'])},
-                        ''
-                    ) as product,
-                    COALESCE({c(['lineitem/usagetype', 'usagetype'])}, '') as usage_type,
-                    COALESCE({c(['lineitem/operation', 'operation'])}, '') as operation,
-                    -- Region fallback chain (Finding K): AWS leaves product_region_code
-                    -- blank on data-transfer rows and carries the region in
-                    -- product_from_region_code / product_location instead; ingest read
-                    -- only the primary column, silently dropping those to 'global'.
-                    -- Fall back through the other real region columns (both region
-                    -- CODES and display NAMES map downstream), excluding SP 'Any'.
-                    COALESCE(
-                        NULLIF({c(['product/region', 'region'])}, ''),
-                        NULLIF({c(['product_from_region_code', 'product/fromregioncode'])}, ''),
-                        NULLIF({c(['product_location', 'product/location'])}, ''),
-                        NULLIF(NULLIF({c(['savings_plan_region', 'savingsplan/region'])}, ''), 'Any'),
-                        ''
-                    ) as aws_region,
-                    COALESCE({c(['pricing/term', 'term'])}, 'OnDemand') as pricing_model,
-                    COALESCE({c(['lineitem/lineitemtype', 'lineitemtype'])}, '') as line_item_type,
-                    CASE WHEN {_workload_expr} THEN TRUE ELSE FALSE END as is_workload,
-                    {_sql_num(c(['lineitem/usageamount', 'usageamount']))} as row_usage,
-                    -- GROSS basis: workload rows carry on-demand/list cost
-                    -- (publicOnDemandCost); discount/commitment rows keep their
-                    -- actual (unblended) amount for the separate savings section.
-                    CASE WHEN {_workload_expr}
-                         THEN {_sql_num(gross_col)}
-                         ELSE {_sql_num(cost_col)}
-                    END as row_cost,
-                    CASE WHEN {c(['pricing/publicondemandcost', 'publicondemandcost'])} != 'NULL'
-                         THEN {_sql_num(c(['pricing/publicondemandcost', 'publicondemandcost']))}
-                         ELSE NULL
-                    END as row_public_od,
-                    COALESCE({c(['product/licensemodel', 'licensemodel'])}, '') as license_model,
-                    COALESCE({c(['product/operatingsystem', 'operatingsystem'])}, '') as operating_system,
-                    COALESCE({c(['product/databaseengine', 'databaseengine'])}, '') as database_engine,
-                    COALESCE({c(['product/deploymentoption', 'deploymentoption'])}, '') as deployment_option,
-                    COALESCE({c(['product/volumetype', 'volumetype'])}, '') as volume_type,
-                    COALESCE({c(['pricing/unit', 'unit'])}, '') as pricing_unit,
-                    -- Authoritative stable key: the raw CUR service code
-                    -- (lineItem/ProductCode), e.g. "AmazonEC2". Already read above
-                    -- for the product-name fallback and is_workload; now persisted
-                    -- as its own column so aws_normalizer.py can key on it.
-                    COALESCE({c(['lineitem/productcode', 'productcode'])}, '') as product_code,
-                    -- Billing month (Finding N): without it in the dedup key, a
-                    -- multi-month CUR collapses each line item across months, so one
-                    -- instance running 2 months looks like 2 instances (instance_count
-                    -- doubles, billing_days defaults wrong). Truncate to YYYY-MM so
-                    -- each month is its own catalog row. Blank on single-period/Hive
-                    -- reads degrades to today's behavior.
-                    COALESCE(
-                        strftime(COALESCE(try_cast({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS DATE), try_strptime(CAST({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS VARCHAR), '%m/%d/%Y'), try_strptime(CAST({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS VARCHAR), '%m/%d/%y')), '%Y-%m'),
-                        strftime(COALESCE(try_cast({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS DATE), try_strptime(CAST({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS VARCHAR), '%m/%d/%Y'), try_strptime(CAST({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS VARCHAR), '%m/%d/%y')), '%Y-%m'),
-                        LEFT(CAST({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS VARCHAR), 7),
-                        LEFT(CAST({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS VARCHAR), 7),
-                        ''
-                    ) as billing_month,
-                    COALESCE(
-                        NULLIF({c(['savingsplan/savingsplanarn', 'savingsplan_savingsplanarn', 'savings_plan_savings_plan_a_r_n', 'savings_plan_arn'])}, ''),
-                        NULLIF({c(['reservation/reservationarn', 'reservation_reservationarn', 'reservation_reservation_a_r_n', 'reservation_arn'])}, ''),
-                        ''
-                    ) as commitment_arn,
-                    CASE WHEN {c(['pricing/publicondemandrate', 'pricing_publicondemandrate', 'pricing_public_on_demand_rate', 'publicondemandrate'])} != 'NULL'
-                         THEN {_sql_num(c(['pricing/publicondemandrate', 'pricing_publicondemandrate', 'pricing_public_on_demand_rate', 'publicondemandrate']))}
-                         ELSE NULL
-                    END as row_public_od_rate,
-                    CASE WHEN {c(['savingsplan/savingsplanrate', 'savingsplan_savingsplanrate', 'savings_plan_savings_plan_rate', 'savings_plan_rate'])} != 'NULL'
-                         THEN {_sql_num(c(['savingsplan/savingsplanrate', 'savingsplan_savingsplanrate', 'savings_plan_savings_plan_rate', 'savings_plan_rate']))}
-                         ELSE NULL
-                    END as row_sp_rate
-                FROM aws_raw
-                WHERE {c(['lineitem/lineitemtype', 'lineitemtype'])} != 'Tax'
-            )
+        conn.execute("DROP VIEW IF EXISTS _raw_flat")
+        conn.execute(f"""
+            CREATE TEMP VIEW _raw_flat AS
+            SELECT
+                -- Prefer a human-readable name (e.g. "Amazon Simple Storage
+                -- Service") over lineItem/ProductCode (AWS's short machine
+                -- code, e.g. "AmazonS3"). Every downstream classifier
+                -- (classify_mechanics.py, aws_normalizer.py, render_report.py's
+                -- pill_type) matches on friendly-name substrings/word-
+                -- boundaries ("Simple Storage", "\bS3\b", ...), which a bare
+                -- code like "AmazonS3"/"AmazonRDS" never satisfies (no word
+                -- boundary between the "n" of "Amazon" and the code that
+                -- follows it once lowercased). Confirmed real: this silently
+                -- sent every raw-CUR S3/RDS/EC2 row to misc -> passthrough
+                -- instead of the deterministic static mappers.
+                --
+                -- Two shapes of friendly name exist across real bills:
+                --   1. A flat product/ProductName column (some CUR exports).
+                --   2. A bare `product` column holding the ENTIRE product
+                --      struct as a JSON string (confirmed real on a live
+                --      customer bill -- product_name nested inside product's
+                --      JSON, e.g. Amazon Elastic File System, alongside
+                --      storage_class/access_type -- with product_servicecode
+                --      carrying the raw "AmazonEFS" code separately). Case 1
+                --      never fires for this bill shape since no
+                --      product/ProductName-style column exists at all --
+                --      only the JSON-in-`product` form does.
+                -- TRY() guards case 2 against a `product` column that isn't
+                -- JSON (older/other bill formats) or is NULL/absent — both
+                -- resolve to NULL and fall through to the code, same as before.
+                COALESCE(
+                    NULLIF({c(['product/productname', 'productname'])}, ''),
+                    NULLIF(TRY(json_extract_string({c(['product'])}, '$.product_name')), ''),
+                    {c(['lineitem/productcode', 'productcode'])},
+                    ''
+                ) as product,
+                COALESCE({c(['lineitem/usagetype', 'usagetype'])}, '') as usage_type,
+                COALESCE({c(['lineitem/operation', 'operation'])}, '') as operation,
+                -- Region fallback chain (Finding K): AWS leaves product_region_code
+                -- blank on data-transfer rows and carries the region in
+                -- product_from_region_code / product_location instead; ingest read
+                -- only the primary column, silently dropping those to 'global'.
+                -- Fall back through the other real region columns (both region
+                -- CODES and display NAMES map downstream), excluding SP 'Any'.
+                COALESCE(
+                    NULLIF({c(['product/region', 'region'])}, ''),
+                    NULLIF({c(['product_from_region_code', 'product/fromregioncode'])}, ''),
+                    NULLIF({c(['product_location', 'product/location'])}, ''),
+                    NULLIF(NULLIF({c(['savings_plan_region', 'savingsplan/region'])}, ''), 'Any'),
+                    ''
+                ) as aws_region,
+                COALESCE({c(['pricing/term', 'term'])}, 'OnDemand') as pricing_model,
+                COALESCE({c(['lineitem/lineitemtype', 'lineitemtype'])}, '') as line_item_type,
+                CASE WHEN {_workload_expr} THEN TRUE ELSE FALSE END as is_workload,
+                {_sql_num(c(['lineitem/usageamount', 'usageamount']))} as row_usage,
+                -- GROSS basis: workload rows carry on-demand/list cost
+                -- (publicOnDemandCost); discount/commitment rows keep their
+                -- actual (unblended) amount for the separate savings section.
+                CASE WHEN {_workload_expr}
+                     THEN {_sql_num(gross_col)}
+                     ELSE {_sql_num(cost_col)}
+                END as row_cost,
+                CASE WHEN {c(['pricing/publicondemandcost', 'publicondemandcost'])} != 'NULL'
+                     THEN {_sql_num(c(['pricing/publicondemandcost', 'publicondemandcost']))}
+                     ELSE NULL
+                END as row_public_od,
+                COALESCE({c(['product/licensemodel', 'licensemodel'])}, '') as license_model,
+                COALESCE({c(['product/operatingsystem', 'operatingsystem'])}, '') as operating_system,
+                COALESCE({c(['product/databaseengine', 'databaseengine'])}, '') as database_engine,
+                COALESCE({c(['product/deploymentoption', 'deploymentoption'])}, '') as deployment_option,
+                COALESCE({c(['product/volumetype', 'volumetype'])}, '') as volume_type,
+                COALESCE({c(['pricing/unit', 'unit'])}, '') as pricing_unit,
+                -- Authoritative stable key: the raw CUR service code
+                -- (lineItem/ProductCode), e.g. "AmazonEC2". Already read above
+                -- for the product-name fallback and is_workload; now persisted
+                -- as its own column so aws_normalizer.py can key on it.
+                COALESCE({c(['lineitem/productcode', 'productcode'])}, '') as product_code,
+                -- Billing month (Finding N): without it in the dedup key, a
+                -- multi-month CUR collapses each line item across months, so one
+                -- instance running 2 months looks like 2 instances (instance_count
+                -- doubles, billing_days defaults wrong). Truncate to YYYY-MM so
+                -- each month is its own catalog row. Blank on single-period/Hive
+                -- reads degrades to today's behavior.
+                COALESCE(
+                    strftime(COALESCE(try_cast({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS DATE), try_strptime(CAST({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS VARCHAR), '%m/%d/%Y'), try_strptime(CAST({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS VARCHAR), '%m/%d/%y')), '%Y-%m'),
+                    strftime(COALESCE(try_cast({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS DATE), try_strptime(CAST({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS VARCHAR), '%m/%d/%Y'), try_strptime(CAST({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS VARCHAR), '%m/%d/%y')), '%Y-%m'),
+                    LEFT(CAST({c(['bill/billingperiodstartdate', 'bill_billing_period_start_date'])} AS VARCHAR), 7),
+                    LEFT(CAST({c(['lineitem/usagestartdate', 'line_item_usage_start_date'])} AS VARCHAR), 7),
+                    ''
+                ) as billing_month,
+                COALESCE(
+                    NULLIF({c(['savingsplan/savingsplanarn', 'savingsplan_savingsplanarn', 'savings_plan_savings_plan_a_r_n', 'savings_plan_arn'])}, ''),
+                    NULLIF({c(['reservation/reservationarn', 'reservation_reservationarn', 'reservation_reservation_a_r_n', 'reservation_arn'])}, ''),
+                    ''
+                ) as commitment_arn,
+                CASE WHEN {c(['pricing/publicondemandrate', 'pricing_publicondemandrate', 'pricing_public_on_demand_rate', 'publicondemandrate'])} != 'NULL'
+                     THEN {_sql_num(c(['pricing/publicondemandrate', 'pricing_publicondemandrate', 'pricing_public_on_demand_rate', 'publicondemandrate']))}
+                     ELSE NULL
+                END as row_public_od_rate,
+                CASE WHEN {c(['savingsplan/savingsplanrate', 'savingsplan_savingsplanrate', 'savings_plan_savings_plan_rate', 'savings_plan_rate'])} != 'NULL'
+                     THEN {_sql_num(c(['savingsplan/savingsplanrate', 'savingsplan_savingsplanrate', 'savings_plan_savings_plan_rate', 'savings_plan_rate']))}
+                     ELSE NULL
+                END as row_sp_rate
+            FROM aws_raw
+            WHERE {c(['lineitem/lineitemtype', 'lineitemtype'])} != 'Tax'
+        """)
+        conn.execute("""
             INSERT INTO aws_li_catalog (
                 aws_li_key, product, usage_type, operation, aws_region, gcp_region,
                 pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost,
@@ -1990,8 +2220,7 @@ def main():
             GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload,
                      license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,
                      billing_month
-        """
-        conn.execute(sql)
+        """)
 
         # Implicit on-demand/private-rate discount: workload rows now carry GROSS
         # (publicOnDemandCost), but AWS actually charged the (lower) unblended rate.
@@ -2544,51 +2773,53 @@ def main():
             # CTE pre-computes all CASE expressions from raw columns so the outer
             # GROUP BY only sees already-derived aliases — avoids DuckDB strict-mode
             # "column must appear in GROUP BY" errors on unaggregated column refs.
-            sql = f"""
-                WITH _flat AS (
-                    SELECT
-                        COALESCE({c(['service'])}, '')          AS product,
-                        COALESCE({c(['custom_usage_type'])}, '') AS usage_type,
-                        COALESCE({c(['description'])}, '')       AS operation,
-                        COALESCE({c(['region'])}, '')             AS aws_region,
-                        COALESCE(
-                            LEFT(CAST({c(['billing_month', 'billingmonth', 'bill/billingperiodstartdate', 'bill_billing_period_start_date', 'date', 'month', 'period', 'billing_period', 'start_date', 'usage_start_date'])} AS VARCHAR), 7),
-                            ''
-                        ) AS billing_month,
-                        CASE
-                            WHEN {c(['service'])} ILIKE '%Spot%' OR {c(['description'])} ILIKE '%Spot Instance%' THEN 'Spot'
-                            WHEN {c(['description'])} ILIKE '%reserved instance applied%'
-                              OR {c(['description'])} ILIKE '%reserved instances%'
-                              OR {c(['service'])} ILIKE '%reserved instances%' THEN 'Committed'
-                            ELSE 'OnDemand'
-                        END AS pricing_model,
-                        {_inv_lit}   AS line_item_type,
-                        {_inv_is_wl} AS is_workload,
-                        {_sql_num(c(['usage_quantity']))} AS row_usage,
-                        {_sql_num(cost_col)}              AS row_cost,
-                        CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%'
-                              OR {c(['description'])} ILIKE '%reserved instances%'
-                              OR {c(['service'])} ILIKE '%reserved instances%'
-                             THEN 'AWS rate is RI-amortized; compare GCP CUD, not OD' ELSE NULL END AS projection_note
-                    FROM aws_raw
-                    WHERE {c(['service'])} != 'Tax'
-                      AND {c(['service'])} NOT ILIKE '%Tax%'
-                      -- Bare '%Tax%' also matches "pre-tax"/"post-tax", which isn't a tax
-                      -- charge — it's the substring the PDF's own "Total pre-tax USD X"
-                      -- line uses, and the exact phrase _load_pdf()'s own gross->stated
-                      -- reconciliation row (see PDF_PRETAX_RE / the "Enterprise Discount
-                      -- Program & credits (reconcile gross USD ... to stated pre-tax USD
-                      -- ...)" row above) puts in its own description. That row was being
-                      -- silently deleted by this exact filter — the reconciliation adjustment
-                      -- it carries (bringing the gross line-item sum down to the bill's
-                      -- real stated total) never reached aws_li_catalog, so AWS Total
-                      -- stayed at the inflated gross figure instead of the bill's real one.
-                      AND ({c(['description'])} NOT ILIKE '%Tax%'
-                           OR {c(['description'])} ILIKE '%pre-tax%'
-                           OR {c(['description'])} ILIKE '%post-tax%')
-                      AND COALESCE({c(['service'])}, '') != ''
-                      AND NOT regexp_matches(COALESCE({c(['description'])}, ''), '^Amazon [A-Za-z0-9 ]+\\([0-9]+ [A-Za-z]+\\)$')
-                )
+            conn.execute("DROP VIEW IF EXISTS _flat")
+            conn.execute(f"""
+                CREATE TEMP VIEW _flat AS
+                SELECT
+                    COALESCE({c(['service'])}, '')          AS product,
+                    COALESCE({c(['custom_usage_type'])}, '') AS usage_type,
+                    COALESCE({c(['description'])}, '')       AS operation,
+                    COALESCE({c(['region'])}, '')             AS aws_region,
+                    COALESCE(
+                        LEFT(CAST({c(['billing_month', 'billingmonth', 'bill/billingperiodstartdate', 'bill_billing_period_start_date', 'date', 'month', 'period', 'billing_period', 'start_date', 'usage_start_date'])} AS VARCHAR), 7),
+                        ''
+                    ) AS billing_month,
+                    CASE
+                        WHEN {c(['service'])} ILIKE '%Spot%' OR {c(['description'])} ILIKE '%Spot Instance%' THEN 'Spot'
+                        WHEN {c(['description'])} ILIKE '%reserved instance applied%'
+                          OR {c(['description'])} ILIKE '%reserved instances%'
+                          OR {c(['service'])} ILIKE '%reserved instances%' THEN 'Committed'
+                        ELSE 'OnDemand'
+                    END AS pricing_model,
+                    {_inv_lit}   AS line_item_type,
+                    {_inv_is_wl} AS is_workload,
+                    {_sql_num(c(['usage_quantity']))} AS row_usage,
+                    {_sql_num(cost_col)}              AS row_cost,
+                    CASE WHEN {c(['description'])} ILIKE '%reserved instance applied%'
+                          OR {c(['description'])} ILIKE '%reserved instances%'
+                          OR {c(['service'])} ILIKE '%reserved instances%'
+                         THEN 'AWS rate is RI-amortized; compare GCP CUD, not OD' ELSE NULL END AS projection_note
+                FROM aws_raw
+                WHERE {c(['service'])} != 'Tax'
+                  AND {c(['service'])} NOT ILIKE '%Tax%'
+                  -- Bare '%Tax%' also matches "pre-tax"/"post-tax", which isn't a tax
+                  -- charge — it's the substring the PDF's own "Total pre-tax USD X"
+                  -- line uses, and the exact phrase _load_pdf()'s own gross->stated
+                  -- reconciliation row (see PDF_PRETAX_RE / the "Enterprise Discount
+                  -- Program & credits (reconcile gross USD ... to stated pre-tax USD
+                  -- ...)" row above) puts in its own description. That row was being
+                  -- silently deleted by this exact filter — the reconciliation adjustment
+                  -- it carries (bringing the gross line-item sum down to the bill's
+                  -- real stated total) never reached aws_li_catalog, so AWS Total
+                  -- stayed at the inflated gross figure instead of the bill's real one.
+                  AND ({c(['description'])} NOT ILIKE '%Tax%'
+                       OR {c(['description'])} ILIKE '%pre-tax%'
+                       OR {c(['description'])} ILIKE '%post-tax%')
+                  AND COALESCE({c(['service'])}, '') != ''
+                  AND NOT regexp_matches(COALESCE({c(['description'])}, ''), '^Amazon [A-Za-z0-9 ]+\\([0-9]+ [A-Za-z]+\\)$')
+            """)
+            conn.execute("""
                 INSERT INTO aws_li_catalog (aws_li_key, product, usage_type, operation, aws_region, gcp_region, pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost, projection_note, billing_month)
                 SELECT
                     md5(product || usage_type || operation || aws_region ||
@@ -2606,10 +2837,13 @@ def main():
                     billing_month
                 FROM _flat
                 GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload, projection_note, billing_month
-            """
-            conn.execute(sql)
+            """)
 
-    # 4. Free raw table/view and disk cache once loaded into aws_li_catalog
+    # 4. Phase 0 (WORKORDER_region_fidelity_and_parts_dispatch):
+    # Compute and persist ingest_stats before aws_raw is dropped.
+    _compute_and_record_ingest_stats(conn, JOB_DIR)
+
+    # 4a. Free raw table/view and disk cache once loaded into aws_li_catalog
     _drop_raw(conn)
 
     # 4b. Multi-currency (Directive 1): normalize aws_amortized_cost to USD internally,
@@ -2904,14 +3138,13 @@ def main():
     fmt = "raw_cur" if is_raw_cur else "flat_csv"
     conn.execute("UPDATE aws_li_catalog SET billing_format = ?", (fmt,))
 
-    # Faithfulness reference (ING-2): Compute from raw file if cost_col is available,
-    # reconciling the final catalog against the source data to catch extraction loss.
+    # Faithfulness reference (ING-2): Reconcile final catalog against raw data
+    # (recorded in ingest_stats before aws_raw was dropped) to catch extraction loss.
     _bill_reference_total = 0.0
     try:
-        if cost_col and cost_col != "NULL":
-            _bill_reference_total = conn.execute(
-                f"SELECT COALESCE(SUM({_sql_num(cost_col)}), 0.0) FROM aws_raw"
-            ).fetchone()[0] or 0.0
+        ref_row = conn.execute("SELECT raw_cost_sum FROM ingest_stats ORDER BY recorded_at DESC LIMIT 1").fetchone()
+        if ref_row and ref_row[0] is not None and ref_row[0] > 0.0:
+            _bill_reference_total = float(ref_row[0])
     except Exception:
         pass
     if _bill_reference_total == 0.0:

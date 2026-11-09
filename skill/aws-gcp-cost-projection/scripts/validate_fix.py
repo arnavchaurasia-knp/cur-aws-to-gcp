@@ -25,6 +25,9 @@ GATES (both modes; violations -> validation_report.json -> exit 1):
   - mapped SKU with no region-reachable rate (silent $0)
   - reconciliation: |Σ aws_li_catalog - bill_total| over tolerance (when the
     bill total can be read from input.txt/input.csv)
+  - cardinality conservation: distinct_dedup_tuples_in == catalog_row_count in ingest_stats
+  - egress strategy invariant: data transfer rows must have strategy IN ('map', 'ignore')
+    and not needs_reprice
 
 Then it recomputes totals deterministically and prints the verdict with the
 CORRECT sign (positive diff = GCP cheaper).
@@ -110,6 +113,7 @@ def _mappable_pattern_clause(column):
 # https://cloud.google.com/compute/docs/sustained-use-discounts
 
 _CUD_PCT_CACHE = None
+_CUD_ELIGIBLE_CACHE = None
 
 def load_cud_pct():
     """Load CUD multipliers from data/cud_pct.json, falling back to hardcoded dict."""
@@ -128,7 +132,7 @@ def load_cud_pct():
                 raw = json.load(f)
             result = {}
             for svc, vals in raw.items():
-                if svc == "_meta":
+                if svc in ("_meta", "cud_eligible"):
                     continue
                 if isinstance(vals, dict) and "1yr_multiplier" in vals and "3yr_multiplier" in vals:
                     result[svc] = (float(vals["1yr_multiplier"]), float(vals["3yr_multiplier"]))
@@ -140,19 +144,55 @@ def load_cud_pct():
     _CUD_PCT_CACHE = dict(_CUD_PCT_FALLBACK)
     return _CUD_PCT_CACHE
 
+
+def load_cud_eligible():
+    """Load CUD-eligible services from data/cud_pct.json."""
+    global _CUD_ELIGIBLE_CACHE
+    if _CUD_ELIGIBLE_CACHE is not None:
+        return _CUD_ELIGIBLE_CACHE
+
+    skill_dir = os.environ.get("SKILL_DIR", "")
+    if not skill_dir:
+        skill_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    json_path = os.path.join(skill_dir, "data", "cud_pct.json")
+
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                raw = json.load(f)
+            if "cud_eligible" in raw and isinstance(raw["cud_eligible"], list):
+                _CUD_ELIGIBLE_CACHE = set(raw["cud_eligible"])
+                return _CUD_ELIGIBLE_CACHE
+        except Exception:
+            pass
+
+    _CUD_ELIGIBLE_CACHE = {
+        "Compute Engine",
+        "Compute Engine Memory Optimized",
+        "Cloud SQL",
+        "Cloud Spanner",
+        "Cloud Bigtable",
+        "Memorystore",
+        "Cloud Memorystore",
+        "Cloud Memorystore for Redis",
+        "Cloud Memorystore for Memcached",
+        "AlloyDB",
+        "Cloud Run",
+    }
+    return _CUD_ELIGIBLE_CACHE
+
+
 CUD_PCT = load_cud_pct()
-# DEFAULT entry from cud_pct.json (0.75, 0.60) is the single source of truth.
-# Do NOT define a separate _CUD_DEFAULT constant — that was the source of the
-# 0.70/0.55 vs 0.75/0.60 inconsistency the manager flagged.
-_CUD_DEFAULT = CUD_PCT.get("DEFAULT", (0.75, 0.60))
+CUD_ELIGIBLE = load_cud_eligible()
+# DEFAULT entry from cud_pct.json (1.0, 1.0) is the single source of truth.
+_CUD_DEFAULT = CUD_PCT.get("DEFAULT", (1.0, 1.0))
 
 
 def _cud_factors(svc):
     """(1yr, 3yr) CUD multipliers for a service. Module-level so it is defined
     before every call site — a nested def crashed the regional-SKU-repair
     branch with a NameError when it ran before the def executed."""
-    if svc not in CUD_PCT or svc == "DEFAULT":
-        print(f"[WARN] CUD_PCT has no entry for service '{svc}' — using DEFAULT {_CUD_DEFAULT}")
+    if svc not in CUD_ELIGIBLE or svc not in CUD_PCT or svc == "DEFAULT":
         return _CUD_DEFAULT
     return CUD_PCT[svc]
 
@@ -676,6 +716,99 @@ def passthrough_integrity(con) -> list:
             "aws_li_key": None,
             "message": f"passthrough_integrity gate could not run: {e}",
         })
+    return violations
+
+
+def check_cardinality_conservation(con) -> list:
+    """Phase 0 / Phase 5 Cardinality Conservation Invariant:
+    Query ingest_stats: if invariant_holds == False, record a fatal hard violation.
+    """
+    violations = []
+    try:
+        tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
+        if "ingest_stats" in tables:
+            stats = con.execute("""
+                SELECT job_id, raw_row_count, distinct_dedup_tuples_in, catalog_row_count,
+                       raw_cost_sum, catalog_cost_sum, invariant_holds
+                FROM ingest_stats
+                ORDER BY recorded_at DESC
+                LIMIT 1
+            """).fetchone()
+            if stats and stats[6] is False:
+                violations.append({
+                    "gate": "cardinality_conservation",
+                    "job_id": stats[0],
+                    "raw_row_count": stats[1],
+                    "distinct_dedup_tuples_in": stats[2],
+                    "catalog_row_count": stats[3],
+                    "raw_cost_sum": stats[4],
+                    "catalog_cost_sum": stats[5],
+                    "reason": (
+                        f"Cardinality conservation violated: distinct_dedup_tuples_in ({stats[2]}) "
+                        f"!= catalog_row_count ({stats[3]})"
+                    ),
+                })
+    except Exception as e:
+        log.warning(f"Error checking ingest_stats cardinality invariant: {e}")
+    return violations
+
+
+def check_egress_strategy_invariant(con) -> list:
+    """Phase 1 / Phase 3 / Phase 5 Egress Strategy Invariant:
+    Any data transfer row must have strategy IN ('map', 'ignore') and must NOT have
+    gcp_sku_id = 'needs_reprice', rate_source = 'needs_reprice', or strategy IS NULL.
+    """
+    violations = []
+    try:
+        tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
+        if "aws_li_catalog" not in tables or "aws_li_to_gcp_li" not in tables:
+            return violations
+
+        m_cols = {c[0] for c in con.execute("DESCRIBE aws_li_to_gcp_li").fetchall()}
+        c_cols = {c[0] for c in con.execute("DESCRIBE aws_li_catalog").fetchall()}
+
+        mg_clause = "c.mechanic_group = 'data_transfer'" if "mechanic_group" in c_cols else "FALSE"
+        rate_source_clause = "COALESCE(m.rate_source, '') = 'needs_reprice'" if "rate_source" in m_cols else "FALSE"
+        rate_source_col = "COALESCE(m.rate_source, '')" if "rate_source" in m_cols else "''"
+
+        egress_rows = con.execute(f"""
+            SELECT m.aws_li_key, c.product, c.usage_type, COALESCE(c.operation, ''),
+                   ROUND(c.aws_amortized_cost, 2), m.strategy, m.gcp_sku_id, {rate_source_col}
+            FROM aws_li_to_gcp_li m
+            JOIN aws_li_catalog c USING (aws_li_key)
+            WHERE c.is_workload
+              AND (
+                  {mg_clause}
+                  OR m.component = 'transfer'
+                  OR c.product ILIKE '%data transfer%'
+                  OR c.usage_type ILIKE '%DataTransfer%'
+                  OR c.usage_type ILIKE '%-Bytes%'
+              )
+              AND COALESCE(m.component, '') NOT IN ('nat', 'cdn')
+              AND (
+                  m.strategy IS NULL
+                  OR m.strategy NOT IN ('map', 'ignore')
+                  OR COALESCE(m.gcp_sku_id, '') = 'needs_reprice'
+                  OR {rate_source_clause}
+              )
+            ORDER BY c.aws_amortized_cost DESC
+        """).fetchall()
+
+        for r in egress_rows:
+            violations.append({
+                "gate": "egress_strategy_invariant",
+                "aws_li_key": r[0],
+                "product": r[1],
+                "usage_type": r[2],
+                "operation": r[3],
+                "aws_cost": r[4],
+                "strategy": r[5],
+                "gcp_sku_id": r[6],
+                "rate_source": r[7],
+                "reason": "Data transfer row must have strategy IN ('map', 'ignore') and not needs_reprice",
+            })
+    except Exception as e:
+        log.warning(f"Error checking egress strategy invariant: {e}")
     return violations
 
 
@@ -1415,15 +1548,16 @@ def main():
                                         INSERT OR REPLACE INTO gcp_sku_rates VALUES
                                         (?, ?, ?, ?, ?, 'OnDemand', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
                                     """, (good_sku, svc, desc, rf, rg, target_region, unit, rate))
-                                    p1, p3 = _cud_factors(svc)
-                                    con.execute("""
-                                        INSERT OR REPLACE INTO gcp_sku_rates VALUES
-                                        (?, ?, ?, ?, ?, 'Commit1Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
-                                    """, (good_sku, svc, desc + " (Commit1Yr alias)", rf, rg, target_region, unit, rate * p1))
-                                    con.execute("""
-                                        INSERT OR REPLACE INTO gcp_sku_rates VALUES
-                                        (?, ?, ?, ?, ?, 'Commit3Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
-                                    """, (good_sku, svc, desc + " (Commit3Yr alias)", rf, rg, target_region, unit, rate * p3))
+                                    if svc in CUD_ELIGIBLE and (svc != "Compute Engine" or rg in ("CPU", "RAM", "GPU")):
+                                        p1, p3 = _cud_factors(svc)
+                                        con.execute("""
+                                            INSERT OR REPLACE INTO gcp_sku_rates VALUES
+                                            (?, ?, ?, ?, ?, 'Commit1Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
+                                        """, (good_sku, svc, desc + " (Commit1Yr alias)", rf, rg, target_region, unit, rate * p1))
+                                        con.execute("""
+                                            INSERT OR REPLACE INTO gcp_sku_rates VALUES
+                                            (?, ?, ?, ?, ?, 'Commit3Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
+                                        """, (good_sku, svc, desc + " (Commit3Yr alias)", rf, rg, target_region, unit, rate * p3))
                     finally:
                         try:
                             con.execute("DETACH catalog")
@@ -1495,15 +1629,16 @@ def main():
                                 # is a fabricated discount that doesn't exist
                                 # on real GCP.
                                 if svc != "Compute Engine" or rg in ("CPU", "RAM", "GPU"):
-                                    p1, p3 = _cud_factors(svc)
-                                    con.execute("""
-                                        INSERT OR REPLACE INTO gcp_sku_rates VALUES
-                                        (?, ?, ?, ?, ?, 'Commit1Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
-                                    """, (good_sku, svc, desc + " (Commit1Yr alias)", rf, rg, target_region, unit, rate * p1))
-                                    con.execute("""
-                                        INSERT OR REPLACE INTO gcp_sku_rates VALUES
-                                        (?, ?, ?, ?, ?, 'Commit3Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
-                                    """, (good_sku, svc, desc + " (Commit3Yr alias)", rf, rg, target_region, unit, rate * p3))
+                                    if svc in CUD_ELIGIBLE and (svc != "Compute Engine" or rg in ("CPU", "RAM", "GPU")):
+                                        p1, p3 = _cud_factors(svc)
+                                        con.execute("""
+                                            INSERT OR REPLACE INTO gcp_sku_rates VALUES
+                                            (?, ?, ?, ?, ?, 'Commit1Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
+                                        """, (good_sku, svc, desc + " (Commit1Yr alias)", rf, rg, target_region, unit, rate * p1))
+                                        con.execute("""
+                                            INSERT OR REPLACE INTO gcp_sku_rates VALUES
+                                            (?, ?, ?, ?, ?, 'Commit3Yr', ?, ?, ?, 'validator-repaired', 'catalog-bundled')
+                                        """, (good_sku, svc, desc + " (Commit3Yr alias)", rf, rg, target_region, unit, rate * p3))
                         finally:
                             try:
                                 con.execute("DETACH catalog")
@@ -1522,8 +1657,8 @@ def main():
     cud_synth = 0
     if not check_only:
         for svc, (p1, p3) in CUD_PCT.items():
-            if svc == "DEFAULT":
-                continue  # "DEFAULT" is a fallback key, not a real GCP service name
+            if svc == "DEFAULT" or svc not in CUD_ELIGIBLE:
+                continue
             # Compute Engine bundles CPU/RAM/GPU (committable) with Hyperdisk
             # storage, External IP, network egress, and PD snapshots (NOT
             # committable — GCP offers no CUD on any of those product types)
@@ -1993,6 +2128,22 @@ def main():
     llm_violations, llm_summary = check_llm_slice_invariants(con, jobdir)
     report["violations"]["llm_slice_invariants"] = llm_violations
     report["llm_slice"] = llm_summary
+
+    # GATE (Phase 0 Cardinality Conservation Invariant)
+    cardinality_violations = check_cardinality_conservation(con)
+    report["violations"]["cardinality_conservation"] = cardinality_violations
+    if cardinality_violations:
+        diag(ERROR, "cardinality_conservation_violation", "validate_fix.py",
+             f"Cardinality conservation violated: {len(cardinality_violations)} violation(s)",
+             rows=len(cardinality_violations), phase=4, job_dir=jobdir)
+
+    # GATE (Phase 1 & 3 Egress Strategy Invariant)
+    egress_violations = check_egress_strategy_invariant(con)
+    report["violations"]["egress_strategy_invariant"] = egress_violations
+    if egress_violations:
+        diag(ERROR, "egress_strategy_violation", "validate_fix.py",
+             f"Egress strategy invariant violated: {len(egress_violations)} row(s)",
+             rows=len(egress_violations), phase=4, job_dir=jobdir)
 
     # Inject CRITICAL view-missing violation at the end so it always appears
     if view_missing_violation is not None:

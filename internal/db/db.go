@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS assumptions (
     rationale     TEXT NOT NULL,
     category      TEXT NOT NULL DEFAULT 'other',
     scope         TEXT NOT NULL DEFAULT 'global',
+    passthrough_enabled INTEGER NOT NULL DEFAULT 0,
     updated_by    TEXT,
     updated_at    DATETIME DEFAULT (datetime('now'))
 );
@@ -104,7 +105,8 @@ CREATE TABLE IF NOT EXISTS assumption_changes (
     new_value   REAL NOT NULL,
     reason      TEXT,
     changed_by  TEXT NOT NULL,
-    changed_at  DATETIME DEFAULT (datetime('now'))
+    changed_at  DATETIME DEFAULT (datetime('now')),
+    field       TEXT NOT NULL DEFAULT 'value'
 );
 
 CREATE TABLE IF NOT EXISTS equivalence_usage (
@@ -339,6 +341,8 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 		`ALTER TABLE users ADD COLUMN default_export_format TEXT DEFAULT 'html'`,
 		`ALTER TABLE users ADD COLUMN default_engine TEXT DEFAULT ''`,
 		`ALTER TABLE assumptions ADD COLUMN category TEXT NOT NULL DEFAULT 'other'`,
+		`ALTER TABLE assumptions ADD COLUMN passthrough_enabled INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE assumption_changes ADD COLUMN field TEXT NOT NULL DEFAULT 'value'`,
 		`CREATE TABLE IF NOT EXISTS uploaded_bills (
 			content_hash TEXT PRIMARY KEY,
 			input_ext    TEXT NOT NULL,
@@ -631,6 +635,18 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 		}
 	}
 
+	// Add passthrough_enabled to assumptions, and field to assumption_changes
+	var passthroughMigrationApplied int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name = 'add_assumption_passthrough_2026_11'`).Scan(&passthroughMigrationApplied); err == nil && passthroughMigrationApplied == 0 {
+		tx, err := conn.Begin()
+		if err == nil {
+			_, _ = tx.Exec(`ALTER TABLE assumptions ADD COLUMN passthrough_enabled INTEGER NOT NULL DEFAULT 0;`)
+			_, _ = tx.Exec(`ALTER TABLE assumption_changes ADD COLUMN field TEXT NOT NULL DEFAULT 'value';`)
+			_, _ = tx.Exec(`INSERT INTO schema_migrations (name, applied_at) VALUES ('add_assumption_passthrough_2026_11', datetime('now'));`)
+			_ = tx.Commit()
+		}
+	}
+
 	// Seed assumptions table with today's values (INSERT OR IGNORE — never
 	// overwrite an admin's edit on restart).
 	if _, err := conn.Exec(`
@@ -733,24 +749,26 @@ func IsValidAssumptionCategory(cat string) bool {
 
 // Assumption represents a single pricing assumption row.
 type Assumption struct {
-	Key          string            `json:"key"`
-	Value        float64           `json:"value"`
-	DefaultValue float64           `json:"default_value"`
-	MinValue     float64           `json:"min_value"`
-	MaxValue     float64           `json:"max_value"`
-	Unit         string            `json:"unit"`
-	Title        string            `json:"title"`
-	Rationale    string            `json:"rationale"`
-	Category     string            `json:"category"`
-	Scope        string            `json:"scope"`
-	Domain       *AssumptionDomain `json:"domain,omitempty"`
-	UpdatedBy    string            `json:"updated_by,omitempty"`
-	UpdatedAt    string            `json:"updated_at,omitempty"`
+	Key                string            `json:"key"`
+	Value              float64           `json:"value"`
+	DefaultValue       float64           `json:"default_value"`
+	MinValue           float64           `json:"min_value"`
+	MaxValue           float64           `json:"max_value"`
+	Unit               string            `json:"unit"`
+	Title              string            `json:"title"`
+	Rationale          string            `json:"rationale"`
+	Category           string            `json:"category"`
+	Scope              string            `json:"scope"`
+	PassthroughEnabled bool              `json:"passthrough_enabled"`
+	PassthroughCapable bool              `json:"passthrough_capable"`
+	Domain             *AssumptionDomain `json:"domain,omitempty"`
+	UpdatedBy          string            `json:"updated_by,omitempty"`
+	UpdatedAt          string            `json:"updated_at,omitempty"`
 }
 
 // GetAssumptions returns all assumption rows.
 func (d *DB) GetAssumptions() ([]*Assumption, error) {
-	rows, err := d.conn.Query(`SELECT key, value, default_value, min_value, max_value, unit, title, rationale, category, scope, COALESCE(updated_by,''), COALESCE(updated_at,'') FROM assumptions ORDER BY key`)
+	rows, err := d.conn.Query(`SELECT key, value, default_value, min_value, max_value, unit, title, rationale, category, scope, COALESCE(updated_by,''), COALESCE(updated_at,''), COALESCE(passthrough_enabled, 0) FROM assumptions ORDER BY key`)
 	if err != nil {
 		return nil, err
 	}
@@ -761,11 +779,16 @@ func (d *DB) GetAssumptions() ([]*Assumption, error) {
 	var assumptions []*Assumption
 	for rows.Next() {
 		var a Assumption
-		if err := rows.Scan(&a.Key, &a.Value, &a.DefaultValue, &a.MinValue, &a.MaxValue, &a.Unit, &a.Title, &a.Rationale, &a.Category, &a.Scope, &a.UpdatedBy, &a.UpdatedAt); err != nil {
+		var pt int
+		if err := rows.Scan(&a.Key, &a.Value, &a.DefaultValue, &a.MinValue, &a.MaxValue, &a.Unit, &a.Title, &a.Rationale, &a.Category, &a.Scope, &a.UpdatedBy, &a.UpdatedAt, &pt); err != nil {
 			return nil, err
 		}
+		a.PassthroughEnabled = (pt != 0)
 		if domains != nil {
 			a.Domain = domains[a.Key]
+			if a.Domain != nil {
+				a.PassthroughCapable = a.Domain.PassthroughCapable
+			}
 		}
 		assumptions = append(assumptions, &a)
 	}
@@ -786,27 +809,32 @@ func (d *DB) CreateAssumption(a *Assumption, createdBy string) error {
 	if a.Scope == "" {
 		a.Scope = "global"
 	}
+	pt := 0
+	if a.PassthroughEnabled {
+		pt = 1
+	}
 	_, err := d.conn.Exec(`
-		INSERT INTO assumptions (key, value, default_value, min_value, max_value, unit, title, rationale, category, scope, updated_by, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-	`, a.Key, a.Value, a.DefaultValue, a.MinValue, a.MaxValue, a.Unit, a.Title, a.Rationale, a.Category, a.Scope, createdBy)
+		INSERT INTO assumptions (key, value, default_value, min_value, max_value, unit, title, rationale, category, scope, updated_by, updated_at, passthrough_enabled)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+	`, a.Key, a.Value, a.DefaultValue, a.MinValue, a.MaxValue, a.Unit, a.Title, a.Rationale, a.Category, a.Scope, createdBy, pt)
 	return err
 }
 
 // AssumptionChange represents a single row in the assumption_changes audit table.
 type AssumptionChange struct {
-	ID         int     `json:"id"`
-	Key        string  `json:"key"`
-	OldValue   float64 `json:"old_value"`
-	NewValue   float64 `json:"new_value"`
-	Reason     string  `json:"reason"`
-	ChangedBy  string  `json:"changed_by"`
-	ChangedAt  string  `json:"changed_at"`
+	ID        int     `json:"id"`
+	Key       string  `json:"key"`
+	OldValue  float64 `json:"old_value"`
+	NewValue  float64 `json:"new_value"`
+	Reason    string  `json:"reason"`
+	ChangedBy string  `json:"changed_by"`
+	ChangedAt string  `json:"changed_at"`
+	Field     string  `json:"field"`
 }
 
 // GetAssumptionHistory returns assumption changes, newest first.
 func (d *DB) GetAssumptionHistory() ([]*AssumptionChange, error) {
-	rows, err := d.conn.Query(`SELECT id, key, old_value, new_value, reason, changed_by, changed_at FROM assumption_changes ORDER BY changed_at DESC`)
+	rows, err := d.conn.Query(`SELECT id, key, old_value, new_value, reason, changed_by, changed_at, COALESCE(field, 'value') FROM assumption_changes ORDER BY changed_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -814,7 +842,7 @@ func (d *DB) GetAssumptionHistory() ([]*AssumptionChange, error) {
 	var changes []*AssumptionChange
 	for rows.Next() {
 		var c AssumptionChange
-		if err := rows.Scan(&c.ID, &c.Key, &c.OldValue, &c.NewValue, &c.Reason, &c.ChangedBy, &c.ChangedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Key, &c.OldValue, &c.NewValue, &c.Reason, &c.ChangedBy, &c.ChangedAt, &c.Field); err != nil {
 			return nil, err
 		}
 		changes = append(changes, &c)
@@ -874,7 +902,7 @@ func (d *DB) UpdateAssumption(key string, value float64, reason, changedBy strin
 			return "", err
 		}
 	}
-	if _, err := tx.Exec(`INSERT INTO assumption_changes (key, old_value, new_value, reason, changed_by) VALUES (?, ?, ?, ?, ?)`, key, oldValue, value, reason, changedBy); err != nil {
+	if _, err := tx.Exec(`INSERT INTO assumption_changes (key, old_value, new_value, reason, changed_by, field) VALUES (?, ?, ?, ?, ?, 'value')`, key, oldValue, value, reason, changedBy); err != nil {
 		return "", err
 	}
 
@@ -885,9 +913,56 @@ func (d *DB) UpdateAssumption(key string, value float64, reason, changedBy strin
 	return d.assumptionsVersionHash()
 }
 
-// ResetAssumptions reverts every assumption's value to its default_value, records
-// each change in assumption_changes, and returns the new version hash. All in one
-// transaction. Mirrors ResetReportSettings.
+// SetAssumptionPassthrough toggles an assumption's forced-passthrough mode, records
+// the change in assumption_changes, and returns the new version hash.
+func (d *DB) SetAssumptionPassthrough(key string, enabled bool, reason, changedBy string) (string, error) {
+	domains, err := LoadAssumptionDomains()
+	if err != nil {
+		return "", err
+	}
+	dom, ok := domains[key]
+	if !ok || !dom.PassthroughCapable {
+		return "", fmt.Errorf("not passthrough-capable: %s", key)
+	}
+
+	var currentPT int
+	err = d.conn.QueryRow(`SELECT COALESCE(passthrough_enabled, 0) FROM assumptions WHERE key = ?`, key).Scan(&currentPT)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("assumption not found: %s", key)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	newPT := 0
+	if enabled {
+		newPT = 1
+	}
+
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`UPDATE assumptions SET passthrough_enabled = ?, updated_by = ?, updated_at = datetime('now') WHERE key = ?`, newPT, changedBy, key); err != nil {
+		return "", err
+	}
+	if _, err := tx.Exec(`INSERT INTO assumption_changes (key, old_value, new_value, reason, changed_by, field) VALUES (?, ?, ?, ?, ?, 'passthrough')`,
+		key, float64(currentPT), float64(newPT), reason, changedBy); err != nil {
+		return "", err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+
+	return d.assumptionsVersionHash()
+}
+
+// ResetAssumptions reverts every assumption's value to its default_value and clears
+// any forced passthrough flag, records each change in assumption_changes, and returns
+// the new version hash. All in one transaction. Mirrors ResetReportSettings.
 func (d *DB) ResetAssumptions(changedBy string) (string, error) {
 	tx, err := d.conn.Begin()
 	if err != nil {
@@ -895,37 +970,48 @@ func (d *DB) ResetAssumptions(changedBy string) (string, error) {
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.Query(`SELECT key, value, default_value FROM assumptions`)
+	rows, err := tx.Query(`SELECT key, value, default_value, COALESCE(passthrough_enabled, 0) FROM assumptions`)
 	if err != nil {
 		return "", err
 	}
 	type kv struct {
-		key           string
+		key            string
 		oldVal, defVal float64
+		pt             int
 	}
 	var pairs []kv
 	for rows.Next() {
 		var k string
 		var ov, dv float64
-		if err := rows.Scan(&k, &ov, &dv); err != nil {
+		var pt int
+		if err := rows.Scan(&k, &ov, &dv, &pt); err != nil {
 			rows.Close()
 			return "", err
 		}
-		pairs = append(pairs, kv{k, ov, dv})
+		pairs = append(pairs, kv{k, ov, dv, pt})
 	}
 	rows.Close()
 
 	for _, p := range pairs {
-		if p.oldVal == p.defVal {
-			continue // already at default — no write, no audit noise
+		if p.oldVal != p.defVal {
+			if _, err := tx.Exec(`UPDATE assumptions SET value = ?, updated_by = ?, updated_at = datetime('now') WHERE key = ?`,
+				p.defVal, changedBy, p.key); err != nil {
+				return "", err
+			}
+			if _, err := tx.Exec(`INSERT INTO assumption_changes (key, old_value, new_value, reason, changed_by, field) VALUES (?, ?, ?, ?, ?, 'value')`,
+				p.key, p.oldVal, p.defVal, "Reset to default", changedBy); err != nil {
+				return "", err
+			}
 		}
-		if _, err := tx.Exec(`UPDATE assumptions SET value = ?, updated_by = ?, updated_at = datetime('now') WHERE key = ?`,
-			p.defVal, changedBy, p.key); err != nil {
-			return "", err
-		}
-		if _, err := tx.Exec(`INSERT INTO assumption_changes (key, old_value, new_value, reason, changed_by) VALUES (?, ?, ?, ?, ?)`,
-			p.key, p.oldVal, p.defVal, "Reset to default", changedBy); err != nil {
-			return "", err
+		if p.pt != 0 {
+			if _, err := tx.Exec(`UPDATE assumptions SET passthrough_enabled = 0, updated_by = ?, updated_at = datetime('now') WHERE key = ?`,
+				changedBy, p.key); err != nil {
+				return "", err
+			}
+			if _, err := tx.Exec(`INSERT INTO assumption_changes (key, old_value, new_value, reason, changed_by, field) VALUES (?, 1.0, 0.0, ?, ?, 'passthrough')`,
+				p.key, "Reset to default", changedBy); err != nil {
+				return "", err
+			}
 		}
 	}
 
@@ -941,9 +1027,9 @@ func (d *DB) AssumptionsVersionHash() (string, error) {
 	return d.assumptionsVersionHash()
 }
 
-// assumptionsVersionHash returns SHA-256 of sorted key=value pairs, first 12 hex chars.
+// assumptionsVersionHash returns SHA-256 of sorted key=value[:pt=X] pairs, first 12 hex chars.
 func (d *DB) assumptionsVersionHash() (string, error) {
-	rows, err := d.conn.Query(`SELECT key, value FROM assumptions ORDER BY key`)
+	rows, err := d.conn.Query(`SELECT key, value, COALESCE(passthrough_enabled, 0) FROM assumptions ORDER BY key`)
 	if err != nil {
 		return "", err
 	}
@@ -952,10 +1038,11 @@ func (d *DB) assumptionsVersionHash() (string, error) {
 	for rows.Next() {
 		var key string
 		var value float64
-		if err := rows.Scan(&key, &value); err != nil {
+		var pt int
+		if err := rows.Scan(&key, &value, &pt); err != nil {
 			return "", err
 		}
-		parts = append(parts, fmt.Sprintf("%s=%g", key, value))
+		parts = append(parts, fmt.Sprintf("%s=%g:pt=%d", key, value, pt))
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, ";")))
 	return hex.EncodeToString(sum[:])[:12], nil

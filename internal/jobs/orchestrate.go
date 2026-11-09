@@ -189,6 +189,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				scripts = append(scripts,
 					"?scripts/reconcile_capacity.py $DB",
 					"?scripts/verify_golden_mappings.py $DB",
+					"?scripts/passthrough_enforcer.py $DB",
 				)
 				return scripts
 			}(),
@@ -415,14 +416,18 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"OR c.product ILIKE '%Simple Storage%' " +
 				"OR c.product ILIKE '%Load Balanc%') " +
 				"AND c.product NOT ILIKE '%NatGateway%' " +
-				"AND c.product NOT ILIKE '%Nat:%'",
+				"AND c.product NOT ILIKE '%Nat:%' " +
+				"AND COALESCE(m.projection_note, '') NOT ILIKE '%forced via assumption%'",
 		},
 		{
 			Num: 4, Name: "Rate-Card Fill", Activity: "Fetching GCP rates",
 			// ensure_catalog_coverage.py is soft: if the catalog fetch fails, apply_rates.py
 			// falls back to cached resolved_skus.json entries (99% hit rate after warmup).
 			// A crash here should not prevent report generation.
-			PreLLMScripts: []string{"?scripts/ensure_catalog_coverage.py"},
+			PreLLMScripts: []string{
+				"?scripts/ensure_catalog_coverage.py",
+				"?scripts/passthrough_enforcer.py $DB",
+			},
 			Script:        "scripts/apply_rates.py",
 			// After rates load, run the deterministic autofixer (regional-SKU
 			// repair, CUD synthesis, per-N clamping, illegal-passthrough repair)

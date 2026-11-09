@@ -288,3 +288,127 @@ func TestAssumptionCategoryValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestGetAssumptionsCapability(t *testing.T) {
+	d := newAssumptionsTestDB(t)
+	assumptions, err := d.GetAssumptions()
+	require.NoError(t, err)
+
+	domains, err := db.LoadAssumptionDomains()
+	require.NoError(t, err)
+
+	for _, a := range assumptions {
+		dom, ok := domains[a.Key]
+		require.True(t, ok, "key %s missing from domains", a.Key)
+		assert.Equal(t, dom.PassthroughCapable, a.PassthroughCapable, "passthrough_capable mismatch for %s", a.Key)
+	}
+}
+
+func TestSetAssumptionPassthrough(t *testing.T) {
+	d := newAssumptionsTestDB(t)
+
+	// Capable key toggles ON
+	v0, err := d.AssumptionsVersionHash()
+	require.NoError(t, err)
+
+	v1, err := d.SetAssumptionPassthrough("nat_vms_per_gateway", true, "testing passthrough", "admin@test.com")
+	require.NoError(t, err)
+	assert.NotEmpty(t, v1)
+	assert.NotEqual(t, v0, v1, "version hash should change when passthrough is enabled")
+
+	assumptions, err := d.GetAssumptions()
+	require.NoError(t, err)
+	var natAssump *db.Assumption
+	for _, a := range assumptions {
+		if a.Key == "nat_vms_per_gateway" {
+			natAssump = a
+			break
+		}
+	}
+	require.NotNil(t, natAssump)
+	assert.True(t, natAssump.PassthroughEnabled)
+	assert.True(t, natAssump.PassthroughCapable)
+
+	// Check audit row in assumption_changes
+	history, err := d.GetAssumptionHistory()
+	require.NoError(t, err)
+	require.NotEmpty(t, history)
+	first := history[0]
+	assert.Equal(t, "nat_vms_per_gateway", first.Key)
+	assert.Equal(t, 0.0, first.OldValue)
+	assert.Equal(t, 1.0, first.NewValue)
+	assert.Equal(t, "testing passthrough", first.Reason)
+	assert.Equal(t, "admin@test.com", first.ChangedBy)
+	assert.Equal(t, "passthrough", first.Field)
+
+	// Non-capable key rejects with error
+	_, err = d.SetAssumptionPassthrough("aws_ri_1yr_discount_pct", true, "not capable", "admin@test.com")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not passthrough-capable")
+
+	// Missing key rejects with error
+	_, err = d.SetAssumptionPassthrough("non_existent_key", true, "bad key", "admin@test.com")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not passthrough-capable")
+}
+
+func TestResetClearsPassthrough(t *testing.T) {
+	d := newAssumptionsTestDB(t)
+
+	// Enable passthrough on a capable key
+	_, err := d.SetAssumptionPassthrough("dax_node_gib", true, "enable PT", "admin@test.com")
+	require.NoError(t, err)
+
+	// Also modify value on another key
+	_, err = d.UpdateAssumption("glue_dpu_vcpu", 8.0, "higher vCPU", "admin@test.com")
+	require.NoError(t, err)
+
+	// Verify before reset
+	assumptions, err := d.GetAssumptions()
+	require.NoError(t, err)
+	for _, a := range assumptions {
+		if a.Key == "dax_node_gib" {
+			assert.True(t, a.PassthroughEnabled)
+		}
+		if a.Key == "glue_dpu_vcpu" {
+			assert.Equal(t, 8.0, a.Value)
+		}
+	}
+
+	// Reset to defaults
+	resetVersion, err := d.ResetAssumptions("admin@test.com")
+	require.NoError(t, err)
+	assert.NotEmpty(t, resetVersion)
+
+	// Verify both value and passthrough reset
+	assumptionsAfter, err := d.GetAssumptions()
+	require.NoError(t, err)
+	for _, a := range assumptionsAfter {
+		if a.Key == "dax_node_gib" {
+			assert.False(t, a.PassthroughEnabled, "passthrough should be cleared on reset")
+		}
+		if a.Key == "glue_dpu_vcpu" {
+			assert.Equal(t, a.DefaultValue, a.Value)
+		}
+	}
+
+	// History should have both 'value' and 'passthrough' reset events
+	history, err := d.GetAssumptionHistory()
+	require.NoError(t, err)
+	foundPTReset := false
+	foundValReset := false
+	for _, h := range history {
+		if h.Reason == "Reset to default" {
+			if h.Field == "passthrough" && h.Key == "dax_node_gib" {
+				foundPTReset = true
+				assert.Equal(t, 1.0, h.OldValue)
+				assert.Equal(t, 0.0, h.NewValue)
+			}
+			if h.Field == "value" && h.Key == "glue_dpu_vcpu" {
+				foundValReset = true
+			}
+		}
+	}
+	assert.True(t, foundPTReset, "expected audit log for passthrough reset")
+	assert.True(t, foundValReset, "expected audit log for value reset")
+}

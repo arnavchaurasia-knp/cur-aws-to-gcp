@@ -3,6 +3,7 @@ import { Layout } from '../components/Layout'
 import {
   getAssumptions,
   putAssumption,
+  putAssumptionPassthrough,
   getAssumptionHistory,
   resetAssumptions,
   type Assumption,
@@ -16,6 +17,26 @@ import { CATEGORY_ORDER, CATEGORY_META } from '../lib/assumptionsConstants'
 import { BackButton } from '../components/BackButton'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { triggerNotificationRefresh } from '../lib/notificationsContext'
+
+const PAIRED_KEYS: Record<string, string[]> = {
+  aurora_acu_vcpu: ['aurora_acu_vcpu', 'aurora_acu_ram_gib'],
+  aurora_acu_ram_gib: ['aurora_acu_vcpu', 'aurora_acu_ram_gib'],
+  glue_dpu_vcpu: ['glue_dpu_vcpu', 'glue_dpu_ram_gib'],
+  glue_dpu_ram_gib: ['glue_dpu_vcpu', 'glue_dpu_ram_gib'],
+}
+
+function getNonCapableReason(key: string): string {
+  if (key.startsWith('aws_ri_') || key.startsWith('aws_sp_') || key.startsWith('aws_spot_')) {
+    return 'Operates on AWS On-Demand baseline reconstruction, not on GCP projection. Passthrough is undefined.'
+  }
+  if (key === 'fx_max_staleness_days') {
+    return 'Diagnostic threshold, no cost mapping.'
+  }
+  if (key === 'rds_iops_included_in_storage') {
+    return 'Binary flag whose 0 state is already passthrough; no second control needed.'
+  }
+  return 'Passthrough not applicable for this parameter.'
+}
 
 function getDomainOptions(domain?: Assumption['domain']): { value: string; label: string }[] | null {
   if (!domain || (domain.kind !== 'enum' && domain.kind !== 'flag')) return null
@@ -52,6 +73,17 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
   // Per-row edit state: key -> value string
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+
+  // Passthrough modal state
+  interface PassthroughModalState {
+    key: string
+    keys: string[]
+    targetEnabled: boolean
+    title: string
+  }
+  const [passthroughModal, setPassthroughModal] = useState<PassthroughModalState | null>(null)
+  const [passthroughReason, setPassthroughReason] = useState('')
+  const [togglingPassthrough, setTogglingPassthrough] = useState(false)
 
   const toggleCollapse = (cat: string) => {
     setCollapsed(prev => ({ ...prev, [cat]: !prev[cat] }))
@@ -147,8 +179,47 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
     }
   }
 
+  const handleTogglePassthrough = (a: Assumption) => {
+    const targetKeys = PAIRED_KEYS[a.key] ?? [a.key]
+    const nextEnabled = !a.passthrough_enabled
+    setPassthroughModal({
+      key: a.key,
+      keys: targetKeys,
+      targetEnabled: nextEnabled,
+      title: a.title,
+    })
+    setPassthroughReason('')
+  }
+
+  const handleConfirmPassthrough = async () => {
+    if (!passthroughModal) return
+    setTogglingPassthrough(true)
+    setError(null)
+    const { keys, targetEnabled, title } = passthroughModal
+    const reasonText = passthroughReason.trim() || `Toggled passthrough ${targetEnabled ? 'ON' : 'OFF'}`
+    try {
+      for (const k of keys) {
+        await putAssumptionPassthrough(k, { enabled: targetEnabled, reason: reasonText })
+      }
+      toast.success(
+        `${targetEnabled ? 'Enabled' : 'Disabled'} passthrough for ${title}${
+          keys.length > 1 ? ' (paired)' : ''
+        }`
+      )
+      setPassthroughModal(null)
+      await refresh()
+      triggerNotificationRefresh()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Passthrough update failed'
+      setError(msg)
+      toast.error(msg)
+    } finally {
+      setTogglingPassthrough(false)
+    }
+  }
+
   const anyCustomized = useMemo(
-    () => (data?.assumptions ?? []).some(a => a.default_value !== undefined && a.value !== a.default_value),
+    () => (data?.assumptions ?? []).some(a => (a.default_value !== undefined && a.value !== a.default_value) || a.passthrough_enabled),
     [data],
   )
 
@@ -490,11 +561,12 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                               {/* Current Value - Centered */}
                               <td className="py-4 px-3 align-top text-center">
                                 {isEditing ? (
-                                  <div className="flex items-center justify-center w-full max-w-[150px] mx-auto">
+                                  <div className="flex flex-col items-center justify-center w-full max-w-[150px] mx-auto gap-1">
                                     {domainOptions ? (
-                                      <div className="relative w-full">
+                                      <div className={`relative w-full ${a.passthrough_enabled ? 'opacity-40 pointer-events-none' : ''}`}>
                                         <select
                                           value={editVal}
+                                          disabled={a.passthrough_enabled}
                                           onChange={e => handleValueChange(a.key, e.target.value)}
                                           onKeyDown={e => {
                                             if (e.key === 'Enter') handleSave(a.key)
@@ -520,9 +592,10 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                         </div>
                                       </div>
                                     ) : (
-                                      <div className="w-full flex flex-col items-center">
+                                      <div className={`w-full flex flex-col items-center ${a.passthrough_enabled ? 'opacity-40 pointer-events-none' : ''}`}>
                                         <input
                                           type="number"
+                                          disabled={a.passthrough_enabled}
                                           step={a.domain?.step ?? "any"}
                                           min={minBound}
                                           max={maxBound}
@@ -545,11 +618,72 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                                   </div>
                                 ) : (
                                   <div className="flex flex-col items-center justify-center">
-                                    <span className="inline-flex items-center justify-center font-mono font-semibold text-xs px-3 py-1 rounded-md bg-[var(--facets-purple)]/10 text-[var(--facets-purple)] dark:bg-[var(--facets-teal)]/10 dark:text-[var(--facets-teal)] border border-[var(--facets-purple)]/20 dark:border-[var(--facets-teal)]/20 tabular-nums shadow-2xs">
+                                    <span className={`inline-flex items-center justify-center font-mono font-semibold text-xs px-3 py-1 rounded-md border tabular-nums shadow-2xs ${
+                                      a.passthrough_enabled
+                                        ? 'bg-slate-200/50 text-slate-500 dark:bg-slate-800/50 dark:text-slate-400 border-slate-300 dark:border-slate-700 opacity-60'
+                                        : 'bg-[var(--facets-purple)]/10 text-[var(--facets-purple)] dark:bg-[var(--facets-teal)]/10 dark:text-[var(--facets-teal)] border-[var(--facets-purple)]/20 dark:border-[var(--facets-teal)]/20'
+                                    }`}>
                                       {a.value}
                                     </span>
                                   </div>
                                 )}
+
+                                {/* Passthrough switch or Non-capable indicator */}
+                                <div className="mt-2 flex flex-col items-center justify-center gap-1">
+                                  {a.passthrough_capable ? (
+                                    <>
+                                      <div className="flex items-center gap-1.5">
+                                        <button
+                                          type="button"
+                                          role="switch"
+                                          aria-checked={a.passthrough_enabled}
+                                          disabled={saving === a.key || togglingPassthrough}
+                                          onClick={() => handleTogglePassthrough(a)}
+                                          className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-1 focus:ring-[var(--facets-purple)] ${
+                                            a.passthrough_enabled
+                                              ? 'bg-emerald-500'
+                                              : 'bg-slate-300 dark:bg-slate-700'
+                                          }`}
+                                          title={`Toggle passthrough for ${a.title}${PAIRED_KEYS[a.key] ? ' (paired)' : ''}`}
+                                        >
+                                          <span
+                                            className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                                              a.passthrough_enabled ? 'translate-x-3' : 'translate-x-0'
+                                            }`}
+                                          />
+                                        </button>
+                                        <span className="text-[10px] font-medium text-[var(--fcp-text-secondary)]">
+                                          Passthrough
+                                        </span>
+                                        {PAIRED_KEYS[a.key] && (
+                                          <span className="text-[9px] font-mono px-1 rounded bg-[var(--fcp-bg-raised)] text-[var(--fcp-text-tertiary)] border border-[var(--fcp-border-subtle)]" title="Paired knob: toggles both keys together">
+                                            paired
+                                          </span>
+                                        )}
+                                      </div>
+                                      {a.passthrough_enabled && (
+                                        <span
+                                          className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 whitespace-nowrap shadow-2xs"
+                                          title="AWS cost carried directly to GCP at ratio 1.0"
+                                        >
+                                          carrying AWS cost (ratio 1)
+                                        </span>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <div
+                                      className="inline-flex items-center gap-1 text-[10px] text-[var(--fcp-text-tertiary)] cursor-help"
+                                      title={getNonCapableReason(a.key)}
+                                    >
+                                      <svg className="w-3 h-3 opacity-60 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <circle cx="12" cy="12" r="10"/>
+                                        <line x1="12" y1="16" x2="12" y2="12"/>
+                                        <line x1="12" y1="8" x2="12.01" y2="8"/>
+                                      </svg>
+                                      <span className="border-b border-dotted border-[var(--fcp-border-subtle)]">Non-capable</span>
+                                    </div>
+                                  )}
+                                </div>
                               </td>
 
                               {/* Default Value Column */}
@@ -719,13 +853,24 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
                         </code>
                       </td>
                       <td className="py-3.5 px-5">
-                        <div className="flex items-center gap-1.5 font-mono text-xs">
-                          <span className="text-[var(--fcp-text-tertiary)] line-through">{h.old_value}</span>
-                          <span className="text-[var(--fcp-text-tertiary)]">→</span>
-                          <span className="font-semibold text-[var(--facets-purple)] dark:text-[var(--facets-teal)]">
-                            {h.new_value}
-                          </span>
-                        </div>
+                        {h.field === 'passthrough' ? (
+                          <div className="flex items-center gap-1.5 font-mono text-xs">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--fcp-bg-raised)] text-[var(--fcp-text-secondary)] border border-[var(--fcp-border-subtle)]">passthrough</span>
+                            <span className="text-[var(--fcp-text-tertiary)]">{h.old_value ? 'ON' : 'OFF'}</span>
+                            <span className="text-[var(--fcp-text-tertiary)]">→</span>
+                            <span className={`font-semibold ${h.new_value ? 'text-emerald-500' : 'text-slate-500'}`}>
+                              {h.new_value ? 'ON' : 'OFF'}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 font-mono text-xs">
+                            <span className="text-[var(--fcp-text-tertiary)] line-through">{h.old_value}</span>
+                            <span className="text-[var(--fcp-text-tertiary)]">→</span>
+                            <span className="font-semibold text-[var(--facets-purple)] dark:text-[var(--facets-teal)]">
+                              {h.new_value}
+                            </span>
+                          </div>
+                        )}
                       </td>
                       <td className="py-3.5 px-5 text-[var(--fcp-text-secondary)] font-medium">
                         {h.changed_by}
@@ -743,7 +888,7 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-red-400">Reset All Assumptions</h3>
             <p className="text-xs text-[var(--fcp-text-secondary)] mt-1">
-              Revert every assumption value back to its calibrated system default. Admin edits are discarded; each change is logged in the history above.
+              Revert every assumption value back to its calibrated system default and turn off all passthrough overrides. Admin edits are discarded; each change is logged in the history above.
             </p>
           </div>
           <button
@@ -761,12 +906,89 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
           open={resetConfirmOpen}
           onOpenChange={setResetConfirmOpen}
           title="Reset pricing assumptions"
-          description="Reset all assumptions to their system defaults? This discards every admin edit and cannot be undone."
+          description="Reset all assumptions to their system defaults? This flips every passthrough toggle off, discards every admin edit, and cannot be undone."
           confirmLabel="Reset assumptions"
           destructive
           loading={resetting}
           onConfirm={handleReset}
         />
+
+        {passthroughModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+            <div className="bg-[var(--fcp-bg-surface)] border border-[var(--fcp-border-subtle)] rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-[var(--fcp-text-primary)]">
+                  {passthroughModal.targetEnabled ? 'Enable Passthrough' : 'Disable Passthrough'}
+                </h3>
+                <p className="text-xs text-[var(--fcp-text-secondary)] mt-1.5 leading-relaxed">
+                  {passthroughModal.keys.length > 1 ? (
+                    <>
+                      This will <strong>{passthroughModal.targetEnabled ? 'enable' : 'disable'}</strong> passthrough for paired assumptions{' '}
+                      <code className="text-xs font-mono bg-[var(--fcp-bg-raised)] px-1 rounded">{passthroughModal.keys.join(', ')}</code>.
+                      {passthroughModal.targetEnabled ? ' Governed workload rows will carry AWS cost directly to GCP at ratio 1.0.' : ' Standard projection mapping and assumption conversion will resume.'}
+                    </>
+                  ) : (
+                    <>
+                      {passthroughModal.targetEnabled ? (
+                        <>Workload rows governed by <strong>{passthroughModal.title}</strong> will carry AWS cost directly to GCP at ratio 1.0 (passthrough).</>
+                      ) : (
+                        <>Standard projection mapping and conversion for <strong>{passthroughModal.title}</strong> will resume using its configured value.</>
+                      )}
+                    </>
+                  )}
+                </p>
+              </div>
+
+              <div>
+                <label htmlFor="passthrough-reason" className="block text-xs font-medium text-[var(--fcp-text-secondary)] mb-1">
+                  Optional rationale / audit note:
+                </label>
+                <input
+                  id="passthrough-reason"
+                  type="text"
+                  placeholder="e.g. Parity pricing requested by architecture team"
+                  value={passthroughReason}
+                  onChange={e => setPassthroughReason(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') handleConfirmPassthrough()
+                    if (e.key === 'Escape') setPassthroughModal(null)
+                  }}
+                  autoFocus
+                  className="w-full text-xs rounded-lg border border-[var(--fcp-border-subtle)] bg-[var(--fcp-input-bg)] px-3 py-2 text-[var(--fcp-text-primary)] placeholder:text-[var(--fcp-text-tertiary)] focus:outline-none focus:border-[#645DF6] focus:ring-2 focus:ring-[#645DF6]/20"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPassthroughModal(null)}
+                  disabled={togglingPassthrough}
+                  className="px-3.5 py-1.5 rounded-lg border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] hover:bg-[var(--fcp-bg-hover)] text-xs font-medium text-[var(--fcp-text-secondary)] hover:text-[var(--fcp-text-primary)] transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmPassthrough}
+                  disabled={togglingPassthrough}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[var(--facets-purple)] hover:bg-[var(--facets-purple-hover)] text-white text-xs font-semibold shadow-xs transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {togglingPassthrough ? (
+                    <>
+                      <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      <span>Saving…</span>
+                    </>
+                  ) : (
+                    <span>{passthroughModal.targetEnabled ? 'Enable Passthrough' : 'Disable Passthrough'}</span>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </Layout>
   )

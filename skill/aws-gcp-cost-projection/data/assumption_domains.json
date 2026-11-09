@@ -18,7 +18,8 @@
       "source": "scripts/gen_ratio_registry.py",
       "refreshable": true,
       "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": true
     },
     "aurora_acu_vcpu": {
       "kind": "enum",
@@ -33,7 +34,8 @@
       "source": "scripts/gen_ratio_registry.py",
       "refreshable": true,
       "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": true
     },
     "aws_ri_1yr_discount_pct": {
       "kind": "range",
@@ -44,7 +46,8 @@
       "source": "bill-derivable; published typical ~0.38",
       "refreshable": false,
       "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": false
     },
     "aws_ri_3yr_discount_pct": {
       "kind": "range",
@@ -55,7 +58,8 @@
       "source": "bill-derivable; published typical ~0.52",
       "refreshable": false,
       "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": false
     },
     "aws_sp_discount_pct": {
       "kind": "range",
@@ -66,7 +70,8 @@
       "source": "bill-derivable; published typical ~0.30",
       "refreshable": false,
       "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": false
     },
     "aws_spot_discount_pct": {
       "kind": "range",
@@ -77,7 +82,8 @@
       "source": "bill-derivable; published typical ~0.70",
       "refreshable": false,
       "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": false
     },
     "dax_node_gib": {
       "kind": "range",
@@ -90,7 +96,8 @@
       "source": "AWS DAX node types run on EC2 R-family memory nodes (large=16, doubling to 16xlarge=512 GiB); GCP ceiling: Memorystore for Redis tiers M1-M5 (4/10/35/100/300 GiB)",
       "refreshable": false,
       "last_verified": "2026-11-09",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": true
     },
     "dynamodb_rcu_to_reads_sec": {
       "kind": "range",
@@ -101,7 +108,8 @@
       "source": "workload-dependent utilization knob. 0 = passthrough at AWS cost (default, ratio 1, matches data/pricing_matrix.json). >0 maps RCU-hours to Cloud Firestore Read Ops as rcu*3600 reads/hr; at 1.0 this over-projects ~8.3x (AWS $0.00013/RCU-hr vs 3600 reads x $3e-7 Firestore = $0.00108). Ratio-1 utilization point is ~0.12 if an op-native projection is wanted instead of passthrough.",
       "refreshable": false,
       "last_verified": "2026-11-09",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": true
     },
     "dynamodb_wcu_to_writes_sec": {
       "kind": "range",
@@ -112,7 +120,8 @@
       "source": "workload-dependent utilization knob. 0 = passthrough at AWS cost (default, ratio 1, matches data/pricing_matrix.json). >0 maps WCU-hours to Cloud Firestore Entity Writes as wcu*3600 writes/hr; at 1.0 this over-projects ~5.0x (AWS $0.00065/WCU-hr vs 3600 writes x $9e-7 Firestore = $0.00324). Ratio-1 utilization point is ~0.20 if an op-native projection is wanted instead of passthrough.",
       "refreshable": false,
       "last_verified": "2026-11-09",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": true
     },
     "fx_max_staleness_days": {
       "kind": "range",
@@ -123,7 +132,8 @@
       "source": "operational policy",
       "refreshable": false,
       "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": false
     },
     "glue_dpu_ram_gib": {
       "kind": "scalar_published",
@@ -135,7 +145,8 @@
       "source": "https://aws.amazon.com/glue/pricing/",
       "refreshable": false,
       "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": true
     },
     "glue_dpu_vcpu": {
       "kind": "scalar_published",
@@ -147,7 +158,8 @@
       "source": "https://aws.amazon.com/glue/pricing/",
       "refreshable": false,
       "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": true
     },
     "inferentia_chip_to_tpu": {
       "kind": "range",
@@ -158,7 +170,8 @@
       "source": "0 = passthrough at AWS cost (default, ratio 1). No public Inferentia-vs-TPU benchmark exists, so projecting a TPU price would assert an unverified performance/price equivalence; passthrough carries the AWS cost with a Cloud TPU label and avoids that. Set >0 to map to Cloud TPU v5e at a declared PRICE ratio (e.g. 0.19 matches inf1.xlarge $0.228/hr vs TPU v5e $1.20/chip-hr) once a defensible equivalence exists.",
       "refreshable": false,
       "last_verified": "2026-11-09",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": true
     },
     "lambda_mb_per_vcpu": {
       "kind": "range",
@@ -171,7 +184,8 @@
       "source": "GCP ceiling: Cloud Run max 4 GiB per vCPU (https://docs.cloud.google.com/run/docs/configuring/services/cpu); AWS reference 1 vCPU/1769 MB (https://docs.aws.amazon.com/lambda/latest/dg/configuration-function-common.html)",
       "refreshable": false,
       "last_verified": "2026-11-09",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": true
     },
     "looker_studio_pro_seat_usd": {
       "kind": "scalar_published",
@@ -183,7 +197,8 @@
       "source": "Data Studio Pro (Google reverted the name Looker Studio -> Data Studio on 2026-04-11; the paid tier is now 'Data Studio Pro'). Per-user, per-project license: $9/user/project/month. VERIFIED 2026-11-09: Google no longer lists a price publicly (old page cloud.google.com/looker-studio/pricing 404s; official number is only in the Cloud console checkout). $9 is CORROBORATED by multiple independent third-party sources (trustradius.com, coupler.io, databloo.com, whatagraph.com) and the 2026 rebrand coverage (ppc.land, dataslayer.ai). Gold-standard confirmation is the Cloud console; keep flagged until an admin confirms there.",
       "refreshable": false,
       "last_verified": "2026-11-09",
-      "needs_human_verification": true
+      "needs_human_verification": true,
+      "passthrough_capable": true
     },
     "memorydb_node_gib": {
       "kind": "range",
@@ -196,7 +211,8 @@
       "source": "AWS MemoryDB node types db.r6g/r7g.* run on EC2 R-family memory nodes (large=16, doubling to 16xlarge=512 GiB); GCP ceiling: Memorystore for Redis tiers M1-M5 (4/10/35/100/300 GiB)",
       "refreshable": false,
       "last_verified": "2026-11-09",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": true
     },
     "nat_vms_per_gateway": {
       "kind": "range",
@@ -207,7 +223,8 @@
       "source": "topology-dependent; calibration deferred",
       "refreshable": false,
       "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": true
     },
     "rds_iops_included_in_storage": {
       "kind": "flag",
@@ -225,7 +242,8 @@
       "source": "policy switch",
       "refreshable": false,
       "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": false
     },
     "trainium_chip_to_tpu": {
       "kind": "range",
@@ -236,7 +254,8 @@
       "source": "no benchmark exists",
       "refreshable": false,
       "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "needs_human_verification": false,
+      "passthrough_capable": true
     }
   }
 }

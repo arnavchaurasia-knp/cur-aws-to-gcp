@@ -156,6 +156,7 @@ INTENTIONAL_PASSTHROUGH_NOTE_ILIKE = _svc_cfg.get("intentional_passthrough_note_
     "%no GCS equivalent%",
     "%no GCP equivalent%",
     "%no direct GCP equivalent%",
+    "%forced via assumption%",
 ])
 
 STATIC_MAPPER_ROW_COLS = [

@@ -329,7 +329,15 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
                             <td className="py-3 px-4">
                               <div className="font-semibold text-[var(--fcp-text-primary)] flex items-center gap-1.5">
                                 {title}
-                                {(isOverridden || isModified) && (
+                                {a.passthrough_enabled && (
+                                  <span
+                                    className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-medium whitespace-nowrap"
+                                    title="AWS cost carried directly to GCP at ratio 1.0 (operator passthrough)"
+                                  >
+                                    passthrough
+                                  </span>
+                                )}
+                                {!a.passthrough_enabled && (isOverridden || isModified) && (
                                   <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
                                     custom
                                   </span>
@@ -345,7 +353,11 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
                               )}
                             </td>
                             <td className="py-3 px-4 text-center">
-                              {canEdit ? (
+                              {a.passthrough_enabled ? (
+                                <span className="font-mono text-[11px] text-[var(--fcp-text-secondary)] italic">
+                                  carrying AWS cost (ratio 1)
+                                </span>
+                              ) : canEdit ? (
                                 domainOptions ? (
                                   <div className="relative inline-block w-36">
                                     <select

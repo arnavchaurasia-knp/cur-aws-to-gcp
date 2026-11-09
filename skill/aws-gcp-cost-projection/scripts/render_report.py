@@ -259,6 +259,13 @@ def _format_why_html(notes_raw):
         cost_tier_html = f'<div class="cost-tier-note">{e(m.group(1).strip())}</div>'
         raw = (raw[:m.start()] + raw[m.end():]).strip(" ;")
 
+    # ── extract operator passthrough override ─────────────────────────────────
+    operator_override_key = None
+    m_pt = re.search(r"\[passthrough:\s*forced via assumption\s+([^\]]+)\]", raw)
+    if m_pt:
+        operator_override_key = m_pt.group(1).strip()
+        raw = (raw[:m_pt.start()] + raw[m_pt.end():]).strip(" ;·")
+
     if not raw:
         return "", cost_tier_html
 
@@ -464,6 +471,9 @@ def _format_why_html(notes_raw):
     # ── build primary (always-visible) rows ───────────────────────────────────
     primary_rows = []
 
+    if operator_override_key:
+        primary_rows.append(row("Decision", f"passthrough (operator override — assumption {e(operator_override_key)})"))
+
     if gcp_targets:
         # Annotate family names with a short descriptor chip when recognisable.
         _FAMILY_CHIPS = {
@@ -546,15 +556,18 @@ def _format_why_html(notes_raw):
 
     # ── assemble HTML ─────────────────────────────────────────────────────────
     if not primary_rows and not detail_rows:
-        # Fallback: render as plain text (unusual / passthrough rows).
-        fallback = e(raw[:320] + ("…" if len(raw) > 320 else ""))
-        return (
-            f'<div class="why-block">'
-            f'<span class="why-label">Why this equivalent:</span>'
-            f'<span class="why-text">{fallback}</span>'
-            f'</div>',
-            cost_tier_html,
-        )
+        if operator_override_key:
+            primary_rows.append(row("Decision", f"passthrough (operator override — assumption {e(operator_override_key)})"))
+        else:
+            # Fallback: render as plain text (unusual / passthrough rows).
+            fallback = e(raw[:320] + ("…" if len(raw) > 320 else ""))
+            return (
+                f'<div class="why-block">'
+                f'<span class="why-label">Why this equivalent:</span>'
+                f'<span class="why-text">{fallback}</span>'
+                f'</div>',
+                cost_tier_html,
+            )
 
     rows_html = '<div class="why-rows">' + "".join(primary_rows) + '</div>'
 
@@ -1916,14 +1929,38 @@ def main():
                             item_idx += 1
                     assump_rows_html = "\n".join(assump_table_rows)
 
-            if assump_rows_html:
-                assumptions_block_html = f"""
-<div class="assumptions-section" style="margin-top:28px">
-  <h3>* Pricing Assumptions</h3>
-  <p class="section-meta">
-    Specific line items in this bill are projected based on documented sizing or ratio assumptions.
-    Rows carrying assumptions are grouped by category below.
-  </p>
+            pt_summary_html = ""
+            try:
+                pt_summary_rows = conn.execute("""
+                    SELECT
+                        m.projection_note,
+                        COUNT(*) AS row_cnt,
+                        ROUND(COALESCE(SUM(c.aws_amortized_cost), 0.0), 2) AS total_usd
+                    FROM aws_li_to_gcp_li m
+                    JOIN aws_li_catalog c USING (aws_li_key)
+                    WHERE m.strategy = 'passthrough'
+                      AND m.projection_note ILIKE '%forced via assumption%'
+                    GROUP BY m.projection_note
+                """).fetchall()
+                if pt_summary_rows:
+                    pt_items = []
+                    for note, cnt, usd in pt_summary_rows:
+                        m_key = re.search(r"\[passthrough:\s*forced via assumption\s+([^\]]+)\]", note)
+                        key_name = m_key.group(1).strip() if m_key else "assumption"
+                        pt_items.append(f"<li><b>{_html.escape(key_name)}</b>: {cnt} row(s) (${usd:,.2f} AWS cost carried at 1:1 parity)</li>")
+                    pt_summary_html = f"""
+                    <div class="operator-passthrough-summary" style="margin-top:16px;padding:12px 16px;background:#F5F3FF;border:1px solid #7C3AED;border-radius:8px;font-size:12px;color:#5B21B6;">
+                      <div style="font-weight:700;margin-bottom:4px;">&#9881; Decision source: operator passthrough overrides active</div>
+                      <ul style="margin:4px 0 0 18px;padding:0;">
+                        {''.join(pt_items)}
+                      </ul>
+                    </div>
+                    """
+            except Exception as _e:
+                pass
+
+            if assump_rows_html or pt_summary_html:
+                assumptions_table_part = f"""
   <div class="table-scroll"><table>
     <tr>
       <th style="width:40px">#</th>
@@ -1932,6 +1969,17 @@ def main():
     </tr>
     {assump_rows_html}
   </table></div>
+""" if assump_rows_html else ""
+
+                assumptions_block_html = f"""
+<div class="assumptions-section" style="margin-top:28px">
+  <h3>* Pricing Assumptions</h3>
+  <p class="section-meta">
+    Specific line items in this bill are projected based on documented sizing or ratio assumptions.
+    Rows carrying assumptions are grouped by category below.
+  </p>
+  {pt_summary_html}
+  {assumptions_table_part}
 </div>
 """
         except Exception as e:
@@ -2627,6 +2675,24 @@ def main():
             f"- Passthroughs (no GCP equivalent): {passthrough_note}",
             f"- Primary GCP region: {gcp_region_display}",
         ])
+        try:
+            op_pt_rows = conn.execute("""
+                SELECT
+                    m.projection_note,
+                    COUNT(*) AS row_cnt,
+                    ROUND(COALESCE(SUM(c.aws_amortized_cost), 0.0), 2) AS total_usd
+                FROM aws_li_to_gcp_li m
+                JOIN aws_li_catalog c USING (aws_li_key)
+                WHERE m.strategy = 'passthrough'
+                  AND m.projection_note ILIKE '%forced via assumption%'
+                GROUP BY m.projection_note
+            """).fetchall()
+            for note, cnt, usd in op_pt_rows:
+                m_key = re.search(r"\[passthrough:\s*forced via assumption\s+([^\]]+)\]", note)
+                key_name = m_key.group(1).strip() if m_key else "assumption"
+                summary_lines.append(f"- **Operator Passthrough ({key_name})**: {cnt} row(s), {curr_symbol}{usd:,.2f} carried at 1:1 parity (decision source: operator passthrough)")
+        except Exception:
+            pass
         summary_text = "\n".join(summary_lines)
         summary_rel  = os.path.join("projection-audit", f"summary-{run_id}.md")
         summary_abs  = os.path.join(JOB_DIR, summary_rel)

@@ -26,6 +26,7 @@ type AssumptionDomain struct {
 	Refreshable            bool     `json:"refreshable"`
 	LastVerified           string   `json:"last_verified,omitempty"`
 	NeedsHumanVerification bool     `json:"needs_human_verification,omitempty"`
+	PassthroughCapable     bool     `json:"passthrough_capable,omitempty"`
 }
 
 var (

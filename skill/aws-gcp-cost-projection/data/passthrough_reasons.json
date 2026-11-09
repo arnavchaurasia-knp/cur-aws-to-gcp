@@ -5,6 +5,11 @@
   },
   "defect_passthrough_budget_pct": 5.0,
   "reasons": {
+    "operator_assumption": {
+      "kind": "intentional",
+      "label": "Operator assumption passthrough",
+      "description": "Passed through at AWS cost per operator assumption override."
+    },
     "no_gcp_equivalent": {
       "kind": "intentional",
       "label": "No GCP equivalent",

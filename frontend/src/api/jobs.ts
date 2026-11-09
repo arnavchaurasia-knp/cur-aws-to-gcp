@@ -362,6 +362,8 @@ export interface JobAssumption {
   rationale: string
   category: string
   scope: string
+  passthrough_enabled?: boolean
+  passthrough_capable?: boolean
   domain?: AssumptionDomain
   is_overridden?: boolean
 }
@@ -385,12 +387,13 @@ export async function getJobAssumptions(jobId: string): Promise<JobAssumptionsRe
 export async function rerunJobAssumptions(
   jobId: string,
   overrides: Record<string, number>,
-  reason?: string
+  reason?: string,
+  passthrough?: Record<string, boolean>
 ): Promise<{ id: string; status: string; pid: number; version: string }> {
   const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/assumptions/rerun`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ overrides, reason }),
+    body: JSON.stringify({ overrides, reason, passthrough }),
   })
   if (!res.ok) {
     let errMsg = `Failed to rerun (${res.status})`

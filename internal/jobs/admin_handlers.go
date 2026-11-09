@@ -839,6 +839,52 @@ func (h *Handler) AdminPutAssumption(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// AdminPutAssumptionPassthrough toggles an assumption's forced-passthrough mode.
+func (h *Handler) AdminPutAssumptionPassthrough(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+	key := chi.URLParam(r, "key")
+
+	var body struct {
+		Enabled bool   `json:"enabled"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	if body.Reason == "" {
+		body.Reason = "Toggled passthrough"
+	}
+
+	actor := "admin"
+	if sess != nil && sess.Email != "" {
+		actor = sess.Email
+	}
+
+	version, err := h.db.SetAssumptionPassthrough(key, body.Enabled, body.Reason, actor)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "not passthrough-capable") {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, msg), http.StatusBadRequest)
+			return
+		}
+		if strings.Contains(msg, "not found") {
+			http.Error(w, `{"error":"assumption not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	_ = h.db.LogAdminAction(actor, "set_assumption_passthrough", key, fmt.Sprintf("enabled=%v reason=%s", body.Enabled, body.Reason))
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"key":                 key,
+		"passthrough_enabled": body.Enabled,
+		"version":             version,
+	})
+}
+
 // AdminResetAssumptions reverts all assumption values to their defaults.
 func (h *Handler) AdminResetAssumptions(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromCtx(r.Context())

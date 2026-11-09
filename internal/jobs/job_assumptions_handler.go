@@ -21,18 +21,20 @@ import (
 // JobAssumptionItem represents a single assumption with its effective value for a specific job,
 // matching the admin schema plus an indicator of whether it has been overridden.
 type JobAssumptionItem struct {
-	Key          string               `json:"key"`
-	Value        float64              `json:"value"`
-	DefaultValue float64              `json:"default_value"`
-	MinValue     float64              `json:"min_value"`
-	MaxValue     float64              `json:"max_value"`
-	Unit         string               `json:"unit"`
-	Title        string               `json:"title"`
-	Rationale    string               `json:"rationale"`
-	Category     string               `json:"category"`
-	Scope        string               `json:"scope"`
-	IsOverridden bool                 `json:"is_overridden"`
-	Domain       *db.AssumptionDomain `json:"domain,omitempty"`
+	Key                string               `json:"key"`
+	Value              float64              `json:"value"`
+	DefaultValue       float64              `json:"default_value"`
+	MinValue           float64              `json:"min_value"`
+	MaxValue           float64              `json:"max_value"`
+	Unit               string               `json:"unit"`
+	Title              string               `json:"title"`
+	Rationale          string               `json:"rationale"`
+	Category           string               `json:"category"`
+	Scope              string               `json:"scope"`
+	PassthroughEnabled bool                 `json:"passthrough_enabled"`
+	PassthroughCapable bool                 `json:"passthrough_capable"`
+	IsOverridden       bool                 `json:"is_overridden"`
+	Domain             *db.AssumptionDomain `json:"domain,omitempty"`
 }
 
 type jobAssumptionsSnapshot struct {
@@ -41,6 +43,7 @@ type jobAssumptionsSnapshot struct {
 	OverriddenKeys []string           `json:"overridden_keys"`
 	Overrides      map[string]float64 `json:"overrides"`
 	Values         map[string]float64 `json:"values"`
+	Passthrough    map[string]bool    `json:"passthrough,omitempty"`
 	Reason         string             `json:"reason"`
 	ChangedBy      string             `json:"changed_by"`
 }
@@ -112,19 +115,27 @@ func (h *Handler) GetJobAssumptions(w http.ResponseWriter, r *http.Request) {
 				effectiveVal = val
 			}
 		}
+		ptEnabled := a.PassthroughEnabled
+		if snapshot.Passthrough != nil {
+			if pt, exists := snapshot.Passthrough[a.Key]; exists {
+				ptEnabled = pt
+			}
+		}
 		items[i] = JobAssumptionItem{
-			Key:          a.Key,
-			Value:        effectiveVal,
-			DefaultValue: a.DefaultValue,
-			MinValue:     a.MinValue,
-			MaxValue:     a.MaxValue,
-			Unit:         a.Unit,
-			Title:        a.Title,
-			Rationale:    a.Rationale,
-			Category:     a.Category,
-			Scope:        a.Scope,
-			IsOverridden: overriddenSet[a.Key],
-			Domain:       a.Domain,
+			Key:                a.Key,
+			Value:              effectiveVal,
+			DefaultValue:       a.DefaultValue,
+			MinValue:           a.MinValue,
+			MaxValue:           a.MaxValue,
+			Unit:               a.Unit,
+			Title:              a.Title,
+			Rationale:          a.Rationale,
+			Category:           a.Category,
+			Scope:              a.Scope,
+			PassthroughEnabled: ptEnabled,
+			PassthroughCapable: a.PassthroughCapable,
+			IsOverridden:       overriddenSet[a.Key],
+			Domain:             a.Domain,
 		}
 	}
 
@@ -278,12 +289,43 @@ func (h *Handler) RerunJobAssumptions(w http.ResponseWriter, r *http.Request) {
 		changedBy = sess.Email
 	}
 
+	passthrough := make(map[string]bool)
+	if existingData, err := os.ReadFile(filepath.Join(jobDir, "assumptions.json")); err == nil {
+		var prev jobAssumptionsSnapshot
+		if err := json.Unmarshal(existingData, &prev); err == nil && prev.Passthrough != nil {
+			for k, v := range prev.Passthrough {
+				if v {
+					passthrough[k] = true
+				}
+			}
+		}
+	}
+	if len(passthrough) == 0 {
+		for _, a := range globalAssumptions {
+			if a.PassthroughEnabled {
+				passthrough[a.Key] = true
+			}
+		}
+	}
+	if ptMap, ok := rawBody["passthrough"].(map[string]any); ok {
+		for k, v := range ptMap {
+			if b, ok := v.(bool); ok {
+				if b {
+					passthrough[k] = true
+				} else {
+					delete(passthrough, k)
+				}
+			}
+		}
+	}
+
 	snapshot := map[string]any{
 		"version":         version,
 		"generated_at":    time.Now().UTC().Format(time.RFC3339),
 		"overridden_keys": overriddenKeys,
 		"overrides":       overrides,
 		"values":          values,
+		"passthrough":     passthrough,
 		"reason":          reason,
 		"changed_by":      changedBy,
 	}

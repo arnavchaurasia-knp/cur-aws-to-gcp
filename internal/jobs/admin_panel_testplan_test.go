@@ -84,6 +84,7 @@ func buildTestRouter(database *db.DB, jobsDir string, adminEmails []string) http
 			r.Get("/api/admin/assumptions", jobHandler.AdminGetAssumptions)
 			r.Post("/api/admin/assumptions", jobHandler.AdminCreateAssumption)
 			r.Put("/api/admin/assumptions/{key}", jobHandler.AdminPutAssumption)
+			r.Put("/api/admin/assumptions/{key}/passthrough", jobHandler.AdminPutAssumptionPassthrough)
 			r.Get("/api/admin/assumptions/history", jobHandler.AdminGetAssumptionHistory)
 			r.Get("/api/admin/report-settings", jobHandler.AdminGetReportSettings)
 			r.Put("/api/admin/report-settings/{key}", jobHandler.AdminPutReportSetting)
@@ -437,6 +438,32 @@ func TestSection4_2_AssumptionsValidationAndPersistence(t *testing.T) {
 	recValidPost := httptest.NewRecorder()
 	h.AdminCreateAssumption(recValidPost, reqValidPost)
 	assert.Equal(t, http.StatusCreated, recValidPost.Code)
+
+	// 8. AdminPutAssumptionPassthrough - capable key returns 200
+	reqPT, _ := http.NewRequestWithContext(ctxWithFullSession("a@facets.cloud", "A", "admin"), "PUT", "/api/admin/assumptions/nat_vms_per_gateway/passthrough", nil)
+	reqPT = reqPT.WithContext(withChiParam(reqPT.Context(), "key", "nat_vms_per_gateway"))
+	reqPT.Body = ioCloserWrapper(`{"enabled":true,"reason":"force PT for testing"}`)
+	recPT := httptest.NewRecorder()
+	h.AdminPutAssumptionPassthrough(recPT, reqPT)
+	assert.Equal(t, http.StatusOK, recPT.Code)
+	assert.Contains(t, recPT.Body.String(), `"passthrough_enabled":true`)
+
+	// 9. AdminPutAssumptionPassthrough - non-capable key returns 400
+	reqBadPT, _ := http.NewRequestWithContext(ctxWithFullSession("a@facets.cloud", "A", "admin"), "PUT", "/api/admin/assumptions/aws_ri_1yr_discount_pct/passthrough", nil)
+	reqBadPT = reqBadPT.WithContext(withChiParam(reqBadPT.Context(), "key", "aws_ri_1yr_discount_pct"))
+	reqBadPT.Body = ioCloserWrapper(`{"enabled":true,"reason":"should fail"}`)
+	recBadPT := httptest.NewRecorder()
+	h.AdminPutAssumptionPassthrough(recBadPT, reqBadPT)
+	assert.Equal(t, http.StatusBadRequest, recBadPT.Code)
+	assert.Contains(t, recBadPT.Body.String(), "not passthrough-capable")
+
+	// 10. AdminPutAssumptionPassthrough - unknown key returns 400 or 404
+	reqMissingPT, _ := http.NewRequestWithContext(ctxWithFullSession("a@facets.cloud", "A", "admin"), "PUT", "/api/admin/assumptions/ghost_key/passthrough", nil)
+	reqMissingPT = reqMissingPT.WithContext(withChiParam(reqMissingPT.Context(), "key", "ghost_key"))
+	reqMissingPT.Body = ioCloserWrapper(`{"enabled":true,"reason":"missing"}`)
+	recMissingPT := httptest.NewRecorder()
+	h.AdminPutAssumptionPassthrough(recMissingPT, reqMissingPT)
+	assert.True(t, recMissingPT.Code == http.StatusBadRequest || recMissingPT.Code == http.StatusNotFound)
 }
 
 func TestSection4_6_ShareLinksSecurity(t *testing.T) {

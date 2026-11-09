@@ -452,6 +452,7 @@ export interface AssumptionDomain {
   refreshable?: boolean
   last_verified?: string
   needs_human_verification?: boolean
+  passthrough_capable?: boolean
 }
 
 export interface Assumption {
@@ -465,6 +466,8 @@ export interface Assumption {
   rationale: string
   category: string
   scope: string
+  passthrough_enabled?: boolean
+  passthrough_capable?: boolean
   domain?: AssumptionDomain
   updated_by: string
   updated_at: string
@@ -475,6 +478,7 @@ export interface AssumptionHistory {
   key: string
   old_value: number
   new_value: number
+  field?: string
   reason: string
   changed_by: string
   changed_at: string
@@ -505,6 +509,27 @@ export async function putAssumption(key: string, body: PutAssumptionBody): Promi
   if (!res.ok) {
     const text = await res.text()
     throw new Error(text || `role update failed (${res.status})`)
+  }
+  return res.json()
+}
+
+export interface PutAssumptionPassthroughBody {
+  enabled: boolean
+  reason: string
+}
+
+export async function putAssumptionPassthrough(
+  key: string,
+  body: PutAssumptionPassthroughBody
+): Promise<{ key: string; passthrough_enabled: boolean; version: string }> {
+  const res = await fetch(`/api/admin/assumptions/${encodeURIComponent(key)}/passthrough`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `passthrough update failed (${res.status})`)
   }
   return res.json()
 }

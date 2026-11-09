@@ -1,7 +1,7 @@
 {
-  "state": "escalated",
-  "started_at": "2026-11-09T13:19:47Z",
-  "finished_at": "2026-11-09T13:19:47Z",
+  "state": "retrying",
+  "started_at": "2026-11-09T15:21:41Z",
+  "finished_at": "2026-11-09T15:21:42Z",
   "exit_code": 1,
   "trigger": "manual",
   "actor": "a@facets.cloud",
@@ -13,9 +13,10 @@
     "==================================================================",
     "No GCP credentials (set GOOGLE_CLOUD_API_KEY). Nothing fetched."
   ],
+  "duration_seconds": 1,
   "source": "gcp_catalog",
   "complete": true,
-  "attempt": 4,
-  "consecutive_failures": 10,
-  "escalated": true
+  "attempt": 1,
+  "next_retry_at": "2026-11-09T15:26:42Z",
+  "consecutive_failures": 18
 }

@@ -614,17 +614,46 @@ def passthrough_budget_exceeded(con) -> list:
         if pct <= BUDGET_PCT:
             return []
 
+        # Check for operator-forced passthroughs and validator downgrades
+        forced_row = con.execute("""
+            SELECT COUNT(*), COALESCE(SUM(c.aws_amortized_cost), 0.0)
+            FROM aws_li_catalog c
+            JOIN aws_li_to_gcp_li m ON m.aws_li_key = c.aws_li_key
+            WHERE m.strategy = 'passthrough' AND c.is_workload = TRUE
+              AND COALESCE(m.projection_note, '') ILIKE '%forced via assumption%'
+        """).fetchone()
+        forced_cnt = int(forced_row[0] or 0) if forced_row else 0
+        forced_usd = float(forced_row[1] or 0.0) if forced_row else 0.0
+
+        dg_row = con.execute("""
+            SELECT COUNT(*)
+            FROM aws_li_catalog c
+            JOIN aws_li_to_gcp_li m ON m.aws_li_key = c.aws_li_key
+            WHERE m.strategy = 'passthrough' AND c.is_workload = TRUE
+              AND COALESCE(m.projection_note, '') ILIKE '%map-with-no-rate downgraded%'
+        """).fetchone()
+        dg_cnt = int(dg_row[0] or 0) if dg_row else 0
+
+        note_additions = []
+        if forced_cnt > 0:
+            note_additions.append(f"{forced_cnt} row(s) (${forced_usd:,.2f}) forced via operator assumptions")
+        if dg_cnt > 0:
+            note_additions.append(f"{dg_cnt} row(s) from validator map-with-no-rate downgrade")
+        extra_note = f" [{'; '.join(note_additions)}]" if note_additions else ""
+
         # Build violations list
         violations = [{
             "gate": "passthrough_budget",
             "severity": "HARD",
             "message": (
                 f"Passthrough budget exceeded: {pct:.1f}% of spend is passthrough "
-                f"(limit: {BUDGET_PCT}%)"
+                f"(limit: {BUDGET_PCT}%){extra_note}"
             ),
             "passthrough_spend": round(passthrough_spend, 2),
             "total_spend": round(total_spend, 2),
             "pct": round(pct, 2),
+            "operator_forced_rows": forced_cnt,
+            "operator_forced_spend": round(forced_usd, 2),
         }]
 
         top10 = con.execute("""
@@ -719,6 +748,108 @@ def passthrough_integrity(con) -> list:
     return violations
 
 
+def check_passthrough_conservation(con, jobdir: str) -> list:
+    """
+    Conservation check for operator-forced assumption passthroughs:
+    For every enabled passthrough key, assert that the count of governed rows
+    now carrying strategy='passthrough' >= the count of governed rows in the catalog.
+    If enforcement did not fire or rows were left non-passthrough, flag passthrough_not_applied.
+    """
+    try:
+        from config_loader import load_assumption_passthroughs, load_data_config
+        from passthrough_enforcer import _row_matches_impact
+    except ImportError:
+        return []
+
+    enabled_keys = load_assumption_passthroughs(jobdir)
+    if not enabled_keys:
+        return []
+
+    impact_cfg = load_data_config("assumption_impact") or {}
+    impacts = impact_cfg.get("impacts", {})
+
+    try:
+        tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
+        if "aws_li_catalog" not in tables or "aws_li_to_gcp_li" not in tables:
+            return []
+
+        c_cols = {c[0] for c in con.execute("DESCRIBE aws_li_catalog").fetchall()}
+        m_cols = {c[0] for c in con.execute("DESCRIBE aws_li_to_gcp_li").fetchall()}
+
+        opt_cols = ["product_code", "pricing_unit", "instance_type", "mechanic_group", "mechanic_rule"]
+        select_opt = ", ".join(f"c.{col}" if col in c_cols else f"'' AS {col}" for col in opt_cols)
+        comp_col = "m.component" if "component" in m_cols else "'' AS component"
+        pt_reason_col = "m.passthrough_reason" if "passthrough_reason" in m_cols else "'' AS passthrough_reason"
+
+        rows = con.execute(f"""
+            SELECT c.aws_li_key, c.product, COALESCE(c.usage_type, ''), COALESCE(c.operation, ''),
+                   COALESCE(c.aws_amortized_cost, 0.0), m.strategy, m.gcp_service,
+                   COALESCE(m.projection_note, ''), {comp_col}, {pt_reason_col}, {select_opt}
+            FROM aws_li_catalog c
+            JOIN aws_li_to_gcp_li m USING (aws_li_key)
+            WHERE c.is_workload
+        """).fetchall()
+
+        violations = []
+        for key in sorted(enabled_keys):
+            impact = impacts.get(key)
+            if not impact:
+                continue
+
+            governed_keys = set()
+            passthrough_keys = set()
+            for r in rows:
+                k = r[0]
+                strat = r[5]
+                row_dict = {
+                    "aws_li_key": r[0],
+                    "product": r[1],
+                    "usage_type": r[2],
+                    "operation": r[3],
+                    "aws_amortized_cost": float(r[4]),
+                    "strategy": strat,
+                    "gcp_service": r[6],
+                    "projection_note": r[7],
+                    "component": r[8],
+                    "passthrough_reason": r[9],
+                    "product_code": r[10],
+                    "pricing_unit": r[11],
+                    "instance_type": r[12],
+                    "mechanic_group": r[13],
+                    "mechanic_rule": r[14],
+                }
+
+                if _row_matches_impact(row_dict, key, impact):
+                    governed_keys.add(k)
+                    if strat == "passthrough":
+                        passthrough_keys.add(k)
+
+            unapplied = governed_keys - passthrough_keys
+            if unapplied:
+                violations.append({
+                    "gate": "passthrough_not_applied",
+                    "severity": "HARD",
+                    "key": key,
+                    "assumption_key": key,
+                    "count": len(unapplied),
+                    "governed_rows": len(governed_keys),
+                    "applied_rows": len(passthrough_keys),
+                    "missing_keys": list(unapplied)[:10],
+                    "message": (
+                        f"Assumption '{key}' forced passthrough was not applied to {len(unapplied)} "
+                        f"of {len(governed_keys)} governed row(s)."
+                    ),
+                })
+
+        return violations
+    except Exception as e:
+        return [{
+            "gate": "passthrough_not_applied",
+            "severity": "WARN",
+            "message": f"passthrough_not_applied gate could not run: {e}",
+        }]
+
+
 def check_cardinality_conservation(con) -> list:
     """Phase 0 / Phase 5 Cardinality Conservation Invariant:
     Query ingest_stats: if invariant_holds == False, record a fatal hard violation.
@@ -809,6 +940,92 @@ def check_egress_strategy_invariant(con) -> list:
             })
     except Exception as e:
         log.warning(f"Error checking egress strategy invariant: {e}")
+    return violations
+
+
+def check_passthrough_conservation(con, jobdir: str | None = None) -> list:
+    """Conservation check: for every enabled passthrough key, assert that the count
+    of governed rows now carrying strategy='passthrough' >= the count that matched the registry.
+    A mismatch is a hard gate failure (passthrough_not_applied).
+    """
+    violations = []
+    try:
+        tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
+        if "aws_li_catalog" not in tables or "aws_li_to_gcp_li" not in tables:
+            return violations
+
+        from config_loader import load_assumption_passthroughs, load_data_config
+        from passthrough_enforcer import _row_matches_impact
+
+        enabled_keys = load_assumption_passthroughs(jobdir)
+        if not enabled_keys:
+            return violations
+
+        impact_cfg = load_data_config("assumption_impact") or {}
+        impacts = impact_cfg.get("impacts", {})
+
+        c_cols = {c[0] for c in con.execute("DESCRIBE aws_li_catalog").fetchall()}
+        m_cols = {c[0] for c in con.execute("DESCRIBE aws_li_to_gcp_li").fetchall()}
+
+        opt_cols = ["product_code", "pricing_unit", "instance_type", "mechanic_group", "mechanic_rule"]
+        select_opt = ", ".join(f"c.{col}" if col in c_cols else f"'' AS {col}" for col in opt_cols)
+        comp_col = "m.component" if "component" in m_cols else "'' AS component"
+        pt_reason_col = "m.passthrough_reason" if "passthrough_reason" in m_cols else "'' AS passthrough_reason"
+
+        rows = con.execute(f"""
+            SELECT c.aws_li_key, c.product, COALESCE(c.usage_type, ''), COALESCE(c.operation, ''),
+                   COALESCE(c.aws_amortized_cost, 0.0), m.strategy, m.gcp_service,
+                   COALESCE(m.projection_note, ''), {comp_col}, {pt_reason_col}, {select_opt}
+            FROM aws_li_catalog c
+            JOIN aws_li_to_gcp_li m USING (aws_li_key)
+            WHERE c.is_workload
+        """).fetchall()
+
+        for key in sorted(enabled_keys):
+            impact = impacts.get(key)
+            if not impact:
+                continue
+
+            unapplied_rows = []
+            for r in rows:
+                row_dict = {
+                    "aws_li_key": r[0],
+                    "product": r[1],
+                    "usage_type": r[2],
+                    "operation": r[3],
+                    "aws_amortized_cost": float(r[4]),
+                    "strategy": r[5],
+                    "gcp_service": r[6],
+                    "projection_note": r[7],
+                    "component": r[8],
+                    "passthrough_reason": r[9],
+                    "product_code": r[10],
+                    "pricing_unit": r[11],
+                    "instance_type": r[12],
+                    "mechanic_group": r[13],
+                    "mechanic_rule": r[14],
+                }
+
+                if _row_matches_impact(row_dict, key, impact):
+                    if row_dict["strategy"] != "passthrough":
+                        unapplied_rows.append({
+                            "aws_li_key": r[0],
+                            "product": r[1],
+                            "usage_type": r[2],
+                            "strategy": r[5],
+                            "cost": float(r[4]),
+                        })
+
+            if unapplied_rows:
+                violations.append({
+                    "gate": "passthrough_not_applied",
+                    "key": key,
+                    "count": len(unapplied_rows),
+                    "unapplied_rows": unapplied_rows,
+                    "reason": f"Assumption '{key}' has forced passthrough enabled, but {len(unapplied_rows)} governed row(s) do not carry strategy='passthrough'",
+                })
+    except Exception as e:
+        log.warning(f"Error checking passthrough conservation: {e}")
     return violations
 
 
@@ -2053,6 +2270,7 @@ def main():
     # total workload spend, the mapping phase has left too much unresolved.
     report["violations"]["passthrough_budget"] = passthrough_budget_exceeded(con)
     report["violations"]["passthrough_integrity"] = passthrough_integrity(con)
+    report["violations"]["passthrough_not_applied"] = check_passthrough_conservation(con, jobdir)
 
     # GATE (Layer 4): NULL gcp_service on non-ignored workload rows.
     # Every mapped/passthrough workload row must name a GCP service. NULL means
@@ -2144,6 +2362,14 @@ def main():
         diag(ERROR, "egress_strategy_violation", "validate_fix.py",
              f"Egress strategy invariant violated: {len(egress_violations)} row(s)",
              rows=len(egress_violations), phase=4, job_dir=jobdir)
+
+    # GATE (Assumption Passthrough Conservation): every row governed by an active passthrough assumption must be passthrough
+    pt_conservation_violations = check_passthrough_conservation(con, jobdir)
+    report["violations"]["passthrough_not_applied"] = pt_conservation_violations
+    if pt_conservation_violations:
+        diag(ERROR, "passthrough_not_applied", "validate_fix.py",
+             f"Passthrough not applied for enabled assumption(s): {len(pt_conservation_violations)} key(s)",
+             rows=len(pt_conservation_violations), phase=4, job_dir=jobdir)
 
     # Inject CRITICAL view-missing violation at the end so it always appears
     if view_missing_violation is not None:

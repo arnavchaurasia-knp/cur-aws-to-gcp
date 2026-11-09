@@ -60,17 +60,22 @@ func (s *Spawner) WriteAssumptionsSnapshot(jobDir string) (string, error) {
 		return "", err
 	}
 	values := make(map[string]float64, len(assumptions))
+	passthrough := make(map[string]bool)
 	items := make([]map[string]any, len(assumptions))
 	categories := make(map[string][]string)
 	for i, a := range assumptions {
 		values[a.Key] = a.Value
+		if a.PassthroughEnabled {
+			passthrough[a.Key] = true
+		}
 		items[i] = map[string]any{
-			"key":       a.Key,
-			"value":     a.Value,
-			"unit":      a.Unit,
-			"title":     a.Title,
-			"rationale": a.Rationale,
-			"category":  a.Category,
+			"key":                 a.Key,
+			"value":               a.Value,
+			"passthrough_enabled": a.PassthroughEnabled,
+			"unit":                a.Unit,
+			"title":               a.Title,
+			"rationale":           a.Rationale,
+			"category":            a.Category,
 		}
 		categories[a.Category] = append(categories[a.Category], a.Key)
 	}
@@ -82,6 +87,7 @@ func (s *Spawner) WriteAssumptionsSnapshot(jobDir string) (string, error) {
 		"version":      version,
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
 		"values":       values,
+		"passthrough":  passthrough,
 		"items":        items,
 		"categories":   categories,
 	}

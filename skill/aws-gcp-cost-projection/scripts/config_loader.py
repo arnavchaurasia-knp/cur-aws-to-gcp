@@ -99,6 +99,68 @@ def load_assumptions(job_dir: str | None = None) -> dict:
     return res
 
 
+def load_assumption_passthroughs(job_dir: str | None = None) -> set[str]:
+    """Return the set of assumption keys for which passthrough is enabled for THIS job.
+
+    Defaults are loaded from data/assumption-defaults.json ('passthrough' object),
+    then overlaid with <job_dir>/assumptions.json ('passthrough' object).
+    Never raises. Returns set[str].
+    """
+    res: set[str] = set()
+
+    # Fall back to committed defaults
+    defaults_path = os.path.join(_DATA_DIR, "assumption-defaults.json")
+    try:
+        with open(defaults_path, encoding="utf-8") as f:
+            data = json.load(f)
+        dpt = data.get("passthrough", {})
+        if isinstance(dpt, dict):
+            for k, v in dpt.items():
+                if bool(v):
+                    res.add(str(k))
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError, TypeError):
+        pass
+
+    # Try job snapshot
+    if job_dir:
+        snapshot_path = os.path.join(job_dir, "assumptions.json")
+        try:
+            with open(snapshot_path, encoding="utf-8") as f:
+                data = json.load(f)
+            jpt = data.get("passthrough", {})
+            if isinstance(jpt, dict):
+                for k, v in jpt.items():
+                    if bool(v):
+                        res.add(str(k))
+                    elif str(k) in res:
+                        res.remove(str(k))
+            # Also check items array if present
+            items = data.get("items", [])
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        k = item.get("key")
+                        if k and item.get("passthrough_enabled"):
+                            res.add(str(k))
+        except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError, TypeError):
+            pass
+
+    return res
+
+
+def is_passthrough_enabled(key: str, job_dir: str | None = None, value: float | None = None) -> bool:
+    """Return whether passthrough is active for key, considering both explicit toggle and legacy value sentinels.
+
+    Rule: effective_passthrough(key) = (key in passthrough set) OR (mapper-specific legacy sentinel still true).
+    """
+    pts = load_assumption_passthroughs(job_dir)
+    if key in pts:
+        return True
+    if value is not None and key in ("inferentia_chip_to_tpu", "trainium_chip_to_tpu", "dynamodb_rcu_to_reads_sec", "dynamodb_wcu_to_writes_sec"):
+        return value <= 0
+    return False
+
+
 def load_report_settings(job_dir: str | None = None) -> dict:
     """Report toggle values for THIS job, from <job_dir>/report-settings.json.
 

@@ -75,7 +75,7 @@ def load_cud_pct():
                 raw = json.load(f)
             result = {}
             for svc, vals in raw.items():
-                if svc == "_meta":
+                if svc in ("_meta", "cud_eligible"):
                     continue
                 if isinstance(vals, dict) and "1yr_multiplier" in vals and "3yr_multiplier" in vals:
                     result[svc] = (float(vals["1yr_multiplier"]), float(vals["3yr_multiplier"]))
@@ -84,6 +84,32 @@ def load_cud_pct():
         except Exception as e:
             log.warning(f"Could not load cud_pct.json ({e}); using fallback multipliers")
     return dict(_CUD_PCT_FALLBACK)
+
+
+def load_cud_eligible() -> set[str]:
+    """Load list of CUD-eligible GCP service names from data/cud_pct.json."""
+    json_path = os.path.join(DATA_DIR, "cud_pct.json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                raw = json.load(f)
+            if "cud_eligible" in raw and isinstance(raw["cud_eligible"], list):
+                return set(raw["cud_eligible"])
+        except Exception as e:
+            log.warning(f"Could not load cud_eligible from cud_pct.json ({e}); using fallback list")
+    return {
+        GCP_COMPUTE_ENGINE,
+        "Compute Engine Memory Optimized",
+        "Cloud SQL",
+        "Cloud Spanner",
+        "Cloud Bigtable",
+        "Memorystore",
+        "Cloud Memorystore",
+        "Cloud Memorystore for Redis",
+        "Cloud Memorystore for Memcached",
+        "AlloyDB",
+        "Cloud Run",
+    }
 
 CONTAINER_CODES = {
     "us": ["us-central1", "us-east1", "us-east4", "us-east5", "us-south1", "us-west1", "us-west2", "us-west3", "us-west4"],
@@ -801,11 +827,12 @@ def main():
         # at what multipliers. Adding a new CUD-eligible service requires only a new entry
         # in data/cud_pct.json — no Python change here.
         cud_pct = load_cud_pct()
-        _default_pct = cud_pct.get("DEFAULT", (0.75, 0.60))
+        cud_eligible = load_cud_eligible()
+        _default_pct = cud_pct.get("DEFAULT", (1.0, 1.0))
 
         synthesized_cud = 0
         for svc, (r1, r3) in cud_pct.items():
-            if svc == "DEFAULT":
+            if svc == "DEFAULT" or svc not in cud_eligible:
                 continue
             # Skip services not present in this bill — no point generating unused rows.
             if svc not in mapped_services and svc != GCP_COMPUTE_ENGINE:
@@ -816,7 +843,7 @@ def main():
                     INSERT INTO gcp_sku_rates
                     SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
                            resource_group, '{pricing_type}', region, unit,
-                           rate_usd * ?, 'doc-percentage', 'cud_pct.json'
+                           rate_usd * ?, 'doc-percentage-fallback', 'cud_pct.json'
                     FROM gcp_sku_rates
                     WHERE gcp_service = ? AND pricing_type = 'OnDemand'
                       {rg_clause}
@@ -900,6 +927,18 @@ def main():
                 (?, 'Compute Engine', ?, 'Network', 'Egress', 'OnDemand', 'global', 'gibibyte', ?, 'canonical-egress', 'published GCP egress list')
                 ON CONFLICT DO NOTHING
             """, (_sku_id, _sku_name, eff_rate))
+
+        # Inter-zone data transfer is $0.01/GiB across all regions (DE9E-AFBC-A15A).
+        # Catalog has regional rows for 5 legacy regions but lacks other regions, and
+        # publishes misleading $0.00 SKU C1F1-02CA-F355. Inject global fallback at $0.01/GiB.
+        # Reference: https://cloud.google.com/vpc/network-pricing
+        conn.execute("""
+            INSERT INTO gcp_sku_rates VALUES
+            ('DE9E-AFBC-A15A', 'Compute Engine', 'Network Inter Zone Data Transfer Out',
+             'Network', 'Egress', 'OnDemand', 'global', 'gibibyte',
+             0.01, 'canonical-egress', 'https://cloud.google.com/vpc/network-pricing')
+            ON CONFLICT (gcp_sku_id, pricing_type, region) DO UPDATE SET rate_usd = 0.01, source = 'canonical-egress'
+        """)
 
         # Looker Studio Pro (per-user): $9/user/mo published list price. Looker
         # Studio is billed as a SaaS product outside standard Cloud Billing SKUs,

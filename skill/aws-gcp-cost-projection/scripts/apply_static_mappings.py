@@ -73,7 +73,16 @@ GB_TO_GIB = 1.0 / 1.074  # AWS decimal GB-Mo -> GCP GiBy.mo (1 GiB = 1.074 GB)
 def _load_cud_fallback() -> dict:
     raw = _cfg("cud_pct")
     if raw:
-        return {k: tuple(v) for k, v in raw.items()}
+        res = {}
+        for k, v in raw.items():
+            if k in ("_meta", "cud_eligible"):
+                continue
+            if isinstance(v, dict) and "1yr_multiplier" in v and "3yr_multiplier" in v:
+                res[k] = (float(v["1yr_multiplier"]), float(v["3yr_multiplier"]))
+            elif isinstance(v, (list, tuple)) and len(v) >= 2:
+                res[k] = (float(v[0]), float(v[1]))
+        if res:
+            return res
     return {
         GCP_COMPUTE_ENGINE: (0.63, 0.45),
         "Compute Engine Memory Optimized": (0.59, 0.30),
@@ -86,7 +95,7 @@ def _load_cud_fallback() -> dict:
         "Cloud Memorystore for Memcached": (0.75, 0.48),
         "AlloyDB": (0.75, 0.60),
         "Cloud Run": (0.83, 0.67),
-        "DEFAULT": (0.75, 0.60),
+        "DEFAULT": (1.0, 1.0),
     }
 
 CUD_PCT_FALLBACK = _load_cud_fallback()
@@ -618,7 +627,7 @@ def _transfer_target(usage_type, operation):
     # regional/AZ rows already contain the literal word "regional" in their operation
     # text, so matching on "regional" alone still catches them without the false
     # positives bare "bandwidth" was causing on internet-egress and inter-region rows.
-    if "regional" in ut or "intra" in ut or re.search(r"az.*az", ut):
+    if "regional" in ut or "intra" in ut or "interzone" in ut or "inter-zone" in ut or re.search(r"az.*az", ut):
         return ("map", "interzone", "inter-zone (same-region) egress")
     # Region-to-region code pair (e.g. "aps1-apn1-aws-out-bytes") → inter-region.
     if re.search(r"\b[a-z]{2,4}\d?-[a-z]{2,4}\d?-aws-out", ut) or "inter-region" in ut or "interregion" in ut:

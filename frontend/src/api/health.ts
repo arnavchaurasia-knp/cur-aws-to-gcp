@@ -56,14 +56,75 @@ export interface EngineHealth {
   live_test_disabled: boolean
 }
 
-export interface CatalogRefreshRun {
-  state: 'idle' | 'running' | 'success' | 'failed' | 'skipped' | string
+export interface LifecyclePolicy {
+  interval_hours: number
+  max_attempts: number
+  backoff_base_seconds: number
+  backoff_factor: number
+  backoff_cap_seconds: number
+  timeout_seconds: number
+  depends_on?: string[]
+  escalate_after_consecutive_failures?: number
+  treat_partial_as?: 'retry' | 'accept' | string
+}
+
+export interface RefreshSourceConfig {
+  expected_set?: string
+  baseline_counts?: string
+  completeness_threshold?: number
+  stale_after_days?: number
+  refresher?: string
+  lifecycle: LifecyclePolicy
+}
+
+export interface RefreshRun {
+  state:
+    | 'idle'
+    | 'running'
+    | 'success'
+    | 'failed'
+    | 'skipped'
+    | 'partial'
+    | 'retrying'
+    | 'backing_off'
+    | 'escalated'
+    | 'paused'
+    | string
   started_at?: string
   finished_at?: string
   duration_sec?: number
-  reason?: string
-  log_tail?: string
+  duration_seconds?: number
+  exit_code?: number
+  trigger?: string
   actor?: string
+  reason?: string
+  log_tail?: string | string[]
+  source?: string
+  expected_count?: number
+  fetched_count?: number
+  coverage_pct?: number
+  complete?: boolean
+  record_count?: number
+  record_delta?: number
+  anomalies?: string[]
+  item_outcomes?: Record<string, string>
+  attempt?: number
+  max_attempts?: number
+  next_retry_at?: string
+  consecutive_failures?: number
+  escalated?: boolean
+}
+
+export type CatalogRefreshRun = RefreshRun
+
+export interface SourceView {
+  config: RefreshSourceConfig
+  status: RefreshRun
+  history?: RefreshRun[]
+}
+
+export interface RefreshSourcesResponse {
+  sources: Record<string, SourceView>
 }
 
 export interface CatalogHealth {
@@ -312,3 +373,12 @@ export const revertDataStore = (key: string) =>
 export const triggerCatalogRefresh = () => sendJSON<void>('POST', '/api/admin/catalog/refresh')
 export const getCatalogRefreshStatus = () =>
   getJSON<CatalogRefreshRun>('/api/admin/catalog/refresh-status')
+
+export const getRefreshSources = () => getJSON<RefreshSourcesResponse>('/api/admin/refresh/sources')
+export const triggerSourceRefresh = (source: string) =>
+  sendJSON<{ status: string }>('POST', `/api/admin/refresh/${encodeURIComponent(source)}/trigger`)
+export const pauseSourceRefresh = (source: string) =>
+  sendJSON<{ status: string }>('POST', `/api/admin/refresh/${encodeURIComponent(source)}/pause`)
+export const resumeSourceRefresh = (source: string) =>
+  sendJSON<{ status: string }>('POST', `/api/admin/refresh/${encodeURIComponent(source)}/resume`)
+

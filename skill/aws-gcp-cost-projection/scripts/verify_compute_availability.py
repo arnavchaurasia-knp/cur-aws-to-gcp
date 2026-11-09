@@ -250,6 +250,27 @@ def main():
     print(f"Wrote {OUT_PATH}: {len(regions)} regions, {len(all_prefixes)} families")
     print(f"Families seen: {all_prefixes}")
 
+    all_regions = sorted({_zone_to_region(z) for z in items.keys()} | {_zone_to_region(z) for z in unreachable_zones})
+    expected_count = len(all_regions)
+    fetched_count = len(regions)
+    coverage_pct = round(100.0 * fetched_count / expected_count, 2) if expected_count > 0 else 0.0
+    complete = coverage_pct >= 90.0
+    anomalies = [f"Unreachable zone in region {r}" for r in sorted(set(all_regions) - set(regions.keys()))]
+    item_outcomes = {r: ("OK" if r in regions else "UNREACHABLE") for r in all_regions}
+
+    summary = {
+        "source": "compute_availability",
+        "expected_count": expected_count,
+        "fetched_count": fetched_count,
+        "coverage_pct": coverage_pct,
+        "complete": complete,
+        "record_count": sum(len(fams) for fams in regions.values()),
+        "record_delta": 0,
+        "anomalies": anomalies,
+        "item_outcomes": item_outcomes,
+    }
+    print(f"REFRESH_SUMMARY {json.dumps(summary)}")
+
 
 if __name__ == "__main__":
     main()

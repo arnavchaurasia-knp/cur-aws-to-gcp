@@ -513,6 +513,15 @@ export async function getAssumptionHistory(): Promise<AssumptionHistory[]> {
   return getJSON<AssumptionHistory[]>('/api/admin/assumptions/history')
 }
 
+export async function resetAssumptions(): Promise<{ version: string }> {
+  const res = await fetch('/api/admin/assumptions/reset', { method: 'POST' })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `reset failed (${res.status})`)
+  }
+  return res.json()
+}
+
 // ─── Report settings ───
 
 export interface ReportSetting {

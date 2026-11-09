@@ -2046,7 +2046,8 @@ def main():
             public_on_demand_cost DOUBLE,
             aws_od_cost DOUBLE,
             sp_ri_discount_pct DOUBLE,
-            od_basis VARCHAR
+            od_basis VARCHAR,
+            source_line_items BIGINT DEFAULT 1
         )
     """)
     # product_code (= CUR lineItem/ProductCode) is the authoritative stable key
@@ -2214,7 +2215,8 @@ def main():
                 public_on_demand_cost,
                 license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,
                 product_code, billing_month,
-                commitment_arn, public_on_demand_rate, savings_plan_rate
+                commitment_arn, public_on_demand_rate, savings_plan_rate,
+                source_line_items
             )
             SELECT
                 md5(product || usage_type || operation || aws_region || pricing_model || line_item_type || CAST(is_workload AS VARCHAR) || license_model || operating_system || database_engine || deployment_option || volume_type || pricing_unit || billing_month) as key,
@@ -2233,7 +2235,8 @@ def main():
                 billing_month,
                 max(commitment_arn) as commitment_arn,
                 max(row_public_od_rate) as public_on_demand_rate,
-                max(row_sp_rate) as savings_plan_rate
+                max(row_sp_rate) as savings_plan_rate,
+                COUNT(*) as source_line_items
             FROM _raw_flat
             GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload,
                      license_model, operating_system, database_engine, deployment_option, volume_type, pricing_unit,
@@ -2295,7 +2298,8 @@ def main():
                 INSERT INTO aws_li_catalog (
                     aws_li_key, product, usage_type, operation, aws_region, gcp_region,
                     pricing_model, line_item_type, is_workload,
-                    total_usage, aws_amortized_cost, pricing_unit, billing_month
+                    total_usage, aws_amortized_cost, pricing_unit, billing_month,
+                    source_line_items
                 )
                 WITH _raw AS (
                     SELECT
@@ -2363,7 +2367,8 @@ def main():
                     SUM(total_usage)  AS total_usage,
                     SUM(row_cost)     AS aws_amortized_cost,
                     pricing_unit,
-                    billing_month
+                    billing_month,
+                    COUNT(*)          AS source_line_items
                 FROM _raw
                 GROUP BY product, usage_type, operation, aws_region,
                          pricing_model, line_item_type, is_workload, pricing_unit, billing_month
@@ -2445,8 +2450,9 @@ def main():
                 group_key = (service, "AggregatedUsage", usage_clean, "global",
                              "OnDemand", "Usage", is_wl, note, "", b_month)
                 if group_key not in aggregated:
-                    aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0}
+                    aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0, "n": 0}
                 aggregated[group_key]["row_cost"] += row_cost
+                aggregated[group_key]["n"] += 1
 
             for gk, val in aggregated.items():
                 prod, ut, op, aws_reg, pm, lit, is_wl, proj_note, p_unit, b_month = gk
@@ -2463,11 +2469,11 @@ def main():
                 
                 conn.execute("""
                     INSERT INTO aws_li_catalog (
-                        aws_li_key, product, usage_type, operation, aws_region, gcp_region, 
+                        aws_li_key, product, usage_type, operation, aws_region, gcp_region,
                         pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost,
-                        projection_note, pricing_unit, billing_month
-                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (aws_li_key, prod, ut, op, aws_reg, pm, lit, is_wl, val["total_usage"], cost, proj_note, p_unit, b_month))
+                        projection_note, pricing_unit, billing_month, source_line_items
+                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (aws_li_key, prod, ut, op, aws_reg, pm, lit, is_wl, val["total_usage"], cost, proj_note, p_unit, b_month, val.get("n", 1)))
             log.info("Loaded custom flat CSV with semicolon-separated Usage (with Units)")
 
         # Check if "service" column exists in aws_raw
@@ -2759,9 +2765,10 @@ def main():
 
                     group_key = (product, usage_type, desc, region, pricing_model, line_item_type, is_workload, projection_note, pricing_unit, b_month)
                     if group_key not in aggregated:
-                        aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0}
+                        aggregated[group_key] = {"total_usage": 0.0, "row_cost": 0.0, "n": 0}
                     aggregated[group_key]["total_usage"] += total_usage
                     aggregated[group_key]["row_cost"] += row_cost
+                    aggregated[group_key]["n"] += 1
 
             # Insert aggregated rows in batches
             insert_rows = []
@@ -2769,15 +2776,15 @@ def main():
                 prod, ut, op, aws_reg, pm, lit, is_wl, proj_note, p_unit, b_month = gk
                 key_str = f"{prod}{ut}{op}{aws_reg}{pm}{lit}{str(is_wl)}{proj_note}{p_unit}{b_month}"
                 aws_li_key = hashlib.md5(key_str.encode('utf-8')).hexdigest()
-                insert_rows.append((aws_li_key, prod, ut, op, aws_reg, pm, lit, is_wl, val["total_usage"], val["row_cost"], proj_note, p_unit, b_month))
+                insert_rows.append((aws_li_key, prod, ut, op, aws_reg, pm, lit, is_wl, val["total_usage"], val["row_cost"], proj_note, p_unit, b_month, val.get("n", 1)))
 
             if insert_rows:
                 conn.executemany("""
                     INSERT INTO aws_li_catalog (
-                        aws_li_key, product, usage_type, operation, aws_region, gcp_region, 
+                        aws_li_key, product, usage_type, operation, aws_region, gcp_region,
                         pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost,
-                        projection_note, pricing_unit, billing_month
-                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                        projection_note, pricing_unit, billing_month, source_line_items
+                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, insert_rows)
         else:
             _inv_lit, _inv_is_wl = _sql_classify_charge(
@@ -2838,7 +2845,7 @@ def main():
                   AND NOT regexp_matches(COALESCE({c(['description'])}, ''), '^Amazon [A-Za-z0-9 ]+\\([0-9]+ [A-Za-z]+\\)$')
             """)
             conn.execute("""
-                INSERT INTO aws_li_catalog (aws_li_key, product, usage_type, operation, aws_region, gcp_region, pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost, projection_note, billing_month)
+                INSERT INTO aws_li_catalog (aws_li_key, product, usage_type, operation, aws_region, gcp_region, pricing_model, line_item_type, is_workload, total_usage, aws_amortized_cost, projection_note, billing_month, source_line_items)
                 SELECT
                     md5(product || usage_type || operation || aws_region ||
                         CASE WHEN operation ILIKE '%reserved instance applied%' THEN 'Committed' ELSE 'OnDemand' END ||
@@ -2852,7 +2859,8 @@ def main():
                     SUM(row_usage)  AS total_usage,
                     SUM(row_cost)   AS aws_amortized_cost,
                     projection_note,
-                    billing_month
+                    billing_month,
+                    COUNT(*)        AS source_line_items
                 FROM _flat
                 GROUP BY product, usage_type, operation, aws_region, pricing_model, line_item_type, is_workload, projection_note, billing_month
             """)
@@ -3275,15 +3283,16 @@ def main():
                 INSERT INTO aws_li_catalog (
                     aws_li_key, product, usage_type, operation, aws_region, gcp_region,
                     pricing_model, line_item_type, is_workload, total_usage,
-                    aws_amortized_cost, projection_note, billing_format, billing_month
+                    aws_amortized_cost, projection_note, billing_format, billing_month,
+                    source_line_items
                 ) VALUES (?, 'Ingestion Materiality Adjustment', 'Aggregate', 'Aggregate',
-                          'global', 'global', 'OnDemand', 'Usage', false, 1, ?, ?, ?, ?)
+                          'global', 'global', 'OnDemand', 'Usage', false, 1, ?, ?, ?, ?, ?)
                 """,
                 [recon_key, low_mat_cost,
                  f"Sum of {low_mat_dropped} line item(s) dropped by the ingestion "
                  f"materiality filter (each individually < 1% of bill cumulative) — "
                  f"re-added as one row so the bill total always reconciles.",
-                 fmt, mat_bmonth],
+                 fmt, mat_bmonth, int(low_mat_dropped)],
             )
 
     total_dropped = zero_dropped + low_mat_dropped

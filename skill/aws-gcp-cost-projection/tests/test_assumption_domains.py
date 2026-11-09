@@ -100,3 +100,155 @@ def test_cli_list_and_key():
     cmd_key = [sys.executable, os.path.join(_SCRIPTS_DIR, "assumption_domains.py"), "--key", "aurora_acu_ram_gib"]
     res_key = subprocess.run(cmd_key, capture_output=True, text=True, check=True)
     assert "Assumption: aurora_acu_ram_gib" in res_key.stdout
+
+
+def test_refresh_domains_behavior(tmp_path):
+    """Verify refresh_domains behaviors for derived, provider_published, and judgment."""
+    from datetime import date, timedelta
+    from refresh_assumption_domains import refresh_domains
+
+    test_domains = {
+        "_meta": {"version": 1},
+        "domains": {
+            "aurora_acu_ram_gib": {
+                "kind": "enum",
+                "values": [2.0],  # deliberately wrong/stale
+                "source_kind": "derived_in_repo",
+                "source": "scripts/gen_ratio_registry.py",
+                "refreshable": True,
+            },
+            "lambda_mb_per_vcpu": {
+                "kind": "scalar_published",
+                "value": 1769.0,
+                "min": 512.0,
+                "max": 10240.0,
+                "source_kind": "provider_published",
+                "source": "https://example.com/lambda",
+                "last_verified": "2024-01-01",  # > 180 days ago
+                "needs_human_verification": False,
+            },
+            "dax_node_gib": {
+                "kind": "range",
+                "min": 1.0,
+                "max": 512.0,
+                "source_kind": "judgment",
+                "source": "fallback",
+                "needs_human_verification": False,
+            }
+        }
+    }
+
+    domains_file = tmp_path / "assumption_domains.json"
+    with open(domains_file, "w", encoding="utf-8") as f:
+        json.dump(test_domains, f)
+
+    # 1. Test check-only: prints VERIFY line, does not modify file
+    today = date(2026, 11, 6)
+    data, report, stale_count = refresh_domains(
+        domains_path=str(domains_file),
+        registry_path=os.path.join(_DATA_DIR, "ratio_registry.json"),
+        check_only=True,
+        as_of_date=today
+    )
+    assert stale_count == 1
+    assert any("VERIFY lambda_mb_per_vcpu" in line for line in report)
+    with open(domains_file, "r", encoding="utf-8") as f:
+        disk_data = json.load(f)
+    # File must be untouched in check_only
+    assert disk_data["domains"]["aurora_acu_ram_gib"]["values"] == [2.0]
+    assert disk_data["domains"]["lambda_mb_per_vcpu"]["needs_human_verification"] is False
+
+    # 2. Test full refresh: writes file, updates derived, flags stale published, leaves judgment untouched
+    data, report, stale_count = refresh_domains(
+        domains_path=str(domains_file),
+        registry_path=os.path.join(_DATA_DIR, "ratio_registry.json"),
+        check_only=False,
+        as_of_date=today
+    )
+    assert stale_count == 1
+    with open(domains_file, "r", encoding="utf-8") as f:
+        updated = json.load(f)["domains"]
+
+    # derived_in_repo updated
+    assert updated["aurora_acu_ram_gib"]["values"] == [4.0, 8.0, 16.0]
+    # provider_published flagged
+    assert updated["lambda_mb_per_vcpu"]["needs_human_verification"] is True
+    assert updated["lambda_mb_per_vcpu"]["value"] == 1769.0  # value untouched!
+    # judgment untouched
+    assert updated["dax_node_gib"]["needs_human_verification"] is False
+
+
+def test_refresh_domains_rejection_gates(tmp_path, monkeypatch):
+    """Derived values that are $0, out of range, or a >50% jump must be rejected."""
+    import refresh_assumption_domains as rad
+    from refresh_assumption_domains import refresh_domains
+
+    test_domains = {
+        "_meta": {
+            "version": 1,
+            "max_refresh_delta_pct": 50,
+        },
+        "domains": {
+            "aurora_acu_ram_gib": {
+                "kind": "enum",
+                "values": [4.0, 8.0, 16.0],
+                "min": 1.0,
+                "max": 64.0,
+                "source_kind": "derived_in_repo",
+                "source": "scripts/gen_ratio_registry.py",
+                "refreshable": True,
+                "needs_human_verification": False,
+            },
+            "aurora_acu_vcpu": {
+                "kind": "enum",
+                "values": [0.5, 1.0, 2.0],
+                "min": 0.1,
+                "max": 16.0,
+                "source_kind": "derived_in_repo",
+                "source": "scripts/gen_ratio_registry.py",
+                "refreshable": True,
+                "needs_human_verification": False,
+            },
+        }
+    }
+
+    # Case A: derived values contain 0.0
+    domains_file = tmp_path / "domains_zero.json"
+    with open(domains_file, "w", encoding="utf-8") as f:
+        json.dump(test_domains, f)
+
+    monkeypatch.setattr(rad, "derive_aurora_values", lambda *args, **kwargs: ([0.0, 8.0], [0.5, 1.0, 2.0]))
+    data, report, _ = refresh_domains(domains_path=str(domains_file), check_only=False)
+    with open(domains_file, "r", encoding="utf-8") as f:
+        saved = json.load(f)["domains"]
+    assert saved["aurora_acu_ram_gib"]["values"] == [4.0, 8.0, 16.0], "Old value must be retained on $0 derived"
+    assert saved["aurora_acu_ram_gib"]["needs_human_verification"] is True
+    assert any("REJECT" in line and "aurora_acu_ram_gib" in line for line in report)
+
+    # Case B: derived values out of range (e.g. 128.0 > max 64.0)
+    domains_file_oor = tmp_path / "domains_oor.json"
+    with open(domains_file_oor, "w", encoding="utf-8") as f:
+        json.dump(test_domains, f)
+
+    monkeypatch.setattr(rad, "derive_aurora_values", lambda *args, **kwargs: ([128.0], [0.5, 1.0, 2.0]))
+    data, report, _ = refresh_domains(domains_path=str(domains_file_oor), check_only=False)
+    with open(domains_file_oor, "r", encoding="utf-8") as f:
+        saved = json.load(f)["domains"]
+    assert saved["aurora_acu_ram_gib"]["values"] == [4.0, 8.0, 16.0], "Old value must be retained on out-of-range"
+    assert saved["aurora_acu_ram_gib"]["needs_human_verification"] is True
+    assert any("REJECT" in line and "aurora_acu_ram_gib" in line for line in report)
+
+    # Case C: derived values jump > 50% (e.g. 32.0 when old max was 16.0 -> 100% jump)
+    domains_file_jump = tmp_path / "domains_jump.json"
+    with open(domains_file_jump, "w", encoding="utf-8") as f:
+        json.dump(test_domains, f)
+
+    monkeypatch.setattr(rad, "derive_aurora_values", lambda *args, **kwargs: ([4.0, 8.0, 32.0], [0.5, 1.0, 2.0]))
+    data, report, _ = refresh_domains(domains_path=str(domains_file_jump), check_only=False)
+    with open(domains_file_jump, "r", encoding="utf-8") as f:
+        saved = json.load(f)["domains"]
+    assert saved["aurora_acu_ram_gib"]["values"] == [4.0, 8.0, 16.0], "Old value must be retained on >50% jump"
+    assert saved["aurora_acu_ram_gib"]["needs_human_verification"] is True
+    assert any("REJECT" in line and "aurora_acu_ram_gib" in line for line in report)
+
+

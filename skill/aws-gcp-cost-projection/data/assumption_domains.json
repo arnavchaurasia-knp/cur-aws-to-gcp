@@ -1,7 +1,8 @@
 {
   "_meta": {
     "description": "Legal input domain + provenance for every pricing assumption key. The admin DB seed bounds, the admin editor UI, and the per-job panel all derive from this file. kind=enum has a closed 'values' list; kind=range has [min,max,step]; kind=flag is a two-choice {0,1}; kind=scalar_published is a provider-published single value with a source_url, edited within bounds but flagged if it drifts.",
-    "version": 1
+    "version": 1,
+    "max_refresh_delta_pct": 50
   },
   "domains": {
     "aurora_acu_ram_gib": {
@@ -80,35 +81,37 @@
     },
     "dax_node_gib": {
       "kind": "range",
-      "min": 1.0,
+      "min": 2.0,
       "max": 512.0,
       "step": 1.0,
-      "source_kind": "judgment",
-      "source": "fallback when CUR lacks node type",
+      "value_source": "derived",
+      "derived_from": "EC2 R-family node RAM (dax.r*.large=16 ... 16xlarge=512 GiB; smallest t-class \u2248 2 GiB). AWS-side quantity; GCP only constrains the output (Memorystore M5 tier \u2248 300 GiB max single-tier representation).",
+      "source_kind": "derived_from_aws_node_specs",
+      "source": "AWS DAX node types run on EC2 R-family memory nodes (large=16, doubling to 16xlarge=512 GiB); GCP ceiling: Memorystore for Redis tiers M1-M5 (4/10/35/100/300 GiB)",
       "refreshable": false,
-      "last_verified": "2026-11-06",
+      "last_verified": "2026-11-09",
       "needs_human_verification": false
     },
     "dynamodb_rcu_to_reads_sec": {
       "kind": "range",
-      "min": 0.1,
+      "min": 0.0,
       "max": 100.0,
       "step": 0.1,
       "source_kind": "judgment",
-      "source": "workload-dependent",
+      "source": "workload-dependent utilization knob. 0 = passthrough at AWS cost (default, ratio 1, matches data/pricing_matrix.json). >0 maps RCU-hours to Cloud Firestore Read Ops as rcu*3600 reads/hr; at 1.0 this over-projects ~8.3x (AWS $0.00013/RCU-hr vs 3600 reads x $3e-7 Firestore = $0.00108). Ratio-1 utilization point is ~0.12 if an op-native projection is wanted instead of passthrough.",
       "refreshable": false,
-      "last_verified": "2026-11-06",
+      "last_verified": "2026-11-09",
       "needs_human_verification": false
     },
     "dynamodb_wcu_to_writes_sec": {
       "kind": "range",
-      "min": 0.1,
+      "min": 0.0,
       "max": 100.0,
       "step": 0.1,
       "source_kind": "judgment",
-      "source": "workload-dependent",
+      "source": "workload-dependent utilization knob. 0 = passthrough at AWS cost (default, ratio 1, matches data/pricing_matrix.json). >0 maps WCU-hours to Cloud Firestore Entity Writes as wcu*3600 writes/hr; at 1.0 this over-projects ~5.0x (AWS $0.00065/WCU-hr vs 3600 writes x $9e-7 Firestore = $0.00324). Ratio-1 utilization point is ~0.20 if an op-native projection is wanted instead of passthrough.",
       "refreshable": false,
-      "last_verified": "2026-11-06",
+      "last_verified": "2026-11-09",
       "needs_human_verification": false
     },
     "fx_max_staleness_days": {
@@ -148,25 +151,26 @@
     },
     "inferentia_chip_to_tpu": {
       "kind": "range",
-      "min": 0.1,
+      "min": 0.0,
       "max": 10.0,
-      "step": 0.1,
-      "source_kind": "judgment",
-      "source": "no benchmark exists (labeled assumption)",
+      "step": 0.01,
+      "source_kind": "passthrough_default",
+      "source": "0 = passthrough at AWS cost (default, ratio 1). No public Inferentia-vs-TPU benchmark exists, so projecting a TPU price would assert an unverified performance/price equivalence; passthrough carries the AWS cost with a Cloud TPU label and avoids that. Set >0 to map to Cloud TPU v5e at a declared PRICE ratio (e.g. 0.19 matches inf1.xlarge $0.228/hr vs TPU v5e $1.20/chip-hr) once a defensible equivalence exists.",
       "refreshable": false,
-      "last_verified": "2026-11-06",
+      "last_verified": "2026-11-09",
       "needs_human_verification": false
     },
     "lambda_mb_per_vcpu": {
-      "kind": "scalar_published",
-      "value": 1769.0,
+      "kind": "range",
       "min": 512.0,
-      "max": 10240.0,
+      "max": 4096.0,
       "step": 1.0,
-      "source_kind": "provider_published",
-      "source": "https://docs.aws.amazon.com/lambda/latest/dg/configuration-function-common.html",
+      "value_source": "derived",
+      "derived_from": "Cloud Run CPU:memory envelope caps memory at 4096 MiB per vCPU; AWS Lambda allocates 1 vCPU per 1769 MB as the as-is reference",
+      "source_kind": "derived_from_gcp_limits",
+      "source": "GCP ceiling: Cloud Run max 4 GiB per vCPU (https://docs.cloud.google.com/run/docs/configuring/services/cpu); AWS reference 1 vCPU/1769 MB (https://docs.aws.amazon.com/lambda/latest/dg/configuration-function-common.html)",
       "refreshable": false,
-      "last_verified": "2026-11-06",
+      "last_verified": "2026-11-09",
       "needs_human_verification": false
     },
     "looker_studio_pro_seat_usd": {
@@ -175,21 +179,23 @@
       "min": 0.0,
       "max": 100.0,
       "step": 1.0,
-      "source_kind": "provider_published",
-      "source": "https://cloud.google.com/looker-studio/pricing",
+      "source_kind": "third_party_corroborated",
+      "source": "Data Studio Pro (Google reverted the name Looker Studio -> Data Studio on 2026-04-11; the paid tier is now 'Data Studio Pro'). Per-user, per-project license: $9/user/project/month. VERIFIED 2026-11-09: Google no longer lists a price publicly (old page cloud.google.com/looker-studio/pricing 404s; official number is only in the Cloud console checkout). $9 is CORROBORATED by multiple independent third-party sources (trustradius.com, coupler.io, databloo.com, whatagraph.com) and the 2026 rebrand coverage (ppc.land, dataslayer.ai). Gold-standard confirmation is the Cloud console; keep flagged until an admin confirms there.",
       "refreshable": false,
-      "last_verified": "2026-11-06",
-      "needs_human_verification": false
+      "last_verified": "2026-11-09",
+      "needs_human_verification": true
     },
     "memorydb_node_gib": {
       "kind": "range",
-      "min": 1.0,
+      "min": 2.0,
       "max": 512.0,
       "step": 1.0,
-      "source_kind": "judgment",
-      "source": "fallback when CUR lacks node type",
+      "value_source": "derived",
+      "derived_from": "EC2 R-family node RAM (db.r6g/r7g.large=16 ... 16xlarge=512 GiB; db.t4g.small \u2248 2 GiB). AWS-side quantity; GCP only constrains the output (Memorystore M5 tier \u2248 300 GiB max single-tier representation).",
+      "source_kind": "derived_from_aws_node_specs",
+      "source": "AWS MemoryDB node types db.r6g/r7g.* run on EC2 R-family memory nodes (large=16, doubling to 16xlarge=512 GiB); GCP ceiling: Memorystore for Redis tiers M1-M5 (4/10/35/100/300 GiB)",
       "refreshable": false,
-      "last_verified": "2026-11-06",
+      "last_verified": "2026-11-09",
       "needs_human_verification": false
     },
     "nat_vms_per_gateway": {

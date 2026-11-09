@@ -169,6 +169,34 @@ def _atomic_write_gz(final_path, obj):
 # Source integrity (the .json.gz dump)
 # ---------------------------------------------------------------------------
 
+# Known-charged SKUs where provider demonstrably charges, but catalog API can publish $0.00.
+# Pinned per AGENTS.md with official pricing page URLs as tiebreaker.
+KNOWN_CHARGED_SKUS = {
+    # GCP Inter-zone data transfer egress bills at $0.01/GiB per official VPC pricing page:
+    # https://cloud.google.com/vpc/network-pricing
+    "C1F1-02CA-F355": {
+        "description": "Network Inter Zone Data Transfer Out",
+        "url": "https://cloud.google.com/vpc/network-pricing",
+        "min_rate": 0.005,
+    },
+}
+
+
+def _extract_sku_rate(sku):
+    """Extract primary tiered rate float from SKU pricingInfo, or None if unpriced."""
+    for pi in (sku.get("pricingInfo") or []):
+        pe = pi.get("pricingExpression", {})
+        for tr in pe.get("tieredRates", []):
+            up = tr.get("unitPrice", {})
+            try:
+                units = float(up.get("units", 0) or 0)
+                nanos = float(up.get("nanos", 0) or 0)
+                return units + (nanos / 1e9)
+            except (ValueError, TypeError):
+                continue
+    return None
+
+
 def _max_effective_time(skus):
     """Newest pricingInfo.effectiveTime across SKUs, as an aware datetime or None."""
     best = None
@@ -237,6 +265,20 @@ def integrity_check_file(path, baseline_count=None):
         status = "DEGRADED"
         issues.append(f"count {count} collapsed vs baseline {baseline_count}")
 
+    # Check for known-charged SKUs published at $0.00 or missing rates
+    for s in skus:
+        sku_id = s.get("skuId")
+        if sku_id in KNOWN_CHARGED_SKUS:
+            spec = KNOWN_CHARGED_SKUS[sku_id]
+            rate = _extract_sku_rate(s)
+            if rate is None or rate < spec["min_rate"]:
+                rate_val = 0.0 if rate is None else rate
+                status = "DEGRADED"
+                issues.append(
+                    f"CRITICAL: known-charged SKU {sku_id} ({spec['description']}) "
+                    f"published at ${rate_val:.4f} per {spec['url']}"
+                )
+
     age_days = None
     et = _max_effective_time(skus)
     if et:
@@ -266,6 +308,59 @@ def _scan_source(p, services, meta):
         if res["status"] != "OK":
             healthy = False
     return results, healthy
+
+
+def compute_catalog_summary(results, expected_count=None, threshold=100.0, prior_record_count=0):
+    """
+    Computes completeness, volume, and anomaly roll-up from integrity scan results.
+    results: dict of {service_id: {"name": str, "status": str, "count": int, "priced": int, "issues": list}}
+    Returns a dict with:
+      source: "gcp_catalog"
+      expected_count: int
+      fetched_count: int
+      coverage_pct: float
+      complete: bool
+      record_count: int
+      record_delta: int
+      anomalies: list of str
+      item_outcomes: dict of {service_id: status}
+      state: "success" | "partial" | "failed"
+    """
+    total_expected = expected_count if expected_count is not None else len(results)
+    fetched_count = sum(1 for r in results.values() if r.get("status") == "OK")
+    coverage_pct = round(100.0 * fetched_count / total_expected, 2) if total_expected > 0 else 0.0
+
+    total_records = sum(r.get("count", 0) for r in results.values())
+    record_delta = total_records - prior_record_count if prior_record_count else 0
+
+    anomalies = []
+    item_outcomes = {}
+    for sid, r in results.items():
+        st = r.get("status", "MISSING")
+        item_outcomes[sid] = st
+        if st != "OK":
+            issues_str = "; ".join(r.get("issues", []))
+            name = r.get("name", sid)
+            msg = f"{name} ({sid}): {st}"
+            if issues_str:
+                msg += f" - {issues_str}"
+            anomalies.append(msg)
+
+    complete = (coverage_pct >= threshold) and (len(anomalies) == 0)
+    state = "success" if complete else ("partial" if fetched_count > 0 else "failed")
+
+    return {
+        "source": "gcp_catalog",
+        "expected_count": total_expected,
+        "fetched_count": fetched_count,
+        "coverage_pct": coverage_pct,
+        "complete": complete,
+        "record_count": total_records,
+        "record_delta": record_delta,
+        "anomalies": anomalies,
+        "item_outcomes": item_outcomes,
+        "state": state,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -497,13 +592,21 @@ def cmd_refresh(p, refresh_all=False):
             fetched_any = True
 
         # Full-source integrity gate BEFORE rebuilding the artifact the pricer reads.
+        prior_record_count = meta.get("sku_count", 0) or sum((meta.get("sku_counts") or {}).values())
         results2, healthy = _scan_source(p, services, _load_meta(p))
-        bad = {sid: r for sid, r in results2.items() if r["status"] != "OK"}
-        if bad:
-            print(f"\nREFUSING to rebuild catalog.duckdb — {len(bad)} source(s) still unhealthy:")
-            for sid, r in bad.items():
-                print(f"  {r['name']}: {r['status']} ({'; '.join(r['issues'])})")
+        summary = compute_catalog_summary(
+            results2,
+            expected_count=len(services),
+            threshold=100.0,
+            prior_record_count=prior_record_count,
+        )
+
+        if not summary["complete"]:
+            print(f"\nREFUSING to rebuild catalog.duckdb — completeness gate failed ({summary['fetched_count']}/{summary['expected_count']} services healthy, {summary['coverage_pct']}% coverage):")
+            for a in summary["anomalies"]:
+                print(f"  {a}")
             print("Existing catalog.duckdb left untouched.")
+            print(f"REFRESH_SUMMARY {json.dumps(summary)}")
             return 1
 
         # Rebuild the artifact from the validated source (build_catalog_index does its
@@ -515,6 +618,10 @@ def cmd_refresh(p, refresh_all=False):
                                cwd=p["skill"], env=env)
             if r.returncode != 0:
                 print(f"  build_catalog_index.py exited {r.returncode} — catalog.duckdb may be stale")
+                summary["complete"] = False
+                summary["state"] = "failed"
+                summary["anomalies"].append(f"build_catalog_index.py exited {r.returncode}")
+                print(f"REFRESH_SUMMARY {json.dumps(summary)}")
                 return 1
         else:
             print("\nNo new source fetched — catalog.duckdb left as-is.")
@@ -523,6 +630,7 @@ def cmd_refresh(p, refresh_all=False):
         counts = {sid: r["count"] for sid, r in results2.items() if r["count"]}
         _write_meta(p, counts)
         print("CATALOG_META.json updated.")
+        print(f"REFRESH_SUMMARY {json.dumps(summary)}")
     return 0
 
 

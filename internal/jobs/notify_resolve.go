@@ -16,9 +16,13 @@ const (
 	keySlackWebhook = "slack.webhook_url" // secret
 )
 
-// resolveEmailConfig overlays DB-stored email settings on top of the env
+// ResolveEmailConfig overlays DB-stored email settings on top of the env
 // config. Returns an empty-APIKey config when email is disabled, so existing
 // "APIKey == ”" guards naturally skip sending.
+func ResolveEmailConfig(d *db.DB, env notify.EmailConfig) notify.EmailConfig {
+	return resolveEmailConfig(d, env)
+}
+
 func resolveEmailConfig(d *db.DB, env notify.EmailConfig) notify.EmailConfig {
 	cfg := env
 	if d == nil {
@@ -33,8 +37,12 @@ func resolveEmailConfig(d *db.DB, env notify.EmailConfig) notify.EmailConfig {
 	return cfg
 }
 
-// resolveSlackURL overlays the DB-stored Slack webhook on the env value.
+// ResolveSlackURL overlays the DB-stored Slack webhook on the env value.
 // Returns "" when Slack is disabled.
+func ResolveSlackURL(d *db.DB, envURL string) string {
+	return resolveSlackURL(d, envURL)
+}
+
 func resolveSlackURL(d *db.DB, envURL string) string {
 	if d == nil {
 		return envURL

@@ -215,17 +215,17 @@ forces `Complete=false`.
 - Do NOT "fix" unrelated issues — list them in your summary.
 
 ## 6. DONE CRITERIA
-- [ ] `RefreshRun` carries completeness (expected/fetched/coverage/complete),
+- [x] `RefreshRun` carries completeness (expected/fetched/coverage/complete),
       volume (count/delta), and anomalies; `partial` state exists.
-- [ ] `data/refresh_sources.json` declares the origin set + threshold per source;
+- [x] `data/refresh_sources.json` declares the origin set + threshold per source;
       a test forbids an untracked refresher.
-- [ ] Catalog refresh computes real completeness from `services.json` + baselines
+- [x] Catalog refresh computes real completeness from `services.json` + baselines
       and marks `partial` on any gap or CRITICAL anomaly.
-- [ ] A partial/failed fetch never replaces the last complete artifact.
-- [ ] Every refresher writes a unified run record.
-- [ ] System Health shows a per-source Data Freshness dashboard (status, age,
+- [x] A partial/failed fetch never replaces the last complete artifact.
+- [x] Every refresher writes a unified run record.
+- [x] System Health shows a per-source Data Freshness dashboard (status, age,
       coverage %, delta, last anomaly, history).
-- [ ] pytest + go build + npm build green; no projection dollar changed.
+- [x] pytest + go build + npm build green; no projection dollar changed.
 
 ## 7. PROGRESS LOG (append-only)
 - 2026-11-06 Created from a live trace. Confirmed the catalog refresh records only
@@ -234,3 +234,12 @@ forces `Complete=false`.
   baselines) already exists in read-only `check` and just needs to be run as a
   post-refresh gate and recorded. Other refreshers record nothing. UI shows catalog
   run state only.
+- 2026-11-09 Completed Phases 1-7:
+  - Extended RefreshRun struct with completeness, volume, and anomaly tracking; added 'partial' state.
+  - Added data/refresh_sources.json and Python/Go loaders, enforced with test_no_untracked_refreshers.
+  - Implemented compute_catalog_summary in scripts/catalog_manager.py with full anomaly roll-up.
+  - Enforced partial-fetch safety gate in cmd_refresh to refuse catalog.duckdb rebuild when incomplete.
+  - Added REFRESH_SUMMARY protocol across verify_compute_availability.py, refresh_assumption_domains.py, and check_cud_coverage.py.
+  - Implemented parseRefreshSummary in internal/jobs/refresh_orchestrator.go across all executors.
+  - Updated AdminRefreshSources and frontend CatalogTab.tsx with rich Data Freshness & Completeness dashboard with history strip.
+  - Verified with unit tests, go build, go test, and npm run build. Zero pricing changes.

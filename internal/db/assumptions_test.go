@@ -45,7 +45,7 @@ func TestAssumptionsSeedInsertsMissingRows(t *testing.T) {
 	a, ok = byKey["looker_studio_pro_seat_usd"]
 	require.True(t, ok)
 	assert.Equal(t, 9.0, a.Value)
-	assert.Equal(t, "USD/user/month", a.Unit)
+	assert.Equal(t, "USD/user/project/mo", a.Unit)
 
 	// Check aurora_acu_ram_gib bounds match domain
 	a, ok = byKey["aurora_acu_ram_gib"]

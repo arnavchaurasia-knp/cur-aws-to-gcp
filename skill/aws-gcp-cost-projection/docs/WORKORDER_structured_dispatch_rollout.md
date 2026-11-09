@@ -90,6 +90,14 @@ EC2 (incl. OS-license + Spot/RI) → EBS (snapshot tier) → RDS/Aurora → Data
 
 **STOP GATE per service:** shadow-diff clean (or diffs are explained fixes); regex `match` removed; golden test + pricing-matrix assert green.
 
+> **Meets the equivalence program here — but in a *separate* PR.** The point where a migrated service
+> asserts "AWS X ≈ GCP Y" is where `WORKORDER_equivalence_consumption_and_directive_upgrade.md` Phase 2
+> writes its crosswalk stamp. Keep the same spend-priority order across both programs, but **routing and
+> stamp are separate concerns → separate PRs**: land this workorder's routing cutover first (shadow-diff
+> byte-identical), then a follow-up PR adds the equivalence stamp. The stamp also presupposes that
+> service's claims have been *authored* (that workorder's Phase 1) — a service whose equivalence claims
+> don't exist yet gets routed here but stamped later. Don't bundle routing + stamp in one diff.
+
 ---
 
 ## Phase E — Guard-layer completion (what makes recurrence negligible)

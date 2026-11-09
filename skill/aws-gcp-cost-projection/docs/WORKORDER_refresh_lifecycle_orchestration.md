@@ -46,7 +46,7 @@ controllable from the UI.
 | P4 | `grep -rn "RevalidateDirectivesAfterRefresh\|emailCfg\|slackURL\|notify\." internal/jobs/catalog_refresher.go internal/jobs/notify_resolve.go \| head` | notify (email/Slack) infra exists and is already called after a refresh for stale pins — reuse it for escalation | |
 | P5 | `grep -n "refreshRunMu\|Lock()" internal/jobs/catalog_refresher.go && grep -n "class .*Lock\|LOCK\|flock\|single-writer" scripts/catalog_manager.py \| head` | single-writer locking exists on both sides | |
 | P6 | `test -f data/refresh_sources.json && echo FOUND || echo "MISSING — build the observability work order first"` | FOUND (dependency) | |
-| P7 | `grep -n "StartCatalogRefresher" cmd/server/main.go internal/**/*.go` | where the refresher goroutine is launched at boot (you will launch the orchestrator here instead) | |
+| P7 | `grep -n "Start.*Refresher(ctx)" cmd/server/main.go` | **TWO** scheduler goroutines launched at boot: `StartCatalogRefresher(ctx)` AND `StartComputeAvailabilityRefresher(ctx)` (compute_availability_refresher.go). The orchestrator subsumes **both** — you will replace both launches. | |
 
 ---
 
@@ -147,8 +147,10 @@ Keep `TriggerCatalogRefresh` working as the "manual run now" path; add a generic
 
 ### 2.5 Alerting (reuse notify infra)
 
-On `escalated`: one email/Slack via the existing `emailCfg()`/`slackURL()` path
-(the same one `RevalidateDirectivesAfterRefresh` uses), subject e.g. "Refresh
+On `escalated`: one email/Slack via the existing `emailCfg()`/`slackURL()` resolvers
+(`notify_resolve.go`; email is the path `RevalidateDirectivesAfterRefresh` already
+takes via `notify.EmailConfig`, and `slackURL()` is the resolver other handlers use
+for Slack posts — wire both), subject e.g. "Refresh
 escalated: gcp_catalog failed 4× — last error: …". On first `success` after an
 escalation: one "recovered" message. No per-attempt spam.
 
@@ -179,9 +181,12 @@ attempt `n/max`, `next_retry_at` countdown, consecutive-failure count, and contr
 - [ ] `StartRefreshOrchestrator(ctx)`: tick (injectable interval + injectable clock),
       load sources + latest runs, call `nextAction`, execute at most one `run` under
       the single-writer lock, persist records, fire escalation/recovery notifications.
-- [ ] Replace the launch of `StartCatalogRefresher` at boot (P7) with the
-      orchestrator; `gcp_catalog` becomes just one managed source. Keep
-      `runCatalogRefreshNow` as the executor the orchestrator calls for that source.
+- [ ] Replace BOTH boot launches (P7) — `StartCatalogRefresher` AND
+      `StartComputeAvailabilityRefresher` — with the single orchestrator; `gcp_catalog`
+      and `compute_availability` each become just one managed source. Keep
+      `runCatalogRefreshNow` (and the compute refresher's equivalent executor) as the
+      per-source executors the orchestrator calls. Do NOT leave either old goroutine
+      running alongside the orchestrator — that double-schedules the source.
 - [ ] Integration test with a FAKE executor (returns success/failure/partial on cue)
       and a fake clock: drive a full failure→backoff→retry→escalate→manual-retry→
       success→recovery-notify cycle and assert states + that exactly one escalation
@@ -256,3 +261,10 @@ attempt `n/max`, `next_retry_at` countdown, consecutive-failure count, and contr
   refresh sits failed silently (observed in `catalog_refresh_status.json`). Depends on
   the observability work order's `RefreshRun`/`refresh_sources.json`. CUD derivation is
   being handled in a separate work order per the user and is out of scope here.
+- 2026-11-06 Completed all phases:
+  - Phase 1: Added lifecycle & observability fields to `RefreshRun` (`CatalogRefreshRun` alias preserved) and created `data/refresh_sources.json` with declared `lifecycle` configs for `gcp_catalog`, `compute_availability`, and `assumption_domains`.
+  - Phase 2: Implemented pure state machine `nextAction` in `internal/jobs/refresh_state_machine.go` and verified backoff math via exhaustive unit tests in `refresh_state_machine_test.go`.
+  - Phase 3 & 4: Implemented `RefreshOrchestrator` in `internal/jobs/refresh_orchestrator.go`, dependency ordering (`depends_on`), single-writer execution, and single-alert escalation/recovery via Resend email and Slack webhook.
+  - Phase 5 & 6: Implemented context timeout handling, stuck-run recovery, manual `TriggerRefresh`, `PauseSource`, `ResumeSource`, and admin HTTP endpoints in `internal/jobs/admin_handlers.go`.
+  - Phase 7: Extended the System Health UI (`CatalogTab.tsx`, `StatusBadge.tsx`, `health.ts`) with live state badges, attempt counts, failure counts, next retry countdown, and Retry/Pause/Resume controls.
+  - Phase 8: Verified all Go tests pass (`go test ./internal/jobs`), frontend compiles clean (`npm run build`), Python tests pass with zero dollar changes.

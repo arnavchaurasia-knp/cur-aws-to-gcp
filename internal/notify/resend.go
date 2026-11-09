@@ -19,7 +19,22 @@ type EmailConfig struct {
 
 const resendEndpoint = "https://api.resend.com/emails"
 
-// SendJobReady sends a polished HTML email notifying the user that their cost projection is ready.
+// SendRefreshEscalated sends an alert email to admins when a refresh source has exhausted all retries.
+func SendRefreshEscalated(cfg EmailConfig, toEmail, source string, attempts int, lastError string) error {
+	subject := fmt.Sprintf("Refresh escalated: %s failed %d× — last error: %s", source, attempts, lastError)
+	text := fmt.Sprintf("Refresh for %s has failed %d consecutive times.\nLast error: %s\n\nPlease check the System Health dashboard.", source, attempts, lastError)
+	html := fmt.Sprintf("<p>Refresh for <strong>%s</strong> has failed %d consecutive times.</p><p><strong>Last error:</strong> %s</p><p>Please inspect the System Health dashboard.</p>", source, attempts, lastError)
+	return sendResend(cfg, toEmail, subject, text, html)
+}
+
+// SendRefreshRecovered sends an email notifying admins that an escalated source has recovered.
+func SendRefreshRecovered(cfg EmailConfig, toEmail, source string) error {
+	subject := fmt.Sprintf("Refresh recovered: %s succeeded", source)
+	text := fmt.Sprintf("Refresh for %s has recovered and completed successfully.", source)
+	html := fmt.Sprintf("<p>Refresh for <strong>%s</strong> has recovered and completed successfully.</p>", source)
+	return sendResend(cfg, toEmail, subject, text, html)
+}
+
 func SendJobReady(cfg EmailConfig, toEmail, toName, prospect, jobID string, awsSpend ...float64) error {
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 	if baseURL == "" {

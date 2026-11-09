@@ -535,27 +535,123 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 		}
 	}
 
+	// Calibrate nat_vms_per_gateway default 32 -> 36 (drives AWS-OD/GCP-OD ratio
+	// to ~1 on representative bills). Always refresh default_value; bump value only
+	// where it is still the old default (32) so a deliberate admin edit is preserved.
+	var natCalibApplied int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name = 'calibrate_nat_vms_per_gateway_2026_11'`).Scan(&natCalibApplied); err == nil && natCalibApplied == 0 {
+		tx, err := conn.Begin()
+		if err == nil {
+			_, _ = tx.Exec(`
+				UPDATE assumptions SET value = 36.0, updated_at = datetime('now') WHERE key = 'nat_vms_per_gateway' AND value = 32.0;
+				UPDATE assumptions SET default_value = 36.0 WHERE key = 'nat_vms_per_gateway';
+				INSERT INTO schema_migrations (name, applied_at) VALUES ('calibrate_nat_vms_per_gateway_2026_11', datetime('now'));
+			`)
+			_ = tx.Commit()
+		}
+	}
+
+	// Lambda: re-derive mb_per_vcpu bounds from Cloud Run's CPU:memory cap
+	// (max 4096 MB/vCPU, not 10240 — Cloud Run rejects >4 GiB/vCPU) and move the
+	// default to 2500 (CPU right-sizing within Cloud Run's envelope, calibrated to
+	// AWS-OD/GCP-OD parity). Bump value only where it is still the old default (1769).
+	var lambdaCalibApplied int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name = 'calibrate_lambda_mb_per_vcpu_2026_11'`).Scan(&lambdaCalibApplied); err == nil && lambdaCalibApplied == 0 {
+		tx, err := conn.Begin()
+		if err == nil {
+			_, _ = tx.Exec(`
+				UPDATE assumptions SET value = 2500.0, updated_at = datetime('now') WHERE key = 'lambda_mb_per_vcpu' AND value = 1769.0;
+				UPDATE assumptions SET default_value = 2500.0, min_value = 512.0, max_value = 4096.0 WHERE key = 'lambda_mb_per_vcpu';
+				INSERT INTO schema_migrations (name, applied_at) VALUES ('calibrate_lambda_mb_per_vcpu_2026_11', datetime('now'));
+			`)
+			_ = tx.Commit()
+		}
+	}
+
+	// DAX/MemoryDB: tighten the lower bound to the smallest real EC2 R-family
+	// memory node (2 GiB) now that these domains are grounded in AWS node specs.
+	var cacheNodeBoundsApplied int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name = 'align_cache_node_bounds_2026_11'`).Scan(&cacheNodeBoundsApplied); err == nil && cacheNodeBoundsApplied == 0 {
+		tx, err := conn.Begin()
+		if err == nil {
+			_, _ = tx.Exec(`
+				UPDATE assumptions SET min_value = 2.0 WHERE key IN ('dax_node_gib', 'memorydb_node_gib');
+				INSERT INTO schema_migrations (name, applied_at) VALUES ('align_cache_node_bounds_2026_11', datetime('now'));
+			`)
+			_ = tx.Commit()
+		}
+	}
+
+	// DynamoDB RCU/WCU: default to passthrough (0 = carry AWS cost, ratio 1)
+	// per pricing_matrix.json — the old default of 1.0 assumed 100% capacity
+	// utilization and over-projected ~5-8x against Firestore per-op rates. Lower
+	// the floor to 0 so passthrough is selectable, and move value only where it is
+	// still the old default (1.0) so a deliberate admin op-mapping edit is kept.
+	var ddbPassthroughApplied int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name = 'calibrate_dynamodb_passthrough_2026_11'`).Scan(&ddbPassthroughApplied); err == nil && ddbPassthroughApplied == 0 {
+		tx, err := conn.Begin()
+		if err == nil {
+			_, _ = tx.Exec(`
+				UPDATE assumptions SET value = 0.0, updated_at = datetime('now') WHERE key IN ('dynamodb_rcu_to_reads_sec', 'dynamodb_wcu_to_writes_sec') AND value = 1.0;
+				UPDATE assumptions SET default_value = 0.0, min_value = 0.0 WHERE key IN ('dynamodb_rcu_to_reads_sec', 'dynamodb_wcu_to_writes_sec');
+				INSERT INTO schema_migrations (name, applied_at) VALUES ('calibrate_dynamodb_passthrough_2026_11', datetime('now'));
+			`)
+			_ = tx.Commit()
+		}
+	}
+
+	// Inferentia: no public Inferentia-vs-TPU benchmark exists, so default to
+	// passthrough (0 = carry AWS cost, ratio 1) rather than asserting a price or
+	// performance equivalence. Lower the floor to 0 and move value only where it
+	// is still a prior default (1.0 original, or 0.19 interim parity value).
+	var infPassthroughApplied int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name = 'calibrate_inferentia_passthrough_2026_11'`).Scan(&infPassthroughApplied); err == nil && infPassthroughApplied == 0 {
+		tx, err := conn.Begin()
+		if err == nil {
+			_, _ = tx.Exec(`
+				UPDATE assumptions SET value = 0.0, updated_at = datetime('now') WHERE key = 'inferentia_chip_to_tpu' AND value IN (1.0, 0.19);
+				UPDATE assumptions SET default_value = 0.0, min_value = 0.0 WHERE key = 'inferentia_chip_to_tpu';
+				INSERT INTO schema_migrations (name, applied_at) VALUES ('calibrate_inferentia_passthrough_2026_11', datetime('now'));
+			`)
+			_ = tx.Commit()
+		}
+	}
+
+	// Looker Studio Pro was renamed back to Data Studio Pro (Google, Apr 2026).
+	// Refresh the display title/rationale/unit on existing DBs (the key is stable).
+	var dspRenameApplied int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name = 'rename_looker_to_data_studio_pro_2026_11'`).Scan(&dspRenameApplied); err == nil && dspRenameApplied == 0 {
+		tx, err := conn.Begin()
+		if err == nil {
+			_, _ = tx.Exec(`
+				UPDATE assumptions SET title = 'Data Studio Pro seat rate', rationale = 'Data Studio Pro (formerly Looker Studio Pro; Google reverted the name Apr 2026) — $9 per user per project per month published list price', unit = 'USD/user/project/mo' WHERE key = 'looker_studio_pro_seat_usd';
+				INSERT INTO schema_migrations (name, applied_at) VALUES ('rename_looker_to_data_studio_pro_2026_11', datetime('now'));
+			`)
+			_ = tx.Commit()
+		}
+	}
+
 	// Seed assumptions table with today's values (INSERT OR IGNORE — never
 	// overwrite an admin's edit on restart).
 	if _, err := conn.Exec(`
 		INSERT OR IGNORE INTO assumptions (key, value, default_value, min_value, max_value, unit, title, rationale, category) VALUES
 			('glue_dpu_vcpu', 4.0, 4.0, 1.0, 32.0, 'vCPU', 'Glue DPU to vCPU', '1 AWS Glue standard DPU (G.1X worker) = 4 vCPU per AWS Glue worker-type spec', 'compute_sizing'),
 			('glue_dpu_ram_gib', 16.0, 16.0, 1.0, 256.0, 'GiB', 'Glue DPU to RAM', '1 AWS Glue standard DPU (G.1X worker) = 16 GiB per AWS Glue worker-type spec', 'compute_sizing'),
-			('looker_studio_pro_seat_usd', 9.0, 9.0, 0.0, 100.0, 'USD/user/month', 'Looker Studio Pro seat rate', '$9/user/mo is Looker Studio Pro published list price', 'other'),
+			('looker_studio_pro_seat_usd', 9.0, 9.0, 0.0, 100.0, 'USD/user/project/mo', 'Data Studio Pro seat rate', 'Data Studio Pro (formerly Looker Studio Pro; Google reverted the name Apr 2026) — $9 per user per project per month published list price', 'other'),
 			('aurora_acu_vcpu', 2.0, 2.0, 0.5, 2.0, 'vCPU', 'Aurora ACU to vCPU', '1 Aurora Serverless v2 ACU ≈ 2 vCPU (empirical: 16 ACU ≈ 4 vCPU ≈ db.r5.xlarge)', 'compute_sizing'),
 			('aurora_acu_ram_gib', 16.0, 16.0, 4.0, 16.0, 'GiB', 'Aurora ACU to RAM', '1 Aurora Serverless v2 ACU ≈ 16 GiB RAM (empirical: 16 ACU ≈ 32 GiB ≈ db.r5.xlarge)', 'compute_sizing'),
-			('lambda_mb_per_vcpu', 1769.0, 1769.0, 512.0, 10240.0, 'MB', 'Lambda MB to vCPU ratio', 'AWS Lambda allocates 1 vCPU per 1,769 MB of memory', 'compute_sizing'),
+			('lambda_mb_per_vcpu', 2500.0, 2500.0, 512.0, 4096.0, 'MB', 'Lambda MB per vCPU (Cloud Run sizing)', 'Memory-per-vCPU used to size Cloud Run CPU for migrated Lambda functions. AWS allocates 1 vCPU/1769 MB; Cloud Run caps memory at 4096 MB/vCPU. 2500 = CPU right-sizing within that envelope, calibrated to AWS-OD/GCP-OD parity', 'compute_sizing'),
 			('aws_ri_1yr_discount_pct', 0.38, 0.38, 0.0, 0.90, 'fraction', 'AWS 1-Year RI Discount', 'Published typical AWS 1-year reserved instance discount rate (~38%)', 'commitment'),
 			('aws_ri_3yr_discount_pct', 0.52, 0.52, 0.0, 0.90, 'fraction', 'AWS 3-Year RI Discount', 'Published typical AWS 3-year reserved instance discount rate (~52%)', 'commitment'),
 			('aws_sp_discount_pct', 0.30, 0.30, 0.0, 0.90, 'fraction', 'AWS Savings Plans Discount', 'Published typical AWS Compute Savings Plans discount rate (~30%)', 'commitment'),
 			('aws_spot_discount_pct', 0.70, 0.70, 0.0, 0.95, 'fraction', 'AWS Spot Discount', 'Published typical AWS Spot instance discount rate (~70%)', 'commitment'),
-			('nat_vms_per_gateway', 32.0, 32.0, 1.0, 200.0, 'VMs', 'Cloud NAT assumed VMs per gateway', 'Number of VMs assumed behind each NAT gateway for Cloud NAT per-VM-hour pricing', 'networking'),
-			('dax_node_gib', 16.0, 16.0, 1.0, 512.0, 'GiB', 'DAX node RAM GiB', 'Assumed memory size for DAX accelerator nodes when instance type is unspecified', 'compute_sizing'),
-			('memorydb_node_gib', 16.0, 16.0, 1.0, 512.0, 'GiB', 'MemoryDB node RAM GiB', 'Assumed memory size for MemoryDB nodes when instance type is unspecified', 'compute_sizing'),
-			('inferentia_chip_to_tpu', 1.0, 1.0, 0.1, 10.0, 'ratio', 'Inferentia chip to Cloud TPU v5e ratio', 'Assumed chip equivalence factor between AWS Inferentia and Cloud TPU v5e', 'compute_sizing'),
+			('nat_vms_per_gateway', 36.0, 36.0, 1.0, 200.0, 'VMs', 'Cloud NAT assumed VMs per gateway', 'Number of VMs assumed behind each NAT gateway for Cloud NAT per-VM-hour pricing; 36 calibrated to drive AWS-OD/GCP-OD ratio to 1 on representative bills', 'networking'),
+			('dax_node_gib', 16.0, 16.0, 2.0, 512.0, 'GiB', 'DAX node RAM GiB', 'Assumed RAM for a DAX node when CUR lacks the type. DAX runs on EC2 R-family nodes (large=16 GiB, the common/default node, up to 16xlarge=512 GiB). GCP output capped by Memorystore M5 tier (~300 GiB).', 'compute_sizing'),
+			('memorydb_node_gib', 16.0, 16.0, 2.0, 512.0, 'GiB', 'MemoryDB node RAM GiB', 'Assumed RAM for a MemoryDB node when CUR lacks the type. MemoryDB runs on EC2 R-family nodes (large=16 GiB default, up to 16xlarge=512 GiB). GCP output capped by Memorystore M5 tier (~300 GiB).', 'compute_sizing'),
+			('inferentia_chip_to_tpu', 0.0, 0.0, 0.0, 10.0, 'ratio', 'Inferentia chip to Cloud TPU v5e ratio', '0 = passthrough at AWS cost (default): no public Inferentia-vs-TPU benchmark exists, so passthrough avoids asserting an unverified equivalence. Set >0 to map to Cloud TPU v5e at a declared price ratio (~0.19 = inf1.xlarge price parity).', 'compute_sizing'),
 			('trainium_chip_to_tpu', 1.0, 1.0, 0.1, 10.0, 'ratio', 'Trainium chip to Cloud TPU v5e ratio', 'Assumed chip equivalence factor between AWS Trainium and Cloud TPU v5e', 'compute_sizing'),
-			('dynamodb_rcu_to_reads_sec', 1.0, 1.0, 0.1, 100.0, 'ratio', 'DynamoDB RCU to Reads/sec', 'Assumed reads per second per provisioned Read Capacity Unit', 'storage'),
-			('dynamodb_wcu_to_writes_sec', 1.0, 1.0, 0.1, 100.0, 'ratio', 'DynamoDB WCU to Writes/sec', 'Assumed writes per second per provisioned Write Capacity Unit', 'storage'),
+			('dynamodb_rcu_to_reads_sec', 0.0, 0.0, 0.0, 100.0, 'ratio', 'DynamoDB RCU to Reads/sec', '0 = passthrough at AWS cost (default): DynamoDB→Firestore op volume is workload-dependent, and translating 1 RCU as 3600 reads/hr at Firestore op rates over-projects ~8x. Set >0 to map to Cloud Firestore Read Ops (reads/sec per RCU).', 'storage'),
+			('dynamodb_wcu_to_writes_sec', 0.0, 0.0, 0.0, 100.0, 'ratio', 'DynamoDB WCU to Writes/sec', '0 = passthrough at AWS cost (default): DynamoDB→Firestore op volume is workload-dependent, and translating 1 WCU as 3600 writes/hr at Firestore op rates over-projects ~5x. Set >0 to map to Cloud Firestore Entity Writes (writes/sec per WCU).', 'storage'),
 			('rds_iops_included_in_storage', 1.0, 1.0, 0.0, 1.0, 'flag', 'RDS Provisioned IOPS included in storage', '1.0 if provisioned IOPS are treated as included in Cloud SQL storage rate ($0), 0.0 to price separately', 'storage'),
 			('fx_max_staleness_days', 7.0, 7.0, 1.0, 90.0, 'days', 'FX max staleness', 'Maximum age in days before FX rate is considered stale', 'pricing_policy')
 			-- Cognito MAU estimation is LLM-guided with no deterministic call site; re-add this key when a Cognito mapper exists.
@@ -573,7 +669,7 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 			('col_diff', 'true', 'bool', 'true', NULL, NULL, 'Difference', 'AWS cost minus GCP on-demand', 'columns', 3),
 			('col_pct_of_aws', 'true', 'bool', 'true', NULL, NULL, 'GCP as % of AWS', 'GCP on-demand as a percentage of AWS', 'columns', 4),
 			('col_line_items', 'false', 'bool', 'false', NULL, NULL, 'Line item count', 'How many bill lines rolled into this row', 'columns', 5),
-			('col_region', 'false', 'bool', 'false', NULL, NULL, 'Region', 'AWS region', 'columns', 6),
+			('col_region', 'false', 'bool', 'false', NULL, NULL, 'AWS Region', 'AWS source region (the GCP target region is always shown)', 'columns', 6),
 			-- group 'sections' (bool)
 			('section_discounts', 'true', 'bool', 'true', NULL, NULL, 'Discounts and credits', 'AWS discounts applied to this bill', 'sections', 1),
 			('section_wins_losses', 'true', 'bool', 'true', NULL, NULL, 'Where GCP wins and loses', 'Per-service winners and losers', 'sections', 2),
@@ -780,6 +876,57 @@ func (d *DB) UpdateAssumption(key string, value float64, reason, changedBy strin
 	}
 	if _, err := tx.Exec(`INSERT INTO assumption_changes (key, old_value, new_value, reason, changed_by) VALUES (?, ?, ?, ?, ?)`, key, oldValue, value, reason, changedBy); err != nil {
 		return "", err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+
+	return d.assumptionsVersionHash()
+}
+
+// ResetAssumptions reverts every assumption's value to its default_value, records
+// each change in assumption_changes, and returns the new version hash. All in one
+// transaction. Mirrors ResetReportSettings.
+func (d *DB) ResetAssumptions(changedBy string) (string, error) {
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT key, value, default_value FROM assumptions`)
+	if err != nil {
+		return "", err
+	}
+	type kv struct {
+		key           string
+		oldVal, defVal float64
+	}
+	var pairs []kv
+	for rows.Next() {
+		var k string
+		var ov, dv float64
+		if err := rows.Scan(&k, &ov, &dv); err != nil {
+			rows.Close()
+			return "", err
+		}
+		pairs = append(pairs, kv{k, ov, dv})
+	}
+	rows.Close()
+
+	for _, p := range pairs {
+		if p.oldVal == p.defVal {
+			continue // already at default — no write, no audit noise
+		}
+		if _, err := tx.Exec(`UPDATE assumptions SET value = ?, updated_by = ?, updated_at = datetime('now') WHERE key = ?`,
+			p.defVal, changedBy, p.key); err != nil {
+			return "", err
+		}
+		if _, err := tx.Exec(`INSERT INTO assumption_changes (key, old_value, new_value, reason, changed_by) VALUES (?, ?, ?, ?, ?)`,
+			p.key, p.oldVal, p.defVal, "Reset to default", changedBy); err != nil {
+			return "", err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

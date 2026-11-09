@@ -40,13 +40,26 @@ except ImportError:
 def get_cud_mult(service: str, term: str) -> float:
     skill_dir = os.environ.get("SKILL_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cud_path = os.path.join(skill_dir, "data", "cud_pct.json")
-    r1, r3 = 0.75, 0.60
+    r1, r3 = 1.0, 1.0
     if os.path.exists(cud_path):
         try:
             with open(cud_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            pair = data.get(service) or data.get("DEFAULT") or [0.75, 0.60]
-            r1, r3 = float(pair[0]), float(pair[1])
+            eligible = set(data.get("cud_eligible", []))
+            if service in eligible:
+                val = data.get(service)
+                if isinstance(val, dict):
+                    r1 = float(val.get("1yr_multiplier", 1.0))
+                    r3 = float(val.get("3yr_multiplier", 1.0))
+                elif isinstance(val, (list, tuple)) and len(val) >= 2:
+                    r1, r3 = float(val[0]), float(val[1])
+            else:
+                default_val = data.get("DEFAULT")
+                if isinstance(default_val, dict):
+                    r1 = float(default_val.get("1yr_multiplier", 1.0))
+                    r3 = float(default_val.get("3yr_multiplier", 1.0))
+                elif isinstance(default_val, (list, tuple)) and len(default_val) >= 2:
+                    r1, r3 = float(default_val[0]), float(default_val[1])
         except Exception:
             pass
     return r3 if term == "cud_3yr" else r1

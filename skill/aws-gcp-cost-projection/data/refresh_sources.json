@@ -1,0 +1,77 @@
+{
+  "gcp_catalog": {
+    "expected_set": "data/services.json",
+    "baseline_counts": "data/CATALOG_META.json:sku_counts",
+    "completeness_threshold": 100.0,
+    "stale_after_days": 7,
+    "refresher": "catalog_manager.py refresh",
+    "lifecycle": {
+      "interval_hours": 168,
+      "max_attempts": 4,
+      "backoff_base_seconds": 300,
+      "backoff_factor": 3.0,
+      "backoff_cap_seconds": 21600,
+      "timeout_seconds": 3600,
+      "depends_on": [],
+      "escalate_after_consecutive_failures": 1,
+      "treat_partial_as": "retry"
+    }
+  },
+  "compute_availability": {
+    "expected_set": "self:regions",
+    "completeness_threshold": 90.0,
+    "stale_after_days": 1,
+    "refresher": "verify_compute_availability.py",
+    "lifecycle": {
+      "interval_hours": 24,
+      "max_attempts": 3,
+      "backoff_base_seconds": 180,
+      "backoff_factor": 2.0,
+      "backoff_cap_seconds": 3600,
+      "timeout_seconds": 600,
+      "depends_on": [],
+      "escalate_after_consecutive_failures": 1,
+      "treat_partial_as": "accept"
+    }
+  },
+  "assumption_domains": {
+    "expected_set": "data/assumption_domains.json",
+    "completeness_threshold": 100.0,
+    "stale_after_days": 1,
+    "refresher": "refresh_assumption_domains.py",
+    "lifecycle": {
+      "interval_hours": 24,
+      "max_attempts": 3,
+      "backoff_base_seconds": 180,
+      "backoff_factor": 2.0,
+      "backoff_cap_seconds": 3600,
+      "timeout_seconds": 300,
+      "depends_on": [
+        "gcp_catalog",
+        "compute_availability"
+      ],
+      "escalate_after_consecutive_failures": 1,
+      "treat_partial_as": "retry"
+    }
+  },
+  "cud_coverage": {
+    "expected_set": "data/cud_pct.json:cud_eligible",
+    "completeness_threshold": 100.0,
+    "stale_after_days": 7,
+    "refresher": "check_cud_coverage.py",
+    "lifecycle": {
+      "interval_hours": 168,
+      "max_attempts": 3,
+      "backoff_base_seconds": 300,
+      "backoff_factor": 2.0,
+      "backoff_cap_seconds": 3600,
+      "timeout_seconds": 300,
+      "depends_on": [
+        "gcp_catalog"
+      ],
+      "escalate_after_consecutive_failures": 1,
+      "treat_partial_as": "retry"
+    }
+  }
+}
+

@@ -5,6 +5,19 @@
     "refresh_note": "Verify annually. GCP occasionally adjusts CUD discount percentages.",
     "reference": "https://cloud.google.com/compute/docs/instances/signing-up-committed-use-discounts"
   },
+  "cud_eligible": [
+    "Compute Engine",
+    "Compute Engine Memory Optimized",
+    "Cloud SQL",
+    "Cloud Spanner",
+    "Cloud Bigtable",
+    "Memorystore",
+    "Cloud Memorystore",
+    "Cloud Memorystore for Redis",
+    "Cloud Memorystore for Memcached",
+    "AlloyDB",
+    "Cloud Run"
+  ],
   "Compute Engine": {
     "1yr_multiplier": 0.63,
     "3yr_multiplier": 0.45,
@@ -55,8 +68,8 @@
     "note": "Committed use for minimum instances"
   },
   "DEFAULT": {
-    "1yr_multiplier": 0.75,
-    "3yr_multiplier": 0.60,
-    "note": "Conservative fallback for unlisted services"
+    "1yr_multiplier": 1.0,
+    "3yr_multiplier": 1.0,
+    "note": "No CUD — committed equals on-demand. Never fabricate a discount."
   }
 }

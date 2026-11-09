@@ -19,18 +19,35 @@ import (
 	"github.com/facets/cur-web/internal/skill"
 )
 
-// CatalogRefreshRun represents the live and recorded execution status of a GCP catalog refresh.
-type CatalogRefreshRun struct {
-	State           string   `json:"state"`                      // idle | running | success | failed | skipped
-	StartedAt       string   `json:"started_at,omitempty"`
-	FinishedAt      string   `json:"finished_at,omitempty"`
-	ExitCode        int      `json:"exit_code"`
-	Trigger         string   `json:"trigger,omitempty"`          // manual | auto
-	Actor           string   `json:"actor,omitempty"`
-	Reason          string   `json:"reason,omitempty"`           // populated on skipped/failed (e.g. image-baked)
-	LogTail         []string `json:"log_tail,omitempty"`         // last ~40 lines of combined stdout/stderr
-	DurationSeconds int      `json:"duration_seconds,omitempty"`
+// RefreshRun represents the live and recorded execution status of a refresh source.
+type RefreshRun struct {
+	State               string            `json:"state"`                      // idle | running | success | failed | skipped | partial | retrying | backing_off | escalated | paused
+	StartedAt           string            `json:"started_at,omitempty"`
+	FinishedAt          string            `json:"finished_at,omitempty"`
+	ExitCode            int               `json:"exit_code"`
+	Trigger             string            `json:"trigger,omitempty"`          // manual | auto
+	Actor               string            `json:"actor,omitempty"`
+	Reason              string            `json:"reason,omitempty"`           // populated on skipped/failed (e.g. image-baked)
+	LogTail             []string          `json:"log_tail,omitempty"`         // last ~40 lines of combined stdout/stderr
+	DurationSeconds     int               `json:"duration_seconds,omitempty"`
+	Source              string            `json:"source,omitempty"`
+	ExpectedCount       int               `json:"expected_count,omitempty"`
+	FetchedCount        int               `json:"fetched_count,omitempty"`
+	CoveragePct         float64           `json:"coverage_pct,omitempty"`
+	Complete            bool              `json:"complete,omitempty"`
+	RecordCount         int               `json:"record_count,omitempty"`
+	RecordDelta         int               `json:"record_delta,omitempty"`
+	Anomalies           []string          `json:"anomalies,omitempty"`
+	ItemOutcomes        map[string]string `json:"item_outcomes,omitempty"`
+	Attempt             int               `json:"attempt,omitempty"`
+	MaxAttempts         int               `json:"max_attempts,omitempty"`
+	NextRetryAt         string            `json:"next_retry_at,omitempty"`
+	ConsecutiveFailures int               `json:"consecutive_failures,omitempty"`
+	Escalated           bool              `json:"escalated,omitempty"`
 }
+
+// CatalogRefreshRun is an alias to RefreshRun for backward compatibility.
+type CatalogRefreshRun = RefreshRun
 
 var refreshRunMu sync.Mutex
 
@@ -168,21 +185,7 @@ func catalogStaleDays() int {
 // or `gcloud auth login`). If credentials are absent the refresh is a no-op
 // that logs the gap without failing the server.
 func StartCatalogRefresher(ctx context.Context) {
-	go func() {
-		// Run once immediately at startup, then on a weekly ticker.
-		runCatalogRefreshIfStale()
-
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				runCatalogRefreshIfStale()
-			}
-		}
-	}()
+	StartRefreshOrchestrator(ctx)
 }
 
 // catalogAge returns how many days ago the catalog was last fetched.
@@ -340,6 +343,27 @@ func runCatalogRefreshNow(trigger, actor string) {
 			LogTail:         logTail,
 			DurationSeconds: durationSec,
 		})
+		runAssumptionDomainsRefresh(skillDir)
+	}
+}
+
+func runAssumptionDomainsRefresh(skillDir string) {
+	script := filepath.Join(skillDir, "scripts", "refresh_assumption_domains.py")
+	if _, err := os.Stat(script); err != nil {
+		return
+	}
+	python := "python3"
+	if _, err := exec.LookPath(python); err != nil {
+		python = "python"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, python, script)
+	cmd.Dir = skillDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		slog.Warn("assumption domains refresh finished with error", "err", err, "output", string(out))
+	} else {
+		slog.Info("assumption domains refresh complete")
 	}
 }
 
@@ -367,31 +391,7 @@ func GetCatalogStatus() CatalogStatus {
 // admin: a button that reports "refresh started" while doing nothing is worse
 // than one that declines, because the operator stops looking.
 func TriggerCatalogRefresh(actor string) (bool, string) {
-	skillDir := skill.ResolveDir()
-	if isImageBaked(skillDir) {
-		reason := "catalog is baked into the container image and refreshed at build time; " +
-			"a runtime refresh would be discarded on the next deploy"
-		writeRefreshRun(CatalogRefreshRun{
-			State:      "skipped",
-			Reason:     reason,
-			Trigger:    "manual",
-			Actor:      actor,
-			FinishedAt: time.Now().UTC().Format(time.RFC3339),
-		})
-		return false, reason
-	}
-
-	curr := readRefreshRun()
-	if curr.State == "running" && curr.StartedAt != "" {
-		if t, err := time.Parse(time.RFC3339, curr.StartedAt); err == nil {
-			if time.Since(t) < catalogRefreshTimeout+30*time.Second {
-				return false, "a refresh is already running"
-			}
-		}
-	}
-
-	go runCatalogRefreshNow("manual", actor)
-	return true, ""
+	return TriggerRefresh("gcp_catalog", actor)
 }
 
 // StalePinResult represents an invalidated directive detected during catalog refresh.

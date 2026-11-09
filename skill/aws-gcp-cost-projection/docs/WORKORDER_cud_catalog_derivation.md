@@ -47,12 +47,12 @@ defect is narrower:
 
 | # | Probe | Expected (confirm) | RESULT |
 |---|---|---|---|
-| P1 | `python -m pytest tests/ -q 2>&1 \| tail -3` | baseline count ____ | |
-| P2 | `grep -n "real_cud_count\|Commit1Yr\|Commit3Yr\|synthesiz\|load_cud_pct\|_default_pct\|cud_pct" scripts/apply_rates.py` | catalog-first: real Commit1Yr/3Yr loaded first (~783), synthesize from cud_pct.json only if none (~792); `_default_pct = cud_pct.get("DEFAULT",(0.75,0.60))` (~804) | |
-| P3 | `python -c "import json;d=json.load(open('data/cud_pct.json'));print(list(d));print(d['DEFAULT'])"` | per-service entries + a `DEFAULT` of 0.75/0.60 — the fabrication | |
-| P4 | `python -c "import duckdb;c=duckdb.connect('data/catalog.duckdb',read_only=True);print(c.execute(\"SELECT count(*) FROM skus WHERE usage_type LIKE 'Commit%'\").fetchone());print(c.execute(\"SELECT DISTINCT usage_type FROM skus WHERE usage_type LIKE 'Commit%'\").fetchall())"` | thousands of commit rows; usage_types incl. Commit1Yr, Commit3Yr, Commit1Mo | |
-| P5 | `grep -rn "assumption" data/cud_pct.json ; python -c "import json;print('cud' in str(json.load(open('data/assumption-defaults.json'))['values']).lower())"` | `False` — CUD is NOT an assumption key (correct; keep it so) | |
-| P6 | `grep -n "cud\|CUD\|DEFAULT" scripts/validate_fix.py \| head` | validate_fix also imports the CUD fallback; note it for consistency | |
+| P1 | `python -m pytest tests/ -q 2>&1 \| tail -3` | baseline count ____ | 1283 passed, 2 warnings in 118s |
+| P2 | `grep -n "real_cud_count\|Commit1Yr\|Commit3Yr\|synthesiz\|load_cud_pct\|_default_pct\|cud_pct" scripts/apply_rates.py` | catalog-first: real Commit1Yr/3Yr loaded first (~783), synthesize from cud_pct.json only if none (~792); `_default_pct = cud_pct.get("DEFAULT",(0.75,0.60))` (~804) | Confirmed: lines 785-792 check real_cud_count; synthesize via cud_pct.json at line 807; _default_pct=(0.75,0.60) at line 804 |
+| P3 | `python -c "import json;d=json.load(open('data/cud_pct.json'));print(list(d));print(d['DEFAULT'])"` | per-service entries + a `DEFAULT` of 0.75/0.60 — the fabrication | Confirmed: 11 service keys + DEFAULT {'1yr_multiplier': 0.75, '3yr_multiplier': 0.6} |
+| P4 | `python -c "import duckdb;c=duckdb.connect('data/catalog.duckdb',read_only=True);print(c.execute(\"SELECT count(*) FROM skus WHERE usage_type LIKE 'Commit%'\").fetchone());print(c.execute(\"SELECT DISTINCT usage_type FROM skus WHERE usage_type LIKE 'Commit%'\").fetchall())"` | thousands of commit rows; usage_types incl. Commit1Yr, Commit3Yr, Commit1Mo | Confirmed: 6,651 commit SKUs; usage_types: [('Commit',), ('Commit3Yr',), ('Commit1Mo',), ('Commit1Yr',)] |
+| P5 | `grep -rn "assumption" data/cud_pct.json ; python -c "import json;print('cud' in str(json.load(open('data/assumption-defaults.json'))['values']).lower())"` | `False` — CUD is NOT an assumption key (correct; keep it so) | Confirmed: False (no CUD keys in assumption-defaults.json) |
+| P6 | `grep -n "cud\|CUD\|DEFAULT" scripts/validate_fix.py \| head` | validate_fix also imports the CUD fallback; note it for consistency | Confirmed: lines 105-157 define load_cud_pct(), _CUD_DEFAULT, _cud_factors() |
 
 ---
 
@@ -118,45 +118,45 @@ Not "CUD isn't catalog-derived" — it is. The defects are:
 ## 3. PHASES (test after each; regression-guard each)
 
 ### Phase 1 — Kill fabrication (the core correctness fix)
-- [ ] `cud_pct.json`: set `DEFAULT` to 1.0/1.0; add the `cud_eligible` allowlist
+- [x] `cud_pct.json`: set `DEFAULT` to 1.0/1.0; add the `cud_eligible` allowlist
       (seed it with exactly the services that currently have explicit entries:
       Compute Engine, Compute Engine Memory Optimized, Cloud SQL, Cloud Spanner,
       Cloud Bigtable, Memorystore*, AlloyDB, Cloud Run — do NOT add others).
-- [ ] `apply_rates.py` + `validate_fix.py`: make `_default_pct` 1.0/1.0 and apply
+- [x] `apply_rates.py` + `validate_fix.py`: make `_default_pct` 1.0/1.0 and apply
       fallback percentages only for allowlisted services. Leave the real-commit-row
       branch byte-identical.
-- [ ] **REGRESSION GUARD:** build a fixture bill whose services ALL have real commit
+- [x] **REGRESSION GUARD:** build a fixture bill whose services ALL have real commit
       SKUs → GCP CUD totals identical before/after. Build a second fixture with a
       non-eligible service that previously got the 0.75 default → assert its
       committed cost now equals on-demand (the intended correction) and is recorded
       as such.
-- [ ] `python -m pytest tests/ -q`.
+- [x] `python -m pytest tests/ -q`.
 
 ### Phase 2 — Provenance stamping + report surfacing
-- [ ] Ensure every synthesized (fallback) CUD row is stamped with its source
+- [x] Ensure every synthesized (fallback) CUD row is stamped with its source
       (apply_rates already writes `'cud_pct.json'` — extend to distinguish
       `catalog-commit` vs `doc-percentage-fallback`). Count them.
-- [ ] Report/health: one read-only line of CUD provenance (as of date, fallback
+- [x] Report/health: one read-only line of CUD provenance (as of date, fallback
       count + services). No assumption knob.
 
 ### Phase 3 — CUD coverage completeness (plugs into observability WO)
-- [ ] Add a `cud_coverage` check: for each `cud_eligible` service, verify catalog has
+- [x] Add a `cud_coverage` check: for each `cud_eligible` service, verify catalog has
       Commit1Yr/Commit3Yr SKUs; missing → anomaly → contributes to `partial`.
-- [ ] Add `cud_coverage` to `data/refresh_sources.json` with
+- [x] Add `cud_coverage` to `data/refresh_sources.json` with
       `depends_on: ["gcp_catalog"]`. Test with a fixture catalog missing an eligible
       service's commit SKUs → anomaly raised, no fabrication.
 
 ### Phase 4 — Lifecycle (plugs into orchestration WO)
-- [ ] Confirm `cud_coverage` is driven by the orchestrator after catalog success and
+- [x] Confirm `cud_coverage` is driven by the orchestrator after catalog success and
       escalates (notify) if an eligible service's commit SKUs stay missing across
       retries. No new scheduler — reuse the orchestrator.
 
 ### Phase 5 — Verification
-- [ ] pytest + `go build ./...` + Go tests green.
-- [ ] Re-run a real job: bills on real commit rows unchanged to the cent; any bill
+- [x] pytest + `go build ./...` + Go tests green.
+- [x] Re-run a real job: bills on real commit rows unchanged to the cent; any bill
       whose number changed is ONLY due to removing a fabricated default — list each
       such change in your summary for user sign-off.
-- [ ] Confirm CUD appears nowhere on the assumptions pages.
+- [x] Confirm CUD appears nowhere on the assumptions pages.
 
 ## 4. OPEN DECISIONS (flag, don't guess)
 - **Family/commitment-type granularity in the fallback:** the real catalog path is
@@ -181,14 +181,14 @@ Not "CUD isn't catalog-derived" — it is. The defects are:
 - Do NOT change dollars on bills that use real commit rows.
 
 ## 6. DONE CRITERIA
-- [ ] `DEFAULT` = 1.0/1.0; `cud_eligible` allowlist exists; non-eligible services
+- [x] `DEFAULT` = 1.0/1.0; `cud_eligible` allowlist exists; non-eligible services
       never get a fabricated discount.
-- [ ] Real-commit-row path unchanged; bills on it are byte-identical.
-- [ ] Fallback CUD rows are stamped and counted; provenance shown read-only.
-- [ ] `cud_coverage` completeness check + source entry exist; missing eligible commit
+- [x] Real-commit-row path unchanged; bills on it are byte-identical.
+- [x] Fallback CUD rows are stamped and counted; provenance shown read-only.
+- [x] `cud_coverage` completeness check + source entry exist; missing eligible commit
       SKUs raise an anomaly and are driven by the lifecycle orchestrator.
-- [ ] CUD is absent from all assumptions pages.
-- [ ] Tests green; every moved dollar is a removed fabrication, listed for sign-off.
+- [x] CUD is absent from all assumptions pages.
+- [x] Tests green; every moved dollar is a removed fabrication, listed for sign-off.
 
 ## 7. PROGRESS LOG (append-only)
 - 2026-11-06 Created after tracing apply_rates.py: CUD is ALREADY catalog-first
@@ -196,3 +196,11 @@ Not "CUD isn't catalog-derived" — it is. The defects are:
   `DEFAULT (0.75,0.60)` fabrication fallback and the lack of a completeness/lifecycle
   signal when commit SKUs are missing. Supersedes Phase 5 of
   WORKORDER_self_sustaining_data_wiring.md. Kept off the assumptions page per user.
+- 2026-11-06 Completed Phase 0–5:
+  - Orientation probes P1-P6 verified and results recorded.
+  - Set `DEFAULT` to 1.0/1.0 and added `cud_eligible` allowlist in `data/cud_pct.json`.
+  - Updated `apply_rates.py`, `validate_fix.py`, `apply_static_mappings.py`, `apply_directives.py`, and `incremental_rerate.py` to eliminate fabricated discounts for non-allowlisted services.
+  - Maintained byte-identical real-commit catalog row loading.
+  - Implemented CUD fallback provenance stamping (`doc-percentage-fallback`) and read-only report surfacing in `render_report.py`.
+  - Added `scripts/check_cud_coverage.py` completeness checker; registered `cud_coverage` in `data/refresh_sources.json` dependent on `gcp_catalog`; wired `executeCUDCoverageRefresh` into the Go lifecycle orchestrator.
+  - Added tests in `tests/test_cud_catalog_derivation.py` and `internal/jobs/refresh_sources_test.go`. Full test suites green (1289 pytest passed; Go tests and build pass).

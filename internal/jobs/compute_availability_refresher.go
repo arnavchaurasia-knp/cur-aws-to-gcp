@@ -40,20 +40,7 @@ const computeAvailabilityRefreshTimeout = 5 * time.Minute
 // mappings.py falls straight back to catalog + _KNOWN_PHANTOM_AVAILABILITY
 // for Compute Engine, exactly as if this feature didn't exist.
 func StartComputeAvailabilityRefresher(ctx context.Context) {
-	go func() {
-		runComputeAvailabilityRefreshIfStale()
-
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				runComputeAvailabilityRefreshIfStale()
-			}
-		}
-	}()
+	// Lifecycle managed centrally by StartRefreshOrchestrator.
 }
 
 // computeAvailabilityAge returns how many days ago

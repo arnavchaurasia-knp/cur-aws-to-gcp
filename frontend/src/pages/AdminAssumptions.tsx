@@ -4,6 +4,7 @@ import {
   getAssumptions,
   putAssumption,
   getAssumptionHistory,
+  resetAssumptions,
   type Assumption,
   type AssumptionHistory,
   type AssumptionsResponse,
@@ -13,6 +14,7 @@ import { useTitle } from '../lib/useTitle'
 import { toast } from 'sonner'
 import { CATEGORY_ORDER, CATEGORY_META } from '../lib/assumptionsConstants'
 import { BackButton } from '../components/BackButton'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { triggerNotificationRefresh } from '../lib/notificationsContext'
 
 function getDomainOptions(domain?: Assumption['domain']): { value: string; label: string }[] | null {
@@ -44,6 +46,8 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
+  const [resetting, setResetting] = useState(false)
 
   // Per-row edit state: key -> value string
   const [edits, setEdits] = useState<Record<string, string>>({})
@@ -140,6 +144,30 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
       toast.error(msg)
     } finally {
       setSaving(null)
+    }
+  }
+
+  const anyCustomized = useMemo(
+    () => (data?.assumptions ?? []).some(a => a.default_value !== undefined && a.value !== a.default_value),
+    [data],
+  )
+
+  const handleReset = async () => {
+    setResetting(true)
+    setError(null)
+    try {
+      await resetAssumptions()
+      setEdits({})
+      await refresh()
+      triggerNotificationRefresh()
+      setResetConfirmOpen(false)
+      toast.success('All assumptions reset to defaults')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Reset failed'
+      setError(msg)
+      toast.error(msg)
+    } finally {
+      setResetting(false)
     }
   }
 
@@ -709,6 +737,36 @@ export function AdminAssumptions({ user }: Readonly<{ user: UserInfo }>) {
             </table>
           </div>
         </div>
+
+        {/* Danger Zone: Reset to Defaults */}
+        <div className="mt-6 bg-red-950/10 border border-red-500/20 rounded-xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-red-400">Reset All Assumptions</h3>
+            <p className="text-xs text-[var(--fcp-text-secondary)] mt-1">
+              Revert every assumption value back to its calibrated system default. Admin edits are discarded; each change is logged in the history above.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setResetConfirmOpen(true)}
+            disabled={!anyCustomized}
+            className="px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 hover:text-red-300 text-xs font-medium transition-colors cursor-pointer shrink-0 self-start sm:self-auto disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-red-500/10 disabled:hover:text-red-400"
+            title={anyCustomized ? 'Reset all assumptions to defaults' : 'All assumptions are already at their defaults'}
+          >
+            Reset to Defaults
+          </button>
+        </div>
+
+        <ConfirmDialog
+          open={resetConfirmOpen}
+          onOpenChange={setResetConfirmOpen}
+          title="Reset pricing assumptions"
+          description="Reset all assumptions to their system defaults? This discards every admin edit and cannot be undone."
+          confirmLabel="Reset assumptions"
+          destructive
+          loading={resetting}
+          onConfirm={handleReset}
+        />
       </div>
     </Layout>
   )

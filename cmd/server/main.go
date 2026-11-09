@@ -373,6 +373,11 @@ func main() {
 			r.Get("/api/admin/catalog/status", jobHandler.AdminCatalogStatus)
 			r.Get("/api/admin/catalog/refresh-status", jobHandler.AdminCatalogRefreshStatus)
 			r.Post("/api/admin/catalog/refresh", jobHandler.AdminCatalogRefresh)
+			r.Get("/api/admin/refresh/sources", jobHandler.AdminRefreshSources)
+			r.Post("/api/admin/refresh/trigger", jobHandler.AdminTriggerSourceRefresh)
+			r.Post("/api/admin/refresh/{source}/trigger", jobHandler.AdminTriggerSourceRefresh)
+			r.Post("/api/admin/refresh/{source}/pause", jobHandler.AdminPauseSourceRefresh)
+			r.Post("/api/admin/refresh/{source}/resume", jobHandler.AdminResumeSourceRefresh)
 			r.Get("/api/admin/audit", jobHandler.AdminAuditLog)
 			r.Get("/api/admin/analytics", jobHandler.AdminAnalytics)
 			r.Get("/api/admin/analytics/composition", jobHandler.AdminAnalyticsComposition)
@@ -383,6 +388,7 @@ func main() {
 			r.Get("/api/admin/assumptions", jobHandler.AdminGetAssumptions)
 			r.Post("/api/admin/assumptions", jobHandler.AdminCreateAssumption)
 			r.Put("/api/admin/assumptions/{key}", jobHandler.AdminPutAssumption)
+			r.Post("/api/admin/assumptions/reset", jobHandler.AdminResetAssumptions)
 			r.Get("/api/admin/assumptions/history", jobHandler.AdminGetAssumptionHistory)
 			r.Get("/api/admin/report-settings", jobHandler.AdminGetReportSettings)
 			r.Put("/api/admin/report-settings/{key}", jobHandler.AdminPutReportSetting)
@@ -525,8 +531,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	jobs.StartCatalogRefresher(ctx)
-	jobs.StartComputeAvailabilityRefresher(ctx)
+	jobs.StartRefreshOrchestrator(ctx, jobs.OrchestratorConfig{
+		DB:          database,
+		AdminEmails: cfg.AdminEmails,
+		EmailCfg:    func() notify.EmailConfig { return jobs.ResolveEmailConfig(database, notifyCfg.Email) },
+		SlackURL:    func() string { return jobs.ResolveSlackURL(database, notifyCfg.SlackURL) },
+	})
 
 	go func() {
 		slog.Info("cur-web starting", "addr", addr)

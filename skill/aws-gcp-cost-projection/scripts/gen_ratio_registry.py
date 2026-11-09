@@ -45,14 +45,6 @@ def main() -> int:
         json.dump(registry, f, indent=2)
         f.write("\n")
     print(f"wrote {REGISTRY_PATH}: ratios={registry['allowed_ram_per_vcpu']}")
-
-    try:
-        from assumption_domains import sync_aurora_domains
-        if sync_aurora_domains():
-            print("synced aurora assumption domains from ratio_registry.json")
-    except Exception as e:
-        print(f"warning: could not sync assumption domains: {e}", file=sys.stderr)
-
     return 0
 
 

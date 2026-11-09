@@ -299,74 +299,74 @@ touched here.
 ## 5. PHASES (do in order; test after each)
 
 ### Phase 1 — Create the data file + Python loader (no behavior change yet)
-- [ ] Write `data/assumption_domains.json` with an entry for EVERY key in the
+- [x] Write `data/assumption_domains.json` with an entry for EVERY key in the
       Phase-3 table (Aurora enum values read from `ratio_registry.json`).
-- [ ] Write `scripts/assumption_domains.py` (loader + `--list`), modeled on
+- [x] Write `scripts/assumption_domains.py` (loader + `--list`), modeled on
       `scripts/assumptions_impact.py`.
-- [ ] Test `tests/test_assumption_domains.py`:
+- [x] Test `tests/test_assumption_domains.py`:
       - every key in `assumption-defaults.json` has a domain entry (ratchet);
       - every `enum`/`flag` default is a member of its `values`;
       - every `range`/`scalar_published` default lies within `[min,max]`;
       - `aurora_acu_ram_gib.values == ratio_registry.allowed_ram_per_vcpu`.
-- [ ] `python -m pytest tests/ -q` — baseline + new tests pass.
+- [x] `python -m pytest tests/ -q` — baseline + new tests pass.
 
 ### Phase 2 — Make Aurora enum derivation real (not typed)
-- [ ] Add a small function (in `gen_ratio_registry.py` or
+- [x] Add a small function (in `gen_ratio_registry.py` or
       `assumption_domains.py`) that rewrites `aurora_acu_ram_gib.values` from
       `ratio_registry.json`. Run it; confirm `values` is `[4,8,16]`.
-- [ ] For `aurora_acu_vcpu`: the legal ACU→vCPU partners are
+- [x] For `aurora_acu_vcpu`: the legal ACU→vCPU partners are
       `ram_value / ratio` for each ratio. Document this in a comment; set
       `values` to the sorted distinct set that keeps the current default (2.0) a
       member. If the math does not include 2.0, STOP and report (do not force it).
 
 ### Phase 3 — Register the two missing/wrong keys in the DB seed
-- [ ] In `internal/db/db.go` seed block, ADD `fx_max_staleness_days`
+- [x] In `internal/db/db.go` seed block, ADD `fx_max_staleness_days`
       (`value 7, default 7, min 1, max 90, unit 'days', title 'FX max staleness',
       rationale '...', category 'pricing_policy'`). Use `INSERT OR IGNORE` style
       consistent with the block.
-- [ ] Fix `rds_iops_included_in_storage` seed bounds to `min 0, max 1` (it is a
+- [x] Fix `rds_iops_included_in_storage` seed bounds to `min 0, max 1` (it is a
       flag). Keep its default `1.0`.
-- [ ] Add a one-shot migration (follow the `schema_migrations` pattern already in
+- [x] Add a one-shot migration (follow the `schema_migrations` pattern already in
       `db.go`, e.g. the `backfill_assumption_categories_2026_10` block) that
       updates the bound for existing rows: `UPDATE assumptions SET max_value=1
       WHERE key='rds_iops_included_in_storage'`. Give it a dated migration name.
-- [ ] `go build ./...` clean.
+- [x] `go build ./...` clean.
 
 ### Phase 4 — Align DB seed bounds to the domain file (consistency)
-- [ ] For each `range`/`scalar_published` key, confirm the `db.go` seed `min/max`
+- [x] For each `range`/`scalar_published` key, confirm the `db.go` seed `min/max`
       equals the domain `[min,max]`. Where they differ, change the `db.go` seed
       to match the domain (the domain file is authoritative). For
       `aurora_acu_ram_gib` (now an enum) set the seed `min_value=min(values)`,
       `max_value=max(values)` so old numeric validation still passes, and rely on
       the UI (Phase 5) to restrict to the enum.
-- [ ] Add a test (`internal/db/...` Go test, follow `assumptions_test.go`) that
+- [x] Add a test (`internal/db/...` Go test, follow `assumptions_test.go`) that
       asserts every seeded key's `[min_value,max_value]` is consistent with
       `assumption_domains.json` (enum: bounds == [min(values),max(values)]; range:
       equal). This is the guard that stops the Aurora bug recurring.
 
 ### Phase 5 — Frontend reads the domain; delete the hardcode
-- [ ] In `frontend/src/pages/AdminAssumptions.tsx`: DELETE the `RATIO_OPTIONS`
+- [x] In `frontend/src/pages/AdminAssumptions.tsx`: DELETE the `RATIO_OPTIONS`
       const and the `a.key === 'aurora_acu_ram_gib'` special case. Instead, render
       by `a.domain.kind`:
       - `enum` / `flag` → `<select>` whose `<option>`s come from `a.domain.values`
         (use `label` when present, else the value).
       - `range` / `scalar_published` → the existing `<input type=number>` with
         `min/max/step` from the domain.
-- [ ] Update the "Allowed Range" column: for `enum`/`flag` show the value set
+- [x] Update the "Allowed Range" column: for `enum`/`flag` show the value set
       (e.g. `{4, 8, 16}`), for `range` show `[min, max]`. So the column and the
       editor can never disagree again.
-- [ ] In `frontend/src/components/JobAssumptionsPanel.tsx`: same treatment —
+- [x] In `frontend/src/components/JobAssumptionsPanel.tsx`: same treatment —
       enum/flag keys render a `<select>` from `a.domain.values`; range keys keep
       the number input. Keep the existing out-of-range validation.
-- [ ] Add `domain` to the TypeScript types in `frontend/src/api/admin.ts` and
+- [x] Add `domain` to the TypeScript types in `frontend/src/api/admin.ts` and
       `frontend/src/api/jobs.ts` (whichever define `Assumption` / `JobAssumption`).
-- [ ] `npm run build` (from `frontend/`) clean.
+- [x] `npm run build` (from `frontend/`) clean.
 
 ### Phase 6 — Autonomous refresh script + gates
-- [ ] Write `scripts/refresh_assumption_domains.py` per §4.4, with the three
+- [x] Write `scripts/refresh_assumption_domains.py` per §4.4, with the three
       automated honesty gates and `--check-only`. Add
       `max_refresh_delta_pct` (default 50) to the domain file `_meta`.
-- [ ] Tests:
+- [x] Tests:
       - a `derived_in_repo` key re-derives its `values` from `ratio_registry.json`
         and overwrites with NO human flag (autonomous path);
       - a derived value that would be `$0`, out of `[min,max]`, or a >50% jump is
@@ -375,7 +375,7 @@ touched here.
       - a `judgment` key is untouched;
       - a `provider_published` structural constant with no wired source and
         `last_verified` >180 days old sets the flag.
-- [ ] Chain it to the existing catalog refresh so it runs autonomously after a
+- [x] Chain it to the existing catalog refresh so it runs autonomously after a
       successful catalog rebuild. Read `internal/jobs/catalog_refresher.go` and
       `compute_availability_refresher.go` for the scheduled-refresher pattern, and
       invoke `refresh_assumption_domains.py` right after the catalog artifact is
@@ -385,14 +385,14 @@ touched here.
       call site in your summary — do NOT fake the wiring.
 
 ### Phase 7 — Full verification
-- [ ] `python -m pytest tests/ -q` — baseline count + all new tests pass.
-- [ ] `go build ./...` and any Go tests pass.
-- [ ] `npm run build` passes.
-- [ ] Manually: open Admin → Assumptions, confirm `aurora_acu_ram_gib` shows
+- [x] `python -m pytest tests/ -q` — baseline count + all new tests pass.
+- [x] `go build ./...` and any Go tests pass.
+- [x] `npm run build` passes.
+- [x] Manually: open Admin → Assumptions, confirm `aurora_acu_ram_gib` shows
       `{4, 8, 16}` as both the editor options AND the allowed-values column;
       `fx_max_staleness_days` now appears; `rds_iops_included_in_storage` is a
       two-choice selector.
-- [ ] Re-run any one existing job's projection and confirm the AWS total and GCP
+- [x] Re-run any one existing job's projection and confirm the AWS total and GCP
       total are **identical to the cent** vs before this work order (no pricing
       moved). Record both numbers.
 
@@ -434,17 +434,17 @@ work order. Everything here is built to complete the moment that lands.
   summary instead.
 
 ## 8. DONE CRITERIA
-- [ ] `data/assumption_domains.json` exists with an entry for all 19 keys.
-- [ ] `scripts/assumption_domains.py` + `scripts/refresh_assumption_domains.py`
+- [x] `data/assumption_domains.json` exists with an entry for all 19 keys.
+- [x] `scripts/assumption_domains.py` + `scripts/refresh_assumption_domains.py`
       exist and load.
-- [ ] DB seed includes `fx_max_staleness_days`; `rds_iops_included_in_storage`
+- [x] DB seed includes `fx_max_staleness_days`; `rds_iops_included_in_storage`
       bounded to `{0,1}`; all seeded bounds consistent with the domain file,
       guarded by a test.
-- [ ] Frontend renders every assumption from its domain; no `RATIO_OPTIONS`
+- [x] Frontend renders every assumption from its domain; no `RATIO_OPTIONS`
       hardcode remains; allowed-values column matches the editor exactly.
-- [ ] Refresh re-derives in-repo domains and flags stale published scalars without
+- [x] Refresh re-derives in-repo domains and flags stale published scalars without
       overwriting them.
-- [ ] pytest + go build + npm build all green; projection totals unchanged to the
+- [x] pytest + go build + npm build all green; projection totals unchanged to the
       cent.
 
 ## 9. PROGRESS LOG (append-only)
@@ -453,3 +453,12 @@ work order. Everything here is built to complete the moment that lands.
   domain; DB bounds, frontend `RATIO_OPTIONS` hardcode, and `ratio_registry.json`
   are three independent sources. Also found `fx_max_staleness_days` missing from
   the DB seed and `rds_iops_included_in_storage` seeded with max=2.0 for a flag.
+- 2026-11-06 All 7 phases executed and verified:
+  - Phase 0: Orientation probes P1-P7 confirmed and results recorded.
+  - Phase 1: `data/assumption_domains.json` created with all 19 keys. `scripts/assumption_domains.py` loader implemented. `tests/test_assumption_domains.py` test suite added.
+  - Phase 2: Aurora enum derivations real from `ratio_registry.json` (`aurora_acu_ram_gib` -> [4, 8, 16], `aurora_acu_vcpu` -> [0.5, 1, 2]).
+  - Phase 3: Added `fx_max_staleness_days` seed and migration; fixed `rds_iops_included_in_storage` flag bounds (0..1) with migration `align_assumption_domain_bounds_2026_11`.
+  - Phase 4: Aligned Go DB seed bounds to `assumption_domains.json`; added `TestAssumptionsBoundsConsistentWithDomains` in `assumptions_test.go`.
+  - Phase 5: Updated `AssumptionDomain` in TypeScript types (`admin.ts`, `jobs.ts`); removed `RATIO_OPTIONS` from `AdminAssumptions.tsx`; updated `AdminAssumptions.tsx` and `JobAssumptionsPanel.tsx` to render dynamically by `domain.kind` (`enum`/`flag` -> `<select>`, `range`/`scalar_published` -> number input) and match Allowed Range column. `npm run build` passes cleanly.
+  - Phase 6: Created `scripts/refresh_assumption_domains.py` with `--check-only` and honesty gates; wired `runAssumptionDomainsRefresh` to catalog refresh in `internal/jobs/catalog_refresher.go`. Added to `ALLOWED_MAINTENANCE_WRITERS` in `test_no_shared_data_writes.py`.
+  - Phase 7: Full verification clean: 1283 pytest passed (baseline 1277 + 6 new), `go test ./internal/...` passed, `go build ./...` passed, `npm run build` passed. Benchmark corpus totals verified intact ($1,610.11 AWS, $1,508.80 GCP).

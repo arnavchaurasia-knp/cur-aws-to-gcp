@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import type { CatalogHealth, CatalogRefreshRun } from '../../api/health'
-import { getCatalogRefreshStatus, triggerCatalogRefresh } from '../../api/health'
+import type { CatalogHealth, CatalogRefreshRun, SourceView } from '../../api/health'
+import {
+  getCatalogRefreshStatus,
+  triggerCatalogRefresh,
+  getRefreshSources,
+  triggerSourceRefresh,
+  pauseSourceRefresh,
+  resumeSourceRefresh,
+} from '../../api/health'
 import { StatusBadge } from './StatusBadge'
 import { formatDuration, relativeTime } from './format'
 
@@ -17,8 +24,26 @@ export function CatalogTab({ catalog, onSelectTab, onRefreshHealth }: Readonly<C
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [expandedLogRun, setExpandedLogRun] = useState<string | null>(null)
 
+  // Managed sources lifecycle state
+  const [sources, setSources] = useState<Record<string, SourceView> | null>(null)
+  const [sourceActionLoading, setSourceActionLoading] = useState<string | null>(null)
+  const [sourceActionMsg, setSourceActionMsg] = useState<string | null>(null)
+
   const pollIntervalRef = useRef<number | null>(null)
   const timerIntervalRef = useRef<number | null>(null)
+
+  const loadSources = async () => {
+    try {
+      const res = await getRefreshSources()
+      setSources(res.sources)
+    } catch {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    loadSources()
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -48,6 +73,7 @@ export function CatalogTab({ catalog, onSelectTab, onRefreshHealth }: Readonly<C
             if (timerIntervalRef.current) clearInterval(timerIntervalRef.current)
             setRefreshing(false)
             onRefreshHealth()
+            loadSources()
           }
         } catch {
           // ignore polling errors
@@ -61,6 +87,48 @@ export function CatalogTab({ catalog, onSelectTab, onRefreshHealth }: Readonly<C
     }
   }
 
+  const handleTriggerSource = async (source: string) => {
+    setSourceActionLoading(source)
+    setSourceActionMsg(null)
+    try {
+      await triggerSourceRefresh(source)
+      await loadSources()
+      setSourceActionMsg(`Refresh triggered for ${source}`)
+    } catch (err: unknown) {
+      setSourceActionMsg(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSourceActionLoading(null)
+    }
+  }
+
+  const handlePauseSource = async (source: string) => {
+    setSourceActionLoading(source)
+    setSourceActionMsg(null)
+    try {
+      await pauseSourceRefresh(source)
+      await loadSources()
+      setSourceActionMsg(`Paused ${source}`)
+    } catch (err: unknown) {
+      setSourceActionMsg(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSourceActionLoading(null)
+    }
+  }
+
+  const handleResumeSource = async (source: string) => {
+    setSourceActionLoading(source)
+    setSourceActionMsg(null)
+    try {
+      await resumeSourceRefresh(source)
+      await loadSources()
+      setSourceActionMsg(`Resumed ${source}`)
+    } catch (err: unknown) {
+      setSourceActionMsg(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSourceActionLoading(null)
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Intro box */}
@@ -71,7 +139,7 @@ export function CatalogTab({ catalog, onSelectTab, onRefreshHealth }: Readonly<C
         <p className="text-sm text-[color:var(--fcp-text-secondary)] leading-relaxed">
           The pricing catalog is the compiled GCP price list every projection reads (
           <code className="font-mono text-xs">catalog.duckdb</code>). It is refreshed from Google Cloud's Billing
-          API.
+          API and orchestrated with automated retries and backoff.
         </p>
       </div>
 
@@ -133,13 +201,247 @@ export function CatalogTab({ catalog, onSelectTab, onRefreshHealth }: Readonly<C
         </div>
       )}
 
+      {/* Managed Sources Lifecycle Section */}
+      <div className="p-5 rounded-2xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <h4 className="text-sm font-bold text-[color:var(--fcp-text-primary)]">
+              Managed Refresh Sources & Lifecycle
+            </h4>
+            <p className="text-xs text-[color:var(--fcp-text-secondary)] mt-0.5">
+              Automated retry with backoff, escalation gates, dependency ordering, and manual overrides.
+            </p>
+          </div>
+          <button
+            onClick={loadSources}
+            className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer self-start sm:self-auto"
+          >
+            ↻ Refresh Sources Status
+          </button>
+        </div>
+
+        {sourceActionMsg && (
+          <div className="p-2.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-300 text-xs">
+            {sourceActionMsg}
+          </div>
+        )}
+
+        {sources && Object.keys(sources).length > 0 ? (
+          <div className="rounded-xl border border-[var(--fcp-border-subtle)] overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-[var(--fcp-bg-subtle)] text-[color:var(--fcp-text-muted)] border-b border-[var(--fcp-border-subtle)]">
+                <tr>
+                  <th className="py-2.5 px-3 font-medium">Source</th>
+                  <th className="py-2.5 px-3 font-medium">Freshness & Status</th>
+                  <th className="py-2.5 px-3 font-medium">Completeness & Coverage</th>
+                  <th className="py-2.5 px-3 font-medium">Volume</th>
+                  <th className="py-2.5 px-3 font-medium">Anomalies</th>
+                  <th className="py-2.5 px-3 font-medium">History</th>
+                  <th className="py-2.5 px-3 font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--fcp-border-subtle)]">
+                {Object.entries(sources).map(([name, { config, status, history }]) => {
+                  const isPaused = status.state === 'paused'
+                  const isRunning = status.state === 'running'
+                  const isLoading = sourceActionLoading === name
+                  const maxAttempts = config.lifecycle.max_attempts || 3
+                  const attempt = status.attempt ?? 0
+
+                  const ageDays = status.finished_at
+                    ? Math.floor((Date.now() - new Date(status.finished_at).getTime()) / (1000 * 60 * 60 * 24))
+                    : null
+                  const isStale = config.stale_after_days && ageDays !== null ? ageDays > config.stale_after_days : false
+
+                  let displayStatus = status.state || 'idle'
+                  if (status.state === 'success' || status.state === 'idle') {
+                    if (isStale) {
+                      displayStatus = 'warn'
+                    } else if (status.complete) {
+                      displayStatus = 'ok'
+                    }
+                  } else if (status.state === 'failed') {
+                    displayStatus = 'fail'
+                  }
+
+                  const historyRuns = (history || []).slice(0, 8)
+
+                  return (
+                    <tr key={name} className="hover:bg-[var(--fcp-hover-overlay)]">
+                      <td className="py-3 px-3">
+                        <div className="font-semibold text-[color:var(--fcp-text-primary)]">{name}</div>
+                        <div className="text-[11px] text-[color:var(--fcp-text-muted)] font-mono">
+                          {config.refresher || 'refresher'}
+                        </div>
+                        {config.lifecycle.depends_on && config.lifecycle.depends_on.length > 0 && (
+                          <div className="text-[10px] text-[color:var(--fcp-text-secondary)] mt-0.5">
+                            Depends on: {config.lifecycle.depends_on.join(', ')}
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-3 px-3">
+                        <StatusBadge status={displayStatus} />
+                        {isStale && (
+                          <div className="text-[10px] text-amber-600 dark:text-amber-400 font-medium mt-0.5">
+                            Stale ({ageDays}d vs max {config.stale_after_days}d)
+                          </div>
+                        )}
+                        {status.next_retry_at ? (
+                          <div className="mt-1">
+                            <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                              Retry {relativeTime(status.next_retry_at)}
+                            </span>
+                            <div className="text-[10px] text-[color:var(--fcp-text-muted)] font-mono" title={status.next_retry_at}>
+                              attempt {attempt}/{maxAttempts}
+                            </div>
+                          </div>
+                        ) : status.finished_at ? (
+                          <div className="text-[10px] text-[color:var(--fcp-text-secondary)] mt-1">
+                            Last {relativeTime(status.finished_at)}
+                          </div>
+                        ) : null}
+                        {status.reason && (
+                          <div className="text-[10px] text-[color:var(--fcp-text-muted)] mt-1 max-w-xs truncate" title={status.reason}>
+                            {status.reason}
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-3 px-3">
+                        {status.expected_count && status.expected_count > 0 ? (
+                          <div>
+                            <div className="font-medium text-[color:var(--fcp-text-primary)]">
+                              {status.fetched_count ?? 0} / {status.expected_count}{' '}
+                              <span className="text-[color:var(--fcp-text-secondary)] font-normal">
+                                ({(status.coverage_pct ?? 0).toFixed(1)}%)
+                              </span>
+                            </div>
+                            <div className="w-24 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden mt-1">
+                              <div
+                                className={`h-full rounded-full ${
+                                  status.complete ? 'bg-emerald-500' : 'bg-amber-500'
+                                }`}
+                                style={{ width: `${Math.min(100, status.coverage_pct ?? 0)}%` }}
+                              />
+                            </div>
+                            <div className="text-[10px] text-[color:var(--fcp-text-muted)] mt-0.5">
+                              threshold: {config.completeness_threshold}%
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-[color:var(--fcp-text-muted)]">—</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-3">
+                        {status.record_count !== undefined && status.record_count > 0 ? (
+                          <div>
+                            <div className="font-mono text-[color:var(--fcp-text-primary)]">
+                              {status.record_count.toLocaleString()}
+                            </div>
+                            {status.record_delta !== undefined && status.record_delta !== 0 && (
+                              <div
+                                className={`text-[10px] font-mono ${
+                                  status.record_delta > 0
+                                    ? 'text-emerald-600 dark:text-emerald-400'
+                                    : 'text-rose-600 dark:text-rose-400'
+                                }`}
+                              >
+                                {status.record_delta > 0 ? `+${status.record_delta.toLocaleString()}` : status.record_delta.toLocaleString()}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[color:var(--fcp-text-muted)]">—</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-3">
+                        {status.anomalies && status.anomalies.length > 0 ? (
+                          <div>
+                            <span
+                              className="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 cursor-help"
+                              title={status.anomalies.join('\n')}
+                            >
+                              {status.anomalies.length} anomaly
+                            </span>
+                            <div className="text-[10px] text-[color:var(--fcp-text-muted)] mt-1 max-w-[140px] truncate" title={status.anomalies[0]}>
+                              {status.anomalies[0]}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                            ✓ None
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 px-3">
+                        {historyRuns.length > 0 ? (
+                          <div className="flex items-center gap-1">
+                            {historyRuns.map((h, i) => {
+                              let dotBg = 'bg-gray-400'
+                              if (h.state === 'success' && h.complete) dotBg = 'bg-emerald-500'
+                              else if (h.state === 'partial' || h.state === 'retrying' || h.state === 'backing_off') dotBg = 'bg-amber-500'
+                              else if (h.state === 'failed') dotBg = 'bg-rose-500'
+                              else if (h.state === 'escalated') dotBg = 'bg-purple-500'
+                              return (
+                                <span
+                                  key={i}
+                                  className={`inline-block w-2.5 h-2.5 rounded-full ${dotBg} transition-transform hover:scale-125 cursor-pointer`}
+                                  title={`${h.state} (${(h.coverage_pct ?? 0).toFixed(0)}%) - ${relativeTime(h.finished_at || h.started_at)}`}
+                                />
+                              )
+                            })}
+                          </div>
+                        ) : (
+                          <span className="text-[color:var(--fcp-text-muted)]">—</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-3">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleTriggerSource(name)}
+                            disabled={isLoading || isRunning}
+                            className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-[11px] font-semibold transition-all cursor-pointer shadow-xs"
+                          >
+                            {isLoading ? '...' : 'Retry now'}
+                          </button>
+                          {isPaused ? (
+                            <button
+                              onClick={() => handleResumeSource(name)}
+                              disabled={isLoading}
+                              className="px-2.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 disabled:opacity-50 text-[11px] font-medium transition-all cursor-pointer"
+                            >
+                              Resume
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handlePauseSource(name)}
+                              disabled={isLoading}
+                              className="px-2.5 py-1 rounded-lg border border-[var(--fcp-border-subtle)] text-[color:var(--fcp-text-secondary)] hover:bg-[var(--fcp-bg-subtle)] disabled:opacity-50 text-[11px] font-medium transition-all cursor-pointer"
+                            >
+                              Pause
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="p-4 rounded-xl border border-[var(--fcp-border-subtle)] text-xs text-[color:var(--fcp-text-muted)] text-center">
+            Loading refresh sources…
+          </div>
+        )}
+      </div>
+
       {/* Refresh Action Card */}
       <div className="p-5 rounded-2xl border border-[var(--fcp-border-subtle)] bg-[var(--fcp-bg-surface)] space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h4 className="text-sm font-bold text-[color:var(--fcp-text-primary)]">Refresh Pricing Catalog</h4>
+            <h4 className="text-sm font-bold text-[color:var(--fcp-text-primary)]">Quick Refresh GCP Catalog</h4>
             <p className="text-xs text-[color:var(--fcp-text-secondary)] mt-0.5">
-              Downloads fresh prices from Google Cloud and rebuilds the local pricing database. Takes 1–3 minutes.
+              Downloads fresh prices from Google Cloud and rebuilds the local pricing database.
             </p>
           </div>
 
@@ -185,7 +487,7 @@ export function CatalogTab({ catalog, onSelectTab, onRefreshHealth }: Readonly<C
             }`}
           >
             <div className="flex items-center gap-2 font-semibold">
-              <StatusBadge status={refreshRun.state === 'success' ? 'ok' : refreshRun.state === 'failed' ? 'fail' : 'unknown'} />
+              <StatusBadge status={refreshRun.state || 'unknown'} />
               <span>Refresh {refreshRun.state}</span>
               {refreshRun.duration_sec !== undefined && (
                 <span className="text-[11px] opacity-75 font-mono">({formatDuration(refreshRun.duration_sec)})</span>
@@ -194,7 +496,7 @@ export function CatalogTab({ catalog, onSelectTab, onRefreshHealth }: Readonly<C
             {refreshRun.reason && <p>{refreshRun.reason}</p>}
             {refreshRun.log_tail && (
               <pre className="p-2 rounded bg-black/10 dark:bg-black/40 font-mono text-[11px] overflow-x-auto whitespace-pre-wrap max-h-40">
-                {refreshRun.log_tail}
+                {Array.isArray(refreshRun.log_tail) ? refreshRun.log_tail.join('\n') : refreshRun.log_tail}
               </pre>
             )}
           </div>
@@ -209,7 +511,7 @@ export function CatalogTab({ catalog, onSelectTab, onRefreshHealth }: Readonly<C
 
       {/* History table */}
       <div className="space-y-3">
-        <h4 className="text-sm font-bold text-[color:var(--fcp-text-primary)]">Refresh History</h4>
+        <h4 className="text-sm font-bold text-[color:var(--fcp-text-primary)]">Catalog Refresh History</h4>
         {catalog.history.length === 0 ? (
           <div className="p-4 rounded-xl border border-[var(--fcp-border-subtle)] text-xs text-[color:var(--fcp-text-muted)] text-center">
             No catalog refreshes recorded in this deployment.
@@ -236,7 +538,7 @@ export function CatalogTab({ catalog, onSelectTab, onRefreshHealth }: Readonly<C
                         {relativeTime(run.started_at)}
                       </td>
                       <td className="py-2.5 px-4">
-                        <StatusBadge status={run.state === 'success' ? 'ok' : run.state === 'failed' ? 'fail' : 'unknown'} />
+                        <StatusBadge status={run.state || 'unknown'} />
                       </td>
                       <td className="py-2.5 px-4 font-mono">
                         {run.duration_sec !== undefined ? formatDuration(run.duration_sec) : '—'}
@@ -256,7 +558,7 @@ export function CatalogTab({ catalog, onSelectTab, onRefreshHealth }: Readonly<C
                             </button>
                             {isExpanded && (
                               <pre className="mt-1 p-2 rounded bg-black/5 dark:bg-black/30 font-mono text-[10px] overflow-x-auto whitespace-pre-wrap max-h-36">
-                                {run.log_tail}
+                                {Array.isArray(run.log_tail) ? run.log_tail.join('\n') : run.log_tail}
                               </pre>
                             )}
                           </div>

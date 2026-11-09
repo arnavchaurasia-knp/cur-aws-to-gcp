@@ -526,6 +526,118 @@ func (h *Handler) AdminCatalogRefreshStatus(w http.ResponseWriter, r *http.Reque
 	json.NewEncoder(w).Encode(GetCatalogRefreshStatus())
 }
 
+// AdminRefreshSources returns configuration and live status for all refresh sources.
+func (h *Handler) AdminRefreshSources(w http.ResponseWriter, r *http.Request) {
+	sources, err := LoadRefreshSources()
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to load sources: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+	type SourceView struct {
+		Config  RefreshSourceConfig `json:"config"`
+		Status  RefreshRun          `json:"status"`
+		History []RefreshRun        `json:"history"`
+	}
+	res := make(map[string]SourceView, len(sources))
+	for name, cfg := range sources {
+		res[name] = SourceView{
+			Config:  cfg,
+			Status:  GetSourceRefreshStatus(name),
+			History: GetSourceRefreshHistory(name),
+		}
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
+		"sources": res,
+	})
+}
+
+// AdminTriggerSourceRefresh triggers an immediate refresh for a source.
+func (h *Handler) AdminTriggerSourceRefresh(w http.ResponseWriter, r *http.Request) {
+	source := chi.URLParam(r, "source")
+	if source == "" {
+		var req struct {
+			Source string `json:"source"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			source = req.Source
+		}
+	}
+	if source == "" {
+		http.Error(w, `{"error":"source is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	sess := auth.SessionFromCtx(r.Context())
+	actorEmail := "admin"
+	if sess != nil {
+		actorEmail = sess.Email
+	}
+
+	started, reason := TriggerRefresh(source, actorEmail)
+	if sess != nil {
+		_ = h.db.LogAdminAction(sess.Email, "refresh_trigger", source, reason)
+	}
+
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	if !started {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "skipped",
+			"reason": reason,
+		})
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "refresh started", "source": source})
+}
+
+// AdminPauseSourceRefresh pauses automatic scheduling for a source.
+func (h *Handler) AdminPauseSourceRefresh(w http.ResponseWriter, r *http.Request) {
+	source := chi.URLParam(r, "source")
+	if source == "" {
+		http.Error(w, `{"error":"source is required"}`, http.StatusBadRequest)
+		return
+	}
+	sess := auth.SessionFromCtx(r.Context())
+	actorEmail := "admin"
+	if sess != nil {
+		actorEmail = sess.Email
+	}
+	if err := PauseSource(source, actorEmail); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if sess != nil {
+		_ = h.db.LogAdminAction(sess.Email, "refresh_pause", source, "")
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]string{"status": "paused", "source": source})
+}
+
+// AdminResumeSourceRefresh unpauses automatic scheduling for a source.
+func (h *Handler) AdminResumeSourceRefresh(w http.ResponseWriter, r *http.Request) {
+	source := chi.URLParam(r, "source")
+	if source == "" {
+		http.Error(w, `{"error":"source is required"}`, http.StatusBadRequest)
+		return
+	}
+	sess := auth.SessionFromCtx(r.Context())
+	actorEmail := "admin"
+	if sess != nil {
+		actorEmail = sess.Email
+	}
+	if err := ResumeSource(source, actorEmail); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if sess != nil {
+		_ = h.db.LogAdminAction(sess.Email, "refresh_resume", source, "")
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]string{"status": "resumed", "source": source})
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Admin: audit log / analytics
 // ─────────────────────────────────────────────────────────────────────────
@@ -723,6 +835,27 @@ func (h *Handler) AdminPutAssumption(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"key":     key,
 		"value":   body.Value,
+		"version": version,
+	})
+}
+
+// AdminResetAssumptions reverts all assumption values to their defaults.
+func (h *Handler) AdminResetAssumptions(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromCtx(r.Context())
+
+	changedBy := ""
+	if sess != nil && sess.Email != "" {
+		changedBy = sess.Email
+	}
+
+	version, err := h.db.ResetAssumptions(changedBy)
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	_ = h.db.LogAdminAction(changedBy, "reset_assumptions", "", "reset to defaults")
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(map[string]any{
 		"version": version,
 	})
 }

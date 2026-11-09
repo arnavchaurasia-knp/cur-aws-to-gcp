@@ -8,6 +8,27 @@ import {
 import { CATEGORY_ORDER, CATEGORY_META } from '../lib/assumptionsConstants'
 import { toast } from 'sonner'
 
+function getDomainOptions(domain?: JobAssumption['domain']): { value: string; label: string }[] | null {
+  if (!domain || (domain.kind !== 'enum' && domain.kind !== 'flag')) return null
+  const vals = domain.values || []
+  return vals.map((v) => {
+    if (typeof v === 'object' && v !== null && 'value' in v) {
+      return { value: String(v.value), label: v.label || String(v.value) }
+    }
+    return { value: String(v), label: String(v) }
+  })
+}
+
+function formatAllowedRange(a: JobAssumption): string {
+  if (a.domain?.kind === 'enum' || a.domain?.kind === 'flag') {
+    const vals = (a.domain.values || []).map(v => (typeof v === 'object' && v !== null ? (v as any).value : v))
+    return `{${vals.join(', ')}}`
+  }
+  const min = a.domain?.min ?? a.min_value
+  const max = a.domain?.max ?? a.max_value
+  return `[${min}, ${max}]`
+}
+
 interface Props {
   jobId: string
   canEdit: boolean
@@ -98,14 +119,19 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
 
   for (const a of assumptionsList) {
     const key = a.key
-    const minVal = a.min_value
-    const maxVal = a.max_value
+    const minVal = a.domain?.min ?? a.min_value
+    const maxVal = a.domain?.max ?? a.max_value
     const defaultVal = a.default_value
+    const domainOptions = getDomainOptions(a.domain)
     const editStr = edits[key]
     if (editStr !== undefined) {
       const num = Number(editStr)
       if (Number.isFinite(num)) {
-        if (num < minVal || num > maxVal) {
+        if (domainOptions) {
+          if (!domainOptions.some(opt => Number(opt.value) === num)) {
+            validationError = `${a.title}: value ${num} is not in allowed values ${formatAllowedRange(a)}`
+          }
+        } else if (num < minVal || num > maxVal) {
           validationError = `${a.title}: value ${num} is out of allowed range [${minVal}, ${maxVal}]`
         }
         if (num !== defaultVal) {
@@ -287,14 +313,15 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
                         const key = a.key
                         const title = a.title
                         const rationale = a.rationale
-                        const minVal = a.min_value
-                        const maxVal = a.max_value
+                        const minVal = a.domain?.min ?? a.min_value
+                        const maxVal = a.domain?.max ?? a.max_value
                         const defaultVal = a.default_value
                         const unit = a.unit
                         const isOverridden = a.is_overridden
+                        const domainOptions = getDomainOptions(a.domain)
                         const currentValStr = edits[key] ?? String(a.value)
                         const num = Number(currentValStr)
-                        const isOutOfRange = Number.isFinite(num) && (num < minVal || num > maxVal)
+                        const isOutOfRange = Number.isFinite(num) && (domainOptions ? !domainOptions.some(opt => Number(opt.value) === num) : (num < minVal || num > maxVal))
                         const isModified = Number.isFinite(num) && num !== defaultVal
 
                         return (
@@ -319,19 +346,48 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
                             </td>
                             <td className="py-3 px-4 text-center">
                               {canEdit ? (
-                                <input
-                                  type="number"
-                                  step="any"
-                                  min={minVal}
-                                  max={maxVal}
-                                  value={currentValStr}
-                                  onChange={e => handleValueChange(key, e.target.value)}
-                                  className={`w-24 text-center px-2 py-1 rounded-lg border font-mono text-xs focus:outline-none focus:border-[#645DF6] focus:ring-2 focus:ring-[#645DF6]/20 bg-[var(--fcp-input-bg)] text-[var(--fcp-text-primary)] ${
-                                    isOutOfRange
-                                      ? 'border-rose-500 text-rose-500'
-                                      : 'border-[var(--fcp-border-strong)]'
-                                  }`}
-                                />
+                                domainOptions ? (
+                                  <div className="relative inline-block w-36">
+                                    <select
+                                      value={currentValStr}
+                                      onChange={e => handleValueChange(key, e.target.value)}
+                                      className={`w-full appearance-none rounded-lg border py-1 pl-2.5 pr-7 text-xs font-mono font-medium focus:outline-none focus:border-[#645DF6] focus:ring-2 focus:ring-[#645DF6]/20 bg-[var(--fcp-input-bg)] text-[var(--fcp-text-primary)] cursor-pointer ${
+                                        isOutOfRange
+                                          ? 'border-rose-500 text-rose-500'
+                                          : 'border-[var(--fcp-border-strong)]'
+                                      }`}
+                                    >
+                                      {domainOptions.map(opt => (
+                                        <option
+                                          key={opt.value}
+                                          value={opt.value}
+                                          className="bg-[var(--fcp-bg-surface)] text-[var(--fcp-text-primary)]"
+                                        >
+                                          {opt.label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-[var(--fcp-text-tertiary)]">
+                                      <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                                      </svg>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <input
+                                    type="number"
+                                    step={a.domain?.step ?? "any"}
+                                    min={minVal}
+                                    max={maxVal}
+                                    value={currentValStr}
+                                    onChange={e => handleValueChange(key, e.target.value)}
+                                    className={`w-24 text-center px-2 py-1 rounded-lg border font-mono text-xs focus:outline-none focus:border-[#645DF6] focus:ring-2 focus:ring-[#645DF6]/20 bg-[var(--fcp-input-bg)] text-[var(--fcp-text-primary)] ${
+                                      isOutOfRange
+                                        ? 'border-rose-500 text-rose-500'
+                                        : 'border-[var(--fcp-border-strong)]'
+                                    }`}
+                                  />
+                                )
                               ) : (
                                 <span className="font-mono font-semibold text-xs text-[var(--facets-purple)] dark:text-[var(--facets-teal)]">
                                   {currentValStr}
@@ -341,8 +397,8 @@ export function JobAssumptionsPanel({ jobId, canEdit, onRerunStarted }: Readonly
                             <td className="py-3 px-4 text-center font-mono text-xs text-[var(--fcp-text-secondary)]">
                               {defaultVal}
                             </td>
-                            <td className="py-3 px-4 text-center font-mono text-[11px] text-[var(--fcp-text-tertiary)]">
-                              [{minVal}, {maxVal}]
+                            <td className="py-3 px-4 text-center font-mono text-[11px] text-[var(--fcp-text-tertiary)] whitespace-nowrap">
+                              {formatAllowedRange(a)}
                             </td>
                             <td className="py-3 px-4 text-center text-xs text-[var(--fcp-text-secondary)]">
                               {unit || '—'}

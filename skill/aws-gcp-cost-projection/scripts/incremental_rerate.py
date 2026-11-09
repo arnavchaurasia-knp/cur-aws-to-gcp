@@ -130,7 +130,7 @@ def fill_missing_skus(conn):
 def synthesize_cud_for_new_skus(conn):
     """Synthesize Commit1Yr/3yr rows for any newly-loaded SKUs that don't have them yet."""
     cud_pct = load_cud_pct()
-    _default_pct = cud_pct.get("DEFAULT", (0.75, 0.60))
+    _default_pct = cud_pct.get("DEFAULT", (1.0, 1.0))
 
     _CUD_GROUPS = [
         ("Compute Engine",                    "('CPU','RAM','GPU')"),
@@ -148,7 +148,7 @@ def synthesize_cud_for_new_skus(conn):
                 INSERT INTO gcp_sku_rates
                 SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
                        resource_group, '{pricing_type}', region, unit,
-                       rate_usd * {mult}, 'doc-percentage', audit_url
+                       rate_usd * {mult}, 'doc-percentage-fallback', audit_url
                 FROM gcp_sku_rates
                 WHERE gcp_service = '{svc}' AND pricing_type = 'OnDemand'
                   {rg_clause}

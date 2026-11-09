@@ -52,6 +52,22 @@ func PostContactInterest(webhookURL, name, email, message string) error {
 	return postSlack(webhookURL, text)
 }
 
+// PostRefreshEscalated pings Slack when a refresh source has exhausted all retry attempts.
+func PostRefreshEscalated(webhookURL, source string, attempts int, lastError string) error {
+	return postSlack(webhookURL, fmt.Sprintf(
+		"🚨 Refresh escalated: *%s* failed %d× — last error: %s",
+		source, attempts, lastError,
+	))
+}
+
+// PostRefreshRecovered pings Slack when an escalated refresh source successfully completes.
+func PostRefreshRecovered(webhookURL, source string) error {
+	return postSlack(webhookURL, fmt.Sprintf(
+		"✅ Refresh recovered: *%s* succeeded",
+		source,
+	))
+}
+
 func postSlack(webhookURL, text string) error {
 	payload, _ := json.Marshal(map[string]string{"text": text})
 	resp, err := http.Post(webhookURL, "application/json", bytes.NewReader(payload))

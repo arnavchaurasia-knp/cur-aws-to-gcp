@@ -12,6 +12,10 @@ from log_utils import get_logger, fatal
 from currency_utils import load_currency_info
 from config_loader import load_report_settings, load_data_config
 
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_SKILL_DIR = os.environ.get("SKILL_DIR", os.path.dirname(_SCRIPTS_DIR))
+_DATA_DIR = os.path.join(_SKILL_DIR, "data")
+
 JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 log = get_logger("render_report")
@@ -52,14 +56,14 @@ COLUMNS = [
     (None,              "AWS Service → GCP Service", lambda r: f'{r[4] or ""} → {r[2] or ""}'),
     (None,              "AWS Instance",    lambda r: str(r[13] or "—")),
     (None,              "GCP Mapping",     lambda r: str(r[14] or "—")),
-    (None,              "Region",          lambda r: str(r[9] or r[10] or "—")),
+    (None,              "GCP Region",      lambda r: str(r[10] or r[9] or "—")),
     (None,              "AWS",             lambda r: fmt(r[5] or 0.0)),
     (None,              "GCP OD",          lambda r: fmt(r[6] or 0.0)),
     ("col_gcp_cud_1yr", "GCP 1yr CUD",     lambda r: fmt(r[7] or 0.0)),
     ("col_gcp_cud_3yr", "GCP 3yr CUD",     lambda r: fmt(r[8] or 0.0)),
     ("col_diff",        "Diff",            lambda r: f'+{fmt((r[5] or 0.0) - (r[6] or 0.0))}' if (r[5] or 0.0) > (r[6] or 0.0) else f'−{fmt(abs((r[5] or 0.0) - (r[6] or 0.0)))}' if abs((r[5] or 0.0) - (r[6] or 0.0)) > 0.005 else '$0.00'),
     ("col_pct_of_aws",  "GCP as % of AWS", lambda r: (f'{(r[6] or 0.0) / r[5] * 100:.0f}%' if (r[5] or 0.0) else "—")),
-    ("col_line_items",  "Line items",      lambda r: "1"),
+    ("col_line_items",  "Line items",      lambda r: (f"{int(r[25]):,}" if len(r) > 25 and r[25] is not None else "—")),
     ("col_region",      "AWS Region",      lambda r: str(r[9] or "—")),
 ]
 
@@ -991,6 +995,12 @@ def main():
     _p_basis_val = "ANY_VALUE(p.od_basis)" if "od_basis" in _p_cols else _c_basis_val
     _od_basis_expr = f"COALESCE({_p_basis_val}, {_c_basis_val}, 'amortized_fallback')"
     _applied_dir_expr = "ANY_VALUE(m.applied_directives)" if "applied_directives" in _m2g_cols else "NULL"
+    # Real count of raw CUR records that rolled up into this li_key (stored at
+    # ingest). Older DBs built before this column fall back to NULL → "—".
+    _source_li_expr = (
+        "ANY_VALUE(c.source_line_items)" if "source_line_items" in _c_cols
+        else "CAST(NULL AS BIGINT)"
+    )
 
     rows = conn.execute(f"""
         SELECT
@@ -1018,7 +1028,8 @@ def main():
             {_commitment_basis_expr}                                           AS commitment_basis,
             {_aws_cost_od_est_expr}                                            AS aws_cost_od_est,
             {_od_basis_expr}                                                   AS od_basis,
-            {_applied_dir_expr}                                                AS applied_directives
+            {_applied_dir_expr}                                                AS applied_directives,
+            {_source_li_expr}                                                  AS source_line_items
         FROM aws_li_catalog c
         LEFT JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
         LEFT JOIN gcp_projection    p ON c.aws_li_key = p.aws_li_key
@@ -1240,7 +1251,7 @@ def main():
     sec_b_rows = []
 
     for r in rows:
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives = r
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives, source_line_items = r
         if (aws or 0.0) < 0:
             continue
 
@@ -1252,7 +1263,7 @@ def main():
             sec_b_rows.append(r)
 
     def _render_row(r, idx, force_pt=False, active_columns=None):
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives = r
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives, source_line_items = r
 
         ptype  = pill_type(gcp_svc, product)
         p_html = pill_html(ptype)
@@ -1302,7 +1313,11 @@ def main():
             strategy_badge = '<span class="strat-pt">[no GCP charge]</span>'
 
         op_str = _html.escape(str(operation or ""))
-        region_str = _html.escape(str(gcp_region or aws_region or "—"))
+        # Two distinct region anchors: the GCP target region (always-on column)
+        # and the AWS source region (toggle column). They are different strings
+        # (e.g. aws 'us-central-1' vs gcp 'us-central1') and must not duplicate.
+        region_str = _html.escape(str(gcp_region or aws_region or "—"))      # GCP target
+        aws_region_str = _html.escape(str(aws_region or "—"))                # AWS source
 
         why_html, cost_tier_html = _format_why_html(notes)
 
@@ -1347,10 +1362,10 @@ def main():
         else:
             if has_license_modeled:
                 base_val = gcp_base_od or 0.0
-                lic_val = gcp_lic_od or 0.0
-                od_str = f"{fmt(base_val)} + {fmt(lic_val)}"
-                if is_assump:
-                    od_str += "*"
+                # License cost is itemized ONLY in the "+" sub-row below. The main
+                # row carries the compute/base (EC2) price alone so it is never
+                # double-counted across the main row and its license sub-row.
+                od_str = f"{fmt(base_val)}*" if is_assump else fmt(base_val)
             else:
                 od_str = f"{fmt(od)}*" if is_assump else fmt(od)
             diff = cmp_aws - od
@@ -1370,7 +1385,8 @@ def main():
         if aws_lic_split:
             aws_base_cost, aws_lic_cost, _os_key = aws_lic_split
             aws_instance_str = _html.escape(str(raw_instance))
-            aws_cost_cell = f"{fmt(aws_base_cost)} + {fmt(aws_lic_cost)}"
+            # License itemized only in the "+" sub-row; main AWS cell = instance base.
+            aws_cost_cell = fmt(aws_base_cost)
         elif has_license_modeled or ("license" in (notes or "").lower() and "oracle" in (product or "").lower()):
             aws_instance_str = f"{_html.escape(str(raw_instance))} <span style='font-size:10px;color:#5F6368'>(incl. OS license)</span>"
             aws_cost_cell = fmt(aws)
@@ -1441,10 +1457,12 @@ def main():
             return diff_td
 
         def cell_line_items():
-            return "<td class='num'>1</td>"
+            n = source_line_items
+            disp = f"{int(n):,}" if (n is not None) else "—"
+            return f"<td class='num'>{disp}</td>"
 
         def cell_aws_region():
-            return f"<td style='font-size:11px;color:#5F6368;white-space:nowrap'>{region_str}</td>"
+            return f"<td style='font-size:11px;color:#5F6368;white-space:nowrap'>{aws_region_str}</td>"
 
         def cell_desc():
             return f'<td class="extra-col">{desc_html}</td>'
@@ -1461,7 +1479,7 @@ def main():
             "AWS Service → GCP Service": cell_svc,
             "AWS Instance": cell_instance,
             "GCP Mapping": cell_mapping,
-            "Region": cell_region,
+            "GCP Region": cell_region,
             "AWS": cell_aws,
             "GCP OD": cell_od,
             "GCP 1yr CUD": cell_cud1,
@@ -1509,7 +1527,7 @@ def main():
                     sub_cells += "<td></td>"
                 elif label == "GCP Mapping":
                     sub_cells += "<td></td>"
-                elif label == "Region":
+                elif label == "GCP Region":
                     sub_cells += f'<td style="color:#5F6368">{region_str}</td>'
                 elif label == "AWS":
                     sub_cells += f'<td class="num">{aws_sub_cell}</td>'
@@ -1524,7 +1542,7 @@ def main():
                 elif label == "Line items":
                     sub_cells += '<td class="num"></td>'
                 elif label == "AWS Region":
-                    sub_cells += f'<td style="color:#5F6368">{region_str}</td>'
+                    sub_cells += f'<td style="color:#5F6368">{aws_region_str}</td>'
                 else:
                     sub_cells += "<td></td>"
             sub_cells += '<td class="extra-col"></td>'
@@ -1543,6 +1561,7 @@ def main():
     sec_a_gcp_od = 0.0
     sec_a_gcp_1yr = 0.0
     sec_a_gcp_3yr = 0.0
+    sec_a_li = 0
 
     idx = 1
     for r in sec_a_rows:
@@ -1559,6 +1578,7 @@ def main():
         sec_a_gcp_od += od
         sec_a_gcp_1yr += c1
         sec_a_gcp_3yr += c3
+        sec_a_li += int(r[25]) if len(r) > 25 and r[25] is not None else 0
         sec_a_html += _render_row(r, idx, force_pt=False, active_columns=_ACTIVE_COLUMNS)
         idx += 1
 
@@ -1566,11 +1586,11 @@ def main():
     diff_sec_a_class = "green" if diff_sec_a > 0 else "red" if diff_sec_a < 0 else ""
     diff_sec_a_str = ("—" if abs(diff_sec_a) < 0.005
                       else (f"+{fmt(diff_sec_a)}" if diff_sec_a > 0 else f"−{fmt(abs(diff_sec_a))}"))
-    def _render_summary_row(row_class, label_text, aws_val, od_val, c1_val, c3_val, diff_str, diff_cls, pct_str):
+    def _render_summary_row(row_class, label_text, aws_val, od_val, c1_val, c3_val, diff_str, diff_cls, pct_str, li_val=None):
         # Count leading non-numeric columns to span with label_text
         leading_cols = 0
         for _, col_label, _ in _ACTIVE_COLUMNS:
-            if col_label in ("#", "AWS Service → GCP Service", "AWS Instance", "GCP Mapping", "Region"):
+            if col_label in ("#", "AWS Service → GCP Service", "AWS Instance", "GCP Mapping", "GCP Region"):
                 leading_cols += 1
             else:
                 break
@@ -1595,7 +1615,8 @@ def main():
             elif col_label == "GCP as % of AWS":
                 row_html += f'<td class="num" style="font-weight:600">{pct_str}</td>'
             elif col_label == "Line items":
-                row_html += '<td class="num"></td>'
+                _li = f"{int(li_val):,}" if li_val else ""
+                row_html += f'<td class="num" style="font-weight:600">{_li}</td>'
             elif col_label == "AWS Region":
                 row_html += '<td></td>'
             else:
@@ -1618,6 +1639,7 @@ def main():
         diff_str=diff_sec_a_str,
         diff_cls=diff_sec_a_class,
         pct_str=pct_sec_a_cell,
+        li_val=sec_a_li,
     )
 
     # ── Render Section B Rows & Subtotal ──────────────────────────────────────
@@ -1626,6 +1648,7 @@ def main():
     sec_b_gcp_od = 0.0
     sec_b_gcp_1yr = 0.0
     sec_b_gcp_3yr = 0.0
+    sec_b_li = 0
 
     for r in sec_b_rows:
         aws = r[5] or 0.0
@@ -1634,6 +1657,7 @@ def main():
         sec_b_gcp_od += aws_od_est
         sec_b_gcp_1yr += aws_od_est
         sec_b_gcp_3yr += aws_od_est
+        sec_b_li += int(r[25]) if len(r) > 25 and r[25] is not None else 0
         sec_b_html += _render_row(r, idx, force_pt=True, active_columns=_ACTIVE_COLUMNS)
         idx += 1
 
@@ -1647,6 +1671,7 @@ def main():
         diff_str="$0.00",
         diff_cls="",
         pct_str="100%" if sec_b_aws > 0 else "—",
+        li_val=sec_b_li,
     )
 
     # ── Grand Totals (Section A + Section B strictly footing) ─────────────────
@@ -1671,6 +1696,7 @@ def main():
         diff_str=diff_tot_str,
         diff_cls=diff_tot_class,
         pct_str=pct_grand,
+        li_val=sec_a_li + sec_b_li,
     )
 
     detail_rows_html = (
@@ -2348,6 +2374,43 @@ def main():
             f'</div>'
         )
 
+    catalog_date = "unknown"
+    meta_path = os.path.join(_DATA_DIR, "CATALOG_META.json")
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                cm = json.load(f)
+            catalog_date = (cm.get("fetched_at") or "").split("T")[0] or "unknown"
+        except Exception:
+            pass
+
+    fb_count = 0
+    fb_services = ""
+    try:
+        fb_rows = conn.execute("""
+            SELECT gcp_service, COUNT(*)
+            FROM gcp_sku_rates
+            WHERE pricing_type IN ('Commit1Yr', 'Commit3Yr')
+              AND source = 'doc-percentage-fallback'
+            GROUP BY gcp_service
+            ORDER BY gcp_service
+        """).fetchall()
+        fb_count = sum(r[1] for r in fb_rows)
+        fb_services = ", ".join(r[0] for r in fb_rows)
+    except Exception:
+        pass
+
+    if fb_count > 0:
+        cud_prov_text = (
+            f"CUD from catalog commit SKUs as of {catalog_date}; "
+            f"{fb_count} rows used documented-percentage fallback for {fb_services}."
+        )
+    else:
+        cud_prov_text = (
+            f"CUD from catalog commit SKUs as of {catalog_date}; "
+            f"0 rows used fallback."
+        )
+
     page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2401,7 +2464,7 @@ def main():
   <ul>
     <li>Target region: <b>{_html.escape(gcp_region_display)}</b></li>
     <li>On-Demand list prices — no sustained-use discount applied to base rates</li>
-    <li>1-Year and 3-Year CUD columns apply committed-use multipliers per service</li>
+    <li>1-Year and 3-Year CUD columns apply committed-use multipliers ({cud_prov_text})</li>
     <li>License-included pricing (BYOL not assumed unless the AWS bill indicates it)</li>
     <li>AWS Spot instances → GCP Spot/Preemptible VMs (~60–91% off On-Demand). AWS Spot prices are market-variable and may be lower — GCP may appear higher for Spot-heavy workloads.</li>
     <li>OpenSearch and MSK rows are <b>self-managed infrastructure estimates</b> on GCP, not managed-service equivalents. Treat as directional only.</li>
@@ -2433,7 +2496,7 @@ def main():
   <li>EC2 and RDS instance families mapped deterministically using instance-family rules — 4th-gen preferred unconditionally regardless of AWS source generation (e.g., c-family → C4/C4D, r/m-family → N4/N4D, t-family (burstable) → cheapest of E2/N4D by real per-region rate — see cost-tier check below, ARM → C4A). Older-gen families are only used when the 4th-gen SKU has no rate at all in that region.</li>
   <li><b>Cost-tier check</b> (rows marked <span class="cost-tier-note" style="font-style:normal">cost-tier</span> in the description): before finalizing a compute row, the tool compares real GCP prices in that row's exact region and swaps to a cheaper option whenever it's the <i>same or better</i> performance guarantee — e.g. a burstable AWS instance can move to a cheaper always-on GCP family (a pure win: AWS's CPU-credit pricing never gets cheaper by staying idle, so this loses nothing and often costs less). It never does the reverse — a sustained-performance AWS instance is never swapped onto a cheaper burstable GCP family, even if that would look cheaper on paper, since that would silently change the performance guarantee you're paying for. Every such swap is noted inline so it's never a silent decision.</li>
   <li>Remaining dynamic rows (misc, managed services) mapped by LLM agents with GCP billing catalog constraints and confidence scoring.</li>
-  <li>GCP list prices sourced from the Cloud Billing API catalog (bundled at report generation time). CUD rates are applied from <code>cud_pct.json</code> per service class.</li>
+  <li>GCP list prices sourced from the Cloud Billing API catalog (bundled at report generation time). {cud_prov_text}</li>
   <li>Outlier safety net: any mapped row with projected GCP/AWS ratio &gt;50× or absolute &gt;$10,000 on &lt;$100 AWS spend is clamped to AWS-cost passthrough.</li>
   <li>AWS Marketplace and Support charges passed through at 1:1 cost (no GCP equivalent).</li>
 </ul>

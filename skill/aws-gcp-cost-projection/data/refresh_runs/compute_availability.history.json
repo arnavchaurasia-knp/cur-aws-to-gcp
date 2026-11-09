@@ -1,0 +1,12 @@
+[
+  {
+    "state": "partial",
+    "started_at": "2026-11-09T12:20:47Z",
+    "finished_at": "2026-11-09T12:20:47Z",
+    "exit_code": 0,
+    "trigger": "auto",
+    "actor": "orchestrator",
+    "reason": "GOOGLE_CLOUD_AVAILABILITY_PROJECT not set",
+    "source": "compute_availability"
+  }
+]

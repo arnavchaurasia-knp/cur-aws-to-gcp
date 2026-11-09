@@ -70,7 +70,7 @@
         "UserMonth"
       ],
       "mapper": "apply_static_mappings.map_flat_hourly",
-      "decision_it_changes": "Amazon QuickSight user-month subscriptions: prices user seats using Looker Studio Pro list price."
+      "decision_it_changes": "Amazon QuickSight user-month subscriptions: prices user seats using Data Studio Pro (formerly Looker Studio Pro) list price."
     },
     "aurora_acu_vcpu": {
       "services": [

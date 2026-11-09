@@ -66,32 +66,6 @@ def derive_aurora_values(ratio_registry_path: str = None) -> tuple:
     return ram_values, vcpu_values
 
 
-def sync_aurora_domains(domains_path: str = None, ratio_registry_path: str = None) -> bool:
-    """
-    Rewrite aurora_acu_ram_gib.values and aurora_acu_vcpu.values in assumption_domains.json
-    from ratio_registry.json.
-    """
-    path = domains_path or _DOMAINS_FILE
-    if not os.path.exists(path):
-        return False
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    domains = data.get("domains", {})
-    ram_vals, vcpu_vals = derive_aurora_values(ratio_registry_path)
-
-    if "aurora_acu_ram_gib" in domains:
-        domains["aurora_acu_ram_gib"]["values"] = ram_vals
-    if "aurora_acu_vcpu" in domains:
-        domains["aurora_acu_vcpu"]["values"] = vcpu_vals
-
-    data["domains"] = domains
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    return True
-
-
 def format_domain(key: str, info: dict) -> str:
     kind = info.get("kind", "unknown")
     lines = [f"Assumption: {key} (kind: {kind})"]

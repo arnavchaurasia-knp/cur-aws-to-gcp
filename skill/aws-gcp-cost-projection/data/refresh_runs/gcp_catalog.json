@@ -1,0 +1,21 @@
+{
+  "state": "escalated",
+  "started_at": "2026-11-09T13:19:47Z",
+  "finished_at": "2026-11-09T13:19:47Z",
+  "exit_code": 1,
+  "trigger": "manual",
+  "actor": "a@facets.cloud",
+  "reason": "Script stopped with exit code 1. Last message: No GCP credentials (set GOOGLE_CLOUD_API_KEY). Nothing fetched.",
+  "log_tail": [
+    "==================================================================",
+    "GCP SKU Catalog — refresh (gaps only)",
+    "Auth: none",
+    "==================================================================",
+    "No GCP credentials (set GOOGLE_CLOUD_API_KEY). Nothing fetched."
+  ],
+  "source": "gcp_catalog",
+  "complete": true,
+  "attempt": 4,
+  "consecutive_failures": 10,
+  "escalated": true
+}

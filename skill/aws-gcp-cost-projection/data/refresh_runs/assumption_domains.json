@@ -1,0 +1,39 @@
+{
+  "state": "success",
+  "started_at": "2026-11-09T12:21:47Z",
+  "finished_at": "2026-11-09T12:21:47Z",
+  "exit_code": 0,
+  "trigger": "auto",
+  "actor": "orchestrator",
+  "log_tail": [
+    "Assumption Domains Refresh Report: all domains up to date and verified.",
+    "REFRESH_SUMMARY {\"source\": \"assumption_domains\", \"expected_count\": 19, \"fetched_count\": 19, \"coverage_pct\": 100.0, \"complete\": true, \"record_count\": 19, \"record_delta\": 0, \"anomalies\": [], \"item_outcomes\": {\"aurora_acu_ram_gib\": \"OK\", \"aurora_acu_vcpu\": \"OK\", \"aws_ri_1yr_discount_pct\": \"OK\", \"aws_ri_3yr_discount_pct\": \"OK\", \"aws_sp_discount_pct\": \"OK\", \"aws_spot_discount_pct\": \"OK\", \"dax_node_gib\": \"OK\", \"dynamodb_rcu_to_reads_sec\": \"OK\", \"dynamodb_wcu_to_writes_sec\": \"OK\", \"fx_max_staleness_days\": \"OK\", \"glue_dpu_ram_gib\": \"OK\", \"glue_dpu_vcpu\": \"OK\", \"inferentia_chip_to_tpu\": \"OK\", \"lambda_mb_per_vcpu\": \"OK\", \"looker_studio_pro_seat_usd\": \"STALE\", \"memorydb_node_gib\": \"OK\", \"nat_vms_per_gateway\": \"OK\", \"rds_iops_included_in_storage\": \"OK\", \"trainium_chip_to_tpu\": \"OK\"}}"
+  ],
+  "source": "assumption_domains",
+  "expected_count": 19,
+  "fetched_count": 19,
+  "coverage_pct": 100,
+  "complete": true,
+  "record_count": 19,
+  "item_outcomes": {
+    "aurora_acu_ram_gib": "OK",
+    "aurora_acu_vcpu": "OK",
+    "aws_ri_1yr_discount_pct": "OK",
+    "aws_ri_3yr_discount_pct": "OK",
+    "aws_sp_discount_pct": "OK",
+    "aws_spot_discount_pct": "OK",
+    "dax_node_gib": "OK",
+    "dynamodb_rcu_to_reads_sec": "OK",
+    "dynamodb_wcu_to_writes_sec": "OK",
+    "fx_max_staleness_days": "OK",
+    "glue_dpu_ram_gib": "OK",
+    "glue_dpu_vcpu": "OK",
+    "inferentia_chip_to_tpu": "OK",
+    "lambda_mb_per_vcpu": "OK",
+    "looker_studio_pro_seat_usd": "STALE",
+    "memorydb_node_gib": "OK",
+    "nat_vms_per_gateway": "OK",
+    "rds_iops_included_in_storage": "OK",
+    "trainium_chip_to_tpu": "OK"
+  }
+}

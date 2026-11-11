@@ -24,7 +24,7 @@ log = get_logger("render_report")
 _RS = load_report_settings(JOB_DIR)
 
 try:
-    _PT_REASONS = load_data_config("passthrough_reasons.json").get("reasons", {})
+    _PT_REASONS = load_data_config("passthrough_reasons").get("reasons", {})
 except Exception:
     _PT_REASONS = {}
 

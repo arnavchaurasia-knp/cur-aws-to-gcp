@@ -1678,10 +1678,13 @@ def test_l3_l4_render_report_and_export_display(tmp_path, monkeypatch):
     assert report_html_path.exists()
     html = report_html_path.read_text(encoding="utf-8")
 
-    # 1. Shows GCP base + license separately (e.g. $120.00 + $30.00) and NOT merged into $150.00
-    assert "$120.00 + $30.00" in html
-    # 2. Phase 2: m5.xlarge has authoritative license_fraction -> AWS splits into base + license ($102.12 + $97.88 = $200.00)
-    assert "$102.12 + $97.88" in html
+    # 1. Shows GCP base ($120.00) in the main row and the license in its "+" sub-row
+    #    ($30.00, asserted below) — never merged into a single $150.00 figure.
+    assert "$120.00" in html
+    assert "$150.00" not in html
+    # 2. Phase 2: m5.xlarge has an authoritative license_fraction -> AWS splits into
+    #    base ($102.12) in the main row + license ($97.88) in the sub-row (= $200.00).
+    assert "$102.12" in html
     assert '<span class="plus-sign">+</span>$97.88' in html
     assert "AWS license split estimated from AWS Price List Windows/Linux OD ratio." in html
 

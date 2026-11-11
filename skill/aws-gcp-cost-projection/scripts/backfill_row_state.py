@@ -9,6 +9,7 @@ Delete once no job DB predating this change can be resumed.
 THIS IS THE ONLY PLACE IN THE CODEBASE PERMITTED TO READ A NOTE AS LOGIC.
 """
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -23,6 +24,25 @@ def backfill_row_state(con: duckdb.DuckDBPyConnection) -> int:
         return 0
 
     rs.ensure_schema(con)
+    mutated = 0
+
+    # 5. forced_assumption_key backfill from legacy note prose
+    pt_rows = con.execute("""
+        SELECT aws_li_key, projection_note
+        FROM aws_li_to_gcp_li
+        WHERE forced_assumption_key IS NULL
+          AND projection_note LIKE '%[passthrough: forced via assumption %'
+    """).fetchall()
+
+    if pt_rows:
+        for k, note in pt_rows:
+            m = re.search(r"\[passthrough:\s*forced via assumption\s+([^\]]+)\]", note or "")
+            if m:
+                key = m.group(1).strip()
+                ok, _ = rs.validate_value("forced_assumption_key", key, tier="pipeline")
+                if ok:
+                    rs.set_state(con, k, by="backfill_row_state", tier="pipeline", forced_assumption_key=key)
+                    mutated = 1
 
     # Check if already populated (no-op if any non-NULL in rate_region_basis or license_status)
     non_null_count = con.execute("""
@@ -32,7 +52,9 @@ def backfill_row_state(con: duckdb.DuckDBPyConnection) -> int:
     """).fetchone()[0]
 
     if non_null_count > 0:
-        return 0
+        if mutated:
+            con.commit()
+        return mutated
 
     # 1. rate_source mappings
     con.execute("""

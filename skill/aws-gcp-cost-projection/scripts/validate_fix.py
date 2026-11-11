@@ -615,12 +615,14 @@ def passthrough_budget_exceeded(con) -> list:
             return []
 
         # Check for operator-forced passthroughs and validator downgrades
-        forced_row = con.execute("""
+        m_cols = {c[0] for c in con.execute("DESCRIBE aws_li_to_gcp_li").fetchall()}
+        forced_clause = "m.forced_assumption_key IS NOT NULL" if "forced_assumption_key" in m_cols else "FALSE"
+        forced_row = con.execute(f"""
             SELECT COUNT(*), COALESCE(SUM(c.aws_amortized_cost), 0.0)
             FROM aws_li_catalog c
             JOIN aws_li_to_gcp_li m ON m.aws_li_key = c.aws_li_key
             WHERE m.strategy = 'passthrough' AND c.is_workload = TRUE
-              AND COALESCE(m.projection_note, '') ILIKE '%forced via assumption%'
+              AND {forced_clause}
         """).fetchone()
         forced_cnt = int(forced_row[0] or 0) if forced_row else 0
         forced_usd = float(forced_row[1] or 0.0) if forced_row else 0.0

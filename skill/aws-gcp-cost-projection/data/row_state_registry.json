@@ -169,10 +169,38 @@
       "writable_by": ["mapper", "llm", "pipeline"],
       "description": "Details about heuristic assumption made."
     },
+    "forced_assumption_key": {
+      "sql_type": "TEXT",
+      "kind": "enum",
+      "domain": {
+        "aurora_acu_ram_gib": { "note_template": null },
+        "aurora_acu_vcpu": { "note_template": null },
+        "aws_ri_1yr_discount_pct": { "note_template": null },
+        "aws_ri_3yr_discount_pct": { "note_template": null },
+        "aws_sp_discount_pct": { "note_template": null },
+        "aws_spot_discount_pct": { "note_template": null },
+        "dax_node_gib": { "note_template": null },
+        "dynamodb_rcu_to_reads_sec": { "note_template": null },
+        "dynamodb_wcu_to_writes_sec": { "note_template": null },
+        "fx_max_staleness_days": { "note_template": null },
+        "glue_dpu_ram_gib": { "note_template": null },
+        "glue_dpu_vcpu": { "note_template": null },
+        "inferentia_chip_to_tpu": { "note_template": null },
+        "lambda_mb_per_vcpu": { "note_template": null },
+        "looker_studio_pro_seat_usd": { "note_template": null },
+        "memorydb_node_gib": { "note_template": null },
+        "nat_vms_per_gateway": { "note_template": null },
+        "rds_iops_included_in_storage": { "note_template": null },
+        "trainium_chip_to_tpu": { "note_template": null }
+      },
+      "writable_by": ["mapper", "pipeline"],
+      "description": "When an assumption forces passthrough (e.g. via passthrough_enforcer.py), records the governing assumption key. NULL when not forced via assumption."
+    },
     "passthrough_reason": {
       "sql_type": "TEXT",
       "kind": "enum",
       "domain": {
+        "operator_assumption":        { "note_template": null },
         "no_gcp_equivalent":          { "note_template": null },
         "unit_model_mismatch":        { "note_template": null },
         "accelerator_manual_sizing":  { "note_template": null },

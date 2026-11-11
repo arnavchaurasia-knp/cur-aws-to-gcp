@@ -26,6 +26,7 @@ if _SCRIPTS not in sys.path:
 
 from aws_normalizer import canonical_service
 from config_loader import load_assumption_passthroughs, load_data_config
+import row_state as rs
 
 try:
     from diagnostics import diag, INFO
@@ -190,6 +191,8 @@ def enforce_assumption_passthroughs(
         impact_cfg = load_data_config("assumption_impact") or {}
         impacts = impact_cfg.get("impacts", {})
 
+        rs.ensure_schema(conn)
+
         c_cols = {c[0] for c in conn.execute("DESCRIBE aws_li_catalog").fetchall()}
         m_cols = {c[0] for c in conn.execute("DESCRIBE aws_li_to_gcp_li").fetchall()}
 
@@ -283,6 +286,9 @@ def enforce_assumption_passthroughs(
                                 {pt_set}
                             WHERE aws_li_key = ?
                         """, [new_svc, new_note, k])
+
+                # Record structured state in row_state field (keep note intact)
+                rs.set_state(conn, matched_keys, by="passthrough_enforcer", tier="pipeline", forced_assumption_key=key)
 
                 summary[key] = {"rows": len(matched_keys), "usd": round(total_usd, 2)}
                 diag(INFO, "passthrough_enforced", "passthrough_enforcer",

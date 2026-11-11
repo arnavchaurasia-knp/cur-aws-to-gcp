@@ -77,13 +77,14 @@ def test_passthrough_enforcer_when_enabled(tmp_path):
 
     # Verify MemoryDB row flipped
     row = con.execute("""
-        SELECT strategy, unit_multiplier, passthrough_reason, projection_note
+        SELECT strategy, unit_multiplier, passthrough_reason, projection_note, forced_assumption_key
         FROM aws_li_to_gcp_li WHERE aws_li_key = 'mdb1'
     """).fetchone()
     assert row[0] == "passthrough"
     assert row[1] == 1.0
     assert row[2] == "operator_assumption"
     assert "[passthrough: forced via assumption memorydb_node_gib]" in row[3]
+    assert row[4] == "memorydb_node_gib"
 
     # Verify S3 row untouched
     s3_row = con.execute("""

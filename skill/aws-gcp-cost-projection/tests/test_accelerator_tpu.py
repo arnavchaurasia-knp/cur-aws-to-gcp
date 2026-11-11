@@ -29,9 +29,11 @@ from conftest import row
 import duckdb
 import family_mapper as fm
 import apply_rates
+import apply_static_mappings as asm
 
 
-def test_inf2_48xlarge_mapping():
+def test_inf2_48xlarge_mapping(monkeypatch):
+    monkeypatch.setitem(asm._ASSUMPTIONS, "inferentia_chip_to_tpu", 1.0)
     r = row(
         aws_li_key="k_inf2_48xl",
         instance_type="inf2.48xlarge",

@@ -1933,20 +1933,19 @@ def main():
             try:
                 pt_summary_rows = conn.execute("""
                     SELECT
-                        m.projection_note,
+                        COALESCE(m.forced_assumption_key, 'assumption') AS key_name,
                         COUNT(*) AS row_cnt,
                         ROUND(COALESCE(SUM(c.aws_amortized_cost), 0.0), 2) AS total_usd
                     FROM aws_li_to_gcp_li m
                     JOIN aws_li_catalog c USING (aws_li_key)
                     WHERE m.strategy = 'passthrough'
-                      AND m.projection_note ILIKE '%forced via assumption%'
-                    GROUP BY m.projection_note
+                      AND m.forced_assumption_key IS NOT NULL
+                    GROUP BY key_name
+                    ORDER BY key_name
                 """).fetchall()
                 if pt_summary_rows:
                     pt_items = []
-                    for note, cnt, usd in pt_summary_rows:
-                        m_key = re.search(r"\[passthrough:\s*forced via assumption\s+([^\]]+)\]", note)
-                        key_name = m_key.group(1).strip() if m_key else "assumption"
+                    for key_name, cnt, usd in pt_summary_rows:
                         pt_items.append(f"<li><b>{_html.escape(key_name)}</b>: {cnt} row(s) (${usd:,.2f} AWS cost carried at 1:1 parity)</li>")
                     pt_summary_html = f"""
                     <div class="operator-passthrough-summary" style="margin-top:16px;padding:12px 16px;background:#F5F3FF;border:1px solid #7C3AED;border-radius:8px;font-size:12px;color:#5B21B6;">
@@ -2678,18 +2677,17 @@ def main():
         try:
             op_pt_rows = conn.execute("""
                 SELECT
-                    m.projection_note,
+                    COALESCE(m.forced_assumption_key, 'assumption') AS key_name,
                     COUNT(*) AS row_cnt,
                     ROUND(COALESCE(SUM(c.aws_amortized_cost), 0.0), 2) AS total_usd
                 FROM aws_li_to_gcp_li m
                 JOIN aws_li_catalog c USING (aws_li_key)
                 WHERE m.strategy = 'passthrough'
-                  AND m.projection_note ILIKE '%forced via assumption%'
-                GROUP BY m.projection_note
+                  AND m.forced_assumption_key IS NOT NULL
+                GROUP BY key_name
+                ORDER BY key_name
             """).fetchall()
-            for note, cnt, usd in op_pt_rows:
-                m_key = re.search(r"\[passthrough:\s*forced via assumption\s+([^\]]+)\]", note)
-                key_name = m_key.group(1).strip() if m_key else "assumption"
+            for key_name, cnt, usd in op_pt_rows:
                 summary_lines.append(f"- **Operator Passthrough ({key_name})**: {cnt} row(s), {curr_symbol}{usd:,.2f} carried at 1:1 parity (decision source: operator passthrough)")
         except Exception:
             pass

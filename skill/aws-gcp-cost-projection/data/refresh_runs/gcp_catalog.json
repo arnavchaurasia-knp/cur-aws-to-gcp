@@ -1,7 +1,7 @@
 {
-  "state": "retrying",
-  "started_at": "2026-11-09T15:21:41Z",
-  "finished_at": "2026-11-09T15:21:42Z",
+  "state": "escalated",
+  "started_at": "2026-11-11T05:42:05Z",
+  "finished_at": "2026-11-11T05:42:06Z",
   "exit_code": 1,
   "trigger": "manual",
   "actor": "a@facets.cloud",
@@ -16,7 +16,7 @@
   "duration_seconds": 1,
   "source": "gcp_catalog",
   "complete": true,
-  "attempt": 1,
-  "next_retry_at": "2026-11-09T15:26:42Z",
-  "consecutive_failures": 18
+  "attempt": 4,
+  "consecutive_failures": 21,
+  "escalated": true
 }

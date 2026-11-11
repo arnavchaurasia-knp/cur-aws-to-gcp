@@ -840,7 +840,15 @@ def _reject_non_aws(cols, conn):
 
 
 def _fail_direct(msg):
-    """Write failure.txt and exit without attempting LLM fallback."""
+    """Write failure.txt and exit without attempting LLM fallback.
+
+    Exit code 2 is the STRUCTURAL-rejection contract with the orchestrator:
+    the input is the wrong cloud / wrong kind of file entirely (Azure, GCP,
+    OCI, VMware export, …), so no amount of LLM normalization can make it an
+    AWS bill. orchestrate.go skips the Phase-1 LLM fallback on exit code 2 and
+    fails the job immediately with this reason. (A plain parse failure that an
+    LLM might recover from uses _fail(), which exits 1 and keeps the fallback.)
+    """
     try:
         with open(os.path.join(JOB_DIR, "failure.txt"), "w", encoding="utf-8") as f:
             f.write(msg)
@@ -849,7 +857,7 @@ def _fail_direct(msg):
     log.error(f"INGEST FAILURE: {msg}")
     sys.stdout.flush()
     sys.stderr.flush()
-    sys.exit(1)
+    sys.exit(2)
 
 
 def _fail(msg):

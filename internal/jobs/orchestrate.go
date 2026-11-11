@@ -1641,8 +1641,21 @@ def run_phase(ph):
                 msg = detailed_reason
             log("ERROR: " + msg)
             on_failure_prompt = ph.get("on_failure_prompt")
+            # Exit code 2 from a phase script is the STRUCTURAL-rejection
+            # contract (ingest.py _fail_direct): the input is the wrong cloud /
+            # wrong kind of file entirely, so the LLM fallback cannot recover it
+            # — retrying only burns minutes and leaves the job stuck "running".
+            # Honor it as a hard failure (falls through to _record_script_failure
+            # below), skipping the fallback.
+            structural_reject = (e.returncode == 2)
             if soft_script:
                 log("soft script failure — continuing to next phase")
+            elif structural_reject:
+                log("structural rejection (exit 2) on Phase " + str(ph["num"])
+                    + " — not eligible for LLM fallback, failing the job")
+                _record_script_failure(msg)
+                measure_metrics(phase_runs)
+                sys.exit(0)
             elif on_failure_prompt:
                 # LLM fallback: the deterministic parser doesn't recognize this
                 # file's format. Build a preview for the LLM (zero tokens), have

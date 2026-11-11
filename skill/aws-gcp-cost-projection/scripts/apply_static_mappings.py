@@ -2686,8 +2686,12 @@ def map_flat_hourly(rows):
                 desc = "Networking Cloud Nat Gateway Uptime"
                 sku_id = resolve_sku("Networking", desc, gcp_region)
                 nat_vms = float(_ASSUMPTIONS.get("nat_vms_per_gateway", 32.0))
+                # GCP Cloud NAT hourly caps at 32 VMs: beyond 32 there is no extra
+                # per-hour charge (https://cloud.google.com/nat/pricing). Clamp so
+                # the multiplier never scales past the cap. <32 scales down linearly.
+                nat_vms_billable = min(max(nat_vms, 0.0), 32.0)
                 base_mult = round(0.044 / 0.0014, 8) if (sku_id and getattr(sku_id, 'rate', None) == 0.0014) else 31.42857143
-                mult = base_mult if nat_vms == 32.0 else round((nat_vms / 32.0) * base_mult, 8)
+                mult = round((nat_vms_billable / 32.0) * base_mult, 8)
                 note_text = (
                     f"Cloud NAT gateway modeled via assumption nat_vms_per_gateway={nat_vms:g} "
                     f"(GCP bills per-VM-hour at ~$0.0014/hr; {nat_vms:g} VMs assumed; 32-VM cap AWS parity)."
@@ -4133,6 +4137,13 @@ def map_data_transfer(rows):
             continue
             
         if "transitgateway-bytes" in ut or "tgw-bytes" in ut:
+            # Verified 2026-11-11 against cloud.google.com/network-connectivity/pricing:
+            # $0 here ASSUMES the GCP target uses plain VPC Peering (free — no data-
+            # processing fee). It is NOT universally free: the TGW analog, Network
+            # Connectivity Center (NCC), charges VPC spoke-hours ($0.10/hr per VPC
+            # spoke ≈ $73/mo) AND an Advanced Data Networking per-GB data-processing
+            # fee on VPC-spoke traffic. Modelling the NCC path needs an architecture
+            # input (peering vs NCC) + spoke count — deferred (see work order).
             out.append({
                 "aws_li_key":       r["aws_li_key"],
                 "gcp_service":      "VPC Network",
@@ -4141,8 +4152,14 @@ def map_data_transfer(rows):
                 "strategy":         "ignore",
                 "unit_multiplier":  1.0,
                 "gcp_region":       r.get("gcp_region"),
-                "projection_note":  "Transit Gateway data processing fee — VPC network spoke traffic has no transit fee on GCP; only standard egress applies",
-                "mapping_confidence": 0.90,
+                "projection_note":  (
+                    "Transit Gateway data processing → $0 on GCP, ASSUMING VPC Peering "
+                    "(free, no data-processing fee). NOT free if the GCP design uses NCC: "
+                    "NCC charges VPC spoke-hours ($0.10/hr per spoke) + Advanced Data "
+                    "Networking per-GB data processing (source: cloud.google.com/network-"
+                    "connectivity/pricing) — re-model if the target architecture uses NCC"
+                ),
+                "mapping_confidence": 0.60,
             })
             continue
 
@@ -6020,8 +6037,9 @@ def map_cloudwatch(rows):
 
         # CloudWatch custom metrics (billed AWS-side per metric-month): GCP
         # Cloud Monitoring bills custom-metric ingestion by INGESTED VOLUME
-        # (MiB/month), not per-metric-count, with the first 150 MiB/project/
-        # month free. Unlike Alarms/Dashboards/API-requests above, this is
+        # (MiB/month), not per-metric-count, with the first 150 MiB per BILLING
+        # ACCOUNT per month free (NOT per-project; verified 2026-11-11 at
+        # cloud.google.com/stackdriver/pricing). Unlike Alarms/Dashboards/API-requests above, this is
         # NOT unconditionally free — it depends on real ingestion volume
         # (sample frequency × cardinality × payload size), which a metric
         # COUNT alone can't determine. Rather than either (a) leaving this
@@ -6123,7 +6141,17 @@ def map_cloudwatch(rows):
                 "strategy":           "ignore",
                 "unit_multiplier":    0.0,
                 "gcp_region":         gcp_region,
-                "projection_note":    "CloudWatch Alarms → $0 on GCP (Cloud Monitoring alerting policies included free)",
+                # Verified 2026-11-11 against cloud.google.com/stackdriver/pricing:
+                # alerting policies are FREE today, but GCP will begin charging for
+                # alerting no sooner than 2027-09-01 ($0.35/mo per metric reference +
+                # $0.50 per 1M condition points). $0 is correct for bills before that
+                # date; re-verify / switch to a priced map for usage months >= 2027-09.
+                "projection_note":    (
+                    "CloudWatch Alarms → $0 on GCP (Cloud Monitoring alerting policies free "
+                    "today). NOTE: GCP will charge for alerting from 2027-09-01 — $0.35/mo per "
+                    "metric reference + $0.50/1M condition points (source: cloud.google.com/"
+                    "stackdriver/pricing); re-verify before then for bills dated on/after 2027-09"
+                ),
                 "mapping_confidence": 0.95,
             }
             out.append(entry)
@@ -6140,14 +6168,28 @@ def map_cloudwatch(rows):
                 "strategy":           "ignore",
                 "unit_multiplier":    0.0,
                 "gcp_region":         gcp_region,
-                "projection_note":    "CloudWatch API requests → $0 on GCP (Cloud Monitoring API calls have no billable SKU)",
-                "mapping_confidence": 0.90,
+                # Verified 2026-11-11 against cloud.google.com/stackdriver/pricing:
+                # Monitoring WRITE API calls are free, but READ API calls ARE charged
+                # since 2025-10-02 ($0.50/million time series returned, first 1M/billing-
+                # account/month free). The AWS unit (per-1,000 requests) doesn't convert
+                # cleanly to GCP's per-time-series-returned read billing, and typical
+                # control-plane call volumes sit within the 1M free allotment, so $0 is a
+                # disclosed free-tier assumption here, not a claim of "no billable SKU".
+                "projection_note":    (
+                    "CloudWatch API requests → $0 on GCP (assumed within free tier). Cloud "
+                    "Monitoring write API is free; read API is chargeable since 2025-10-02 at "
+                    "$0.50/M time series returned (first 1M/billing-account/mo free) — source: "
+                    "cloud.google.com/stackdriver/pricing. AWS per-1,000-requests unit doesn't "
+                    "map cleanly to GCP's per-time-series read billing; verify if read-API volume "
+                    "is material"
+                ),
+                "mapping_confidence": 0.55,
             }
             out.append(entry)
             continue
         elif is_custom_metrics:
             # GCP's real SKU for this (catalog A924-09D0-8854, "Metric Volume", $0.258/
-            # $0.151/$0.061 per MiB tiered, 150 MiB/project/month free) bills by INGESTED
+            # $0.151/$0.061 per MiB tiered, 150 MiB/billing-account/month free) bills by INGESTED
             # BYTES, which the AWS CUR never exposes directly (depends on sample
             # frequency and label cardinality, not metric count alone). BUT Google
             # publishes an official, sourced bytes-per-datapoint constant for exactly
@@ -6158,7 +6200,7 @@ def map_cloudwatch(rows):
             # rate. That rate — not a fabricated one — is what AWS custom metrics
             # default to absent evidence of high-resolution (1-second) publishing, so
             # using it here is a disclosed, sourced assumption, not a guess. For
-            # ordinary metric counts (tens-to-hundreds) the 150 MiB/month free tier
+            # ordinary metric counts (tens-to-hundreds) the 150 MiB/billing-account/month free tier
             # safely absorbs this under the same assumption, so $0 is still a
             # defensible placeholder there. But that free-tier assumption breaks down
             # well before it reaches the thousands, so above that scale this now
@@ -6208,11 +6250,13 @@ def map_cloudwatch(rows):
                     "gcp_region":         gcp_region,
                     "projection_note":    (
                         "CloudWatch custom metrics → $0 on GCP: Cloud Monitoring bills custom-"
-                        "metric ingestion by volume (first 150 MiB/project/month free), not per-"
-                        "metric-count like AWS. Assumption: this metric count is well below the "
-                        "free-tier volume under normal sampling rates — verify actual ingested "
-                        "MiB/month with the customer if this bill shows unusually high-frequency "
-                        "or high-cardinality custom metrics"
+                        "metric ingestion by volume (first 150 MiB per BILLING ACCOUNT per month "
+                        "free, verified 2026-11-11 at cloud.google.com/stackdriver/pricing), not "
+                        "per-metric-count like AWS. Assumption: this metric count is well below the "
+                        "free-tier volume under normal sampling rates. LIMITATION: this $0 is decided "
+                        "per row, but the 150 MiB free tier is a single account-wide pool — many "
+                        "individually-small metric rows can collectively exceed it, so verify total "
+                        "ingested MiB/month on metric-heavy bills"
                     ),
                     "mapping_confidence": 0.60,
                 }

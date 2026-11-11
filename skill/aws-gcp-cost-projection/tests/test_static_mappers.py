@@ -645,6 +645,8 @@ def test_cloudwatch_custom_metrics_low_volume_ignored():
     out = _with_sku(map_cloudwatch, rows)
     assert out[0]["strategy"] == "ignore"
     assert out[0]["gcp_service"] == "Cloud Monitoring"
+    assert "billing account" in out[0]["projection_note"].lower()
+    assert "account-wide pool" in out[0]["projection_note"]
 
 
 def test_cloudwatch_custom_metrics_high_volume_not_silently_zeroed():
@@ -687,6 +689,44 @@ def test_cloudwatch_database_insights_ignored():
     assert out[0]["strategy"] == "ignore"
     assert out[0]["gcp_service"] == "Cloud Monitoring"
     assert out[0]["unit_multiplier"] == 0.0
+
+
+def test_cloudwatch_alarms_dated_caveat():
+    rows = [row(product="AmazonCloudWatch",
+                usage_type="APS3-CW:AlarmMonitorUsage",
+                operation="StandardAlarm", unit="Alarms")]
+    out = _with_sku(map_cloudwatch, rows)
+    assert len(out) == 1
+    assert out[0]["strategy"] == "ignore"
+    assert out[0]["gcp_service"] == "Cloud Monitoring"
+    assert "2027" in out[0]["projection_note"]
+    assert "$0.35" in out[0]["projection_note"]
+
+
+def test_cloudwatch_api_requests_dated_caveat():
+    rows = [row(product="AmazonCloudWatch",
+                usage_type="APS3-CW:Requests",
+                operation="GetMetricData per 1,000 requests", unit="Requests")]
+    out = _with_sku(map_cloudwatch, rows)
+    assert len(out) == 1
+    assert out[0]["strategy"] == "ignore"
+    assert out[0]["gcp_service"] == "Cloud Monitoring"
+    assert "read" in out[0]["projection_note"].lower()
+    assert "2025-10-02" in out[0]["projection_note"]
+    assert out[0]["mapping_confidence"] == 0.55
+
+
+def test_transit_gateway_data_processing_assumes_peering():
+    rows = [row(product="Amazon Virtual Private Cloud",
+                usage_type="USE2-TransitGateway-Bytes",
+                operation="", unit="GB")]
+    out = _with_sku(map_data_transfer, rows)
+    assert len(out) == 1
+    assert out[0]["strategy"] == "ignore"
+    assert "VPC Peering" in out[0]["projection_note"]
+    assert "NCC" in out[0]["projection_note"]
+    assert out[0]["mapping_confidence"] == 0.60
+
 
 
 # ---------------------------------------------------------------------------

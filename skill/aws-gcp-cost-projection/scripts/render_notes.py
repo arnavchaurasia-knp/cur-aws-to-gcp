@@ -45,6 +45,12 @@ def compose(row):
                 t = (rs.REVIEW_FLAGS.get(flag) or {}).get("note_template")
                 if t:
                     parts.append(_fill(t, row))
+        elif field == "pipeline_note":
+            # Free-text pipeline rationale; may hold several parts joined with " · ".
+            for piece in str(val).split(" · "):
+                piece = piece.strip()
+                if piece:
+                    parts.append(piece)
         elif field == "mapper_note":
             parts.append(str(val))
         else:
@@ -66,7 +72,7 @@ def render_notes_for_db(con):
     """Regenerate projection_note on con from state fields."""
     cols = ["aws_li_key", "component", "strategy", "passthrough_reason",
             "rate_source", "rate_region_basis", "rate_region_used",
-            "license_status", "review_flags", "mapper_note"]
+            "license_status", "review_flags", "pipeline_note", "mapper_note"]
     # Ensure schema first in case columns are missing
     rs.ensure_schema(con)
 

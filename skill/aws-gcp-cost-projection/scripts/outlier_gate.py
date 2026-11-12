@@ -191,16 +191,15 @@ def main():
     if bad_pairs:
         try:
             cols = {c[1].lower() for c in con.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
-            needs_reprice_clause = "needs_reprice = TRUE," if "needs_reprice" in cols else ""
+            needs_reprice_clause = ", needs_reprice = TRUE" if "needs_reprice" in cols else ""
+            # Decision carried in structured state only (strategy + passthrough_reason);
+            # render_notes composes the human note from 'clamped_outlier'.
             con.executemany(
                 f"""
                 UPDATE aws_li_to_gcp_li
                 SET strategy = 'needs_reprice',
                     passthrough_reason = 'clamped_outlier',
-                    decided_by = 'outlier_gate.py',
-                    {needs_reprice_clause}
-                    projection_note = COALESCE(projection_note || ' ', '') ||
-                        '[outlier_gate: clamped to needs_reprice — gcp/aws ratio exceeded threshold]'
+                    decided_by = 'outlier_gate.py'{needs_reprice_clause}
                 WHERE aws_li_key = ? AND component IS NOT DISTINCT FROM ?
                 """,
                 bad_pairs

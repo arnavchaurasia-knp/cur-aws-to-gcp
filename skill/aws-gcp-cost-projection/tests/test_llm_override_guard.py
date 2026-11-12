@@ -27,18 +27,20 @@ def test_unit_multiplier_sanity():
 
 def test_g2_intentional_passthrough_protection():
     conn = duckdb.connect(":memory:")
+    # Intentional-passthrough protection is decided from the structured
+    # passthrough_reason enum, never from projection_note prose.
     conn.execute("""
         CREATE TABLE aws_li_to_gcp_li (
             aws_li_key VARCHAR,
             strategy VARCHAR,
-            projection_note VARCHAR
+            passthrough_reason VARCHAR
         )
     """)
     conn.execute("""
         INSERT INTO aws_li_to_gcp_li VALUES
-        ('k1', 'passthrough', 'no GCP equivalent — carried at AWS cost'),
-        ('k2', 'passthrough', 'no GCS equivalent — penalty charge'),
-        ('k3', 'passthrough', 'standard unmapped row')
+        ('k1', 'passthrough', 'no_gcp_equivalent'),
+        ('k2', 'passthrough', 'unit_model_mismatch'),
+        ('k3', 'passthrough', 'unresolved_sku')
     """)
 
     # Attempting to map an intentional passthrough should be rejected

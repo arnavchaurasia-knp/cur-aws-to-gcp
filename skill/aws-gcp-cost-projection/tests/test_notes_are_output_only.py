@@ -60,10 +60,11 @@ def test_no_script_reads_projection_note():
         # _emit() infers passthrough_reason from note prose when a mapper did
         # not declare one. Retire by making the ~34 mappers declare it.
         "apply_static_mappings.py": 3,
-        # _is_intentional_passthrough_note()'s fallback for pre-migration DBs.
-        "llm_override_guard.py": 2,
-        # Report-side display filter, deliberately out of scope.
-        "render_report.py": 1,
+        # Intentional-passthrough protection now decides from the structured
+        # passthrough_reason only; the note fallback was removed.
+        "llm_override_guard.py": 0,
+        # Report-side display filter, retired.
+        "render_report.py": 0,
     }
 
     violations = []

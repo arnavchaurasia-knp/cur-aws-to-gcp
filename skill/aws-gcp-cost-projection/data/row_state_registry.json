@@ -128,7 +128,8 @@
         "architecture_review":   { "note_template": "Architecture review recommended." },
         "verify_with_customer":  { "note_template": "Verify this assumption with the customer." },
         "region_unavailable":    { "note_template": "Requested region unavailable for this resource." },
-        "cost_may_differ":       { "note_template": "Real cost may differ materially from this estimate." }
+        "cost_may_differ":       { "note_template": "Real cost may differ materially from this estimate." },
+        "capacity_adjusted":     { "note_template": "GCP vCPU/RAM was scaled up to match the AWS instance footprint." }
       },
       "writable_by": ["mapper", "pipeline"],
       "description": "Caveats and warnings that do not change the number but change how it should be read."
@@ -231,6 +232,13 @@
       "readable_as_logic": false,
       "description": "The mapper's or LLM's own explanation. Rendered into the note; never matched against."
     },
+    "pipeline_note": {
+      "sql_type": "TEXT",
+      "kind": "free_text",
+      "writable_by": ["pipeline"],
+      "readable_as_logic": false,
+      "description": "Free-text rationale contributed by deterministic pipeline passes that has no enum equivalent (e.g. a service_map policy reason, a directive disclosure, a remap explanation). Multiple parts are joined with ' · '. Rendered into the note; never matched against to make a mapping decision."
+    },
     "projection_note": {
       "sql_type": "TEXT",
       "kind": "derived",
@@ -252,6 +260,7 @@
     "rate_region_basis",
     "license_status",
     "review_flags",
+    "pipeline_note",
     "mapper_note"
   ]
 }

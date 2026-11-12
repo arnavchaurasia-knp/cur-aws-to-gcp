@@ -185,412 +185,162 @@ from license_split import load_ec2_specs as _load_ec2_specs, get_aws_license_spl
 
 
 
-# Signal phrases that only ever show up in internal engineering commentary
-# (references to our own function/file names, "mode" bookkeeping, or bug-fix
-# narration) — never in a customer-facing pricing rationale. Used to strip
-# such commentary out of projection_note text before it reaches the report,
-# regardless of what data source it came from (service_map.json "reason"
-# fields, static-mapper notes, LLM output, etc.) or how it's punctuated.
-_DEV_NOTE_SIGNAL_RE = re.compile(
-    r"\b(?:"
-    r"\w+\.py\b"                                   # a source filename, e.g. apply_static_mappings.py
-    r"|\bmap_\w+\(\)"                               # a function call, e.g. map_efs()
-    r"|mode\s*=\s*['\"]?(?:keep|review)\b"          # internal mode bookkeeping
-    r"|mode changed \w+->\w+"
-    r"|unconditionally overwrit\w*"
-    r"|clobber\w*"
-    r"|same bug class\b"
-    r"|confirmed (?:real|empirically)\b"
-    r"|silently (?:force-mapped|overwritten|switched)\b"
-    r")",
-    re.IGNORECASE,
-)
+def _why_first(agg):
+    """STRING_AGG('|') -> first non-empty token, original case preserved."""
+    if not agg:
+        return None
+    for part in str(agg).split("|"):
+        part = part.strip()
+        if part:
+            return part
+    return None
 
 
-def _strip_dev_notes(text):
-    """Drop any clause of `text` that reads as internal engineering commentary
-    rather than customer-facing rationale (see _DEV_NOTE_SIGNAL_RE). Splits on
-    sentence/clause boundaries (". ", " — ", " - ") and removes every clause
-    from the first flagged one onward, since a debug aside typically explains
-    itself in everything that follows it too."""
-    if not text or not _DEV_NOTE_SIGNAL_RE.search(text):
-        return text
-    clauses = re.split(r"(\.\s+|\s+[—-]\s+)", text)
-    kept = []
-    for i in range(0, len(clauses), 2):
-        clause = clauses[i]
-        if _DEV_NOTE_SIGNAL_RE.search(clause):
-            break
-        kept.append(clause)
-        if i + 1 < len(clauses):
-            kept.append(clauses[i + 1])
-    cleaned = "".join(kept).rstrip()
-    cleaned = re.sub(r"[\s;—-]+$", "", cleaned).strip()
-    if cleaned and not cleaned.endswith((".", ")", "]")):
-        cleaned += "."
-    return cleaned
+# Severity order for rate_source: an unresolved/approximate source is worth
+# surfacing to the reader; 'exact' needs no caveat.
+_RATE_SOURCE_SEVERITY = {"no_catalog": 4, "no_rate": 3, "word_overlap": 2, "unknown": 1}
 
 
-def _format_why_html(notes_raw):
-    """Parse a combined projection_note string into structured HTML.
+def _why_worst_rate_source(agg):
+    if not agg:
+        return None
+    worst, worst_rank = None, 0
+    for part in str(agg).split("|"):
+        rank = _RATE_SOURCE_SEVERITY.get(part.strip(), 0)
+        if rank > worst_rank:
+            worst, worst_rank = part.strip(), rank
+    return worst
+
+
+_COST_TIER_RE = re.compile(r"\[cost-tier:\s*([^\]]+)\]", re.IGNORECASE)
+
+
+def _format_why_from_state(*, strategy, gcp_service, gcp_base_sku_name,
+                           gcp_machine_type, lic_name, passthrough_reason,
+                           rate_source, rate_region_basis, rate_region_used,
+                           license_status, review_flags, forced_assumption_key,
+                           pipeline_note, mapper_note):
+    """Render the customer-facing "why" purely from structured decision state.
+
+    This NEVER parses projection_note. projection_note is an output-only view
+    composed by scripts/render_notes.py from these very same fields; this
+    function renders the fields directly as labelled HTML rows. Because it reads
+    live state, the "why" updates automatically whenever an assumption,
+    directive, or refinement changes a row's decision and the pipeline re-runs.
 
     Returns (why_html, cost_tier_html).
-
-    The note string is a · -separated concatenation of per-component notes
-    (one per billing component — core, RAM, OS license, GPU, etc.).  We parse
-    it into labelled rows so the customer sees a clean breakdown instead of a
-    wall of internal mapping text, and collapse any detail/caveat text behind
-    a <details> toggle so it never wraps the table cell to unreadable lengths.
     """
+    import row_state as _rs
     e = _html.escape
 
-    raw = (notes_raw or "").replace(" | ", " · ")
+    strat = (strategy or "").strip()
+    is_ignore = strat == "ignore"
+    is_pt = strat in ("passthrough", "needs_reprice")
 
-    # ── strip internal bookkeeping tokens ─────────────────────────────────────
-    raw = re.sub(r"\s*\[validator:[^\]]*\]", "", raw)
-    raw = re.sub(r"\s*\(rule=service_map_v1[^)]*\)", "", raw)
-    raw = raw.strip(" ;")
-    raw = _strip_dev_notes(raw)
+    pr     = _why_first(passthrough_reason)
+    rsrc   = _why_worst_rate_source(rate_source)
+    rbasis = _why_first(rate_region_basis)
+    lstat  = _why_first(license_status)
 
-    # ── extract cost-tier aside ────────────────────────────────────────────────
+    # Free-text rationale; lift any [cost-tier: ...] aside out of it.
     cost_tier_html = ""
-    m = re.search(r"\[cost-tier:\s*([^\]]+)\]", raw)
-    if m:
-        cost_tier_html = f'<div class="cost-tier-note">{e(m.group(1).strip())}</div>'
-        raw = (raw[:m.start()] + raw[m.end():]).strip(" ;")
-
-    # ── extract operator passthrough override ─────────────────────────────────
-    operator_override_key = None
-    m_pt = re.search(r"\[passthrough:\s*forced via assumption\s+([^\]]+)\]", raw)
-    if m_pt:
-        operator_override_key = m_pt.group(1).strip()
-        raw = (raw[:m_pt.start()] + raw[m_pt.end():]).strip(" ;·")
-
-    if not raw:
-        return "", cost_tier_html
-
-    # ── split into per-component segments ─────────────────────────────────────
-    segments = [s.strip() for s in raw.split(" · ") if s.strip()]
-
-    # ── classify each segment ─────────────────────────────────────────────────
-    # Structured buckets used to build the labelled-row display.
-    gcp_targets   = []   # primary "GCE Family X" lines
-    os_licenses   = []   # RHEL / Windows license lines
-    inline_notes  = []   # [Note: …] extracted from any segment
-    arch_caveats  = []   # [architecture review recommended: …]
-    verify_flags  = []   # [verify with customer …] / "verify with customer"
-    other_lines   = []   # free-form lines that don't fit above
-
-    _DET_MAP  = "Deterministic mapping:"
-    _DET_OS   = "Deterministic OS-license mapping:"
-    _DET_DB   = "Deterministic DB mapping:"
-    _GPU_MAP  = "GPU workload mapping:"
-    _GPU_ACCEL = "Nvidia Accelerator attachment"
-    _NOTE_RE  = re.compile(r'\[Note:\s*([^\]]+)\]', re.IGNORECASE)
-    _ARCH_RE  = re.compile(r'\[architecture review recommended:\s*([^\]]+)\]', re.IGNORECASE)
-    _VFY_RE   = re.compile(r'\[verify with customer[^\]]*\]', re.IGNORECASE)
-    _VFY2_RE  = re.compile(r'verify with customer', re.IGNORECASE)
-    # burstable / family-switch free-form: "t3a.medium → N2D AMD (2 vCPU / 4.0 GiB)"
-    _ARROW_RE = re.compile(
-        r'^([\w.\-]+)\s*[→\->]+\s*([\w\s.]+?)\s*\((\d+)\s*vCPU\s*/\s*([\d.]+)\s*GiB?\)',
-        re.IGNORECASE,
-    )
-    # no-rate suffix: " [no rate in region …]" — strip, it's an ops detail
-    _NO_RATE_RE = re.compile(r'\s*\[no rate in region[^\]]*\]', re.IGNORECASE)
-
-    for seg in segments:
-        seg = _NO_RATE_RE.sub("", seg)
-
-        # Pull bracketed sub-tokens out before classifying the remainder.
-        for m2 in _NOTE_RE.finditer(seg):
-            inline_notes.append(m2.group(1).strip())
-        for m2 in _ARCH_RE.finditer(seg):
-            arch_caveats.append(m2.group(1).strip())
-        for m2 in _VFY_RE.finditer(seg):
-            txt = m2.group(0)
-            inner = re.sub(r'^\[verify with customer[:\s]*', '', txt, flags=re.IGNORECASE).rstrip(']').strip()
-            verify_flags.append(inner or "verify workload performance with customer")
-
-        clean = _NOTE_RE.sub("", seg)
-        clean = _ARCH_RE.sub("", clean)
-        clean = _VFY_RE.sub("", clean)
-        clean = clean.strip(" ;·")
-
-        if not clean:
+    free_parts = []
+    for blob in (pipeline_note, mapper_note):
+        if not blob:
             continue
+        txt = str(blob)
+        m = _COST_TIER_RE.search(txt)
+        if m and not cost_tier_html:
+            cost_tier_html = f'<div class="cost-tier-note">{e(m.group(1).strip())}</div>'
+        txt = _COST_TIER_RE.sub("", txt).strip(" ;")
+        for piece in txt.split(" \u00b7 "):
+            piece = piece.strip(" \u00b7;")
+            if piece:
+                free_parts.append(piece)
 
-        if clean.startswith(_DET_OS):
-            os_licenses.append(clean[len(_DET_OS):].strip())
-
-        elif clean.startswith(_DET_DB):
-            # "Deterministic DB mapping: Cloud SQL for MySQL standard vCPU (N2D family)"
-            part = clean[len(_DET_DB):].strip()
-            gcp_targets.append(part)
-
-        elif clean.startswith(_DET_MAP):
-            part = clean[len(_DET_MAP):].strip()
-            part = re.sub(r'^GCE\s+', '', part)
-            gcp_targets.append(part)
-
-        elif clean.startswith(_GPU_MAP):
-            # "GPU workload mapping: GCE G2 Core" → "G2 (paired compute)"
-            part = clean[len(_GPU_MAP):].strip()
-            part = re.sub(r'^GCE\s+', '', part)
-            gcp_targets.append(part)
-
-        elif clean.lower().startswith(_GPU_ACCEL.lower()):
-            # "Nvidia Accelerator attachment (Nvidia L4 GPU)" → separate GPU row
-            accel = re.search(r'\(([^)]+)\)', clean)
-            label = accel.group(1) if accel else clean
-            # "[no exact GCP equivalent for A10G; substituted L4 — …]" →
-            # split into an inline note (the substitution fact) + a verify flag
-            alias = re.search(r'\[no exact GCP equivalent[^\]]*\]', clean, re.IGNORECASE)
-            if alias:
-                alias_body = alias.group(0).strip('[]')
-                # keep up to first semicolon as the note; rest is verify caveat
-                parts = alias_body.split(';', 1)
-                # Preserve original capitalisation of GPU model names (A10G, L4, etc.)
-                inline_notes.append(parts[0].strip())
-                if len(parts) > 1:
-                    tail = parts[1].strip().lstrip('- ')
-                    verify_flags.append(tail[:1].upper() + tail[1:] if tail else "")
-                clean = clean[:alias.start()].strip()
-                accel2 = re.search(r'\(([^)]+)\)', clean)
-                label = accel2.group(1) if accel2 else label
-            gcp_targets.append(f"\x00gpu\x00{label}")  # sentinel for GPU accelerator row
-
-        elif _ARROW_RE.match(clean):
-            # burstable / family-switch: "t3a.medium → N2D AMD (2 vCPU / 4.0 GiB)"
-            am = _ARROW_RE.match(clean)
-            src, fam, vcpu, ram = am.group(1), am.group(2).strip(), am.group(3), am.group(4)
-            gcp_targets.append(fam)
-            inline_notes.append(f"Source: {src} · {vcpu} vCPU / {ram} GiB")
-
-        elif re.match(r'^S3 .+\s*[→\->]+\s*GCS .+ Class [AB] Operations', clean, re.IGNORECASE):
-            # "S3 Glacier Instant Retrieval GET → GCS Coldline Class B Operations ($0.05/10k; note)"
-            # Extract GCS target and parenthetical rate/note so they render as structured rows.
-            m3 = re.match(
-                r'^S3 .+\s*[→\->]+\s*GCS\s+(.+?)\s*\(([^)]+)\)\s*(.*)$',
-                clean, re.IGNORECASE,
-            )
-            if m3:
-                gcp_targets.append(m3.group(1).strip())
-                rate_note = m3.group(2).strip()
-                # split on semicolon: first part = rate claim, second = pricing caveat
-                halves = rate_note.split(";", 1)
-                inline_notes.append(halves[0].strip())
-                if len(halves) > 1:
-                    caveat = halves[1].strip()
-                    # "GCS is 2× cheaper …" is a real pricing delta — surface it as a verify flag
-                    verify_flags.append(caveat[:1].upper() + caveat[1:] if caveat else "")
-                if m3.group(3).strip():
-                    inline_notes.append(m3.group(3).strip())
-            else:
-                other_lines.append(clean)
-
-        elif clean.startswith("Local SSD"):
-            gcp_targets.append("Local SSD (storage-optimized attachment)")
-
-        elif clean.startswith("[Networking]") or clean.startswith("["):
-            # service_map.json reason note — strip the category tag
-            body = re.sub(r'^\[[^\]]+\]\s*', '', clean)
-            # strip ". NOTE: mode changed …" bookkeeping tail
-            body = re.sub(r'\.\s*NOTE:\s*mode changed.*$', '', body, flags=re.IGNORECASE).strip()
-            other_lines.append(body)
-
-        else:
-            # Plain free-form note — check for verify-with-customer inline
-            if _VFY2_RE.search(clean):
-                # split at the verify phrase so the main line stays clean
-                parts = _VFY2_RE.split(clean, maxsplit=1)
-                if parts[0].strip():
-                    other_lines.append(parts[0].strip(" ;—"))
-                # the phrase itself was already harvested above if in brackets;
-                # if it's bare text, add a generic flag
-                if not any("verify" in f.lower() for f in verify_flags):
-                    verify_flags.append("verify workload performance with customer")
-            else:
-                other_lines.append(clean)
-
-    # ── deduplicate while preserving order ────────────────────────────────────
-    def _dedup(lst):
-        seen, out = set(), []
-        for x in lst:
-            if x not in seen:
-                seen.add(x); out.append(x)
-        return out
-
-    gcp_targets  = _dedup(gcp_targets)
-    os_licenses  = _dedup(os_licenses)
-    inline_notes = _dedup(inline_notes)
-    arch_caveats = _dedup(arch_caveats)
-    verify_flags = _dedup(verify_flags)
-    other_lines  = _dedup(other_lines)
-
-    # ── collapse redundant component pairs into one label ────────────────────
-    # "N2D AMD Core" + "N2D AMD RAM"  →  "N2D AMD"
-    # "Cloud SQL for MySQL standard vCPU" + "…standard RAM"  →  "Cloud SQL for MySQL standard"
-    # Normalise a target string to its "family" by stripping trailing component
-    # suffixes, including parenthetical qualifiers like "(N2D AMD family)".
-    # "N2D AMD Core"                               → "N2D AMD"
-    # "Cloud SQL for MySQL standard vCPU (N2D ...)" → "Cloud SQL for MySQL standard"
-    _COMP_PAT = re.compile(
-        r'\s*(Core|RAM|vCPU|ram|core)\s*(?:\([^)]*\))?\s*$', re.IGNORECASE)
-    def _strip_comp(t):
-        return _COMP_PAT.sub('', t).strip()
-
-    plain_targets = [t for t in gcp_targets if not t.startswith('\x00gpu\x00')]
-    gpu_targets   = [t[5:] for t in gcp_targets if t.startswith('\x00gpu\x00')]
-
-    _IS_CORE = re.compile(r'\s+(Core|vCPU|core)\b', re.IGNORECASE)
-    _IS_RAM  = re.compile(r'\s+(RAM|ram)\b', re.IGNORECASE)
-    cores = {_strip_comp(t) for t in plain_targets if _IS_CORE.search(t)}
-    rams  = {_strip_comp(t) for t in plain_targets if _IS_RAM.search(t)}
-    families = cores & rams
-
-    collapsed = []
-    for fam in sorted(families):
-        collapsed.append(fam)
-    for t in plain_targets:
-        base = _strip_comp(t)
-        if base not in families:
-            # Still strip the suffix even when unpaired — "T2A Arm Core" → "T2A Arm"
-            collapsed.append(base if _COMP_PAT.search(t) else t)
-    gcp_targets = _dedup(collapsed) + [f"\x00gpu\x00{g}" for g in _dedup(gpu_targets)]
-
-    # ── pretty-print helpers ───────────────────────────────────────────────────
     def row(key, val_html, cls="why-row-val"):
         return (f'<div class="why-row">'
                 f'<span class="why-row-key">{e(key)}</span>'
                 f'<span class="{cls}">{val_html}</span>'
                 f'</div>')
 
-    def chip(label, cls):
-        return f'<span class="why-chip {cls}">{e(label)}</span>'
-
-    # ── build primary (always-visible) rows ───────────────────────────────────
     primary_rows = []
-
-    if operator_override_key:
-        primary_rows.append(row("Decision", f"passthrough (operator override — assumption {e(operator_override_key)})"))
-
-    if gcp_targets:
-        # Annotate family names with a short descriptor chip when recognisable.
-        _FAMILY_CHIPS = {
-            "C2D AMD": ("Compute-opt · AMD EPYC", "chip-new-gen"),
-            "C3D":     ("Compute-opt · AMD Genoa", "chip-new-gen"),
-            "C3":      ("Compute-opt · Intel", "chip-new-gen"),
-            "C4":      ("Compute-opt · Intel", "chip-new-gen"),
-            "C4D":     ("Compute-opt · AMD", "chip-new-gen"),
-            "C4A Arm": ("Compute-opt · ARM", "chip-new-gen"),
-            "N2D AMD": ("General · AMD EPYC", "chip-new-gen"),
-            "N4":      ("General · Intel", "chip-new-gen"),
-            "N4D":     ("General · AMD Genoa", "chip-new-gen"),
-            "T2A Arm": ("General · ARM", "chip-new-gen"),
-            "G2":      ("Paired compute · L4", "chip-arch"),
-            "A2":      ("Paired compute · A100", "chip-arch"),
-            "A3":      ("Paired compute · H100", "chip-arch"),
-            # GCS operation SKUs — matched on prefix so "Coldline Class B Operations" hits first
-            "Archive Class B Operations":  ("Cold storage · 365-day min", "chip-arch"),
-            "Coldline Class B Operations": ("Cold storage · 90-day min",  "chip-arch"),
-            "Standard Class B Operations": ("Object storage reads",        "chip-new-gen"),
-            "Standard Class A Operations": ("Object storage writes",       "chip-new-gen"),
-        }
-        has_gpu_row = any(t.startswith('\x00gpu\x00') for t in gcp_targets)
-        for fam in gcp_targets:
-            if fam.startswith('\x00gpu\x00'):
-                gpu_label = fam[5:]
-                primary_rows.append(row("GPU accelerator", e(gpu_label)))
-                continue
-            label = fam
-            ch = ""
-            # Only show machine-family chip when there is no separate GPU row
-            # (to avoid redundant "GPU · L4" on the G2 row + the GPU row).
-            if not has_gpu_row:
-                for key, (desc, cls_) in _FAMILY_CHIPS.items():
-                    if label.startswith(key):
-                        ch = chip(desc, cls_)
-                        break
-            else:
-                # With a GPU row, just add a plain "Compute" chip for the paired family
-                for key in _FAMILY_CHIPS:
-                    if label.startswith(key):
-                        ch = chip("Paired compute", "chip-new-gen")
-                        break
-            primary_rows.append(row("GCP target", e(label) + ch))
-
-    if os_licenses:
-        for lic in os_licenses:
-            # Make RHEL band human-readable: "Red Hat Enterprise Linux 9 on VM with up to 8 VCPU"
-            # → "RHEL 9 · up to 8 vCPU tier"
-            display = lic
-            rhel_m = re.match(
-                r'Red Hat Enterprise Linux (\d+) on VM with (.+)', lic, re.IGNORECASE)
-            if rhel_m:
-                band = rhel_m.group(2).replace("VCPU", "vCPU").replace("vcpu", "vCPU")
-                display = f"RHEL {rhel_m.group(1)} — {band}"
-            win_m = re.match(r'Windows Server.*?(\d{4}).*?(Core|BYOL|per vCPU.*)?$', lic, re.IGNORECASE)
-            if win_m:
-                display = f"Windows Server {win_m.group(1)} license"
-                if win_m.group(2):
-                    display += f" ({win_m.group(2)})"
-            primary_rows.append(row("OS license", e(display)))
-
-    for line in other_lines:
-        primary_rows.append(row("Note", e(line)))
-
-    # ── build detail (collapsible) rows ───────────────────────────────────────
     detail_rows = []
 
-    if inline_notes:
-        for note in inline_notes:
-            detail_rows.append(row("Detail", e(note)))
+    # 1) Headline decision / GCP target.
+    if is_ignore:
+        primary_rows.append(row("Decision", "No GCP charge \u2014 free or included on GCP."))
+    elif is_pt:
+        meta = _PT_REASONS.get(pr or "", {})
+        label = meta.get("label") or "Carried at AWS cost"
+        primary_rows.append(row("Decision", e(label) + " \u2014 carried at AWS cost (cost parity)."))
+        desc = meta.get("description")
+        if desc and desc.lower() != (label or "").lower():
+            detail_rows.append(row("Why", e(desc)))
+    else:
+        target = gcp_machine_type or gcp_base_sku_name or gcp_service
+        if target:
+            primary_rows.append(row("GCP target", e(str(target))))
+        if lic_name:
+            primary_rows.append(row("OS license", e(str(lic_name))))
 
-    if arch_caveats:
-        for cav in arch_caveats:
-            detail_rows.append(row("⚠ Architecture", e(cav), cls="why-row-caveat"))
+    # 2) Operator assumption that forced this outcome.
+    if forced_assumption_key:
+        primary_rows.append(row(
+            "Assumption",
+            "Forced to passthrough by the operator assumption "
+            f"<code>{e(str(forced_assumption_key))}</code>.",
+        ))
 
-    if verify_flags:
-        for flag in verify_flags:
-            detail_rows.append(row("☑ Verify", e(flag), cls="why-row-caveat"))
+    # 3) Pricing basis (how the GCP rate was obtained / which region).
+    if rsrc:
+        tmpl = (_rs.RATE_SOURCE.get(rsrc) or {}).get("note_template")
+        if tmpl:
+            primary_rows.append(row("Pricing basis", e(tmpl)))
+    if rbasis and rbasis != "exact":
+        tmpl = (_rs.RATE_REGION_BASIS.get(rbasis) or {}).get("note_template")
+        if tmpl:
+            try:
+                tmpl = tmpl.format(rate_region_used=rate_region_used or "another region")
+            except Exception:
+                pass
+            primary_rows.append(row("Region", e(tmpl)))
 
-    # ── assemble HTML ─────────────────────────────────────────────────────────
+    # 4) Licensing.
+    if lstat and lstat != "none":
+        tmpl = (_rs.LICENSE_STATUS.get(lstat) or {}).get("note_template")
+        if tmpl:
+            primary_rows.append(row("Licensing", e(tmpl)))
+
+    # 5) Review caveats (do not change the number; change how to read it).
+    for flag in _rs.flags_of(review_flags):
+        tmpl = (_rs.REVIEW_FLAGS.get(flag) or {}).get("note_template")
+        if tmpl:
+            detail_rows.append(row("\u2611 Verify", e(tmpl), cls="why-row-caveat"))
+
+    # 6) Any remaining free-text rationale.
+    for piece in free_parts:
+        detail_rows.append(row("Note", e(piece)))
+
     if not primary_rows and not detail_rows:
-        if operator_override_key:
-            primary_rows.append(row("Decision", f"passthrough (operator override — assumption {e(operator_override_key)})"))
-        else:
-            # Fallback: render as plain text (unusual / passthrough rows).
-            fallback = e(raw[:320] + ("…" if len(raw) > 320 else ""))
-            return (
-                f'<div class="why-block">'
-                f'<span class="why-label">Why this equivalent:</span>'
-                f'<span class="why-text">{fallback}</span>'
-                f'</div>',
-                cost_tier_html,
-            )
+        return "", cost_tier_html
 
-    rows_html = '<div class="why-rows">' + "".join(primary_rows) + '</div>'
-
+    rows_html = ('<div class="why-rows">' + "".join(primary_rows) + '</div>') if primary_rows else ""
+    expand_html = ""
     if detail_rows:
         detail_html = '<div class="why-detail-rows">' + "".join(detail_rows) + '</div>'
         expand_html = (
             '<details class="why-expand">'
-            '<summary>'
-            '<span class="why-toggle">'
-            '<span class="why-toggle-arrow">▶</span> details</span>'
-            '</summary>'
+            '<summary><span class="why-toggle">'
+            '<span class="why-toggle-arrow">\u25b6</span> details</span></summary>'
             + detail_html +
             '</details>'
         )
-    else:
-        expand_html = ""
-
     html = (
-        f'<div class="why-block">'
-        f'<span class="why-label">Why this equivalent:</span>'
-        + rows_html
-        + expand_html
-        + f'</div>'
+        '<div class="why-block">'
+        '<span class="why-label">Why this equivalent:</span>'
+        + rows_html + expand_html +
+        '</div>'
     )
     return html, cost_tier_html
 
@@ -808,26 +558,36 @@ def main():
     aws_non_workload = (conn.execute("SELECT COALESCE(SUM(aws_amortized_cost),0) FROM aws_li_catalog WHERE NOT is_workload").fetchone()[0]) * aws_fx_rate
     aws_grand = aws_workload + aws_non_workload
 
-    # Gross bill before any credit/discount/EDP-reconciliation row nets
-    # against it — i.e. every POSITIVE charge, ignoring the negative rows
-    # (EDP reconciliation, refunds, "covered by Savings Plans" nettings,
-    # etc.) that bring the total down to what you actually pay. aws_grand
-    # above already nets these in (it's the real invoice total); this is
-    # just the other half of that same number, shown alongside it so a
-    # reader can see both "what you're billed" and "what was discounted off"
-    # without doing the subtraction themselves.
-    aws_gross = (conn.execute(
-        "SELECT COALESCE(SUM(aws_amortized_cost),0) FROM aws_li_catalog WHERE aws_amortized_cost > 0"
-    ).fetchone()[0]) * aws_fx_rate
-    aws_discounts = aws_gross - aws_grand
+    # Gross bill at On-Demand list prices before any credit/discount/EDP-reconciliation
+    # row nets against it. Reads aws_od_cost from gcp_projection (or aws_li_catalog)
+    # to evaluate true baseline unit economics (OD-vs-OD), rather than amortized cost
+    # which under-reported list price on commitment-discounted bills (WORKORDER_round3_audit.md B-1).
+    try:
+        aws_gross = (conn.execute("""
+            SELECT COALESCE(SUM(p_dedup.aws_od_cost), 0)
+            FROM (
+                SELECT aws_li_key, ANY_VALUE(aws_od_cost) AS aws_od_cost
+                FROM gcp_projection
+                WHERE aws_amortized_cost > 0
+                GROUP BY aws_li_key
+            ) p_dedup
+        """).fetchone()[0]) * aws_fx_rate
+        if aws_gross < aws_grand:
+            aws_gross = aws_grand
+    except Exception:
+        aws_gross = (conn.execute(
+            "SELECT COALESCE(SUM(aws_amortized_cost),0) FROM aws_li_catalog WHERE aws_amortized_cost > 0"
+        ).fetchone()[0]) * aws_fx_rate
+    aws_discounts = max(0.0, aws_gross - aws_grand)
 
-    # Marketplace spend: non-workload rows that are passthrough with "Marketplace" in note
+    # Marketplace spend: non-workload rows whose AWS product is a Marketplace
+    # charge. Detected from the AWS product (the source of truth), never from the
+    # projection note — the note is an output-only view and is never read for logic.
     aws_marketplace = (conn.execute("""
         SELECT COALESCE(SUM(c.aws_amortized_cost), 0)
         FROM aws_li_catalog c
-        JOIN aws_li_to_gcp_li m USING (aws_li_key)
         WHERE NOT c.is_workload
-          AND (m.projection_note ILIKE '%marketplace%' OR c.product ILIKE '%marketplace%')
+          AND (c.product ILIKE '%marketplace%' OR c.product ILIKE '%AWSMP%')
     """).fetchone()[0]) * aws_fx_rate
     # Infrastructure baseline = everything except marketplace (the "true" IaaS+PaaS spend)
     aws_infra_baseline = aws_grand - aws_marketplace
@@ -1015,6 +775,23 @@ def main():
         else "CAST(NULL AS BIGINT)"
     )
 
+    # Structured decision-state columns. The report's "why" is rendered from
+    # these (via _format_why_from_state), never by parsing projection_note.
+    # Each is guarded so older job DBs without the column still render.
+    def _agg(col, sep="|"):
+        return (f"STRING_AGG(DISTINCT NULLIF(m.{col}, ''), '{sep}')"
+                if col in _m2g_cols else "NULL")
+    _pt_reason_expr   = _agg("passthrough_reason")
+    _rate_source_expr = _agg("rate_source")
+    _rate_basis_expr  = _agg("rate_region_basis")
+    _rate_region_used_expr = "ANY_VALUE(m.rate_region_used)" if "rate_region_used" in _m2g_cols else "NULL"
+    _license_status_expr = _agg("license_status")
+    _review_flags_expr = ("STRING_AGG(DISTINCT m.review_flags, '')"
+                          if "review_flags" in _m2g_cols else "NULL")
+    _forced_key_expr = "ANY_VALUE(m.forced_assumption_key)" if "forced_assumption_key" in _m2g_cols else "NULL"
+    _pipeline_note_expr = _agg("pipeline_note", " · ")
+    _mapper_note_expr   = _agg("mapper_note", " · ")
+
     rows = conn.execute(f"""
         SELECT
             c.product,
@@ -1047,7 +824,16 @@ def main():
             -- Used for the main-row "GCP Mapping" so a license SKU picked by the
             -- ANY_VALUE above can never masquerade as the instance mapping.
             STRING_AGG(DISTINCT CASE WHEN m.component NOT IN ('license', 'sql_license')
-                                     THEN NULLIF(m.gcp_sku_name, '') ELSE NULL END, ' + ') AS gcp_base_sku_name
+                                     THEN NULLIF(m.gcp_sku_name, '') ELSE NULL END, ' + ') AS gcp_base_sku_name,
+            {_pt_reason_expr}        AS st_passthrough_reason,
+            {_rate_source_expr}      AS st_rate_source,
+            {_rate_basis_expr}       AS st_rate_region_basis,
+            {_rate_region_used_expr} AS st_rate_region_used,
+            {_license_status_expr}   AS st_license_status,
+            {_review_flags_expr}     AS st_review_flags,
+            {_forced_key_expr}       AS st_forced_assumption_key,
+            {_pipeline_note_expr}    AS st_pipeline_note,
+            {_mapper_note_expr}      AS st_mapper_note
         FROM aws_li_catalog c
         LEFT JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
         LEFT JOIN gcp_projection    p ON c.aws_li_key = p.aws_li_key
@@ -1269,7 +1055,8 @@ def main():
     sec_b_rows = []
 
     for r in rows:
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives, source_line_items, gcp_base_sku_name = r
+        (product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives, source_line_items, gcp_base_sku_name,
+         st_passthrough_reason, st_rate_source, st_rate_region_basis, st_rate_region_used, st_license_status, st_review_flags, st_forced_assumption_key, st_pipeline_note, st_mapper_note) = r
         if (aws or 0.0) < 0:
             continue
 
@@ -1289,7 +1076,8 @@ def main():
             sec_b_rows.append(r)
 
     def _render_row(r, idx, force_pt=False, active_columns=None):
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives, source_line_items, gcp_base_sku_name = r
+        (product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives, source_line_items, gcp_base_sku_name,
+         st_passthrough_reason, st_rate_source, st_rate_region_basis, st_rate_region_used, st_license_status, st_review_flags, st_forced_assumption_key, st_pipeline_note, st_mapper_note) = r
 
         ptype  = pill_type(gcp_svc, product)
         p_html = pill_html(ptype)
@@ -1348,7 +1136,22 @@ def main():
         region_str = _html.escape(str(gcp_region or aws_region or "—"))      # GCP target
         aws_region_str = _html.escape(str(aws_region or "—"))                # AWS source
 
-        why_html, cost_tier_html = _format_why_html(notes)
+        why_html, cost_tier_html = _format_why_from_state(
+            strategy=strategy,
+            gcp_service=gcp_svc,
+            gcp_base_sku_name=gcp_base_sku_name,
+            gcp_machine_type=gcp_machine_type,
+            lic_name=lic_name,
+            passthrough_reason=st_passthrough_reason,
+            rate_source=st_rate_source,
+            rate_region_basis=st_rate_region_basis,
+            rate_region_used=st_rate_region_used,
+            license_status=st_license_status,
+            review_flags=st_review_flags,
+            forced_assumption_key=st_forced_assumption_key,
+            pipeline_note=st_pipeline_note,
+            mapper_note=st_mapper_note,
+        )
 
         basis_tag = f' <span class="basis-tag" style="font-size:10px;color:#5F6368" title="OD basis: {_html.escape(str(od_basis))}">[{_html.escape(str(od_basis))}]</span>' if od_basis else ""
 

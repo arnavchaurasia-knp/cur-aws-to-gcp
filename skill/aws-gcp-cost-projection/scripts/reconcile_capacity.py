@@ -83,11 +83,11 @@ def main():
         con.execute("""
             UPDATE aws_li_to_gcp_li
             SET unit_multiplier = ?,
-                projection_note  = COALESCE(projection_note, '') ||
-                    ' [capacity adjusted: vCPU ' || CAST(ROUND(?, 2) AS VARCHAR) ||
-                    ' → ' || CAST(ROUND(?, 2) AS VARCHAR) || ' to match AWS ' || ? || ']'
+                review_flags = CASE
+                    WHEN COALESCE(review_flags, ',') LIKE '%,capacity_adjusted,%' THEN review_flags
+                    ELSE COALESCE(NULLIF(review_flags, ''), ',') || 'capacity_adjusted,' END
             WHERE aws_li_key = ? AND strategy IN ('break_down', 'map') AND component = 'core'
-        """, [aws_v, gcp_v, aws_v, itype or "instance", key])
+        """, [aws_v, key])
         vcpu_gain += aws_v - gcp_v
 
     # ── RAM ───────────────────────────────────────────────────────────────────
@@ -110,12 +110,11 @@ def main():
         con.execute("""
             UPDATE aws_li_to_gcp_li
             SET unit_multiplier = ?,
-                projection_note  = COALESCE(projection_note, '') ||
-                    ' [capacity adjusted: RAM ' || CAST(ROUND(?, 1) AS VARCHAR) ||
-                    ' GB → ' || CAST(ROUND(?, 1) AS VARCHAR) ||
-                    ' GB to match AWS ' || ? || ']'
+                review_flags = CASE
+                    WHEN COALESCE(review_flags, ',') LIKE '%,capacity_adjusted,%' THEN review_flags
+                    ELSE COALESCE(NULLIF(review_flags, ''), ',') || 'capacity_adjusted,' END
             WHERE aws_li_key = ? AND strategy IN ('break_down', 'map') AND component = 'ram'
-        """, [aws_r, gcp_r, aws_r, itype or "instance", key])
+        """, [aws_r, key])
         ram_gain += aws_r - gcp_r
 
     con.commit()

@@ -114,6 +114,26 @@ def flags_of(value) -> list[str]:
     return [f for f in REVIEW_FLAGS if f in present]
 
 
+def note_merge_sql(column: str = "pipeline_note") -> str:
+    """Return a SQL assignment fragment that idempotently appends a text snippet
+    to a free-text, output-only note column (default pipeline_note).
+
+    The snippet parameter must be bound THREE times, in order, e.g.:
+        con.execute(f"UPDATE {TABLE_NAME} SET {note_merge_sql()} WHERE ...",
+                    [text, text, text, ...])
+
+    Parts are joined with ' · ' (the separator render_notes splits on). This
+    reads the column only to avoid duplicate appends; the column is declared
+    readable_as_logic=false and is never used to make a mapping decision.
+    """
+    return (
+        f"{column} = CASE "
+        f"WHEN COALESCE({column}, '') = '' THEN ? "
+        f"WHEN COALESCE({column}, '') NOT LIKE '%' || ? || '%' THEN {column} || ' · ' || ? "
+        f"ELSE {column} END"
+    )
+
+
 def validate_value(field: str, value, tier: str = "pipeline") -> tuple[bool, str | None]:
     """Validate value and writer tier for a field.
     Returns (is_valid, error_message)."""

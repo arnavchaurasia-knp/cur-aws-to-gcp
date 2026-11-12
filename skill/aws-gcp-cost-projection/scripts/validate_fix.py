@@ -632,7 +632,8 @@ def passthrough_budget_exceeded(con) -> list:
             FROM aws_li_catalog c
             JOIN aws_li_to_gcp_li m ON m.aws_li_key = c.aws_li_key
             WHERE m.strategy = 'passthrough' AND c.is_workload = TRUE
-              AND COALESCE(m.projection_note, '') ILIKE '%map-with-no-rate downgraded%'
+              AND m.passthrough_reason = 'unresolved_sku'
+              AND COALESCE(m.decided_by, '') = 'validate_fix.py'
         """).fetchone()
         dg_cnt = int(dg_row[0] or 0) if dg_row else 0
 
@@ -1259,8 +1260,13 @@ def _downgrade_enterprise_plus(conn, services=None):
         if new_id and new_id != sku_id:
             conn.execute(
                 "UPDATE aws_li_to_gcp_li SET gcp_sku_id = ?, gcp_sku_name = ?, "
-                "projection_note = COALESCE(projection_note || ' ', '') || "
-                "'[tier-review: Enterprise Plus -> Enterprise — CUR evidence alone does not justify Plus-tier features (near-zero-downtime failover, Data Cache); confirm with customer if source workload needs them]' "
+                "review_flags = CASE "
+                "  WHEN COALESCE(review_flags, ',') LIKE '%,verify_with_customer,%' THEN review_flags "
+                "  ELSE COALESCE(NULLIF(review_flags, ''), ',') || 'verify_with_customer,' END, "
+                "pipeline_note = CASE "
+                "  WHEN COALESCE(pipeline_note, '') LIKE '%Enterprise Plus%' THEN pipeline_note "
+                "  ELSE COALESCE(NULLIF(pipeline_note, '') || ' · ', '') || "
+                "       'Mapped to Cloud SQL Enterprise (not Enterprise Plus): the bill alone does not justify Plus-tier features (near-zero-downtime failover, Data Cache) — confirm with the customer if the workload needs them.' END "
                 "WHERE aws_li_key = ? AND gcp_sku_id = ?",
                 (new_id, new_name, aws_li_key, sku_id),
             )
@@ -1645,8 +1651,7 @@ def main():
         for key, comp, mult, op, ut in rows:
             if PER_N_RE.search(f"{op} {ut}"):
                 con.execute(
-                    "UPDATE aws_li_to_gcp_li SET unit_multiplier=1.0, "
-                    "projection_note=COALESCE(projection_note,'')||' [validator: per-N multiplier clamped 1.0]' "
+                    "UPDATE aws_li_to_gcp_li SET unit_multiplier=1.0 "
                     "WHERE aws_li_key=? AND component IS NOT DISTINCT FROM ?", [key, comp])
                 clamped.append({"aws_li_key": key, "was": mult, "op": op[:60]})
 
@@ -1659,8 +1664,7 @@ def main():
         zeroed_keys = [r[0] for r in zeroed]
         if zeroed_keys:
             con.execute(
-                "UPDATE aws_li_to_gcp_li SET strategy='ignore', gcp_sku_id=NULL, unit_multiplier=NULL, "
-                "projection_note=COALESCE(projection_note,'')||' [validator: $0 bundled-throughput -> ignore]' "
+                "UPDATE aws_li_to_gcp_li SET strategy='ignore', gcp_sku_id=NULL, unit_multiplier=NULL "
                 f"WHERE aws_li_key IN ({','.join(['?']*len(zeroed_keys))})", zeroed_keys)
 
         # Repair instance family mismatches
@@ -1933,9 +1937,7 @@ def main():
             if phantom_auto_keys:
                 con.execute(
                     "UPDATE aws_li_to_gcp_li SET strategy='ignore', gcp_sku_id=NULL, "
-                    "unit_multiplier=NULL, "
-                    "projection_note=COALESCE(projection_note,'')||"
-                    "' [validator: phantom-zero AWS<=1 auto-ignored]' "
+                    "unit_multiplier=NULL "
                     f"WHERE aws_li_key IN ({','.join(['?']*len(phantom_auto_keys))})",
                     phantom_auto_keys,
                 )
@@ -1975,9 +1977,7 @@ def main():
             if no_rate_rows:
                 con.executemany(
                     "UPDATE aws_li_to_gcp_li SET strategy='passthrough', "
-                    "passthrough_reason='unresolved_sku', decided_by='validate_fix.py', gcp_sku_id=NULL, "
-                    "projection_note=COALESCE(projection_note,'')||"
-                    "' [validator: map-with-no-rate downgraded to passthrough]' "
+                    "passthrough_reason='unresolved_sku', decided_by='validate_fix.py', gcp_sku_id=NULL "
                     "WHERE aws_li_key = ? AND component IS NOT DISTINCT FROM ?",
                     no_rate_rows,
                 )
@@ -2014,9 +2014,7 @@ def main():
                 con.execute(
                     "UPDATE aws_li_to_gcp_li SET strategy='passthrough', "
                     "passthrough_reason='echo_reset', decided_by='validate_fix.py', gcp_sku_id=NULL, "
-                    "gcp_service='N/A (cost-parity passthrough)', "
-                    "projection_note=COALESCE(projection_note,'')||"
-                    "' [validator: echo bug — gcp_service was AWS name, reset to passthrough]' "
+                    "gcp_service='N/A (cost-parity passthrough)' "
                     "WHERE gcp_service = ?", [svc]
                 )
                 echo_cleared += 1
@@ -2044,9 +2042,7 @@ def main():
                 con.executemany(
                     "UPDATE aws_li_to_gcp_li SET strategy='passthrough', "
                     "passthrough_reason='detail_less_row', decided_by='validate_fix.py', gcp_sku_id=NULL, "
-                    "mapping_confidence=LEAST(COALESCE(mapping_confidence, 0.2), 0.2), "
-                    "projection_note=COALESCE(projection_note,'')||"
-                    "' [validator: detail-less row downgraded to passthrough]' "
+                    "mapping_confidence=LEAST(COALESCE(mapping_confidence, 0.2), 0.2) "
                     "WHERE aws_li_key = ?",
                     dl_rows,
                 )

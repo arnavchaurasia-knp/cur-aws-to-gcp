@@ -53,20 +53,20 @@ except Exception:
     compute_dominant_region = lambda _c: "us-central1"
 
 
-def _is_intentional_passthrough_note(note: str | None, reason: str | None = None) -> bool:
-    if reason:
-        try:
-            import passthrough_reasons as _pr
-            return reason in _pr.INTENTIONAL_REASONS
-        except Exception:
-            pass
-    if not note:
+def _is_intentional_passthrough(reason: str | None) -> bool:
+    """True when a passthrough is intentional (the correct final answer).
+
+    Decided ONLY from the structured passthrough_reason enum — never from
+    projection_note prose. The note is an output-only view and is never read to
+    make a mapping decision (see test_projection_note_isolation).
+    """
+    if not reason:
         return False
-    note_lower = note.lower()
-    for pattern in INTENTIONAL_PASSTHROUGH_NOTE_ILIKE:
-        if pattern.replace("%", "").lower() in note_lower:
-            return True
-    return False
+    try:
+        import passthrough_reasons as _pr
+        return reason in _pr.INTENTIONAL_REASONS
+    except Exception:
+        return False
 
 
 def validate_override(conn, aws_li_key, component, fix):
@@ -114,27 +114,29 @@ def validate_override(conn, aws_li_key, component, fix):
                 f"update max_unit_multiplier_* in data/review-config.json."
             )
 
-    # 3. G-2: Enforce intentional-passthrough protection in the guard
-    # If the current row's projection_note or passthrough_reason marks it as intentional passthrough and
-    # the override sets strategy='map' (or provides a SKU to map), reject.
+    # 3. G-2: Enforce intentional-passthrough protection in the guard.
+    # Decided from the structured passthrough_reason only — never from
+    # projection_note, which is an output-only view and is never read for logic.
     override_strategy = fix.get("strategy")
     is_mapping = override_strategy == "map" or (override_strategy is None and bool(gcp_sku_id))
 
     if conn is not None and aws_li_key:
         try:
             cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
-            reason_expr = "passthrough_reason" if "passthrough_reason" in cols else "NULL"
-            curr_row = conn.execute(
-                f"SELECT projection_note, {reason_expr} FROM aws_li_to_gcp_li WHERE aws_li_key = ? LIMIT 1",
-                [aws_li_key]
-            ).fetchone()
-            if curr_row and _is_intentional_passthrough_note(curr_row[0], curr_row[1]):
-                if is_mapping:
-                    return False, (
-                        f"Row {aws_li_key} is an intentional passthrough ({curr_row[0]!r}, reason={curr_row[1]!r}). "
-                        f"Overriding to strategy='map' violates intentional-passthrough protection."
-                    )
-        except Exception as e:
+            if "passthrough_reason" in cols:
+                curr_row = conn.execute(
+                    "SELECT passthrough_reason FROM aws_li_to_gcp_li WHERE aws_li_key = ? LIMIT 1",
+                    [aws_li_key]
+                ).fetchone()
+                curr_reason = curr_row[0] if curr_row else None
+            else:
+                curr_reason = None
+            if curr_reason and _is_intentional_passthrough(curr_reason) and is_mapping:
+                return False, (
+                    f"Row {aws_li_key} is an intentional passthrough (reason={curr_reason!r}). "
+                    f"Overriding to strategy='map' violates intentional-passthrough protection."
+                )
+        except Exception:
             # Table might not exist or other query error in isolated unit tests
             pass
 

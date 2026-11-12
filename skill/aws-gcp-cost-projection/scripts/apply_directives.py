@@ -367,19 +367,17 @@ def apply_directives_to_db(
             updated += 1
 
         if eff.notes:
-            # Annotation append mirrors the legacy apply_architecture_notes idiom:
-            # idempotent concat with a dedup guard, executed per note to avoid
-            # multiple assignments to projection_note in a single UPDATE statement.
+            # Directive disclosures are merged into pipeline_note (structured,
+            # output-only); render_notes.py composes projection_note from it.
+            # The CASE de-duplicates internally, so this never reads the note to
+            # make a mapping decision. Directive provenance lives in
+            # applied_directives; this is only the human explanation.
             for n in eff.notes:
-                con.execute("""
+                con.execute(f"""
                     UPDATE aws_li_to_gcp_li
-                    SET projection_note = CASE
-                        WHEN COALESCE(projection_note, '') = '' THEN ?
-                        WHEN COALESCE(projection_note, '') NOT ILIKE ? THEN COALESCE(projection_note, '') || '; ' || ?
-                        ELSE projection_note
-                    END
+                    SET {rs.note_merge_sql('pipeline_note')}
                     WHERE aws_li_key = ?
-                """, [n, f"%{n[:50]}%", n, key])
+                """, [n, n, n, key])
 
         if has_projection_table:
             # Compose gcp_projected_cost from at most one base and an optional CUD
@@ -416,6 +414,12 @@ def apply_directives_to_db(
                     params.extend(p)
                 params.append(key)
                 con.execute(f"UPDATE gcp_projection SET {', '.join(cols)} WHERE aws_li_key = ?", params)
+
+    try:
+        import render_notes
+        render_notes.render_notes_for_db(con)
+    except Exception:
+        pass
 
     con.close()
     print(f"apply_directives: applied {len(all_directives)} directive(s) across {updated} row(s)")

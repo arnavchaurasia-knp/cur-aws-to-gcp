@@ -78,9 +78,13 @@ def apply_candidate(conn, key: str, cand: dict, notes: list):
         conn.execute("""
             UPDATE aws_li_to_gcp_li
             SET mapping_confidence = GREATEST(0.1, COALESCE(mapping_confidence, 0.8) - ?),
-                projection_note = COALESCE(projection_note, '') || ' ' || ?
+                pipeline_note = CASE
+                    WHEN COALESCE(pipeline_note, '') = '' THEN ?
+                    WHEN COALESCE(pipeline_note, '') NOT LIKE '%' || ? || '%' THEN pipeline_note || ' · ' || ?
+                    ELSE pipeline_note
+                END
             WHERE aws_li_key = ?
-        """, [penalty, note, key])
+        """, [penalty, note, note, note, key])
         notes.append(f"- {key}: penalized confidence by {penalty} due to unsupported feature")
     else:
         notes.append(f"- `{key}`: unknown candidate action '{action}' — skipped")
@@ -98,6 +102,8 @@ def apply_override(conn, key: str, fix: dict, notes: list):
         updates = {"gcp_sku_id": gcp_sku_id, "gcp_sku_name": gcp_sku_name, "strategy": "map"}
         if gcp_service:
             updates["gcp_service"] = gcp_service
+        if component is not None:
+            updates["component"] = component
         try:
             cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
             if "needs_reprice" in cols:
@@ -107,7 +113,7 @@ def apply_override(conn, key: str, fix: dict, notes: list):
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         if component is not None:
             values = list(updates.values()) + [key, component]
-            conn.execute(f"UPDATE aws_li_to_gcp_li SET {set_clause} WHERE aws_li_key = ? AND component = ?", values)
+            conn.execute(f"UPDATE aws_li_to_gcp_li SET {set_clause} WHERE aws_li_key = ? AND (component = ? OR component IS NULL)", values)
             notes.append(f"- `{key}`: override — SKU {gcp_sku_id} ({gcp_sku_name}) [{component}] — {reason}")
         else:
             values = list(updates.values()) + [key]
@@ -116,12 +122,18 @@ def apply_override(conn, key: str, fix: dict, notes: list):
 
 
     if unit_mult is not None:
-        comp_mult = component if component is not None else "core"
-        conn.execute("""
-            UPDATE aws_li_to_gcp_li SET unit_multiplier = ?
-            WHERE aws_li_key = ? AND component = ?
-        """, [float(unit_mult), key, comp_mult])
-        notes.append(f"- `{key}`: override multiplier — {unit_mult} ({comp_mult}) — {reason}")
+        if component is not None:
+            conn.execute("""
+                UPDATE aws_li_to_gcp_li SET unit_multiplier = ?
+                WHERE aws_li_key = ? AND (component = ? OR component IS NULL)
+            """, [float(unit_mult), key, component])
+            notes.append(f"- `{key}`: override multiplier — {unit_mult} ({component}) — {reason}")
+        else:
+            conn.execute("""
+                UPDATE aws_li_to_gcp_li SET unit_multiplier = ?
+                WHERE aws_li_key = ?
+            """, [float(unit_mult), key])
+            notes.append(f"- `{key}`: override multiplier — {unit_mult} — {reason}")
 
 
 def main():
@@ -149,6 +161,11 @@ def main():
         sys.exit(0)
 
     conn = duckdb.connect(DB_PATH)
+    try:
+        import row_state
+        row_state.ensure_schema(conn)
+    except Exception:
+        pass
     notes = []
     applied = vetoed = errors = 0
 
@@ -178,9 +195,7 @@ def main():
                     SET strategy = 'passthrough',
                         passthrough_reason = 'llm_veto',
                         decided_by = 'apply_review_fixes.py',
-                        needs_reprice = FALSE,
-                        projection_note = COALESCE(NULLIF(projection_note, '') || '; ', '') ||
-                            'no GCP rate found — carried at AWS cost'
+                        needs_reprice = FALSE
                     WHERE aws_li_key = ? AND (strategy = 'needs_reprice' OR needs_reprice = TRUE)
                 """, [key])
             except Exception:
@@ -241,6 +256,12 @@ def main():
             except Exception as e:
                 print(f"ERROR applying override for {key}: {e}", file=sys.stderr)
                 errors += 1
+
+    try:
+        import render_notes
+        render_notes.render_notes_for_db(conn)
+    except Exception:
+        pass
 
     conn.close()
 

@@ -168,8 +168,9 @@ def main():
         if not rule:
             stats["unmatched"] += 1
             continue
-        note = (f"[{rule['category']}] {rule['reason']} "
-                f"(rule={RULE_TAG}, gcp={rule['gcp_service']})")
+        # Customer-facing policy reason only. Provenance (rule tag, category,
+        # target service) is structured elsewhere; it never belongs in the note.
+        note = (rule.get("reason") or "").strip()
         mode = rule["mode"]
         # service_map.json confidences are on a 0-100 scale; mapping_confidence
         # everywhere else is 0-1. Averaging the two scales made the report show
@@ -197,7 +198,7 @@ def main():
             ignore_updates.append((rule["gcp_service"], conf, note, product, usage_type))
             stats["ignore"] += 1
         else:  # keep
-            keep_updates.append((rule["gcp_service"], conf, note, note, product, usage_type))
+            keep_updates.append((rule["gcp_service"], conf, note, product, usage_type))
             stats["keep"] += 1
 
     # usage_type may be NULL (PDF-ingested bills); match it with IS NOT DISTINCT FROM
@@ -206,7 +207,7 @@ def main():
         con.executemany(
             """
             UPDATE aws_li_to_gcp_li SET
-                gcp_service = ?, mapping_confidence = ?, projection_note = ?,
+                gcp_service = ?, mapping_confidence = ?, pipeline_note = ?,
                 strategy = 'passthrough', passthrough_reason = 'service_policy_review', decided_by = 'service_classifier.py',
                 gcp_sku_id = NULL, gcp_sku_name = NULL
             WHERE aws_li_key IN (
@@ -219,7 +220,7 @@ def main():
         con.executemany(
             """
             UPDATE aws_li_to_gcp_li SET
-                gcp_service = ?, mapping_confidence = ?, projection_note = ?,
+                gcp_service = ?, mapping_confidence = ?, pipeline_note = ?,
                 strategy = 'ignore', gcp_sku_id = NULL, gcp_sku_name = NULL
             WHERE aws_li_key IN (
                 SELECT aws_li_key FROM aws_li_catalog
@@ -255,24 +256,15 @@ def main():
                 -- leaves unknown sub-charges of the same product as passthrough with
                 -- gcp_service NULL (confirmed real: VPC IPAM-Active-IP and
                 -- PublicIPv4:ContiguousBlock rows under "Amazon Virtual Private
-                -- Cloud"). Those null rows can't be rescued by a 'review' rule either
-                -- — flat_hourly is in DETERMINISTIC_GROUPS, so review is skipped as
-                -- "already priced". Backfill the rule's gcp_service ONLY when the
-                -- row has none, so labeled rows keep their real mapper SKU/label and
-                -- the no_null_projected_cost gate stops failing on the orphans.
+                -- Cloud"). Backfill the rule's gcp_service ONLY when the row has
+                -- none, so labeled rows keep their real mapper SKU/label.
                 gcp_service = COALESCE(NULLIF(TRIM(gcp_service), ''), ?),
                 mapping_confidence = LEAST(COALESCE(mapping_confidence, 1.0), ?),
-                projection_note = CASE
-                    WHEN (
-                        COALESCE(rate_source, '') IN ('no_rate', 'word_overlap', 'no_catalog', 'unknown')
-                        OR COALESCE(rate_region_basis, '') IN ('dominant', 'cheapest_available')
-                        OR passthrough_reason IS NOT NULL
-                        OR COALESCE(license_status, '') = 'premium_not_modeled'
-                        OR COALESCE(review_flags, ',') <> ','
-                    )
-                    THEN projection_note || ' ' || ?
-                    ELSE ?
-                END
+                -- The policy reason goes to pipeline_note (output-only). It never
+                -- clobbers the mapper's own mapper_note, and the mapper's structured
+                -- rate_source / passthrough_reason / review_flags still drive the
+                -- note independently via render_notes.
+                pipeline_note = ?
             WHERE aws_li_key IN (
                 SELECT aws_li_key FROM aws_li_catalog
                 WHERE product = ? AND usage_type IS NOT DISTINCT FROM ?)

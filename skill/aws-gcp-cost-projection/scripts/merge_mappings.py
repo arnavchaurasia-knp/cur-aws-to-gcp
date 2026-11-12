@@ -317,9 +317,9 @@ def main() -> None:
             if r.get("strategy") in ("map", "break_down") and r.get("gcp_sku_id"):
                 r["mapping_confidence"] = min(r.get("mapping_confidence", 0.5), 0.5)
                 note = "[sku-unvalidated: catalog unavailable]"
-                existing = r.get("projection_note") or ""
+                existing = r.get("mapper_note") or ""
                 if note not in existing:
-                    r["projection_note"] = f"{existing} {note}".strip()
+                    r["mapper_note"] = f"{existing} {note}".strip()
                 unvalidated_skus_count += 1
 
     # G-1 & G-1b: Intent resolution and SKU validation

@@ -1948,7 +1948,7 @@ def main():
                         "component": None,
                         "unit_multiplier": trusted.get("unit_multiplier", 1.0),
                         "gcp_region": r.get("gcp_region"),
-                        "projection_note": f"[refresh_store: trusted fact, {trusted.get('confirmation_count', 1)} confirmation(s)]",
+                        "mapper_note": f"Priced from a confirmed pricing fact ({trusted.get('confirmation_count', 1)} confirmation(s)).",
                         "mapping_confidence": 1.0,
                         "is_workload": True,
                         "break_down": False,

@@ -13,7 +13,7 @@ from egress_rates import EGRESS_SKUS
 from synthetic_skus import SYNTHETIC_SKU_IDS
 from resolve_sku import resolve_intent_to_sku
 from apply_static_mappings import GCP_COMPUTE_ENGINE, CUD_PCT_FALLBACK as _CUD_PCT_FALLBACK
-from config_loader import load_data_config
+from config_loader import load_data_config, load_assumptions
 
 log = get_logger("apply_rates")
 
@@ -194,14 +194,14 @@ def enforce_accelerator_passthrough(conn):
         if not comps or all(s == "passthrough" for _, s in comps):
             continue
         keep = comps[0][0]
-        conn.execute("UPDATE aws_li_to_gcp_li SET strategy='ignore', unit_multiplier=0, "
-                     "projection_note='accelerator component folded into passthrough' "
+        conn.execute("UPDATE aws_li_to_gcp_li SET strategy='ignore', unit_multiplier=0 "
                      "WHERE aws_li_key=? AND rowid<>?", [k, keep])
+        # Decision carried in structured state only; render_notes composes the
+        # human note from passthrough_reason='accelerator_manual_sizing'.
         conn.execute("UPDATE aws_li_to_gcp_li SET strategy='passthrough', "
                      "passthrough_reason='accelerator_manual_sizing', decided_by='apply_rates.py', "
                      "gcp_service='Manual Sizing Required', gcp_sku_id=NULL, gcp_sku_name=NULL, "
-                     "unit_multiplier=NULL, mapping_confidence=0.3, component='accelerator', "
-                     "projection_note='AI accelerator (Inferentia/Trainium/GPU) — Manual sizing required (A3/A2/G2/L4/H100/etc.)' "
+                     "unit_multiplier=NULL, mapping_confidence=0.3, component='accelerator' "
                      "WHERE aws_li_key=? AND rowid=?", [k, keep])
         fixed += 1
     if fixed:
@@ -218,6 +218,11 @@ def remap_elasticache_to_memorystore(conn):
     identically-named 'Custom Core/RAM' SKUs with the same vCPU+RAM break_down
     model, so we relabel the service and clear the sku_id — apply_rates then
     re-resolves the Memorystore SKU by the same name. Deterministic, no rate table."""
+    try:
+        import row_state
+        row_state.ensure_schema(conn)
+    except Exception:
+        pass
     n = conn.execute("""
         SELECT COUNT(*) FROM aws_li_to_gcp_li m JOIN aws_li_catalog cat USING (aws_li_key)
         WHERE LOWER(cat.product) LIKE '%elasticache%' AND m.gcp_service = 'Cloud SQL'
@@ -233,7 +238,7 @@ def remap_elasticache_to_memorystore(conn):
                 ELSE 'Memorystore for Memcached Custom Core'
             END,
             gcp_sku_id = NULL,
-            projection_note = 'ElastiCache → Memorystore for Memcached (cache workload; not Cloud SQL)'
+            pipeline_note = 'ElastiCache mapped to Memorystore for Memcached (cache workload, not Cloud SQL).'
         WHERE aws_li_key IN (
             SELECT cat.aws_li_key FROM aws_li_catalog cat
             WHERE LOWER(cat.product) LIKE '%elasticache%'
@@ -265,6 +270,11 @@ def fix_managed_db_storage_rows(conn, *_ignored):
         deployment), which should map to Cloud SQL's Regional (HA) storage
         tier. Now checks usage_type for "Multi-AZ".
     """
+    try:
+        import row_state
+        row_state.ensure_schema(conn)
+    except Exception:
+        pass
 
     # Aurora Serverless v2 ACU-hour rows (usage_type contains "ServerlessV2" or
     # ":ACU") are legitimately mapped to a vCPU/RAM SKU by map_managed_db() and
@@ -352,9 +362,7 @@ def fix_managed_db_storage_rows(conn, *_ignored):
                     gcp_sku_id = NULL, gcp_sku_name = NULL,
                     component = 'storage',
                     unit_multiplier = 1.0,
-                    mapping_confidence = 0.6,
-                    projection_note = 'Aurora/RDS Storage+IO row — unit mismatch with vCPU SKU; '
-                                      'passthrough at cost parity until Cloud SQL storage SKU resolved'
+                    mapping_confidence = 0.6
                 WHERE aws_li_key = ? AND component = ?
             """, [key, keep_component])
         else:
@@ -365,11 +373,11 @@ def fix_managed_db_storage_rows(conn, *_ignored):
                     component = 'storage',
                     unit_multiplier = 1.0,
                     mapping_confidence = 0.85,
-                    projection_note = ?
+                    pipeline_note = ?
                 WHERE aws_li_key = ? AND component = ?
             """, [new_sku_id, storage_sku,
-                  f"Aurora/RDS Storage+IO → {storage_sku} (unit-mismatch fix: was vCPU/RAM SKU"
-                  + (", Multi-AZ→Regional tier)" if is_multi_az else ")"),
+                  f"Aurora/RDS storage+I/O mapped to {storage_sku}"
+                  + (" (Multi-AZ → Regional tier)." if is_multi_az else "."),
                   key, keep_component])
         fixed += 1
 
@@ -560,13 +568,12 @@ def main():
         if res.sku_id:
             if res.note:
                 conn.execute(
-                    f"""UPDATE aws_li_to_gcp_li 
+                    f"""UPDATE aws_li_to_gcp_li
                        SET gcp_sku_id = ?,
                            gcp_sku_unit = COALESCE(?, gcp_sku_unit),
-                           rate_source = COALESCE(rate_source, 'word_overlap'),
-                           projection_note = COALESCE(NULLIF(projection_note, '') || '; ', '') || ?
+                           rate_source = COALESCE(rate_source, 'word_overlap')
                        WHERE aws_li_key = ? AND gcp_sku_id IS NULL {comp_filter}""",
-                    [res.sku_id, res.unit, res.note, aws_li_key] + comp_args,
+                    [res.sku_id, res.unit, aws_li_key] + comp_args,
                 )
                 if "[unit-unverified" in res.note:
                     conn.execute(
@@ -586,20 +593,20 @@ def main():
             resolved += 1
             log.debug(f"Resolved SKU: {gcp_service} / {gcp_sku_name!r} -> {res.sku_id}")
         else:
-            note = res.note or "[unresolved-sku: no catalog match — needs reprice]"
             try:
                 cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
                 reprice_col_clause = "needs_reprice = TRUE," if "needs_reprice" in cols else ""
             except Exception:
                 reprice_col_clause = ""
+            # Decision carried in structured state only: strategy='needs_reprice'
+            # + rate_source='no_rate' render to the human note via render_notes.
             conn.execute(
-                f"""UPDATE aws_li_to_gcp_li 
+                f"""UPDATE aws_li_to_gcp_li
                    SET strategy = 'needs_reprice',
                        {reprice_col_clause}
-                       rate_source = COALESCE(rate_source, 'no_rate'),
-                       projection_note = COALESCE(NULLIF(projection_note, '') || '; ', '') || ?
+                       rate_source = COALESCE(rate_source, 'no_rate')
                    WHERE aws_li_key = ? AND gcp_sku_id IS NULL {comp_filter}""",
-                [note, aws_li_key] + comp_args,
+                [aws_li_key] + comp_args,
             )
 
 
@@ -1146,9 +1153,7 @@ def main():
             # Batch update unreachable rows into outlier_triage (AR-O)
             conn.execute("""
                 UPDATE aws_li_to_gcp_li
-                SET strategy = 'outlier_triage',
-                    projection_note = COALESCE(NULLIF(projection_note, '') || ' ', '') ||
-                        '[rate-fill-gap: no rate for region — routed to Phase 5]'
+                SET strategy = 'outlier_triage'
                 WHERE strategy IN ('map', 'break_down')
                   AND gcp_sku_id IS NOT NULL
                   AND aws_li_key IN (
@@ -1303,8 +1308,9 @@ def main():
         except Exception as e:
             log.warning(f"render_notes_for_db in apply_rates failed: {e}")
 
-        # Re-create projection view with dominant region
-        create_projection_view(conn, dominant_region)
+        # Re-create projection view with dominant region and job assumptions
+        job_assumptions = load_assumptions(JOB_DIR)
+        create_projection_view(conn, dominant_region, assumptions=job_assumptions, job_dir=JOB_DIR)
 
         # Cap confidence on rows falling back to cheapest available region
         conn.execute("""

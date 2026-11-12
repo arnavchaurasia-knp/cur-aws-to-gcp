@@ -11,12 +11,14 @@ import (
 
 	"github.com/facets/cur-web/internal/config"
 	"github.com/facets/cur-web/internal/db"
+	"github.com/facets/cur-web/internal/jobs/engine"
 	"github.com/facets/cur-web/internal/skill"
 )
 
 type SpawnerConfig struct {
 	AGYPath  string
 	AGYModel string // `agy --model` alias; defaults to "gemini-3.8-flash" if empty.
+	Engine   engine.Engine
 	// ANTIGRAVITY_API_KEY is intentionally not part of SpawnerConfig. The spawned
 	// agy process inherits it from os.Environ(); set it on the host
 	// (VM-wide on prod, shell on dev). GEMINI_API_KEY is ignored by agy —
@@ -29,11 +31,29 @@ type SpawnResult struct {
 }
 
 type Spawner struct {
-	cfg SpawnerConfig
-	db  *db.DB // set via SetDB; used to write per-job assumption snapshots
+	cfg    SpawnerConfig
+	engine engine.Engine
+	db     *db.DB // set via SetDB; used to write per-job assumption snapshots
 }
 
-func NewSpawner(cfg SpawnerConfig) *Spawner { return &Spawner{cfg: cfg} }
+func NewSpawner(cfg SpawnerConfig) *Spawner {
+	eng := cfg.Engine
+	if eng == nil {
+		eng = engine.NewCLIEngine(engine.CLIEngineConfig{
+			AGYPath:  cfg.AGYPath,
+			AGYModel: cfg.AGYModel,
+		})
+	}
+	return &Spawner{
+		cfg:    cfg,
+		engine: eng,
+	}
+}
+
+// Engine returns the underlying execution Engine.
+func (s *Spawner) Engine() engine.Engine {
+	return s.engine
+}
 
 // SetDB injects the database handle so the spawner can write per-job
 // assumption snapshots. Called from main.go after both DB and Spawner exist.
@@ -258,8 +278,13 @@ func (s *Spawner) agyBin() string {
 	return "agy"
 }
 
-// EngineVersion returns the agy binary version string (or empty if unable to determine).
+// EngineVersion returns the engine/binary version string (or empty if unable to determine).
 func (s *Spawner) EngineVersion() string {
+	if s.engine != nil {
+		if ver := s.engine.Version(); ver != "" {
+			return ver
+		}
+	}
 	bin := s.agyBin()
 	out, err := exec.Command(bin, "--version").Output()
 	if err != nil {

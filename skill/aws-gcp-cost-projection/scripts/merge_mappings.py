@@ -43,10 +43,11 @@ from resolve_sku import (
 import passthrough_reasons as _pr
 import row_state as _rs
 try:
-    from diagnostics import diag, WARN
+    from diagnostics import diag, WARN, ERROR
 except (ImportError, ModuleNotFoundError):  # pragma: no cover
     def diag(*a, **k): pass
     WARN = "warn"
+    ERROR = "error"
 
 # Columns that appear in a mapping record.
 # Order matches the INSERT statement.
@@ -280,7 +281,15 @@ def main() -> None:
         cat_count = catalog_rows_per_group.get(group, 0)
         map_count = mapping_rows_per_group.get(group, 0)
         if cat_count > 0 and map_count == 0:
-            diag(WARN, "empty_group_mappings", "merge_mappings.py",
+            # Escalate deterministic groups to ERROR if they produced 0 rows (fingerprint of a crashed deterministic mapper)
+            is_deterministic_group = False
+            try:
+                from classify_mechanics import DETERMINISTIC_GROUPS
+                is_deterministic_group = group in DETERMINISTIC_GROUPS
+            except Exception:
+                pass
+            level = ERROR if is_deterministic_group else WARN
+            diag(level, "empty_group_mappings", "merge_mappings.py",
                  f"Group '{group}' has {cat_count} catalog row(s) but no mapping file/rows",
                  rows=cat_count, usd=0.0,
                  detail={"mechanic_group": group, "catalog_rows": cat_count, "mapping_rows": map_count})
@@ -447,17 +456,45 @@ def main() -> None:
             row_dict["decided_by"] = row_dict.get("_source_file") or "merge_mappings.py"
         records.append(tuple(row_dict.get(col) for col in COLUMNS))
 
-    # M-1: Atomic transaction (never DELETE before records are proven insertable)
+    # M-1: Atomic transaction with UPSERT semantics (never clobber existing retry/direct inserts)
     con.execute("BEGIN TRANSACTION")
     try:
-        con.execute("DELETE FROM aws_li_to_gcp_li")
         if records:
-            placeholders = ", ".join(["?"] * len(COLUMNS))
             col_list = ", ".join(COLUMNS)
+            placeholders = ", ".join(["?"] * len(COLUMNS))
+            con.execute(f"CREATE TEMP TABLE _incoming_mappings AS SELECT {col_list} FROM aws_li_to_gcp_li WHERE 1=0")
             con.executemany(
-                f"INSERT INTO aws_li_to_gcp_li ({col_list}) VALUES ({placeholders})",
+                f"INSERT INTO _incoming_mappings ({col_list}) VALUES ({placeholders})",
                 records,
             )
+
+            # Precedence rule: Delete existing rows matching (aws_li_key, component) UNLESS
+            # the existing row was authored by a direct LLM retry/fallback prompt or high-precedence human decision.
+            con.execute("""
+                DELETE FROM aws_li_to_gcp_li
+                WHERE EXISTS (
+                    SELECT 1 FROM _incoming_mappings inc
+                    WHERE inc.aws_li_key = aws_li_to_gcp_li.aws_li_key
+                      AND COALESCE(inc.component, '') = COALESCE(aws_li_to_gcp_li.component, '')
+                      AND NOT (
+                          COALESCE(aws_li_to_gcp_li.decided_by, '') LIKE '%retry%'
+                          OR COALESCE(aws_li_to_gcp_li.decided_by, '') LIKE '%direct%'
+                          OR COALESCE(aws_li_to_gcp_li.decided_by, '') = 'human'
+                      )
+                )
+            """)
+
+            # Insert incoming rows where no higher-precedence row currently exists
+            con.execute(f"""
+                INSERT INTO aws_li_to_gcp_li ({col_list})
+                SELECT {col_list} FROM _incoming_mappings inc
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM aws_li_to_gcp_li cur
+                    WHERE cur.aws_li_key = inc.aws_li_key
+                      AND COALESCE(cur.component, '') = COALESCE(inc.component, '')
+                )
+            """)
+            con.execute("DROP TABLE _incoming_mappings")
         con.execute("COMMIT")
     except Exception as e:
         con.execute("ROLLBACK")

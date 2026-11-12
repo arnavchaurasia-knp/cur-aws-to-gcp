@@ -160,14 +160,14 @@ func phaseSpecs(inputExt string) []phaseSpec {
 					// forces a full (and futile) Phase-2 LLM re-run.
 					return []string{
 						"scripts/classify_mechanics.py $DB",
-						"?scripts/apply_commitment_ignores.py $DB",
-						"?scripts/apply_static_mappings.py $DB",
+						"scripts/apply_commitment_ignores.py $DB",
+						"scripts/apply_static_mappings.py $DB",
 					}
 				}
 				return []string{
 					"scripts/classify_mechanics.py $DB",
-					"?scripts/apply_commitment_ignores.py $DB",
-					"?scripts/apply_static_mappings.py $DB",
+					"scripts/apply_commitment_ignores.py $DB",
+					"scripts/apply_static_mappings.py $DB",
 				}
 			}(),
 			PostLLMScripts: func() []string {
@@ -682,6 +682,37 @@ func (s *Spawner) StartOrchestrated(jobDir, inputExt string, engine ...string) (
 		return 0, "", fmt.Errorf("mkdir jobDir: %w", err)
 	}
 
+	// Pin job-local copy of phases and scripts so in-flight runs are isolated
+	// from concurrent codebase edits.
+	copyDirAll := func(src, dst string) error {
+		return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(src, path)
+			if err != nil {
+				return err
+			}
+			target := filepath.Join(dst, rel)
+			if info.IsDir() {
+				return os.MkdirAll(target, 0755)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(target, data, info.Mode())
+		})
+	}
+	_ = copyDirAll(filepath.Join(skillDir, "phases"), filepath.Join(cleanJobDir, "phases"))
+	_ = copyDirAll(filepath.Join(skillDir, "scripts"), filepath.Join(cleanJobDir, "scripts"))
+
+	// Record skill provenance / git SHA in job dir
+	if gitOut, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
+		sha := strings.TrimSpace(string(gitOut))
+		_ = os.WriteFile(filepath.Join(cleanJobDir, "skill_version.txt"), []byte(sha+"\n"), 0644)
+	}
+
 	script, err := renderOrchestrator(inputExt)
 	if err != nil {
 		return 0, "", fmt.Errorf("render orchestrator: %w", err)
@@ -800,6 +831,17 @@ AGY_LOG   = os.path.join(JOB_DIR, "agy-internal.log")
 PHASES    = json.loads(base64.b64decode("%s").decode())
 END_PHASE = int(os.environ.get("END_PHASE", str(TOTAL_PHASES)))
 SKILL_DIR = os.environ.get("SKILL_DIR", "")
+# Prefer the job's pinned scripts directory (copied by spawner at job start)
+# so concurrent codebase edits or half-saved files do not mutate an in-flight job.
+JOB_SCRIPTS_DIR = os.path.join(JOB_DIR, "scripts")
+def _resolve_script(rel_path):
+    if rel_path.startswith("scripts/") or rel_path.startswith("scripts\\"):
+        sub = rel_path[len("scripts/"):].lstrip("/\\")
+        job_copy = os.path.join(JOB_SCRIPTS_DIR, sub)
+        if os.path.exists(job_copy):
+            return job_copy
+    p = os.path.join(SKILL_DIR, rel_path)
+    return p
 
 # Single-instance lock. This exists because an agy agent has, in practice,
 # invoked "python3 run_all.py" itself as a shell command mid-phase (e.g. after
@@ -978,7 +1020,7 @@ def run_script(script_cmd):
         script_cmd = script_cmd[1:]
     cmd = script_cmd.replace("$DB", DB).replace("$JOBDIR", JOB_DIR)
     parts = cmd.split()
-    script_path = os.path.join(SKILL_DIR, parts[0])
+    script_path = _resolve_script(parts[0])
     if not os.path.exists(script_path):
         msg = "Referenced script does not exist on disk: " + script_path
         log("[SCRIPT] FATAL: " + msg)
@@ -1390,7 +1432,7 @@ def _build_mapping_coverage_retry_prompt(v):
         "need field definitions). Then INSERT one row per component directly into aws_li_to_gcp_li in "
         + DB + " via SQL (aws_li_key, gcp_service, gcp_sku_id, gcp_sku_name, gcp_sku_unit, component,\n"
         "strategy, unit_multiplier, gcp_region, projection_note, mapping_confidence, is_workload,\n"
-        "break_down, rate_source). Every one of the " + str(v) + " aws_li_keys listed above must end up\n"
+        "break_down, rate_source, decided_by). Always set decided_by='llm_retry_direct'. Every one of the " + str(v) + " aws_li_keys listed above must end up\n"
         "with at least one row in aws_li_to_gcp_li.\n"
         "RULES:\n"
         "  * Map ONLY the rows listed above. Do not touch, re-map, or overwrite any other aws_li_key.\n"
@@ -1506,7 +1548,7 @@ def _build_targeted_retry_prompt(ph, v):
             "isolated from every other job running on this machine at the same time.\n\n"
             "## Violating rows\n\n" + row_block +
             "## Instructions\n\n"
-            "Fix each row by updating aws_li_to_gcp_li in " + DB + ".\n"
+            "Fix each row by updating aws_li_to_gcp_li in " + DB + " (and set decided_by='llm_outlier_retry_direct').\n"
             "Over-projection: reduce unit_multiplier or switch to a cheaper SKU.\n"
             "Zero projection: the SKU has no rate — set strategy=passthrough with a clear gcp_service label.\n"
             "After fixing, run scripts/incremental_rerate.py " + DB + " then scripts/outlier_gate.py " + DB + ".\n"
@@ -1567,7 +1609,7 @@ def run_phase(ph):
     if pre_script:
         log("Running pre_script: " + pre_script)
         try:
-            subprocess.run([PYTHON, os.path.join(SKILL_DIR, pre_script)], cwd=JOB_DIR, check=True)
+            subprocess.run([PYTHON, _resolve_script(pre_script)], cwd=JOB_DIR, check=True)
         except subprocess.CalledProcessError as e:
             msg = ("pre_script " + pre_script + " exited with code " + str(e.returncode)
                    + " during Phase " + str(ph["num"]) + " (" + ph["name"] + "). Check agy.log for details.")
@@ -1602,7 +1644,7 @@ def run_phase(ph):
         _r = None
         _stderr_tail = ""
         try:
-            _r = subprocess.run([PYTHON, os.path.join(SKILL_DIR, script_path)],
+            _r = subprocess.run([PYTHON, _resolve_script(script_path)],
                                 cwd=JOB_DIR, stderr=subprocess.PIPE, text=True)
             # Tee captured stderr back into agy.log so the live log view (and the
             # facets log tail) still shows it exactly as before.
@@ -1666,7 +1708,7 @@ def run_phase(ph):
                 fallback_ok = True
                 if on_failure_pre:
                     try:
-                        subprocess.run([PYTHON, os.path.join(SKILL_DIR, on_failure_pre)],
+                        subprocess.run([PYTHON, _resolve_script(on_failure_pre)],
                                         cwd=JOB_DIR, check=True)
                     except subprocess.CalledProcessError as e2:
                         log("WARNING: on_failure_pre_script " + on_failure_pre
@@ -1686,7 +1728,7 @@ def run_phase(ph):
                     log("retrying script after LLM fallback: " + script_path)
                     _r3 = None
                     try:
-                        _r3 = subprocess.run([PYTHON, os.path.join(SKILL_DIR, script_path)],
+                        _r3 = subprocess.run([PYTHON, _resolve_script(script_path)],
                                         cwd=JOB_DIR, stderr=subprocess.PIPE, text=True)
                         if _r3.stderr:
                             try:
@@ -1801,6 +1843,8 @@ def run_phase(ph):
             sys.exit(0)
         else:
             log("WARNING: quota/auth block on non-critical Phase %%d — continuing to report" %% ph["num"])
+            phase_entry["duration_seconds"] = int(time.time() - _phase_start_t)
+            phase_entry["end_time"] = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
             write_phase_checkpoint(ph["num"], duration=phase_entry["duration_seconds"],
                                    phase_name=ph["name"], status="warning")
             return
@@ -1839,10 +1883,14 @@ def run_phase(ph):
                                  + str(ph["num"]) + " (" + ph["name"] + "). The model API returned a "
                                  "quota error, so the projection could not be completed. Re-run once the "
                                  "quota resets or switch to an account with available quota.")
+                    phase_entry["duration_seconds"] = int(time.time() - _phase_start_t)
+                    phase_entry["end_time"] = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
                     measure_metrics(phase_runs)
                     sys.exit(0)
                 else:
                     log("WARNING: quota/auth block on non-critical Phase %%d retry — continuing to report" %% ph["num"])
+                    phase_entry["duration_seconds"] = int(time.time() - _phase_start_t)
+                    phase_entry["end_time"] = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
                     write_phase_checkpoint(ph["num"], duration=phase_entry["duration_seconds"],
                                            phase_name=ph["name"], status="warning")
                     return
@@ -1893,6 +1941,8 @@ def run_phase(ph):
                     log("gate FATAL: " + msg)
                     with open(os.path.join(JOB_DIR, "failure.txt"), "w") as _f:
                         _f.write(msg)
+                    phase_entry["duration_seconds"] = int(time.time() - _phase_start_t)
+                    phase_entry["end_time"] = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
                     measure_metrics(phase_runs)
                     sys.exit(0)
                 else:
@@ -1904,7 +1954,10 @@ def run_phase(ph):
             log("gate %%s PASS" %% ph.get("check_name","?"))
 
     # Record this phase's terminal state so the UI tracker resolves and a
-    # retry can resume here.
+    # retry can resume here. Recompute elapsed duration and end_time at write
+    # time so retried phases (or post-LLM repair passes) are timed accurately.
+    phase_entry["duration_seconds"] = int(time.time() - _phase_start_t)
+    phase_entry["end_time"] = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
     write_phase_checkpoint(ph["num"], duration=phase_entry["duration_seconds"],
                            phase_name=ph["name"], status=phase_status)
 

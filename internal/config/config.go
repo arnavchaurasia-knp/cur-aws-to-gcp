@@ -52,6 +52,9 @@ type Config struct {
 	// AGYModel is the model alias passed to `agy --model`. From
 	// $AGY_MODEL, default "gemini-3.8-flash".
 	AGYModel string
+	// Engine selects the execution substrate: "cli" (default) or "api".
+	// From $CUR_WEB_ENGINE.
+	Engine string
 	// AdminEmails is a comma-separated allow-list from $ADMIN_EMAILS.
 	// Members can see every job (not just their own) via /api/admin/*.
 	// Empty = no admins. Compared case-insensitively against session.Email.
@@ -225,9 +228,15 @@ func LoadFromEnv() (*Config, error) {
 		s3Region = "auto"
 	}
 
+	engineChoice := strings.ToLower(strings.TrimSpace(os.Getenv("CUR_WEB_ENGINE")))
+	if engineChoice == "" {
+		engineChoice = "cli"
+	}
+
 	return &Config{
 		AGYPath:            os.Getenv("AGY_PATH"),
 		AGYModel:           model,
+		Engine:             engineChoice,
 		Port:               port,
 		DataDir:            dataDir,
 		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),

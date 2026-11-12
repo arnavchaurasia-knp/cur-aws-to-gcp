@@ -22,6 +22,7 @@ import (
 	"github.com/facets/cur-web/internal/db"
 	"github.com/facets/cur-web/internal/envmgr"
 	"github.com/facets/cur-web/internal/jobs"
+	"github.com/facets/cur-web/internal/jobs/engine"
 	"github.com/facets/cur-web/internal/logger"
 	"github.com/facets/cur-web/internal/mcp"
 	"github.com/facets/cur-web/internal/notify"
@@ -111,7 +112,25 @@ func main() {
 		log.Println("WARNING: DEV_AUTH_BYPASS=true — Google OAuth disabled, /api/auth/login sets a fake dev@facets.cloud session")
 	}
 
-	spawner := jobs.NewSpawner(jobs.SpawnerConfig{AGYPath: cfg.AGYPath, AGYModel: cfg.AGYModel})
+	var execEngine engine.Engine
+	if cfg.Engine == "api" {
+		slog.Info("initializing API execution engine", "model", cfg.AGYModel)
+		execEngine = engine.NewAPIEngine(engine.APIEngineConfig{
+			Model: cfg.AGYModel,
+		})
+	} else {
+		slog.Info("initializing CLI execution engine", "model", cfg.AGYModel, "agy_path", cfg.AGYPath)
+		execEngine = engine.NewCLIEngine(engine.CLIEngineConfig{
+			AGYPath:  cfg.AGYPath,
+			AGYModel: cfg.AGYModel,
+		})
+	}
+
+	spawner := jobs.NewSpawner(jobs.SpawnerConfig{
+		AGYPath:  cfg.AGYPath,
+		AGYModel: cfg.AGYModel,
+		Engine:   execEngine,
+	})
 	spawner.SetDB(database)
 	notifyCfg := jobs.NotifyConfig{
 		Email: notify.EmailConfig{

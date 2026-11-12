@@ -69,7 +69,7 @@ def test_m1_atomic_transaction_rollback_on_failure(temp_env, monkeypatch):
     orig_executemany = duckdb.DuckDBPyConnection.executemany
 
     def failing_executemany(self, sql, records):
-        if "INSERT INTO aws_li_to_gcp_li" in sql:
+        if "INSERT INTO _incoming_mappings" in sql or "INSERT INTO aws_li_to_gcp_li" in sql:
             raise RuntimeError("Simulated DuckDB write failure")
         return orig_executemany(self, sql, records)
 

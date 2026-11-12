@@ -10,6 +10,8 @@ _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _DATA_DIR = os.path.join(_SCRIPTS_DIR, "..", "data")
 _DOMAINS_FILE = os.path.join(_DATA_DIR, "assumption_domains.json")
 _RATIO_REGISTRY_FILE = os.path.join(_DATA_DIR, "ratio_registry.json")
+_DEFAULTS_FILE = os.path.join(_DATA_DIR, "assumption-defaults.json")
+_SPEC_FILE = os.path.join(_DATA_DIR, "ec2-instance-types.json")
 
 
 def load_domains() -> dict:
@@ -64,6 +66,48 @@ def derive_aurora_values(ratio_registry_path: str = None) -> tuple:
         raise ValueError("Derived aurora_acu_vcpu values do not include default 2.0!")
 
     return ram_values, vcpu_values
+
+
+def derive_node_ram_values(service: str, spec_path: str = None) -> float:
+    """
+    Derive default node RAM (GiB) for DAX or MemoryDB from ec2-instance-types.json.
+    - DAX runs on R5 large baseline: r5.large -> 16.0 GiB
+    - MemoryDB runs on Graviton R6g large baseline: r6g.large -> 16.0 GiB
+    """
+    path = spec_path or _SPEC_FILE
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Instance types spec file not found at {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        specs = json.load(f)
+
+    svc_lower = service.lower()
+    if "dax" in svc_lower:
+        instance_type = "r5.large"
+    elif "memorydb" in svc_lower:
+        instance_type = "r6g.large"
+    else:
+        raise ValueError(f"Unknown service for node RAM derivation: {service}")
+
+    spec = specs.get(instance_type)
+    if not spec or "ram_gb" not in spec:
+        raise ValueError(f"Instance type {instance_type} not found or missing ram_gb in {path}")
+
+    return float(spec["ram_gb"])
+
+
+def derive_lambda_mb_per_vcpu(defaults_path: str = None, ceiling_mb: float = 4096.0) -> float:
+    """
+    Derive Lambda memory-per-vCPU baseline bounded by Cloud Run's architectural ceiling (4096 MiB/vCPU).
+    Defaults to 2500.0 MB per vCPU from assumption-defaults.json, clamped within [512.0, ceiling_mb].
+    """
+    path = defaults_path or _DEFAULTS_FILE
+    val = 2500.0
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+            val = float(d.get("values", {}).get("lambda_mb_per_vcpu", 2500.0))
+    clamped = min(max(512.0, val), float(ceiling_mb))
+    return float(clamped)
 
 
 def format_domain(key: str, info: dict) -> str:

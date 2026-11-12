@@ -400,6 +400,111 @@ def apply_od_basis(conn, assumptions: dict | None = None) -> None:
         log.info(f"OD-basis distribution (WORKORDER_real_discount_resolution): {summary_map}")
     except Exception:
         pass
+
+    # Tier C assumption calibration from the bill (WORKORDER_assumption_self_fetch_all.md Phase 4)
+    try:
+        calibrate_assumptions_from_bill(conn)
+    except Exception as e:
+        log.debug(f"Tier C assumption calibration skipped: {e}")
+
+
+def calibrate_assumptions_from_bill(conn, assumptions_path: str | None = None) -> dict:
+    """Calibrate Tier C assumptions from the customer's actual bill (WORKORDER_assumption_self_fetch_all.md Phase 4).
+
+    Computes realized RI (1yr/3yr), SP, and Spot discounts from lines in aws_li_catalog.
+    When a bill contains matching lines with valid public OD vs amortized cost, the realized discount
+    is written to the per-job assumptions.json with value_source: "bill_derived".
+    Falls back to committed defaults when the bill lacks those lines or when division would be invalid.
+    Returns the calibrated assumptions dictionary.
+    """
+    calibrated = {}
+    sources = {}
+
+    defaults_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "assumption-defaults.json")
+    defaults = {}
+    if os.path.exists(defaults_path):
+        try:
+            with open(defaults_path, "r", encoding="utf-8") as f:
+                defaults = json.load(f).get("values", {})
+        except Exception:
+            pass
+
+    _sp_match = (
+        "LOWER(COALESCE(line_item_type, '')) = 'savingsplancoveredusage' "
+        "OR COALESCE(usage_type, '') ILIKE '%savings%plan%' "
+        "OR COALESCE(operation, '') ILIKE '%savings%plan%'"
+    )
+    _ri_match = (
+        "LOWER(COALESCE(pricing_model, '')) IN ('committed', 'reserved') "
+        "OR LOWER(COALESCE(line_item_type, '')) = 'discountedusage' "
+        "OR COALESCE(usage_type, '') ILIKE '%reserved%' "
+        "OR COALESCE(operation, '') ILIKE '%reserved%'"
+    )
+    _spot_match = (
+        "LOWER(COALESCE(pricing_model, '')) = 'spot' "
+        "OR COALESCE(usage_type, '') ILIKE '%spot%' "
+        "OR COALESCE(operation, '') ILIKE '%spot%'"
+    )
+    _is_3yr = (
+        "REGEXP_MATCHES(LOWER(COALESCE(usage_type, '') || ' ' || COALESCE(operation, '')), "
+        "'\\b(3-year|36\\s*mo|36\\s*month)\\b|3\\s+yr|3\\s+year|3yr')"
+    )
+
+    queries = {
+        "aws_sp_discount_pct": f"SELECT SUM(public_on_demand_cost), SUM(aws_amortized_cost) FROM aws_li_catalog WHERE ({_sp_match}) AND public_on_demand_cost > 0 AND aws_amortized_cost > 0",
+        "aws_ri_3yr_discount_pct": f"SELECT SUM(public_on_demand_cost), SUM(aws_amortized_cost) FROM aws_li_catalog WHERE ({_ri_match}) AND ({_is_3yr}) AND public_on_demand_cost > 0 AND aws_amortized_cost > 0",
+        "aws_ri_1yr_discount_pct": f"SELECT SUM(public_on_demand_cost), SUM(aws_amortized_cost) FROM aws_li_catalog WHERE ({_ri_match}) AND NOT ({_is_3yr}) AND public_on_demand_cost > 0 AND aws_amortized_cost > 0",
+        "aws_spot_discount_pct": f"SELECT SUM(public_on_demand_cost), SUM(aws_amortized_cost) FROM aws_li_catalog WHERE ({_spot_match}) AND public_on_demand_cost > 0 AND aws_amortized_cost > 0",
+    }
+
+    for key, q in queries.items():
+        try:
+            row = conn.execute(q).fetchone()
+            if row and row[0] and row[1] and row[0] > row[1]:
+                disc = round(float((row[0] - row[1]) / row[0]), 4)
+                if 0.01 <= disc <= 0.99:
+                    calibrated[key] = disc
+                    sources[key] = "bill_derived"
+                    continue
+        except Exception:
+            pass
+        if key in defaults:
+            calibrated[key] = float(defaults[key])
+            sources[key] = "committed_default"
+
+    if "nat_vms_per_gateway" in defaults:
+        calibrated["nat_vms_per_gateway"] = float(defaults["nat_vms_per_gateway"])
+        sources["nat_vms_per_gateway"] = "committed_default (topology not in CUR)"
+
+    target_path = assumptions_path
+    if not target_path and "JOB_DIR" in globals():
+        candidate = os.path.join(JOB_DIR, "assumptions.json")
+        audit_dir = os.path.join(JOB_DIR, "projection-audit")
+        if os.path.isdir(audit_dir) and os.path.exists(candidate):
+            target_path = candidate
+
+    if target_path:
+        existing = {}
+        if os.path.exists(target_path):
+            try:
+                with open(target_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            except Exception:
+                pass
+        vals = existing.get("values", {})
+        vals.update(calibrated)
+        existing["values"] = vals
+        v_sources = existing.get("value_source", {})
+        v_sources.update(sources)
+        existing["value_source"] = v_sources
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+            with open(target_path, "w", encoding="utf-8") as f:
+                json.dump(existing, f, indent=2)
+        except Exception as e:
+            log.warning(f"Could not write calibrated assumptions to {target_path}: {e}")
+
+    return calibrated
 try:
     from diagnostics import diag, WARN
 except ImportError:
@@ -2905,7 +3010,7 @@ def main():
         )
 
     # 4c. OD-vs-OD Comparison (WORKORDER_od_vs_od_sp_ri). See apply_od_basis().
-    apply_od_basis(conn)
+    apply_od_basis(conn, assumptions=_load_assumptions(JOB_DIR))
 
     # 5. Map Regions
     catalog_rows = conn.execute("""

@@ -40,6 +40,35 @@ def test_all_defaults_have_domain_entry(defaults):
         assert key in domains, f"Missing domain entry for default key '{key}'"
 
 
+def test_refresh_tiers_and_sources_valid():
+    """Every key must have a valid refresh_tier (A, B, C, D) and Tier A/B must resolve sources."""
+    domains = load_domains()
+    assert len(domains) >= 19
+    valid_tiers = {"A", "B", "C", "D"}
+    for key, dom in domains.items():
+        tier = dom.get("refresh_tier")
+        assert tier in valid_tiers, f"Assumption '{key}' missing valid refresh_tier (got {tier})"
+
+        if tier == "A":
+            # Must point to an in-repo source_artifact or source_url
+            artifact = dom.get("source_artifact")
+            url = dom.get("source_url")
+            assert artifact or url, f"Tier A key '{key}' missing source_artifact and source_url"
+            if artifact:
+                abs_art = os.path.join(_SKILL_DIR, artifact)
+                assert os.path.exists(abs_art), f"Tier A key '{key}' points to non-existent artifact {artifact}"
+        elif tier == "B":
+            # Must point to a valid http(s) source_url
+            url = dom.get("source_url")
+            assert url and url.startswith("http"), f"Tier B key '{key}' missing valid source_url (got {url})"
+        elif tier == "C":
+            # Bill calibrated
+            assert dom.get("source_kind") == "bill_calibrated"
+        elif tier == "D":
+            # Tracked outcome must be recorded
+            assert dom.get("tracked_outcome") in {"NO_SOURCE", "POLICY", "NEEDS_HUMAN"}
+
+
 def test_aurora_acu_ram_gib_matches_ratio_registry(ratio_registry):
     """aurora_acu_ram_gib.values must strictly equal ratio_registry.allowed_ram_per_vcpu."""
     domain = domain_for("aurora_acu_ram_gib")
@@ -250,5 +279,160 @@ def test_refresh_domains_rejection_gates(tmp_path, monkeypatch):
     assert saved["aurora_acu_ram_gib"]["values"] == [4.0, 8.0, 16.0], "Old value must be retained on >50% jump"
     assert saved["aurora_acu_ram_gib"]["needs_human_verification"] is True
     assert any("REJECT" in line and "aurora_acu_ram_gib" in line for line in report)
+
+
+def test_tier_a_derivations(defaults):
+    """Tier A derivations must match pinned defaults and be offline-safe."""
+    from assumption_domains import derive_node_ram_values, derive_lambda_mb_per_vcpu
+
+    dax_val = derive_node_ram_values("dax")
+    assert dax_val == defaults["dax_node_gib"]
+    assert dax_val == 16.0
+
+    memdb_val = derive_node_ram_values("memorydb")
+    assert memdb_val == defaults["memorydb_node_gib"]
+    assert memdb_val == 16.0
+
+    lambda_val = derive_lambda_mb_per_vcpu()
+    assert lambda_val == defaults["lambda_mb_per_vcpu"]
+    assert lambda_val == 2500.0
+
+
+def test_tier_b_live_fetch(tmp_path, monkeypatch):
+    """Tier B live fetches must be fail-safe, offline-safe, and obey honesty gates."""
+    import refresh_assumption_domains as rad
+    from refresh_assumption_domains import refresh_domains
+
+    test_domains = {
+        "_meta": {"version": 1, "max_refresh_delta_pct": 50},
+        "domains": {
+            "glue_dpu_vcpu": {
+                "kind": "scalar_published",
+                "value": 4.0,
+                "min": 1.0,
+                "max": 32.0,
+                "step": 1.0,
+                "refresh_tier": "B",
+                "source_kind": "provider_published",
+                "source_url": "https://aws.amazon.com/glue/pricing/",
+                "last_verified": "2026-11-06",
+                "needs_human_verification": False,
+            }
+        }
+    }
+
+    # Case 1: Mocked fetch succeeds with pinned value
+    f1 = tmp_path / "d1.json"
+    with open(f1, "w", encoding="utf-8") as f:
+        json.dump(test_domains, f)
+
+    monkeypatch.setattr(rad, "fetch_provider_scalar", lambda key, url: (4.0, ""))
+    data1, report1, stale1 = refresh_domains(domains_path=str(f1), check_only=False)
+    assert stale1 == 0
+    assert data1["domains"]["glue_dpu_vcpu"]["needs_human_verification"] is False
+    assert data1["_item_outcomes"]["glue_dpu_vcpu"] == "SELF_FETCHED"
+
+    # Case 2: Mocked fetch fails with network error (fail-safe)
+    f2 = tmp_path / "d2.json"
+    with open(f2, "w", encoding="utf-8") as f:
+        json.dump(test_domains, f)
+
+    monkeypatch.setattr(rad, "fetch_provider_scalar", lambda key, url: (None, "HTTP 500 Connection Timeout"))
+    data2, report2, stale2 = refresh_domains(domains_path=str(f2), check_only=False)
+    assert any("VERIFY glue_dpu_vcpu" in r for r in report2)
+    assert data2["domains"]["glue_dpu_vcpu"]["value"] == 4.0  # untouched!
+    assert data2["_item_outcomes"]["glue_dpu_vcpu"] == "VERIFY"
+
+    # Case 3: Mocked fetch returns $0 -> rejected by honesty gate
+    f3 = tmp_path / "d3.json"
+    with open(f3, "w", encoding="utf-8") as f:
+        json.dump(test_domains, f)
+
+    monkeypatch.setattr(rad, "fetch_provider_scalar", lambda key, url: (0.0, ""))
+    data3, report3, stale3 = refresh_domains(domains_path=str(f3), check_only=False)
+    assert any("REJECT glue_dpu_vcpu" in r for r in report3)
+    assert data3["domains"]["glue_dpu_vcpu"]["value"] == 4.0  # untouched!
+    assert data3["_item_outcomes"]["glue_dpu_vcpu"] == "REJECTED"
+
+
+def test_tier_c_bill_calibration(tmp_path):
+    """Tier C bill calibration calculates realized discounts when available and falls back to defaults."""
+    import duckdb
+    from ingest import calibrate_assumptions_from_bill
+
+    conn = duckdb.connect(":memory:")
+    conn.execute("""
+        CREATE TABLE aws_li_catalog (
+            line_item_type VARCHAR,
+            usage_type VARCHAR,
+            operation VARCHAR,
+            pricing_model VARCHAR,
+            public_on_demand_cost DOUBLE,
+            aws_amortized_cost DOUBLE
+        )
+    """)
+
+    # Populate with known discounts:
+    # SP: public OD 100, amortized 60 -> discount = (100 - 60)/100 = 0.40 (40%)
+    conn.execute("""
+        INSERT INTO aws_li_catalog VALUES
+        ('SavingsPlanCoveredUsage', 'USE1-SavingsPlan', 'RunInstances', 'OnDemand', 100.0, 60.0),
+        -- 1yr RI: public OD 200, amortized 120 -> discount = (200 - 120)/200 = 0.40 (40%)
+        ('DiscountedUsage', 'USE1-HeavyUsage', 'RunInstances', 'Reserved', 200.0, 120.0),
+        -- Spot: public OD 50, amortized 15 -> discount = (50 - 15)/50 = 0.70 (70%)
+        ('Usage', 'USE1-SpotUsage', 'RunInstances', 'Spot', 50.0, 15.0)
+    """)
+
+    assump_file = tmp_path / "assumptions.json"
+    calibrated = calibrate_assumptions_from_bill(conn, assumptions_path=str(assump_file))
+
+    assert calibrated["aws_sp_discount_pct"] == 0.40
+    assert calibrated["aws_ri_1yr_discount_pct"] == 0.40
+    assert calibrated["aws_spot_discount_pct"] == 0.70
+    assert calibrated["aws_ri_3yr_discount_pct"] == 0.52  # default fallback
+
+    # Check written assumptions.json
+    with open(assump_file, "r", encoding="utf-8") as f:
+        saved = json.load(f)
+    assert saved["values"]["aws_sp_discount_pct"] == 0.40
+    assert saved["value_source"]["aws_sp_discount_pct"] == "bill_derived"
+    assert saved["value_source"]["aws_ri_3yr_discount_pct"] == "committed_default"
+
+
+def test_uniform_tracking_all_19_domains():
+    """All 19 domains must be visited each run and emit explicit honest outcomes."""
+    from refresh_assumption_domains import refresh_domains
+
+    data, report, stale_count = refresh_domains(check_only=True)
+    outcomes = data.get("_item_outcomes", {})
+    assert len(outcomes) >= 19
+
+    # Tier A
+    assert outcomes["aurora_acu_ram_gib"] == "DERIVED"
+    assert outcomes["aurora_acu_vcpu"] == "DERIVED"
+    assert outcomes["dax_node_gib"] == "DERIVED"
+    assert outcomes["memorydb_node_gib"] == "DERIVED"
+    assert outcomes["lambda_mb_per_vcpu"] == "DERIVED"
+
+    # Tier B (cached or live fetched)
+    assert outcomes["glue_dpu_ram_gib"] in ("SELF_FETCHED", "VERIFY")
+    assert outcomes["glue_dpu_vcpu"] in ("SELF_FETCHED", "VERIFY")
+
+    # Tier C
+    assert outcomes["aws_ri_1yr_discount_pct"] == "BILL_CALIBRATED"
+    assert outcomes["aws_ri_3yr_discount_pct"] == "BILL_CALIBRATED"
+    assert outcomes["aws_sp_discount_pct"] == "BILL_CALIBRATED"
+    assert outcomes["aws_spot_discount_pct"] == "BILL_CALIBRATED"
+    assert outcomes["nat_vms_per_gateway"] == "BILL_CALIBRATED"
+
+    # Tier D
+    assert outcomes["dynamodb_rcu_to_reads_sec"] == "NO_SOURCE"
+    assert outcomes["dynamodb_wcu_to_writes_sec"] == "NO_SOURCE"
+    assert outcomes["inferentia_chip_to_tpu"] == "NO_SOURCE"
+    assert outcomes["trainium_chip_to_tpu"] == "NO_SOURCE"
+    assert outcomes["rds_iops_included_in_storage"] == "POLICY"
+    assert outcomes["fx_max_staleness_days"] == "POLICY"
+    assert outcomes["looker_studio_pro_seat_usd"] == "NEEDS_HUMAN"
+
 
 

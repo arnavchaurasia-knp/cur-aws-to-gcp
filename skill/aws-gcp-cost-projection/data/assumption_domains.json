@@ -17,9 +17,11 @@
       "source_kind": "derived_in_repo",
       "source": "scripts/gen_ratio_registry.py",
       "refreshable": true,
-      "last_verified": "2026-11-06",
+      "last_verified": "2026-11-12",
       "needs_human_verification": false,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "A",
+      "source_artifact": "data/ratio_registry.json"
     },
     "aurora_acu_vcpu": {
       "kind": "enum",
@@ -33,57 +35,63 @@
       "source_kind": "derived_in_repo",
       "source": "scripts/gen_ratio_registry.py",
       "refreshable": true,
-      "last_verified": "2026-11-06",
+      "last_verified": "2026-11-12",
       "needs_human_verification": false,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "A",
+      "source_artifact": "data/ratio_registry.json"
     },
     "aws_ri_1yr_discount_pct": {
       "kind": "range",
       "min": 0.0,
       "max": 0.9,
       "step": 0.01,
-      "source_kind": "judgment",
+      "source_kind": "bill_calibrated",
       "source": "bill-derivable; published typical ~0.38",
       "refreshable": false,
       "last_verified": "2026-11-06",
       "needs_human_verification": false,
-      "passthrough_capable": false
+      "passthrough_capable": false,
+      "refresh_tier": "C"
     },
     "aws_ri_3yr_discount_pct": {
       "kind": "range",
       "min": 0.0,
       "max": 0.9,
       "step": 0.01,
-      "source_kind": "judgment",
+      "source_kind": "bill_calibrated",
       "source": "bill-derivable; published typical ~0.52",
       "refreshable": false,
       "last_verified": "2026-11-06",
       "needs_human_verification": false,
-      "passthrough_capable": false
+      "passthrough_capable": false,
+      "refresh_tier": "C"
     },
     "aws_sp_discount_pct": {
       "kind": "range",
       "min": 0.0,
       "max": 0.9,
       "step": 0.01,
-      "source_kind": "judgment",
+      "source_kind": "bill_calibrated",
       "source": "bill-derivable; published typical ~0.30",
       "refreshable": false,
       "last_verified": "2026-11-06",
       "needs_human_verification": false,
-      "passthrough_capable": false
+      "passthrough_capable": false,
+      "refresh_tier": "C"
     },
     "aws_spot_discount_pct": {
       "kind": "range",
       "min": 0.0,
       "max": 0.95,
       "step": 0.01,
-      "source_kind": "judgment",
+      "source_kind": "bill_calibrated",
       "source": "bill-derivable; published typical ~0.70",
       "refreshable": false,
       "last_verified": "2026-11-06",
       "needs_human_verification": false,
-      "passthrough_capable": false
+      "passthrough_capable": false,
+      "refresh_tier": "C"
     },
     "dax_node_gib": {
       "kind": "range",
@@ -94,10 +102,12 @@
       "derived_from": "EC2 R-family node RAM (dax.r*.large=16 ... 16xlarge=512 GiB; smallest t-class \u2248 2 GiB). AWS-side quantity; GCP only constrains the output (Memorystore M5 tier \u2248 300 GiB max single-tier representation).",
       "source_kind": "derived_from_aws_node_specs",
       "source": "AWS DAX node types run on EC2 R-family memory nodes (large=16, doubling to 16xlarge=512 GiB); GCP ceiling: Memorystore for Redis tiers M1-M5 (4/10/35/100/300 GiB)",
-      "refreshable": false,
-      "last_verified": "2026-11-09",
+      "refreshable": true,
+      "last_verified": "2026-11-12",
       "needs_human_verification": false,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "A",
+      "source_artifact": "data/ec2-instance-types.json"
     },
     "dynamodb_rcu_to_reads_sec": {
       "kind": "range",
@@ -109,7 +119,9 @@
       "refreshable": false,
       "last_verified": "2026-11-09",
       "needs_human_verification": false,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "D",
+      "tracked_outcome": "NO_SOURCE"
     },
     "dynamodb_wcu_to_writes_sec": {
       "kind": "range",
@@ -121,7 +133,9 @@
       "refreshable": false,
       "last_verified": "2026-11-09",
       "needs_human_verification": false,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "D",
+      "tracked_outcome": "NO_SOURCE"
     },
     "fx_max_staleness_days": {
       "kind": "range",
@@ -133,7 +147,9 @@
       "refreshable": false,
       "last_verified": "2026-11-06",
       "needs_human_verification": false,
-      "passthrough_capable": false
+      "passthrough_capable": false,
+      "refresh_tier": "D",
+      "tracked_outcome": "POLICY"
     },
     "glue_dpu_ram_gib": {
       "kind": "scalar_published",
@@ -143,10 +159,12 @@
       "step": 1.0,
       "source_kind": "provider_published",
       "source": "https://aws.amazon.com/glue/pricing/",
-      "refreshable": false,
-      "last_verified": "2026-11-06",
+      "refreshable": true,
+      "last_verified": "2026-11-12",
       "needs_human_verification": false,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "B",
+      "source_url": "https://aws.amazon.com/glue/pricing/"
     },
     "glue_dpu_vcpu": {
       "kind": "scalar_published",
@@ -156,10 +174,12 @@
       "step": 1.0,
       "source_kind": "provider_published",
       "source": "https://aws.amazon.com/glue/pricing/",
-      "refreshable": false,
-      "last_verified": "2026-11-06",
+      "refreshable": true,
+      "last_verified": "2026-11-12",
       "needs_human_verification": false,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "B",
+      "source_url": "https://aws.amazon.com/glue/pricing/"
     },
     "inferentia_chip_to_tpu": {
       "kind": "range",
@@ -171,7 +191,9 @@
       "refreshable": false,
       "last_verified": "2026-11-09",
       "needs_human_verification": false,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "D",
+      "tracked_outcome": "NO_SOURCE"
     },
     "lambda_mb_per_vcpu": {
       "kind": "range",
@@ -182,10 +204,13 @@
       "derived_from": "Cloud Run CPU:memory envelope caps memory at 4096 MiB per vCPU; AWS Lambda allocates 1 vCPU per 1769 MB as the as-is reference",
       "source_kind": "derived_from_gcp_limits",
       "source": "GCP ceiling: Cloud Run max 4 GiB per vCPU (https://docs.cloud.google.com/run/docs/configuring/services/cpu); AWS reference 1 vCPU/1769 MB (https://docs.aws.amazon.com/lambda/latest/dg/configuration-function-common.html)",
-      "refreshable": false,
-      "last_verified": "2026-11-09",
+      "refreshable": true,
+      "last_verified": "2026-11-12",
       "needs_human_verification": false,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "A",
+      "source_url": "https://docs.cloud.google.com/run/docs/configuring/services/cpu",
+      "source_artifact": "data/ratio_registry.json"
     },
     "looker_studio_pro_seat_usd": {
       "kind": "scalar_published",
@@ -198,7 +223,9 @@
       "refreshable": false,
       "last_verified": "2026-11-09",
       "needs_human_verification": true,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "D",
+      "tracked_outcome": "NEEDS_HUMAN"
     },
     "memorydb_node_gib": {
       "kind": "range",
@@ -209,22 +236,25 @@
       "derived_from": "EC2 R-family node RAM (db.r6g/r7g.large=16 ... 16xlarge=512 GiB; db.t4g.small \u2248 2 GiB). AWS-side quantity; GCP only constrains the output (Memorystore M5 tier \u2248 300 GiB max single-tier representation).",
       "source_kind": "derived_from_aws_node_specs",
       "source": "AWS MemoryDB node types db.r6g/r7g.* run on EC2 R-family memory nodes (large=16, doubling to 16xlarge=512 GiB); GCP ceiling: Memorystore for Redis tiers M1-M5 (4/10/35/100/300 GiB)",
-      "refreshable": false,
-      "last_verified": "2026-11-09",
+      "refreshable": true,
+      "last_verified": "2026-11-12",
       "needs_human_verification": false,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "A",
+      "source_artifact": "data/ec2-instance-types.json"
     },
     "nat_vms_per_gateway": {
       "kind": "range",
       "min": 1.0,
       "max": 200.0,
       "step": 1.0,
-      "source_kind": "judgment",
+      "source_kind": "bill_calibrated",
       "source": "topology-dependent; calibration deferred",
       "refreshable": false,
       "last_verified": "2026-11-06",
       "needs_human_verification": false,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "C"
     },
     "rds_iops_included_in_storage": {
       "kind": "flag",
@@ -243,7 +273,9 @@
       "refreshable": false,
       "last_verified": "2026-11-06",
       "needs_human_verification": false,
-      "passthrough_capable": false
+      "passthrough_capable": false,
+      "refresh_tier": "D",
+      "tracked_outcome": "POLICY"
     },
     "trainium_chip_to_tpu": {
       "kind": "range",
@@ -255,7 +287,9 @@
       "refreshable": false,
       "last_verified": "2026-11-06",
       "needs_human_verification": false,
-      "passthrough_capable": true
+      "passthrough_capable": true,
+      "refresh_tier": "D",
+      "tracked_outcome": "NO_SOURCE"
     }
   }
 }

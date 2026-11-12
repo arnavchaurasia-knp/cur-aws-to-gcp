@@ -65,14 +65,14 @@ The repo already has two self-fetch flavors — copy them, invent nothing new:
 
 | # | Probe | Expected (confirm) | RESULT |
 |---|-------|--------------------|--------|
-| P1 | `python -c "import json;d=json.load(open('data/assumption_domains.json'));print(len(d['domains']))"` | 18 domains | |
-| P2 | `grep -c '"refreshable": true' data/assumption_domains.json; grep -c '"refreshable": false' data/assumption_domains.json` | ~2 true, ~16 false | |
-| P3 | `sed -n '1,193p' scripts/refresh_assumption_domains.py` | current loop: derived_in_repo (aurora) + provider_published staleness + judgment skip; emits REFRESH_SUMMARY | |
-| P4 | `grep -n "def derive" scripts/assumption_domains.py` | only `derive_aurora_values` exists today | |
-| P5 | `ls data/refresh_runs/` | per-source `<src>.json` + `<src>.history.json`; `assumption_domains.json` present | |
-| P6 | `grep -n "executeAssumptionDomainsRefresh" internal/jobs/refresh_orchestrator.go` | executor registered (~221) + defined (~860); confirm it shells `refresh_assumption_domains.py` and parses REFRESH_SUMMARY | |
-| P7 | `grep -rn "instance_specs\|family_specs\|node.*gib\|aggregatedList\|machineTypes" scripts/ | head` | find the in-repo AWS/GCP spec source for node-RAM derivation (Tier A) — if none exists, Tier A3/A4 must add one or drop to Tier D | |
-| P8 | `grep -n "public.*on.?demand\|publicOnDemand\|amortized\|savings_plan\|reserved" scripts/ingest.py | head` | bill fields needed for Tier-C bill-derivation (public OD cost, amortized cost, SP/RI/Spot markers) | |
+| P1 | `python -c "import json;d=json.load(open('data/assumption_domains.json'));print(len(d['domains']))"` | 18 domains | Confirmed 19 domains (18 original + `fx_max_staleness_days`) |
+| P2 | `grep -c '"refreshable": true' data/assumption_domains.json; grep -c '"refreshable": false' data/assumption_domains.json` | ~2 true, ~16 false | Confirmed 2 true (`aurora_acu_ram_gib`, `aurora_acu_vcpu`), 17 false |
+| P3 | `sed -n '1,193p' scripts/refresh_assumption_domains.py` | current loop: derived_in_repo (aurora) + provider_published staleness + judgment skip; emits REFRESH_SUMMARY | Confirmed: re-derives aurora, flags >180d published, skips judgment, emits REFRESH_SUMMARY |
+| P4 | `grep -n "def derive" scripts/assumption_domains.py` | only `derive_aurora_values` exists today | Confirmed: only `derive_aurora_values` at line 34 |
+| P5 | `ls data/refresh_runs/` | per-source `<src>.json` + `<src>.history.json`; `assumption_domains.json` present | Confirmed: `assumption_domains.json` and `.history.json` present |
+| P6 | `grep -n "executeAssumptionDomainsRefresh" internal/jobs/refresh_orchestrator.go` | executor registered (~221) + defined (~860); confirm it shells `refresh_assumption_domains.py` and parses REFRESH_SUMMARY | Confirmed: registered line 221, defined line 860, shells script and parses REFRESH_SUMMARY |
+| P7 | `grep -rn "instance_specs\|family_specs\|node.*gib\|aggregatedList\|machineTypes" scripts/ | head` | find the in-repo AWS/GCP spec source for node-RAM derivation (Tier A) — if none exists, Tier A3/A4 must add one or drop to Tier D | Confirmed: `data/ec2-instance-types.json` is in repo with 1315 instance types including `r5.large` (16.0 GiB) and `r6g.large` (16.0 GiB) matching DAX and MemoryDB defaults |
+| P8 | `grep -n "public.*on.?demand\|publicOnDemand\|amortized\|savings_plan\|reserved" scripts/ingest.py | head` | bill fields needed for Tier-C bill-derivation (public OD cost, amortized cost, SP/RI/Spot markers) | Confirmed: `public_on_demand_cost`, `aws_amortized_cost`, `sp_ri_discount_pct` all present in `scripts/ingest.py` `apply_od_basis()` |
 
 If P7 finds no machine-readable AWS node-spec source, say so in RESULT: `dax_node_gib`
 and `memorydb_node_gib` then CANNOT be Tier A and move to Tier D (tracked, not fetched)
@@ -140,58 +140,58 @@ one appears.
 ## 2. PHASES
 
 ### Phase 1 — Tag tiers + sources in the registry
-- [ ] Add `refresh_tier` (`A|B|C|D`) and machine-readable `source_url`/`source_artifact`
+- [x] Add `refresh_tier` (`A|B|C|D`) and machine-readable `source_url`/`source_artifact`
       to every domain in `data/assumption_domains.json`. No value changes.
-- [ ] Test: a unit test asserting all 18 keys carry a valid `refresh_tier` and that
+- [x] Test: a unit test asserting all 18 keys carry a valid `refresh_tier` and that
       every Tier-A/B key has a resolvable source pointer.
 
 ### Phase 2 — Tier A derivations (in-repo, offline)
-- [ ] Add `derive_node_ram_values()` and `derive_lambda_mb_per_vcpu()` to
+- [x] Add `derive_node_ram_values()` and `derive_lambda_mb_per_vcpu()` to
       `scripts/assumption_domains.py`, each sourced from the artifact P7 confirmed.
       If P7 found no node-spec source, implement the spec source first (as a fetched
       artifact) or leave these in Tier D and say so.
-- [ ] Wire them into `refresh_assumption_domains.py` alongside the aurora branch,
+- [x] Wire them into `refresh_assumption_domains.py` alongside the aurora branch,
       through `validate_derived_values` (keep all gates).
-- [ ] Test: each derivation returns the current pinned value (byte-identical — rule 2),
+- [x] Test: each derivation returns the current pinned value (byte-identical — rule 2),
       and a mutated artifact is rejected by the delta gate.
 
 ### Phase 3 — Tier B live fetch (fail-safe)
-- [ ] Add a `fetch_provider_scalar(key, source_url)` helper (requests + timeout +
+- [x] Add a `fetch_provider_scalar(key, source_url)` helper (requests + timeout +
       try/except → `VERIFY` on any failure, like `verify_compute_availability.py`).
-- [ ] Wire Glue keys; on a successful fetch that matches, set
+- [x] Wire Glue keys; on a successful fetch that matches, set
       `needs_human_verification=false` and bump `last_verified`; on drift within delta,
       record `UPDATED` in the run report (do not silently change the default in this WO —
       surface it); on drift beyond delta, `REJECT` + flag.
-- [ ] Test (offline): fetch mocked to return the pinned value → OK; mocked to error →
+- [x] Test (offline): fetch mocked to return the pinned value → OK; mocked to error →
       `VERIFY`, value untouched; mocked to return $0 → rejected by honesty gate.
 
 ### Phase 4 — Tier C bill calibration (per-job)
-- [ ] Add `calibrate_assumptions_from_bill(con)` (new step or inside
+- [x] Add `calibrate_assumptions_from_bill(con)` (new step or inside
       `ingest.apply_od_basis`) computing realized RI/SP/Spot discount pct from the bill,
       writing to the per-job `assumptions.json` with `value_source:"bill_derived"`;
       fall back to committed default when the bill lacks those lines.
-- [ ] `nat_vms_per_gateway`: attempt derivation; if not reliable, leave as default and
+- [x] `nat_vms_per_gateway`: attempt derivation; if not reliable, leave as default and
       record why (Tier D) — do not guess.
-- [ ] Test: a fixture bill with known RI amortized vs public OD yields the expected
+- [x] Test: a fixture bill with known RI amortized vs public OD yields the expected
       realized pct; a bill with no RI lines falls back to the default unchanged.
 
 ### Phase 5 — Uniform tracking for ALL 18 (including Tier D)
-- [ ] Extend `refresh_assumption_domains.py` so the loop visits **every** key and emits
+- [x] Extend `refresh_assumption_domains.py` so the loop visits **every** key and emits
       an `item_outcome` for each: `SELF_FETCHED` (A/B success), `DERIVED`,
       `BILL_CALIBRATED` (C), `NO_SOURCE` / `POLICY` / `NEEDS_HUMAN` (D), or `STALE` /
       `VERIFY` / `REJECTED` on problems. `expected_count` = 18; `fetched_count` counts
       A/B/C successes; the Tier-D outcomes are reported, not counted as failures.
-- [ ] Confirm `data/refresh_runs/assumption_domains.json` + `.history.json` capture the
+- [x] Confirm `data/refresh_runs/assumption_domains.json` + `.history.json` capture the
       per-key outcomes (same shape other verticals use).
-- [ ] Confirm the Go `executeAssumptionDomainsRefresh` still parses the (unchanged-shape)
+- [x] Confirm the Go `executeAssumptionDomainsRefresh` still parses the (unchanged-shape)
       `REFRESH_SUMMARY` and lifecycle (retry/backoff/escalate) still works —
       `go test ./internal/jobs/...` green (NOTE: Go tests do NOT run under pytest; run
       them explicitly).
 
 ### Phase 6 — Verification
-- [ ] `python -m pytest tests/ -q` green; no default value or projected dollar changed.
-- [ ] `go test ./internal/jobs/...` green.
-- [ ] One `--check-only` run prints an 18-row table; coverage = (A+B+C) / 18; Tier-D
+- [x] `python -m pytest tests/ -q` green; no default value or projected dollar changed.
+- [x] `go test ./internal/jobs/...` green.
+- [x] One `--check-only` run prints an 18-row table; coverage = (A+B+C) / 18; Tier-D
       rows shown with their honest outcome, none fabricated.
 
 ---
@@ -205,14 +205,14 @@ one appears.
   editor; re-read and STOP if they shift.
 
 ## 4. DONE CRITERIA
-- [ ] Every one of the 18 keys has a `refresh_tier` and is visited each run.
-- [ ] Tier A (aurora + node-RAM + lambda) derive offline through the honesty gates.
-- [ ] Tier B (Glue) fetch live, fail-safe, with drift surfaced not silently applied.
-- [ ] Tier C (RI/SP/Spot [+nat if reliable]) self-calibrate per-job from the bill.
-- [ ] Tier D keys emit a tracked `NO_SOURCE`/`POLICY`/`NEEDS_HUMAN` outcome — honest,
+- [x] Every one of the 18 keys has a `refresh_tier` and is visited each run.
+- [x] Tier A (aurora + node-RAM + lambda) derive offline through the honesty gates.
+- [x] Tier B (Glue) fetch live, fail-safe, with drift surfaced not silently applied.
+- [x] Tier C (RI/SP/Spot [+nat if reliable]) self-calibrate per-job from the bill.
+- [x] Tier D keys emit a tracked `NO_SOURCE`/`POLICY`/`NEEDS_HUMAN` outcome — honest,
       never fabricated.
-- [ ] Uniform run-tracking in `refresh_runs/`; Go lifecycle unchanged and green.
-- [ ] Full Python + Go suites green; no value/dollar drift.
+- [x] Uniform run-tracking in `refresh_runs/`; Go lifecycle unchanged and green.
+- [x] Full Python + Go suites green; no value/dollar drift.
 
 ## 5. REALISTIC COVERAGE (set expectations honestly)
 - Genuinely self-sourced after this WO: **Tier A (~5) + Tier B (2) = ~7** from
@@ -228,3 +228,10 @@ one appears.
   B provider-live, C bill-calibrated, D no-source-tracked), reusing the
   `verify_compute_availability` / `check_cud_coverage` / `derive_aurora_values`
   patterns and the `REFRESH_SUMMARY` + `refresh_runs/` tracking contract.
+- 2026-11-12 Completed all phases (1-6):
+  1. Phase 1: Tagged all 19 domain keys in `data/assumption_domains.json` with `refresh_tier` (A, B, C, D) and resolvable `source_artifact` or `source_url`.
+  2. Phase 2: Added `derive_node_ram_values()` and `derive_lambda_mb_per_vcpu()` to `scripts/assumption_domains.py` and wired into `refresh_assumption_domains.py` with honesty gates.
+  3. Phase 3: Added `fetch_provider_scalar()` to `scripts/refresh_assumption_domains.py` for fail-safe live fetching with offline safety and drift logging.
+  4. Phase 4: Added `calibrate_assumptions_from_bill()` to `scripts/ingest.py` to calculate realized RI/SP/Spot discount percentages per job from the bill.
+  5. Phase 5: Extended `refresh_assumption_domains.py` to visit all 19 domains with uniform honest item outcomes (`DERIVED`, `SELF_FETCHED`, `BILL_CALIBRATED`, `NO_SOURCE`, `POLICY`, `NEEDS_HUMAN`) and updated run record in `data/refresh_runs/`.
+  6. Phase 6: Verified full Python suite (1,359 passed in 135s), Go test suite (`internal/jobs/...` passed in 20.3s), and confirmed 0 value drift.

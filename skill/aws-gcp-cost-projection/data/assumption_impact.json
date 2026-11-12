@@ -25,7 +25,7 @@
         "dax_node_hours",
         "NodeUsage"
       ],
-      "mapper": "apply_static_mappings.map_flat_hourly",
+      "mapper": "apply_static_mappings.map_elasticache",
       "decision_it_changes": "DynamoDB Accelerator (DAX) node-hours: converts node-hours into Memorystore for Redis RAM GiB-hours."
     },
     "memorydb_node_gib": {
@@ -36,7 +36,7 @@
         "memorydb_node_hours",
         "NodeUsage"
       ],
-      "mapper": "apply_static_mappings.map_flat_hourly",
+      "mapper": "apply_static_mappings.map_elasticache",
       "decision_it_changes": "Amazon MemoryDB for Redis node-hours: converts node-hours into Memorystore for Redis RAM GiB-hours."
     },
     "glue_dpu_vcpu": {
@@ -47,7 +47,7 @@
         "glue_dpu_hours",
         "DPU-Hours"
       ],
-      "mapper": "apply_static_mappings.map_flat_hourly",
+      "mapper": "apply_static_mappings.map_glue",
       "decision_it_changes": "AWS Glue DPU-hours: decomposes standard DPU worker hours into Cloud Dataflow / Compute Engine vCPU worker hours."
     },
     "glue_dpu_ram_gib": {
@@ -58,7 +58,7 @@
         "glue_dpu_hours",
         "DPU-Hours"
       ],
-      "mapper": "apply_static_mappings.map_flat_hourly",
+      "mapper": "apply_static_mappings.map_glue",
       "decision_it_changes": "AWS Glue DPU-hours: decomposes standard DPU worker hours into Cloud Dataflow / Compute Engine memory GiB worker hours."
     },
     "looker_studio_pro_seat_usd": {
@@ -69,7 +69,7 @@
         "quicksight_seats",
         "UserMonth"
       ],
-      "mapper": "apply_static_mappings.map_flat_hourly",
+      "mapper": "apply_static_mappings.map_quicksight",
       "decision_it_changes": "Amazon QuickSight user-month subscriptions: prices user seats using Data Studio Pro (formerly Looker Studio Pro) list price."
     },
     "aurora_acu_vcpu": {
@@ -104,7 +104,7 @@
         "lambda_compute",
         "Lambda-GB-Second"
       ],
-      "mapper": "apply_static_mappings.map_serverless",
+      "mapper": "apply_static_mappings.map_lambda",
       "decision_it_changes": "AWS Lambda memory-duration: derives Cloud Run vCPU-seconds and memory GiB-seconds from allocated memory ratio."
     },
     "inferentia_chip_to_tpu": {
@@ -116,7 +116,7 @@
         "BoxUsage:inf1",
         "BoxUsage:inf2"
       ],
-      "mapper": "apply_static_mappings.map_accelerators",
+      "mapper": "apply_static_mappings.map_tpu_row",
       "decision_it_changes": "AWS Inferentia instance hours: maps Inferentia accelerator chips to Cloud TPU v5e chip-hours using declared chip ratio."
     },
     "trainium_chip_to_tpu": {
@@ -128,7 +128,7 @@
         "BoxUsage:trn1",
         "BoxUsage:trn2"
       ],
-      "mapper": "apply_static_mappings.map_accelerators",
+      "mapper": "apply_static_mappings.map_tpu_row",
       "decision_it_changes": "AWS Trainium instance hours: maps Trainium accelerator chips to Cloud TPU v5e chip-hours using declared chip ratio."
     },
     "dynamodb_rcu_to_reads_sec": {
@@ -139,8 +139,8 @@
         "dynamodb_rcu",
         "ReadCapacityUnit-Hrs"
       ],
-      "mapper": "apply_static_mappings.map_per_request",
-      "decision_it_changes": "DynamoDB provisioned Read Capacity Units: maps provisioned RCU-hours to Cloud Firestore / Bigtable read operations."
+      "mapper": "llm_guidance.dynamodb_throughput",
+      "decision_it_changes": "DynamoDB provisioned Read Capacity Units: guides LLM sizing of Cloud Firestore / Bigtable read operations using declared read rate."
     },
     "dynamodb_wcu_to_writes_sec": {
       "services": [
@@ -150,8 +150,8 @@
         "dynamodb_wcu",
         "WriteCapacityUnit-Hrs"
       ],
-      "mapper": "apply_static_mappings.map_per_request",
-      "decision_it_changes": "DynamoDB provisioned Write Capacity Units: maps provisioned WCU-hours to Cloud Firestore / Bigtable write operations."
+      "mapper": "llm_guidance.dynamodb_throughput",
+      "decision_it_changes": "DynamoDB provisioned Write Capacity Units: guides LLM sizing of Cloud Firestore / Bigtable write operations using declared write rate."
     },
     "rds_iops_included_in_storage": {
       "services": [

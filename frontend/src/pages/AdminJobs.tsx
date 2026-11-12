@@ -12,6 +12,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog'
 import { facetsGetLogs } from '../api/facets'
 import { useTitle } from '../lib/useTitle'
 import { toast } from 'sonner'
+import { useNotifications, triggerNotificationRefresh } from '../lib/notificationsContext'
 import { BackButton } from '../components/BackButton'
 
 const statusColor: Record<string, string> = {
@@ -96,6 +97,7 @@ function LogLine({ line, lineNum }: Readonly<{ line: string; lineNum?: number }>
 
 export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('All Projections — admin')
+  const { feed: notifFeed } = useNotifications()
   const nav = useNavigate()
   const searchParams = useMemo(() => new URLSearchParams(window.location.search), [])
   const [tab, setTab] = useState<'active' | 'deleted' | 'shares'>(() => {
@@ -260,6 +262,16 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offset, pageSize, statusFilter, fromDate, toDate, debouncedQuery, sortField, sortDir, tab])
 
+  // Pattern A — refresh active jobs list immediately when notifications feed changes
+  useEffect(() => {
+    let cancelled = false
+    refreshActive().then(() => {
+      if (cancelled) return
+    }).catch(() => {})
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notifFeed])
+
   // Open log drawer for job
   const handleOpenLogs = async (e: React.MouseEvent, j: Job) => {
     e.stopPropagation()
@@ -326,6 +338,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     setGlobalError(null)
     try {
       await cancelAllJobs()
+      triggerNotificationRefresh()
       toast.error('All active runs cancelled and orchestration halted')
       setConfirmStopAllOpen(false)
       await refreshActive()
@@ -341,6 +354,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     setGlobalError(null)
     try {
       await resumeAllJobs()
+      triggerNotificationRefresh()
       toast.success('Orchestration resumed')
       await refreshActive()
     } catch (err) {
@@ -356,6 +370,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     setRowError(prev => { const next = { ...prev }; delete next[id]; return next })
     try {
       await retryJob(id)
+      triggerNotificationRefresh()
       toast.success(`Job ${id.slice(0, 8)} queued for retry`)
       await refreshActive()
     } catch (err) {
@@ -378,6 +393,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     setBusy(prev => new Set(prev).add(id))
     try {
       await cancelJob(id)
+      triggerNotificationRefresh()
       toast.warning(`Job ${id.slice(0, 8)} cancelled`)
       setPendingCancelJob(null)
       await refreshActive()
@@ -399,6 +415,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     setBusy(prev => new Set(prev).add(id))
     try {
       await deleteJob(id)
+      triggerNotificationRefresh()
       toast.success(`Job archived to deleted_jobs table`)
       setPendingDeleteJob(null)
       await refreshActive()
@@ -483,6 +500,7 @@ export function AdminJobs({ user }: Readonly<{ user: UserInfo }>) {
     setRevokingToken(token)
     try {
       await revokeShare(token)
+      triggerNotificationRefresh()
       toast.success('Share link revoked')
       setPendingRevokeToken(null)
       await refreshShares()

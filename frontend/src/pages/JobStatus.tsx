@@ -13,6 +13,7 @@ import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { PHASES, TOTAL_PHASES } from '../lib/phases'
 import { toast } from 'sonner'
+import { useNotifications, triggerNotificationRefresh } from '../lib/notificationsContext'
 import { JobHealth } from '../components/JobHealth'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { formatMoney } from '../lib/preferencesContext'
@@ -386,6 +387,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
     setDeleting(true)
     try {
       await deleteJob(id)
+      triggerNotificationRefresh()
       toast.success(`Job run for "${job.prospect}" deleted`)
       setDeleteConfirmOpen(false)
       navigate('/', { replace: true })
@@ -401,6 +403,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
     setCancelError(null)
     try {
       await cancelJob(id)
+      triggerNotificationRefresh()
       setJob(prev => prev ? { ...prev, status: 'cancelled' } : prev)
       setJobs(prev => prev.map(old => old.id === id ? { ...old, status: 'cancelled' } : old))
       setCancelConfirmOpen(false)
@@ -418,6 +421,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
     try {
       const result = await regenerateReport(id)
       if (result) {
+        triggerNotificationRefresh()
         toast.success('Report regenerated')
         setRuns(prev => [...prev, { ...result, run_id: result.run_id } as any])
       } else {
@@ -437,6 +441,7 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
     try {
       const result = await recalculateJob(id)
       if (result) {
+        triggerNotificationRefresh()
         toast.success('Job recalculated and report regenerated')
         setRuns(prev => [...prev, { ...result, run_id: result.run_id } as any])
       } else {
@@ -477,6 +482,9 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
     setRetryError(null)
     try {
       await retryJob(id)
+      triggerNotificationRefresh()
+      prevStatusRef.current = 'running'
+      runsCountRef.current = 0
       setJob(prev => prev ? { ...prev, status: 'running', error: '', aws_spend: null } : prev)
       setProgress(null)
       setRuns([])
@@ -494,9 +502,12 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
     setRefineError(null)
     try {
       await refineJob(id, instruction.trim())
+      triggerNotificationRefresh()
       // Optimistic flip — the backend has already set status=running before
       // returning 202, but updating local state in the same batch avoids the
       // flicker of the done card briefly reappearing.
+      prevStatusRef.current = 'running'
+      runsCountRef.current = 0
       setJob(prev => prev ? { ...prev, status: 'running', aws_spend: null, error: '' } : prev)
       setProgress(null)
       setRuns([])
@@ -512,40 +523,122 @@ export function JobStatus({ user }: Readonly<{ user: UserInfo }>) {
 
   useTitle(job ? `${job.prospect} · ${job.status.charAt(0).toUpperCase() + job.status.slice(1)}` : 'Loading')
 
-  useEffect(() => { listJobs().then(setJobs) }, [])
-
+  const { feed: notifFeed } = useNotifications()
+  const prevStatusRef = useRef<string | null>(null)
+  const runsCountRef = useRef(0)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
+    runsCountRef.current = runs.length
+  }, [runs.length])
+
+  useEffect(() => { listJobs().then(setJobs) }, [])
+
+  // Single refetch callback used by initial load, polling, focus/visibility, and notification feed
+  const refetchJob = useCallback(async (isCancelled?: () => boolean): Promise<Job | null> => {
+    if (!id) return null
+    try {
+      const j = await getJob(id)
+      if (isCancelled && isCancelled()) return null
+      setJob(j)
+      setLoadError(null)
+      setJobs(prev => prev.map(old => old.id === j.id ? { ...old, status: j.status } : old))
+
+      if (j.status === 'running' || j.status === 'pending') {
+        getProgress(id).then(p => {
+          if ((!isCancelled || !isCancelled()) && p) setProgress(p)
+        }).catch(() => {})
+      } else if (j.status === 'done' && (prevStatusRef.current !== 'done' || runsCountRef.current === 0)) {
+        getRuns(id).then(r => {
+          if (!isCancelled || !isCancelled()) {
+            setRuns(r.runs)
+            setCurrency({ symbol: r.currency.symbol, aws_fx_rate: r.currency.aws_fx_rate, fx_rate: r.currency.fx_rate })
+          }
+        }).catch(() => {})
+        getSummary(id).then(s => {
+          if ((!isCancelled || !isCancelled()) && s) setSummary(s)
+        }).catch(() => {})
+      }
+      prevStatusRef.current = j.status
+      return j
+    } catch (err: unknown) {
+      if (isCancelled && isCancelled()) return null
+      const msg = err instanceof Error ? err.message : 'Job not found'
+      const isNotFound = msg.toLowerCase().includes('not found') || msg.includes('404')
+      if (isNotFound) {
+        setJob(null)
+        setLoadError(msg)
+      }
+      throw err
+    }
+  }, [id])
+
+  // Pattern A — refetch when the notification feed changes (admins get instant updates within <=12s)
+  useEffect(() => {
     if (!id) return
     let cancelled = false
-    let prevStatus: string | null = null
+    refetchJob(() => cancelled).catch(() => {})
+    return () => { cancelled = true }
+  }, [notifFeed, id, refetchJob])
+
+  // Pattern C — resilient local poll (works for everyone, incl. non-admins)
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+    let timerId: ReturnType<typeof setTimeout> | null = null
+
     const poll = async () => {
       if (cancelled) return
+      let isTerminal = false
+      let is404 = false
       try {
-        const j = await getJob(id)
+        const j = await refetchJob(() => cancelled)
         if (cancelled) return
-        setJob(j)
-        setLoadError(null)
-        setJobs(prev => prev.map(old => old.id === j.id ? { ...old, status: j.status } : old))
-        if (j.status === 'running' || j.status === 'pending') {
-          getProgress(id).then(p => { if (!cancelled && p) setProgress(p) })
-          setTimeout(poll, 5000)
-        } else if (j.status === 'done' && prevStatus !== 'done') {
-          // First time we see done — fetch runs + summary.
-          getRuns(id).then(r => { if (!cancelled) { setRuns(r.runs); setCurrency({ symbol: r.currency.symbol, aws_fx_rate: r.currency.aws_fx_rate, fx_rate: r.currency.fx_rate }) } })
-          getSummary(id).then(s => { if (!cancelled) setSummary(s) })
+        if (j && j.status !== 'running' && j.status !== 'pending') {
+          isTerminal = true
         }
-        prevStatus = j.status
       } catch (err: unknown) {
-        if (!cancelled) {
-          setLoadError(err instanceof Error ? err.message : 'Job not found')
+        if (cancelled) return
+        const msg = err instanceof Error ? err.message : String(err)
+        const isNotFound = msg.toLowerCase().includes('not found') || msg.includes('404')
+        if (isNotFound) {
+          is404 = true
+        } else if (prevStatusRef.current === null) {
+          // Keep showing loading error if initial fetch failed on non-404, but continue polling in finally
+          setLoadError(msg)
+        }
+      } finally {
+        if (!cancelled && !isTerminal && !is404) {
+          timerId = setTimeout(poll, 5000)
         }
       }
     }
+
     poll()
-    return () => { cancelled = true }
-  }, [id, refining, retrying])
+
+    return () => {
+      cancelled = true
+      if (timerId) clearTimeout(timerId)
+    }
+  }, [id, refetchJob, refining, retrying])
+
+  // Pattern C — focus and visibility change listener for immediate update on returning to tab
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        refetchJob(() => cancelled).catch(() => {})
+      }
+    }
+    window.addEventListener('focus', onFocusOrVisible)
+    document.addEventListener('visibilitychange', onFocusOrVisible)
+    return () => {
+      cancelled = true
+      window.removeEventListener('focus', onFocusOrVisible)
+      document.removeEventListener('visibilitychange', onFocusOrVisible)
+    }
+  }, [id, refetchJob])
 
   if (!job) {
     return (

@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import facetsLogo from '../assets/facets-logo-full.svg'
-import facetsFIcon from '../assets/facets-logo-f.svg'
+import facetsFIconWhite from '../assets/facets-logo-f-white.svg'
+import facetsTexture from '../assets/facets-texture.svg'
 import { useTitle } from '../lib/useTitle'
 
 const FEATURES = [
@@ -98,211 +99,212 @@ export function Login() {
 
   return (
     <div className="min-h-screen h-screen flex overflow-hidden">
-      {/* left panel — clean, accessible, modern sign-in */}
-      <div className="w-full lg:w-[480px] shrink-0 bg-white text-gray-900 flex flex-col px-6 sm:px-9 pt-4 sm:pt-5 pb-3 sm:pb-4 relative z-10 h-screen overflow-hidden">
-        <a
-          href="https://www.facets.cloud"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="w-fit inline-block hover:opacity-85 transition-opacity anim-fade-in-up self-start"
-          title="Visit facets.cloud"
-        >
-          <img src={facetsLogo} alt="Facets" className="h-5 sm:h-6 w-auto" />
-        </a>
-
-        <div className="flex-1 flex flex-col justify-center max-w-sm sm:max-w-md w-full mx-auto my-auto py-2">
-          <div className="w-full flex flex-col">
-            <div className="anim-fade-in-up delay-100 text-center">
-              <h1 className="text-2xl sm:text-[28px] font-semibold tracking-tight text-gray-900 font-['Plus_Jakarta_Sans',sans-serif]">
-                GCP TCO Analyzer
-              </h1>
-              <p className="text-[#645DF6] text-[11px] sm:text-xs font-semibold tracking-wider uppercase mt-1">
-                AWS → GCP Estimator
-              </p>
-              <h2 className="text-xl sm:text-[22px] font-semibold tracking-tight text-gray-900 mt-6 sm:mt-7">
-                Sign in
-              </h2>
-            </div>
-
-            {/* Email + Password login form */}
-            <form onSubmit={handleEmailSubmit} className="flex flex-col gap-3 anim-fade-in-up delay-175 mt-5">
-              <div>
-                <label htmlFor="email" className="block text-[11px] sm:text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                  Email
-                </label>
-                <input
-                  id="email"
-                  type="email"
-                  required
-                  placeholder="you@company.com or you@gmail.com"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  className="w-full px-3.5 py-2 text-sm bg-gray-50 border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#645DF6] focus:border-transparent transition-all"
-                />
-              </div>
-
-              <div>
-                <label htmlFor="password" className="block text-[11px] sm:text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                  Password
-                </label>
-                <input
-                  id="password"
-                  type="password"
-                  required
-                  placeholder="Enter your password"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  className="w-full px-3.5 py-2 text-sm bg-gray-50 border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#645DF6] focus:border-transparent transition-all"
-                />
-                <p className="text-[10px] sm:text-[10.5px] text-gray-400 mt-1">
-                  First time? Entering email &amp; password creates your account automatically.
-                </p>
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading || !email.trim() || !password}
-                className="cursor-pointer w-full flex items-center justify-center gap-2 bg-[#645DF6] hover:bg-[#5249e0] text-white px-5 py-2.5 rounded-lg font-medium text-sm shadow-sm transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed hover:shadow hover:scale-[1.01] active:scale-[0.99] mt-0.5"
-              >
-                {loading ? (
-                  <span className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <span>Sign In / Register</span>
-                )}
-              </button>
-            </form>
-
-            {/* Divider */}
-            <div className="flex items-center gap-3 anim-fade-in-up delay-200 my-4">
-              <div className="flex-1 h-px bg-gray-200" />
-              <span className="text-[10px] sm:text-[11px] text-gray-400 uppercase tracking-widest font-medium">or continue with google</span>
-              <div className="flex-1 h-px bg-gray-200" />
-            </div>
-
-            {/* Google OAuth Button */}
-            <div className="flex flex-col gap-2 anim-fade-in-up delay-250">
-              <button
-                type="button"
-                onClick={() => {
-                  window.location.assign('/api/auth/login')
-                }}
-                className="cursor-pointer w-full flex items-center justify-center gap-3 bg-white text-gray-800 px-5 py-2.5 rounded-lg font-medium text-sm
-                  border border-gray-300 hover:bg-gray-50 hover:border-gray-400 hover:scale-[1.01] active:scale-[0.99]
-                  transition-all duration-150 shadow-sm"
-              >
-                <GoogleIcon />
-                Sign in with Google
-              </button>
-            </div>
-          </div>
+      {/* ── LEFT PANEL — sign-in ─────────────────────────────────────── */}
+      <div className="w-full lg:w-[480px] shrink-0 bg-white text-gray-900 flex flex-col px-6 sm:px-12 pt-8 pb-6 relative z-10 h-screen overflow-hidden">
+        {/* Logo shares the form's content column so it left-aligns with the fields */}
+        <div className="w-full max-w-sm mx-auto">
+          <a
+            href="https://www.facets.cloud"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-fit inline-block hover:opacity-80 transition-opacity anim-fade-in-up"
+            title="Visit facets.cloud"
+          >
+            <img src={facetsLogo} alt="Facets" className="h-6 w-auto" />
+          </a>
         </div>
 
-        {/* Proper aligned compact footer */}
-        <footer className="mt-auto pt-3 border-t border-gray-100 flex items-center justify-between text-[11px] text-gray-400 anim-fade-in delay-500">
+        <div className="flex-1 flex flex-col justify-center max-w-sm w-full mx-auto">
+          {/* Heading block — hierarchy by weight + color, tight grouping */}
+          <div className="anim-fade-in-up delay-100">
+            <p className="text-[#645DF6] text-xs font-semibold tracking-wider uppercase">
+              AWS → GCP Estimator
+            </p>
+            <h1 className="text-[28px] leading-tight font-bold tracking-tight text-gray-900 mt-2">
+              GCP TCO Analyzer
+            </h1>
+            <p className="text-sm font-medium text-gray-500 mt-2">
+              Sign in to your account
+            </p>
+          </div>
+
+          {/* Email + Password login form */}
+          <form onSubmit={handleEmailSubmit} className="flex flex-col gap-4 anim-fade-in-up delay-175 mt-6">
+            <div className="flex flex-col gap-2">
+              <label htmlFor="email" className="text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                Email
+              </label>
+              <input
+                id="email"
+                type="email"
+                required
+                placeholder="you@company.com or you@gmail.com"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                className="w-full px-4 py-3 text-sm bg-gray-50 border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#645DF6] focus:border-transparent transition-all duration-150"
+              />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <label htmlFor="password" className="text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                Password
+              </label>
+              <input
+                id="password"
+                type="password"
+                required
+                placeholder="Enter your password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                className="w-full px-4 py-3 text-sm bg-gray-50 border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#645DF6] focus:border-transparent transition-all duration-150"
+              />
+              <p className="text-xs text-gray-400">
+                First time? Entering email &amp; password creates your account automatically.
+              </p>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading || !email.trim() || !password}
+              className="cursor-pointer w-full flex items-center justify-center gap-2 bg-[#645DF6] hover:bg-[#5046e5] text-white px-5 py-3 rounded-lg font-semibold text-sm shadow-sm transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-md hover:scale-[1.01] active:scale-[0.99] mt-1"
+            >
+              {loading ? (
+                <span className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <span>Sign In / Register</span>
+              )}
+            </button>
+          </form>
+
+          {/* Divider */}
+          <div className="flex items-center gap-4 anim-fade-in-up delay-200 my-6">
+            <div className="flex-1 h-px bg-gray-200" />
+            <span className="text-[11px] text-gray-400 uppercase tracking-widest font-medium">or continue with google</span>
+            <div className="flex-1 h-px bg-gray-200" />
+          </div>
+
+          {/* Google OAuth Button */}
+          <button
+            type="button"
+            onClick={() => {
+              window.location.assign('/api/auth/login')
+            }}
+            className="cursor-pointer w-full flex items-center justify-center gap-3 bg-white text-gray-800 px-5 py-3 rounded-lg font-medium text-sm
+              border border-gray-300 hover:bg-gray-50 hover:border-gray-400 hover:scale-[1.01] active:scale-[0.99]
+              transition-all duration-150 shadow-sm anim-fade-in-up delay-250"
+          >
+            <GoogleIcon />
+            Sign in with Google
+          </button>
+        </div>
+
+        {/* Footer */}
+        <footer className="mt-auto pt-4 border-t border-gray-100 flex items-center justify-between text-[11px] text-gray-400 anim-fade-in delay-500 w-full max-w-sm mx-auto">
           <span>© {new Date().getFullYear()} Facets.cloud</span>
-          <div className="flex items-center gap-2.5 text-gray-400">
-            <a
-              href="https://www.facets.cloud/privacy-policy"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-gray-600 transition-colors"
-            >
-              Privacy
-            </a>
-            <span>•</span>
-            <a
-              href="https://www.facets.cloud/demo"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-gray-600 transition-colors"
-            >
-              Demo
-            </a>
-            <span>•</span>
-            <a
-              href="https://www.facets.cloud/why-facets"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-gray-600 transition-colors"
-            >
-              Why Facets
-            </a>
-            <span>•</span>
-            <a
-              href="https://www.facets.cloud/terms-of-service"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-gray-600 transition-colors"
-            >
-              Terms
-            </a>
+          <div className="flex items-center gap-4 text-gray-400">
+            <a href="https://www.facets.cloud/privacy-policy" target="_blank" rel="noopener noreferrer" className="hover:text-gray-600 transition-colors">Privacy</a>
+            <a href="https://www.facets.cloud/demo" target="_blank" rel="noopener noreferrer" className="hover:text-gray-600 transition-colors">Demo</a>
+            <a href="https://www.facets.cloud/why-facets" target="_blank" rel="noopener noreferrer" className="hover:text-gray-600 transition-colors">Why Facets</a>
           </div>
         </footer>
       </div>
 
-      {/* right panel — dark, animated presentation */}
-      <div className="login-bg hidden lg:flex flex-1 flex-col items-center justify-center relative overflow-hidden px-16 text-white h-screen">
-        <div className="login-orb absolute top-1/4 left-1/4 w-96 h-96 rounded-full pointer-events-none"
-             style={{ background: 'radial-gradient(circle, rgba(100,93,246,0.16) 0%, transparent 70%)' }} />
-        <div className="login-orb absolute bottom-1/4 right-1/4 w-80 h-80 rounded-full pointer-events-none"
-             style={{ background: 'radial-gradient(circle, rgba(0,194,187,0.12) 0%, transparent 70%)', animationDelay: '5s' }} />
+      {/* ── RIGHT PANEL — brand texture + one orchestrated moment ──────── */}
+      <div
+        data-login-promo
+        className="hidden lg:flex flex-1 flex-col items-center justify-center relative overflow-hidden px-16 text-[#f8fafc] h-screen"
+        style={{
+          backgroundColor: '#0a0a0f',
+          backgroundImage: `url(${facetsTexture})`,
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+        }}
+      >
+        {/* Vignette so copy stays legible over the texture */}
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{ background: 'radial-gradient(120% 90% at 50% 0%, transparent 40%, rgba(10,10,15,0.65) 100%)' }}
+        />
+        {/* Single soft brand glow for life (one subtle moving element) */}
+        <div
+          className="login-orb absolute top-[18%] left-1/2 -translate-x-1/2 w-[28rem] h-[28rem] rounded-full pointer-events-none"
+          style={{ background: 'radial-gradient(circle, rgba(100,93,246,0.20) 0%, transparent 70%)' }}
+        />
 
+        {/* Logo with the drop-to-ignite moment (the one memorable motion) */}
         <div
           ref={glyphRef}
-          className="relative flex flex-col items-center mb-8"
+          className="relative flex flex-col items-center mb-10 z-10"
           style={{ '--drop-dist': `${dropDistance}px` } as React.CSSProperties}
         >
           <div className="login-drop-line" />
           <div className="login-drop-dot" />
-          <div className="login-glyph-wrap relative rounded-2xl flex items-center justify-center">
+          <div className="login-glyph-wrap relative flex items-center justify-center">
             <img
-              src={facetsFIcon}
+              src={facetsFIconWhite}
               alt="Facets"
-              className="h-20 sm:h-22 w-auto relative z-10 transition-transform duration-300 drop-shadow-[0_8px_20px_rgba(0,0,0,0.45)]"
+              className="h-20 w-auto relative z-10 drop-shadow-[0_8px_24px_rgba(0,0,0,0.5)]"
             />
           </div>
         </div>
 
         <div className="max-w-md relative z-10 text-center anim-fade-in-up delay-175">
-          <p className="login-eyebrow text-xs uppercase tracking-[0.3em] text-[#00C2BB] mb-3">Intelligent Cloud Migration</p>
-          <h2 className="login-headline text-3xl font-semibold leading-tight tracking-tight">
-            Estimate cloud costs <span className="login-gradient-text">with SKU-level precision</span>
+          <p className="text-[11px] uppercase tracking-[0.22em] text-[#00C2BB] font-semibold">
+            Intelligent cloud migration
+          </p>
+          <h2 className="text-[32px] leading-[1.15] font-bold tracking-tight mt-4">
+            Estimate cloud costs
+            <br />
+            <span className="login-gradient-text">with SKU-level precision</span>
           </h2>
-          <p className="text-gray-400 text-sm mt-3 leading-relaxed">
-            Deterministically maps every line item on your AWS bill to its exact
-            Google Cloud equivalent, pricing out on-demand, 1-year, and 3-year
-            committed-use discounts with auditable accuracy.
+          <p className="text-slate-300 text-sm mt-5 leading-relaxed">
+            Every line item on your AWS bill, mapped to its exact Google Cloud
+            equivalent — priced across on-demand, 1-year, and 3-year committed-use
+            discounts, with auditable accuracy.
           </p>
 
-          <ul className="mt-6 flex flex-col gap-2.5 items-start mx-auto w-fit text-left">
-            {FEATURES.map((f, i) => (
-              <li key={f} className="login-feature flex items-center gap-3 text-sm text-gray-300"
-                  style={{ animationDelay: `${350 + i * 120}ms` }}>
-                <span className="login-feature-dot shrink-0 w-1.5 h-1.5 rounded-full bg-[#645DF6]"
-                      style={{ animationDelay: `${1000 + i * 220}ms` }} />
+          <ul className="mt-8 flex flex-col gap-3 items-start mx-auto w-fit text-left">
+            {FEATURES.map(f => (
+              <li key={f} className="flex items-center gap-3 text-sm text-slate-200">
+                <CheckIcon />
                 {f}
               </li>
             ))}
           </ul>
         </div>
 
-        {/* Powered by Facets linking to facets.cloud */}
+        {/* Powered by Facets */}
         <a
           href="https://www.facets.cloud"
           target="_blank"
           rel="noopener noreferrer"
-          className="cursor-pointer group absolute bottom-6 right-8 flex items-center gap-2 text-xs text-gray-400 hover:text-white transition-colors duration-200 z-10"
+          className="cursor-pointer group absolute bottom-6 right-8 flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors duration-200 z-10"
           title="Visit Facets.cloud"
         >
           <span>Powered by</span>
-          <img
-            src={facetsFIcon}
-            alt="Facets"
-            className="h-4 opacity-80 transition-transform duration-200 group-hover:scale-110"
-          />
+          <img src={facetsFIconWhite} alt="Facets" className="h-4 w-auto opacity-80 transition-transform duration-200 group-hover:scale-110" />
         </a>
       </div>
     </div>
+  )
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="#00C2BB"
+      strokeWidth="2.25"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="shrink-0"
+      aria-hidden="true"
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
   )
 }
 

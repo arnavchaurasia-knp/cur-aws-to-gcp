@@ -44,15 +44,20 @@
   "Memorystore": {
     "1yr_multiplier": 0.75,
     "3yr_multiplier": 0.48,
-    "note": "~25%/52% discount for Redis/Memcached CUD"
+    "cud_exclude_sku_re": "Redis Capacity (Basic|Standard) M1\\b",
+    "note": "M1 capacity tier (<5 GB) is CUD-ineligible: cloud.google.com/memorystore/docs/redis/cuds (~25%/52% discount for Redis/Memcached CUD)"
   },
   "Cloud Memorystore": {
     "1yr_multiplier": 0.75,
-    "3yr_multiplier": 0.48
+    "3yr_multiplier": 0.48,
+    "cud_exclude_sku_re": "Redis Capacity (Basic|Standard) M1\\b",
+    "note": "M1 capacity tier (<5 GB) is CUD-ineligible: cloud.google.com/memorystore/docs/redis/cuds"
   },
   "Cloud Memorystore for Redis": {
     "1yr_multiplier": 0.75,
-    "3yr_multiplier": 0.48
+    "3yr_multiplier": 0.48,
+    "cud_exclude_sku_re": "Redis Capacity (Basic|Standard) M1\\b",
+    "note": "M1 capacity tier (<5 GB) is CUD-ineligible: cloud.google.com/memorystore/docs/redis/cuds"
   },
   "Cloud Memorystore for Memcached": {
     "1yr_multiplier": 0.75,

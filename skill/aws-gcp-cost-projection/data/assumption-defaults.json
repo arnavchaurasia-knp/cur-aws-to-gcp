@@ -14,7 +14,7 @@
     "aws_ri_3yr_discount_pct": 0.52,
     "aws_sp_discount_pct": 0.3,
     "aws_spot_discount_pct": 0.7,
-    "nat_vms_per_gateway": 36.0,
+    "nat_vms_per_gateway": 32.0,
     "dax_node_gib": 16.0,
     "memorydb_node_gib": 16.0,
     "inferentia_chip_to_tpu": 0.0,

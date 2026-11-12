@@ -1,0 +1,87 @@
+{
+  "_meta": {
+    "description": "Known AWS usage-type catalog per service for partition completeness testing (WORKORDER_spec_partition_completeness §2/§4). Every signature must dispatch to an explicit charge_type, never the spec_gap fallback.",
+    "version": "1.0.0"
+  },
+  "dynamodb": [
+    {
+      "usage_type": "APS3-NodeUsage:dax.r5.large",
+      "expected_mechanic": "elasticache",
+      "expected_charge_type": "dax_node_hours",
+      "description": "DAX node-hours"
+    },
+    {
+      "usage_type": "APS3-ReadCapacityUnit-Hrs",
+      "expected_mechanic": "misc",
+      "expected_charge_type": "dynamodb_throughput",
+      "description": "Provisioned RCU capacity-unit-hours"
+    },
+    {
+      "usage_type": "APS3-WriteCapacityUnit-Hrs",
+      "expected_mechanic": "misc",
+      "expected_charge_type": "dynamodb_throughput",
+      "description": "Provisioned WCU capacity-unit-hours"
+    },
+    {
+      "usage_type": "APS3-ReadRequestUnits",
+      "expected_mechanic": "misc",
+      "expected_charge_type": "dynamodb_throughput",
+      "description": "On-demand read request units"
+    },
+    {
+      "usage_type": "APS3-WriteRequestUnits",
+      "expected_mechanic": "misc",
+      "expected_charge_type": "dynamodb_throughput",
+      "description": "On-demand write request units"
+    },
+    {
+      "usage_type": "APS3-ReplWriteRequestUnits",
+      "expected_mechanic": "misc",
+      "expected_charge_type": "dynamodb_replication_writes",
+      "description": "Global Tables on-demand replication writes"
+    },
+    {
+      "usage_type": "APS3-ReplWriteCapacityUnit-Hrs",
+      "expected_mechanic": "misc",
+      "expected_charge_type": "dynamodb_replication_writes",
+      "description": "Global Tables provisioned replication writes"
+    },
+    {
+      "usage_type": "APS3-Streams-RequestsCount",
+      "expected_mechanic": "misc",
+      "expected_charge_type": "dynamodb_streams",
+      "description": "DynamoDB Streams requests"
+    },
+    {
+      "usage_type": "APS3-ChangeDataCaptureUnits-Kinesis",
+      "expected_mechanic": "misc",
+      "expected_charge_type": "dynamodb_cdc_kinesis",
+      "description": "DynamoDB CDC to Kinesis"
+    },
+    {
+      "usage_type": "APS3-TimedStorage-ByteHrs",
+      "expected_mechanic": "dynamodb_storage",
+      "expected_charge_type": "dynamodb_storage",
+      "description": "Table storage"
+    },
+    {
+      "usage_type": "APS3-TimedPITRStorage-ByteHrs",
+      "expected_mechanic": "dynamodb_storage",
+      "expected_charge_type": "dynamodb_storage",
+      "description": "PITR backup storage"
+    },
+    {
+      "usage_type": "APS3-TimedBackupStorage-ByteHrs",
+      "expected_mechanic": "dynamodb_storage",
+      "expected_charge_type": "dynamodb_backup",
+      "description": "On-demand backup storage"
+    },
+    {
+      "usage_type": "APS3-RestoreDataSize-Bytes",
+      "expected_mechanic": "dynamodb_storage",
+      "expected_charge_type": "dynamodb_restore",
+      "description": "Table restore data size"
+    }
+  ]
+}
+

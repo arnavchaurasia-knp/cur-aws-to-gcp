@@ -21,11 +21,13 @@ import {
 import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { BackButton } from '../components/BackButton'
+import { useNotifications, triggerNotificationRefresh } from '../lib/notificationsContext'
 
 export function ReportOverride({ user }: Readonly<{ user: UserInfo }>) {
   const { id } = useParams<{ id: string }>()
   const [searchParams] = useSearchParams()
   const targetRow = searchParams.get('row')
+  const { feed: notifFeed } = useNotifications()
 
   useTitle(`Review & Overrides — ${id?.slice(0, 8)}`)
 
@@ -94,6 +96,13 @@ export function ReportOverride({ user }: Readonly<{ user: UserInfo }>) {
     loadThread()
   }, [id])
 
+  // Pattern A — reload data and thread when notifications feed updates
+  useEffect(() => {
+    if (!id) return
+    loadData()
+    loadThread()
+  }, [notifFeed])
+
   // Scroll to targeted row if query param provided
   useEffect(() => {
     if (targetRow && items.length > 0) {
@@ -143,6 +152,7 @@ export function ReportOverride({ user }: Readonly<{ user: UserInfo }>) {
       setToastMsg('Override applied. Deterministic recalculation triggered.')
       setTimeout(() => setToastMsg(null), 4000)
       setEditingKey(null)
+      triggerNotificationRefresh()
       loadData()
       loadThread()
     } catch (err) {
@@ -163,6 +173,7 @@ export function ReportOverride({ user }: Readonly<{ user: UserInfo }>) {
       })
       setToastMsg(newSuppressed ? 'Line item suppressed ($0 GCP cost).' : 'Line item unsuppressed.')
       setTimeout(() => setToastMsg(null), 3000)
+      triggerNotificationRefresh()
       loadData()
       loadThread()
     } catch (err) {
@@ -180,6 +191,7 @@ export function ReportOverride({ user }: Readonly<{ user: UserInfo }>) {
       await deleteLineItemOverride(id, key)
       setToastMsg('Override deleted. Restored automated mapping.')
       setTimeout(() => setToastMsg(null), 3000)
+      triggerNotificationRefresh()
       loadData()
       loadThread()
     } catch (err) {
@@ -259,6 +271,7 @@ export function ReportOverride({ user }: Readonly<{ user: UserInfo }>) {
     setIsRecalculating(true)
     try {
       await applyRefinement(id)
+      triggerNotificationRefresh()
       setToastMsg('Refinements applied! Recalculation started in the background.')
       setTimeout(() => {
         loadData()

@@ -35,7 +35,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from region_prefix import decode_region_prefix as _decode_region  # noqa: E402
+from region_prefix import (  # noqa: E402
+    UT_PAIR_RE,
+    UT_PREFIX_TO_GCP,
+    decode_region_prefix as _decode_region,
+)
 from unit_equivalence import normalize_unit as _normalize_unit     # noqa: E402
 
 
@@ -423,6 +427,18 @@ def transfer_direction(parts: dict) -> tuple[str, str | None, str]:
     op_lower = op.lower()
     if "regional" in op_lower or "intra" in op_lower or re.search(r"az.*az", op_lower):
         return ("map", "interzone", "inter-zone (same-region) egress")
+
+    # Authoritative override: a usage_type encoding two DIFFERENT real regions
+    # (e.g. "APS3-USW2-AWS-Out-Bytes") is unambiguously inter-REGION. AWS often sets
+    # product/toRegionCode == fromRegionCode on egress rows, which would otherwise
+    # trip the from==to -> interzone branch below and mislabel a cross-region lane.
+    # Verified: cloud.google.com/vpc/network-pricing (inter-region != inter-zone).
+    _pm = UT_PAIR_RE.search(ut)
+    if _pm:
+        _a = UT_PREFIX_TO_GCP.get(_pm.group(1).lower())
+        _b = UT_PREFIX_TO_GCP.get(_pm.group(2).lower())
+        if _a and _b and _a != _b:
+            return ("map", "interregion", "inter-region egress (distinct region pair in usage_type)")
 
     # CUR from_region and to_region (Phase 2 columns) win
     from_reg = parts.get("from_region")

@@ -16,6 +16,40 @@ requires.
 
 ---
 
+## Prerequisites — blockers that must land first (verified 2026-11-11)
+
+This program assumes `spec_dispatch` cleanly classifies each row to a **service** charge_type, so the
+charge_type's declared equivalence attribute (Phase 2) can fire. That assumption is **false today for the
+highest-$ rows**, because of a known, separate bug:
+
+- **BLOCKER (hard) — generic-mechanic over-claim + `DETERMINISTIC_GROUPS` immunity**
+  (`WORKORDER_generic_mechanic_overclaim.md`, FIX-B). Generic shared mechanics `per_request` / `managed_db`
+  match and **over-claim service-specific charge-types** before the service's own charge_type can; then the
+  `DETERMINISTIC_GROUPS` immunity (`service_classifier.py` review-skip guard) makes those rows immune to
+  correction. Confirmed instances are exactly the rows this program most needs to reach:
+  **Aurora I/O → `managed_db#10`, priced as ACU compute-hours** (the very case Phase 6.5 wants to model as
+  "$0 folded into Cloud SQL"); **WAF `RequestV2` → `per_request`**; **S3 `Requests-Tier2` → `per_request`**.
+  While a generic mechanic owns the row: (a) Phase 2 stamps the *wrong* attribute or none, because the
+  service charge_type never matched; (b) Phase 3 findings can't correct it (immunity); (c) Phase 6.5's
+  assumption can't be applied because the Aurora charge_type isn't what priced the row.
+  **→ FIX-B (split the immunity) + the service-split (stop `per_request`/`managed_db` claiming
+  service-specific charge-types) must precede Phase 2 for any over-claimed service.** Clean services
+  (e.g. storage) are unaffected and may proceed; this is a per-service gate, consistent with the
+  money-ranked rollout.
+
+- **BLOCKER (ordering) — finish the spec-dispatch cutover.** Phase 2 stamps are emitted by `spec_dispatch`
+  from the charge_type's declared equivalence; a service still served by legacy `classify_mechanics.RULES`
+  or a legacy `map_*` function carries no declaration and so cannot be stamped. Stamp a service only after
+  it is specced (already a Phase-2 rule) — and prioritize the spec-dispatch cutover for the over-claimed
+  high-$ services so BLOCKER 1's fix and this program land on the same specced rows.
+
+**Net:** the authoring work (Phase 0–1) is independent and can start now; the *consumption* work (Phase 2+)
+is gated per-service on FIX-B + that service being specced. Do not start Phase 2 on Aurora/RDS, WAF, or S3
+requests until the over-claim fix has landed for them — the stamp would decorate a mapping that a generic
+mechanic already mispriced.
+
+---
+
 ## Verified inventory (do not re-derive)
 
 **Crosswalk — real current state (measured 2026-11-06):**
@@ -157,7 +191,8 @@ consequence: **a legacy `map_*` function with no spec simply does not stamp** �
 service is specced, so the equivalence program rides the structured-dispatch migration rather than
 duplicating it.
 
-**Do (one specced service per PR, census-$ order, only after its claims are authored):**
+**Do (one specced service per PR, census-$ order, only after its claims are authored AND the over-claim
+blocker is cleared for it — see Prerequisites; for Aurora/RDS, WAF, S3 requests that means FIX-B first):**
 1. Add the `equivalence:[{attribute,scope}]` block to that service's charge_types (authored from the
    Phase-0 taxonomy).
 2. In `spec_dispatch`, for each declared equivalence call `lookup`; collect claim ids; write

@@ -111,6 +111,23 @@ def load_cud_eligible() -> set[str]:
         "Cloud Run",
     }
 
+
+def load_cud_exclusions() -> dict[str, str]:
+    """Load per-service CUD SKU exclusion regexes from data/cud_pct.json."""
+    json_path = os.path.join(DATA_DIR, "cud_pct.json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                raw = json.load(f)
+            result = {}
+            for svc, vals in raw.items():
+                if isinstance(vals, dict) and "cud_exclude_sku_re" in vals:
+                    result[svc] = vals["cud_exclude_sku_re"]
+            return result
+        except Exception as e:
+            log.warning(f"Could not load cud exclusions from cud_pct.json ({e})")
+    return {}
+
 CONTAINER_CODES = {
     "us": ["us-central1", "us-east1", "us-east4", "us-east5", "us-south1", "us-west1", "us-west2", "us-west3", "us-west4"],
     "eu": ["europe-west1", "europe-west2", "europe-west3", "europe-west4", "europe-west6", "europe-west8", "europe-west9", "europe-west10", "europe-west12", "europe-north1", "europe-central2", "europe-southwest1"],
@@ -828,17 +845,64 @@ def main():
         # in data/cud_pct.json — no Python change here.
         cud_pct = load_cud_pct()
         cud_eligible = load_cud_eligible()
+        cud_exclusions = load_cud_exclusions()
         _default_pct = cud_pct.get("DEFAULT", (1.0, 1.0))
 
+        # Known service aliases between mapper labels, catalog service_names, and cud_pct keys (BUG-3)
+        CUD_SERVICE_ALIASES = {
+            "Cloud Memorystore for Redis": {"Memorystore", "Cloud Memorystore", "Cloud Memorystore for Redis"},
+            "Cloud Memorystore for Memcached": {"Memorystore", "Cloud Memorystore", "Cloud Memorystore for Memcached"},
+            "Cloud Memorystore": {"Memorystore", "Cloud Memorystore", "Cloud Memorystore for Redis", "Cloud Memorystore for Memcached"},
+            "Memorystore": {"Memorystore", "Cloud Memorystore", "Cloud Memorystore for Redis", "Cloud Memorystore for Memcached"},
+            "AlloyDB": {"AlloyDB", "AlloyDB for PostgreSQL", "Cloud AlloyDB"},
+            "Cloud SQL": {"Cloud SQL"},
+            "Compute Engine": {"Compute Engine"},
+            "Cloud Spanner": {"Cloud Spanner", "Spanner"},
+            "Cloud Bigtable": {"Cloud Bigtable", "Bigtable"},
+            "Cloud Run": {"Cloud Run"},
+        }
+
+        # Find all distinct OnDemand services in gcp_sku_rates
+        rate_services = {
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT gcp_service FROM gcp_sku_rates WHERE pricing_type = 'OnDemand' AND gcp_service IS NOT NULL"
+            ).fetchall()
+        }
+
         synthesized_cud = 0
-        for svc, (r1, r3) in cud_pct.items():
-            if svc == "DEFAULT" or svc not in cud_eligible:
+        for rate_svc in rate_services:
+            aliases = CUD_SERVICE_ALIASES.get(rate_svc, {rate_svc})
+            eligible_key = next((a for a in [rate_svc] + list(aliases) if a in cud_eligible), None)
+            if not eligible_key:
                 continue
-            # Skip services not present in this bill — no point generating unused rows.
-            if svc not in mapped_services and svc != GCP_COMPUTE_ENGINE:
+
+            # Check if this service is mapped in this bill (or is Compute Engine)
+            is_mapped = bool(aliases & mapped_services) or (rate_svc == GCP_COMPUTE_ENGINE) or (eligible_key == GCP_COMPUTE_ENGINE)
+            if not is_mapped:
                 continue
-            rg_clause = "AND resource_group IN ('CPU','RAM','GPU')" if svc == GCP_COMPUTE_ENGINE else ""
+
+            # Multiplier lookup: check rate_svc, then aliases, then DEFAULT
+            mults = None
+            for k in [rate_svc] + list(aliases):
+                if k in cud_pct and k != "DEFAULT":
+                    mults = cud_pct[k]
+                    break
+            if not mults:
+                continue
+            r1, r3 = mults
+
+            # Exclusions lookup (BUG-2: M1 capacity tier is CUD-ineligible)
+            excl = None
+            for k in [rate_svc] + list(aliases):
+                if k in cud_exclusions:
+                    excl = cud_exclusions[k]
+                    break
+
+            rg_clause = "AND resource_group IN ('CPU','RAM','GPU')" if (rate_svc == GCP_COMPUTE_ENGINE or eligible_key == GCP_COMPUTE_ENGINE) else ""
+            excl_clause = "AND NOT regexp_matches(gcp_sku_name, ?)" if excl else ""
+
             for pricing_type, mult in [("Commit1Yr", r1), ("Commit3Yr", r3)]:
+                params = [mult, rate_svc] + ([excl] if excl else [])
                 n = conn.execute(f"""
                     INSERT INTO gcp_sku_rates
                     SELECT gcp_sku_id, gcp_service, gcp_sku_name, resource_family,
@@ -847,8 +911,9 @@ def main():
                     FROM gcp_sku_rates
                     WHERE gcp_service = ? AND pricing_type = 'OnDemand'
                       {rg_clause}
+                      {excl_clause}
                     ON CONFLICT DO NOTHING
-                """, [mult, svc]).rowcount
+                """, params).rowcount
                 synthesized_cud += (n or 0)
         if synthesized_cud:
             log.info(f"CUD synthesis: {synthesized_cud} row(s) generated from cud_pct.json percentages")

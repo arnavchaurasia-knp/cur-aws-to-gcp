@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { DropZone } from '../components/DropZone'
@@ -10,6 +10,7 @@ import type { Job } from '../api/jobs'
 import type { UserInfo } from '../api/auth'
 import { PHASES, TOTAL_PHASES } from '../lib/phases'
 import { useTitle } from '../lib/useTitle'
+import { useNotifications } from '../lib/notificationsContext'
 
 export function Upload({ user }: Readonly<{ user: UserInfo }>) {
   useTitle('New Estimation')
@@ -24,16 +25,60 @@ export function Upload({ user }: Readonly<{ user: UserInfo }>) {
   const nav = useNavigate()
 
   const [uploadStatus, setUploadStatus] = useState<string>('Uploading…')
+  const { feed: notifFeed } = useNotifications()
+
+  const refreshJobs = useCallback(async (isCancelled?: () => boolean) => {
+    try {
+      const res = await listJobs()
+      if (!isCancelled || !isCancelled()) {
+        setJobs(res)
+      }
+    } catch {
+      // ignore transient errors
+    }
+  }, [])
 
   useEffect(() => {
-    listJobs().then(setJobs)
+    refreshJobs()
     getEngineSettings().then(cfg => {
       if (cfg.allowed_engines && cfg.allowed_engines.length > 0) {
         setAllowedEngines(cfg.allowed_engines)
         setSelectedEngine(cfg.default_engine || cfg.allowed_engines[0])
       }
     }).catch(() => {})
-  }, [])
+  }, [refreshJobs])
+
+  // Pattern A — refresh jobs when notifications feed changes
+  useEffect(() => {
+    let cancelled = false
+    refreshJobs(() => cancelled)
+    return () => { cancelled = true }
+  }, [notifFeed, refreshJobs])
+
+  // Pattern C — resilient local poll every 15s + focus/visibility listener (works for non-admins)
+  useEffect(() => {
+    let cancelled = false
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        refreshJobs(() => cancelled)
+      }
+    }, 15_000)
+
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        refreshJobs(() => cancelled)
+      }
+    }
+    window.addEventListener('focus', onFocusOrVisible)
+    document.addEventListener('visibilitychange', onFocusOrVisible)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+      window.removeEventListener('focus', onFocusOrVisible)
+      document.removeEventListener('visibilitychange', onFocusOrVisible)
+    }
+  }, [refreshJobs])
 
   const submit = async () => {
     if (submitting) return

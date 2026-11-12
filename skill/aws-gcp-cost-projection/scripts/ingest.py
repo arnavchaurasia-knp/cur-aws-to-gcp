@@ -2947,7 +2947,9 @@ def main():
         if to_raw:
             to_clean = to_raw.strip().lower()
             to_gcp = REGION_MAP.get(to_clean) or DESCRIPTIVE_REGION_MAP.get(to_clean)
-        if not to_gcp:
+        # BUG-1: When to_raw decodes to the same region as from_gcp, but the
+        # usage_type pair encodes a different destination region, prefer pair_to.
+        if (not to_gcp) or (from_gcp and to_gcp == from_gcp and pair_to and pair_to != from_gcp):
             to_gcp = pair_to
 
         region_updates.append((gcp_r, from_gcp, to_gcp, key))

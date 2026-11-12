@@ -2119,6 +2119,39 @@ def main():
     except Exception as _unpr_e:
         pass
 
+    # Emit diagnostic for CUD-eligible rows missing Commit1Yr rate (BUG-3)
+    try:
+        from apply_rates import load_cud_eligible
+        _cud_el = load_cud_eligible()
+        tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
+        if _cud_el and "gcp_sku_rates" in tables:
+            placeholders = ",".join("?" for _ in _cud_el)
+            missing_cuds = con.execute(f"""
+                SELECT m.gcp_service, COUNT(*) as cnt, COUNT(DISTINCT m.gcp_sku_id) as sku_cnt
+                FROM aws_li_to_gcp_li m
+                JOIN aws_li_catalog c USING (aws_li_key)
+                WHERE m.strategy IN ('map', 'break_down')
+                  AND m.gcp_service IN ({placeholders})
+                  AND m.gcp_sku_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM gcp_sku_rates r
+                      WHERE r.gcp_sku_id = m.gcp_sku_id
+                        AND r.pricing_type = 'Commit1Yr'
+                  )
+                GROUP BY m.gcp_service
+            """, list(_cud_el)).fetchall()
+            if missing_cuds:
+                report.setdefault("warnings", {})["cud_missing_commit_rate"] = [
+                    {"gcp_service": r[0], "row_count": r[1], "sku_count": r[2]}
+                    for r in missing_cuds
+                ]
+                total_missing_rows = sum(r[1] for r in missing_cuds)
+                diag(WARN, "cud_missing_commit_rate", "validate_fix.py",
+                     f"{total_missing_rows} CUD-eligible row(s) have no Commit1Yr rate (may be legitimately excluded or unmapped)",
+                     rows=total_missing_rows, phase=4, job_dir=jobdir)
+    except Exception as _cud_err:
+        pass
+
     phantom, underproj = [], []
     if has_view:
         phantom = con.execute("""

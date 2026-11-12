@@ -96,3 +96,33 @@ def test_transfer_direction_corrupted_pdf_label():
     assert strat == "map"
     assert direction == "interzone"
     assert "inter-zone" in note
+
+
+def test_transfer_direction_bug1_corrupted_to_region_override():
+    """BUG-1 (P0): APS3-USW2-AWS-Out-Bytes has to_region wrongly set to asia-south1 (from_region).
+    Authoritative usage_type region pair must override and return interregion.
+    """
+    parts = {
+        "usage_type": "APS3-USW2-AWS-Out-Bytes",
+        "operation": "AWS-Out-Bytes",
+        "product": "AWS Data Transfer",
+        "from_region": "asia-south1",
+        "to_region": "asia-south1",
+    }
+    strat, direction, note = transfer_direction(parts)
+    assert strat == "map"
+    assert direction == "interregion"
+    assert "inter-region" in note
+
+    # Same-region pair stays interzone
+    parts_same = {
+        "usage_type": "APS3-APS3-AWS-Out-Bytes",
+        "operation": "AWS-Out-Bytes",
+        "product": "AWS Data Transfer",
+        "from_region": "asia-south1",
+        "to_region": "asia-south1",
+    }
+    strat, direction, note = transfer_direction(parts_same)
+    assert strat == "map"
+    assert direction == "interzone"
+

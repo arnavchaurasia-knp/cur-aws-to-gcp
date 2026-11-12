@@ -1042,7 +1042,12 @@ def main():
             {_aws_cost_od_est_expr}                                            AS aws_cost_od_est,
             {_od_basis_expr}                                                   AS od_basis,
             {_applied_dir_expr}                                                AS applied_directives,
-            {_source_li_expr}                                                  AS source_line_items
+            {_source_li_expr}                                                  AS source_line_items,
+            -- Compute-only SKU name(s): the non-license components (core+ram+gpu).
+            -- Used for the main-row "GCP Mapping" so a license SKU picked by the
+            -- ANY_VALUE above can never masquerade as the instance mapping.
+            STRING_AGG(DISTINCT CASE WHEN m.component NOT IN ('license', 'sql_license')
+                                     THEN NULLIF(m.gcp_sku_name, '') ELSE NULL END, ' + ') AS gcp_base_sku_name
         FROM aws_li_catalog c
         LEFT JOIN aws_li_to_gcp_li m ON c.aws_li_key = m.aws_li_key
         LEFT JOIN gcp_projection    p ON c.aws_li_key = p.aws_li_key
@@ -1264,19 +1269,27 @@ def main():
     sec_b_rows = []
 
     for r in rows:
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives, source_line_items = r
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives, source_line_items, gcp_base_sku_name = r
         if (aws or 0.0) < 0:
             continue
 
-        # Invariant: Section A contains ONLY strategy in ('map', 'break_down')
-        # with is_workload=True, aws > 0, and a resolved GCP On-Demand price (od is not None).
-        if strategy in ("map", "break_down") and is_wl and od is not None and (aws or 0.0) > 0:
+        # Section A = mapped workload with a resolved GCP outcome:
+        #   - strategy in ('map', 'break_down') with a resolved GCP On-Demand price, OR
+        #   - strategy == 'ignore' (the GCP equivalent is FREE / included — a real,
+        #     favorable mapping worth $0, not a passthrough). Free rows belong with
+        #     the workload they map to so their savings are counted, not carried 1:1
+        #     at AWS cost in Section B.
+        # Section B stays for passthrough / no-GCP-equivalent / unpriced / non-workload.
+        if is_wl and (aws or 0.0) > 0 and (
+            (strategy in ("map", "break_down") and od is not None)
+            or strategy == "ignore"
+        ):
             sec_a_rows.append(r)
         else:
             sec_b_rows.append(r)
 
     def _render_row(r, idx, force_pt=False, active_columns=None):
-        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives, source_line_items = r
+        product, operation, gcp_svc, strategy, notes, aws, od, cud1, cud3, aws_region, gcp_region, is_wl, pricing_model, instance_type, gcp_sku_name, gcp_machine_type, is_assump, aws_li_key, gcp_base_od, gcp_lic_od, lic_name, commitment_basis, aws_cost_od_est, od_basis, applied_directives, source_line_items, gcp_base_sku_name = r
 
         ptype  = pill_type(gcp_svc, product)
         p_html = pill_html(ptype)
@@ -1284,11 +1297,14 @@ def main():
         aws_od_est = aws_cost_od_est if aws_cost_od_est is not None else aws
 
         is_ignore = (strategy == "ignore")
-        is_pt = force_pt or (strategy == "passthrough") or (od is None and not is_ignore)
+        # A free (ignore) row is NEVER a passthrough, even when Section B renders it
+        # with force_pt: it maps to a $0 GCP equivalent, so it must keep its
+        # "[no GCP charge]" badge, $0 cost and true 0%-of-AWS — not be carried 1:1.
+        is_pt = (force_pt and not is_ignore) or (strategy == "passthrough") or (od is None and not is_ignore)
 
         cmp_aws = aws_od_est
 
-        if force_pt:
+        if force_pt and not is_ignore:
             od = cmp_aws
             cud1 = cmp_aws
             cud3 = cmp_aws
@@ -1357,6 +1373,28 @@ def main():
 
         is_estimated_od = (commitment_basis != "on_demand" and abs(aws_od_est - aws) > 0.005)
 
+        # L-4: AWS side instance + license split (Phase 2). Computed BEFORE the
+        # diff/pct block so the main row can compare compute-vs-compute on the
+        # On-Demand basis, with the license itemized on its own "+" sub-row.
+        raw_instance = instance_type or _short_aws_label(product) or "—"
+        aws_lic_split = None
+        if has_license_modeled:
+            # Split the OD estimate (cmp_aws), NOT the amortized cost, so the AWS
+            # base/license numbers share the On-Demand basis used by the GCP side
+            # and by the Diff / "% of AWS" columns.
+            aws_lic_split = _get_aws_license_split(instance_type, lic_name, cmp_aws)
+        lic_split_active = has_license_modeled and aws_lic_split is not None
+        aws_base_cost = aws_lic_cost = None
+        if aws_lic_split:
+            aws_base_cost, aws_lic_cost, _os_key = aws_lic_split
+
+        # Values the Diff and "GCP as % of AWS" columns compare for the MAIN row.
+        # Default: whole-row OD on both sides. For a license-split row the main row
+        # compares compute-vs-compute (OD) — the license is compared separately on
+        # its "+" sub-row — so the %/Diff match the compute numbers shown here.
+        pct_aws = cmp_aws
+        pct_od = od
+
         if is_ignore:
             od_str   = fmt(0.0)
             cud1_str = fmt(0.0)
@@ -1373,15 +1411,21 @@ def main():
             cud3_str = '—'
             diff_td  = '<td class="num">—</td>'
         else:
-            if has_license_modeled:
+            if lic_split_active:
+                # Compute-only on both sides; the license is the "+" sub-row below.
                 base_val = gcp_base_od or 0.0
-                # License cost is itemized ONLY in the "+" sub-row below. The main
-                # row carries the compute/base (EC2) price alone so it is never
-                # double-counted across the main row and its license sub-row.
+                od_str = f"{fmt(base_val)}*" if is_assump else fmt(base_val)
+                pct_aws = aws_base_cost
+                pct_od = base_val
+            elif has_license_modeled:
+                # Phase-1 (no AWS split available): the main AWS cell stays
+                # license-inclusive, so compare whole-row totals (GCP base + its
+                # license sub-row == the AWS license-inclusive number).
+                base_val = gcp_base_od or 0.0
                 od_str = f"{fmt(base_val)}*" if is_assump else fmt(base_val)
             else:
                 od_str = f"{fmt(od)}*" if is_assump else fmt(od)
-            diff = cmp_aws - od
+            diff = pct_aws - pct_od
             if abs(diff) < 0.005:
                 diff_td = '<td class="num">—</td>'
             elif diff > 0:
@@ -1389,14 +1433,7 @@ def main():
             else:
                 diff_td = f'<td class="num red">−{fmt(abs(diff))}</td>'
 
-        # L-4: AWS side instance + license split (Phase 2)
-        raw_instance = instance_type or _short_aws_label(product) or "—"
-        aws_lic_split = None
-        if has_license_modeled:
-            aws_lic_split = _get_aws_license_split(instance_type, lic_name, aws)
-
         if aws_lic_split:
-            aws_base_cost, aws_lic_cost, _os_key = aws_lic_split
             aws_instance_str = _html.escape(str(raw_instance))
             # License itemized only in the "+" sub-row; main AWS cell = instance base.
             aws_cost_cell = fmt(aws_base_cost)
@@ -1427,8 +1464,12 @@ def main():
             )
         elif gcp_machine_type and not is_pt:
             gcp_mapping_str = _html.escape(str(gcp_machine_type))
-        elif gcp_sku_name and not is_pt:
-            gcp_mapping_str = _html.escape(str(gcp_sku_name))
+        elif (gcp_base_sku_name or gcp_sku_name) and not is_pt:
+            # Prefer the compute-only SKU name(s). gcp_sku_name is an ANY_VALUE that
+            # can be a license component's SKU on a license-split row — using the
+            # compute aggregate keeps the main row's mapping the GCP instance, not
+            # the license (the license maps on its own "+" sub-row below).
+            gcp_mapping_str = _html.escape(str(gcp_base_sku_name or gcp_sku_name))
         elif is_pt:
             gcp_mapping_str = "Passthrough"
         else:
@@ -1481,9 +1522,12 @@ def main():
             return f'<td class="extra-col">{desc_html}</td>'
 
         def cell_pct():
-            if not cmp_aws:
+            # OD-vs-OD on both sides, matching the AWS and GCP OD cells shown on
+            # this row (compute-vs-compute on a license-split row; the license has
+            # its own % on the "+" sub-row).
+            if not pct_aws:
                 return "<td class='num'>—</td>"
-            pct = (od / cmp_aws * 100) if cmp_aws > 0 else 0
+            pct = (pct_od / pct_aws * 100) if pct_aws > 0 else 0
             color = "#137333" if pct <= 100 else "#D93025"
             return f"<td class='num' style='color:{color};font-weight:500'>{pct:.0f}%</td>"
 
@@ -1525,21 +1569,38 @@ def main():
         if has_license_modeled:
             aws_sub_cell = ""
             aws_ratio_note = ""
+            lic_diff_cell = '<td class="num"></td>'
+            lic_pct_cell = '<td class="num"></td>'
             if aws_lic_split:
                 _base, a_lic, _ = aws_lic_split
                 aws_sub_cell = f'<span class="plus-sign">+</span>{fmt(a_lic)}'
                 aws_ratio_note = '<div style="font-size:9px;color:#80868B;font-style:italic">AWS license split estimated from AWS Price List Windows/Linux OD ratio.</div>'
+                # License compared on its own OD-vs-OD basis (AWS license uplift vs
+                # GCP license SKU), independent of the compute row above.
+                _l_gcp = gcp_lic_od or 0.0
+                _l_diff = a_lic - _l_gcp
+                if abs(_l_diff) >= 0.005:
+                    _cls = "green" if _l_diff > 0 else "red"
+                    _sign = "+" if _l_diff > 0 else "−"
+                    lic_diff_cell = f'<td class="num {_cls}">{_sign}{fmt(abs(_l_diff))}</td>'
+                if a_lic > 0:
+                    _lp = _l_gcp / a_lic * 100
+                    _lpc = "#137333" if _lp <= 100 else "#D93025"
+                    lic_pct_cell = f'<td class="num" style="color:{_lpc};font-weight:500">{_lp:.0f}%</td>'
+
+            # GCP license SKU name — the GCP mapping of this AWS OS/DB license.
+            lic_mapping = _html.escape(str(lic_name)) if lic_name else ""
 
             sub_cells = ""
             for _, label, _ in active_columns:
                 if label == "#":
                     sub_cells += "<td></td>"
                 elif label == "AWS Service → GCP Service":
-                    sub_cells += f'<td><span class="plus-sign">+</span> {_html.escape(str(lic_name))}{aws_ratio_note}</td>'
+                    sub_cells += f'<td><span class="plus-sign">+</span> OS/DB license{aws_ratio_note}</td>'
                 elif label == "AWS Instance":
                     sub_cells += "<td></td>"
                 elif label == "GCP Mapping":
-                    sub_cells += "<td></td>"
+                    sub_cells += f'<td style="font-size:11px;color:#5F6368"><span class="plus-sign">+</span> {lic_mapping}</td>'
                 elif label == "GCP Region":
                     sub_cells += f'<td style="color:#5F6368">{region_str}</td>'
                 elif label == "AWS":
@@ -1549,9 +1610,9 @@ def main():
                 elif label in ("GCP 1yr CUD", "GCP 3yr CUD"):
                     sub_cells += '<td class="num"></td>'
                 elif label == "Diff":
-                    sub_cells += '<td class="num"></td>'
+                    sub_cells += lic_diff_cell
                 elif label == "GCP as % of AWS":
-                    sub_cells += '<td class="num"></td>'
+                    sub_cells += lic_pct_cell
                 elif label == "Line items":
                     sub_cells += '<td class="num"></td>'
                 elif label == "AWS Region":
@@ -1667,13 +1728,22 @@ def main():
         aws = r[5] or 0.0
         aws_od_est = r[22] if r[22] is not None else aws
         sec_b_aws += aws_od_est
-        sec_b_gcp_od += aws_od_est
-        sec_b_gcp_1yr += aws_od_est
-        sec_b_gcp_3yr += aws_od_est
+        # Passthrough / unpriced rows are carried 1:1 (GCP = AWS). A free (ignore)
+        # row that lands here (e.g. non-workload free tier) costs $0 on GCP, so it
+        # must NOT inflate the GCP side of the total.
+        _gcp_carry = 0.0 if (r[3] == "ignore") else aws_od_est
+        sec_b_gcp_od += _gcp_carry
+        sec_b_gcp_1yr += _gcp_carry
+        sec_b_gcp_3yr += _gcp_carry
         sec_b_li += int(r[25]) if len(r) > 25 and r[25] is not None else 0
         sec_b_html += _render_row(r, idx, force_pt=True, active_columns=_ACTIVE_COLUMNS)
         idx += 1
 
+    # Usually AWS == GCP here (1:1 carry) so diff is $0 / 100%; free rows carried at
+    # $0 make the subtotal reflect their savings instead of a flat 100%.
+    _diff_b = sec_b_aws - sec_b_gcp_od
+    _diff_b_str = ("$0.00" if abs(_diff_b) < 0.005
+                   else (f"+{fmt(_diff_b)}" if _diff_b > 0 else f"−{fmt(abs(_diff_b))}"))
     subtotal_b_html = _render_summary_row(
         row_class="subtotal-row",
         label_text="SUBTOTAL SECTION B (PASSTHROUGH / NON-WORKLOAD / UNPRICED)",
@@ -1681,9 +1751,9 @@ def main():
         od_val=sec_b_gcp_od,
         c1_val=sec_b_gcp_1yr,
         c3_val=sec_b_gcp_3yr,
-        diff_str="$0.00",
-        diff_cls="",
-        pct_str="100%" if sec_b_aws > 0 else "—",
+        diff_str=_diff_b_str,
+        diff_cls=("green" if _diff_b > 0.005 else ""),
+        pct_str=(f"{(sec_b_gcp_od / sec_b_aws * 100):.0f}%" if sec_b_aws > 0 else "—"),
         li_val=sec_b_li,
     )
 

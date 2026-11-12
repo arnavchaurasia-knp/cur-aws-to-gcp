@@ -86,7 +86,9 @@ CASES = [
      _row(product="Amazon Elastic Compute Cloud", product_code="AmazonEC2",
           usage_type="APS3-EBS:VolumeUsage.gp3", operation="", unit="GB-Mo",
           volume_type="gp3"),
-     "block_storage", "ebs_storage"),
+     # ebs_storage is now a parent partitioned into snapshot tiers + ebs_volume
+     # (catch-all leaf); a gp3 VolumeUsage row sub-classifies to the volume leaf.
+     "block_storage", "ebs_volume"),
     ("ec2_data_transfer_out",
      _row(product="Amazon Elastic Compute Cloud", product_code="AmazonEC2",
           usage_type="APS3-DataTransfer-Out-Bytes", operation="", unit="GB"),
@@ -249,7 +251,7 @@ CASES = [
     ("dynamodb_wcu_fallback",
      _row(product="Amazon DynamoDB", product_code="AmazonDynamoDB",
           usage_type="APS3-WriteRequestUnits", unit="Count"),
-     "misc", "dynamodb_throughput"),  # excluded from per_request; routes to misc via dynamodb_throughput
+     "misc", "dynamodb_throughput"),  # WORKORDER_spec_partition_completeness: routes to dynamodb_throughput (misc+LLM)
 
     # ---- EFS ----
     ("efs_storage",
@@ -385,7 +387,7 @@ CASES = [
     ("memorydb_instance",
      _row(product="Amazon MemoryDB",
           usage_type="APS3-NodeUsage:db.r6g.large", unit="Hrs"),
-     "managed_db", "instance_hour"),
+     "elasticache", "instance_hour"),  # FIX-3: routes to elasticache
     ("memorydb_storage",
      _row(product="Amazon MemoryDB",
           usage_type="APS3-MemoryDB-Storage", unit="GB-Mo"),

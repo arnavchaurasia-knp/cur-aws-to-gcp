@@ -1,5 +1,5 @@
 import { toast } from 'sonner'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 export interface LogEntry {
   timestamp?: string
@@ -119,6 +119,16 @@ export function JobLogsViewer({ jobId, isRunning, initialStream = 'pipeline' }: 
     const interval = setInterval(fetchLogs, 5000)
     return () => clearInterval(interval)
   }, [isRunning, jobId, stream, level, script, search])
+
+  const prevIsRunningRef = useRef(isRunning)
+  useEffect(() => {
+    // When isRunning transitions from true to false (terminal state reached),
+    // trigger one final fetch to ensure the final log lines are captured.
+    if (prevIsRunningRef.current && !isRunning) {
+      fetchLogs()
+    }
+    prevIsRunningRef.current = isRunning
+  }, [isRunning])
 
   const copyLogs = () => {
     if (!data) return

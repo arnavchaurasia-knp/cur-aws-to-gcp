@@ -50,7 +50,7 @@ if [[ -n "$ALL_TIERS" ]]; then
     echo "ERROR: --all-tiers requires --sku-id <skuId>" >&2
     exit 1
   fi
-  duckdb -csv "$INDEX" \
+  duckdb -readonly -csv "$INDEX" \
     "SELECT tier_start, rate_usd
      FROM   tiered_rates
      WHERE  sku_id = '$(echo "$SKU_ID" | sed "s/'/''/g")'
@@ -93,7 +93,7 @@ fi
 # displayed rows even when stdout is redirected to a file, not just an interactive
 # terminal — confirmed live, a 122-row match silently produced only 40 visible rows
 # with no truncation indicator. -csv returns every matching row.
-duckdb -csv -separator $'\t' "$INDEX" "
+duckdb -readonly -csv -separator $'\t' "$INDEX" "
 SELECT s.service_name,
        s.sku_id,
        s.resource_group,

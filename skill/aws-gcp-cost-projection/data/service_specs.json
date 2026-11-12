@@ -490,6 +490,15 @@
         "match": {
           "usage_type_re": "NatGateway-Hours|ElasticIP|IPAddress|PublicIPv4|VPN-Connections|VPNConnection|LoadBalancerUsage"
         },
+        "fallback_match": {
+          "operation_re": "NatGateway|NAT Gateway|LoadBalancer|VpnConnection"
+        },
+        "parsed_match": {
+          "sub_type_in": [
+            "gateway_hours"
+          ],
+          "exclude_any_field_re": "transitgateway|transit gateway|data transfer|-bytes|databytes"
+        },
         "mechanic": "flat_hourly",
         "fields": [
           {
@@ -505,7 +514,8 @@
             "required": false
           }
         ],
-        "source_rule": "flat_hourly (EC2 networking branch)"
+        "source_rule": "flat_hourly (EC2 networking branch)",
+        "notes": "FIX-1 (inert-assumptions workorder): added fallback_match/parsed_match so NAT/ELB/VPN hourly rows on PDF/flat-CSV bills (empty usage_type) still classify flat_hourly instead of falling to misc->LLM, which bypassed the nat_vms_per_gateway assumption."
       }
     ]
   },
@@ -1143,6 +1153,36 @@
         "description": "Node-hours -> Memorystore GiB-h (node RAM from instance table).",
         "match": {},
         "mechanic": "elasticache",
+        "gcp_target": "Cloud Memorystore for Redis",
+        "gcp_candidates": [
+          {
+            "service": "Cloud Memorystore for Redis",
+            "role": "default",
+            "fit_class": "managed_like_for_like",
+            "safety": "safe",
+            "cud_eligible": true,
+            "cud_exclude_sku_re": "Redis Capacity (Basic|Standard) M1\\b",
+            "availability_key": "redis.googleapis.com",
+            "note": "per-GiB-hour dedicated capacity; no burstable tier"
+          },
+          {
+            "service": "Memorystore for Valkey",
+            "role": "alternative",
+            "fit_class": "managed_like_for_like",
+            "safety": "safe",
+            "cud_eligible": true,
+            "availability_key": "memorystore.googleapis.com",
+            "note": "shared-core node ≈ burstable; ~½ per-GiB cost"
+          },
+          {
+            "service": "Compute Engine (self-hosted)",
+            "role": "fallback",
+            "fit_class": "self_host",
+            "safety": "flag_downgrade",
+            "cud_eligible": true,
+            "note": "loses managed HA/patching; only when flagged or user opts in"
+          }
+        ],
         "fields": [
           {
             "name": "node_type",
@@ -1607,11 +1647,118 @@
     ],
     "charge_types": [
       {
+        "id": "dax_node_hours",
+        "description": "DynamoDB Accelerator (DAX) node-hours. Routed to map_elasticache (is_dax branch) which reads the dax_node_gib assumption and maps to Memorystore for Redis.",
+        "match": {
+          "usage_type_re": "NodeUsage|DAX"
+        },
+        "fallback_match": {
+          "operation_re": "DAX|Accelerator"
+        },
+        "mechanic": "elasticache",
+        "fields": [],
+        "source_rule": "dax_node_hours -> map_elasticache (is_dax)",
+        "notes": "FIX-5 (inert-assumptions workorder): route DAX node-hours to elasticache so dax_node_gib applies."
+      },
+      {
+        "id": "dynamodb_replication_writes",
+        "description": "Global Tables replication write units (+ IA class). Multi-region Firestore / Spanner target + cross-region egress.",
+        "any_of": [
+          {
+            "usage_type_re": "ReplWriteRequestUnits|ReplWriteCapacityUnit-Hrs"
+          }
+        ],
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "units",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "llm_guidance": {
+          "gcp_target": "Cloud Firestore (multi-region) / Cloud Spanner + Network Egress",
+          "strategy": "map",
+          "confidence_max": 0.5,
+          "guidance": "DynamoDB Global Tables replication writes indicate multi-region deployment. Map to multi-region Firestore or Cloud Spanner, and account for inter-region data transfer egress."
+        },
+        "source_rule": "misc (DynamoDB replication writes -> multi-region + egress)"
+      },
+      {
+        "id": "dynamodb_streams",
+        "description": "DynamoDB Streams read request units -> Eventarc / Firestore Triggers / Pub/Sub.",
+        "any_of": [
+          {
+            "usage_type_re": "Streams-RequestsCount"
+          }
+        ],
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "units",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "llm_guidance": {
+          "gcp_target": "Firestore Triggers / Eventarc / Pub/Sub",
+          "strategy": "map",
+          "confidence_max": 0.5,
+          "guidance": "DynamoDB Streams requests map to Firestore Triggers (Eventarc) or Pub/Sub pull/push operations."
+        },
+        "source_rule": "misc (DynamoDB Streams -> Eventarc / Pub/Sub)"
+      },
+      {
+        "id": "dynamodb_cdc_kinesis",
+        "description": "Change Data Capture (CDC) to Kinesis -> Datastream / Pub/Sub.",
+        "any_of": [
+          {
+            "usage_type_re": "ChangeDataCaptureUnits-Kinesis"
+          }
+        ],
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "units",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "llm_guidance": {
+          "gcp_target": "Datastream / Pub/Sub",
+          "strategy": "map",
+          "confidence_max": 0.5,
+          "guidance": "DynamoDB CDC to Kinesis maps to Datastream CDC or Pub/Sub event ingestion."
+        },
+        "source_rule": "misc (DynamoDB CDC -> Datastream / Pub/Sub)"
+      },
+      {
         "id": "dynamodb_throughput",
         "description": "DynamoDB RCU/WCU throughput charges -> Firestore / Bigtable / Spanner.",
         "any_of": [
           {
-            "usage_type_re": "ReadRequestUnits|WriteRequestUnits|ReadCapacityUnit|WriteCapacityUnit"
+            "usage_type_re": "(?:Read|Write)RequestUnits|(?:Read|Write)CapacityUnit-Hrs|(?:Read|Write)CapacityUnit"
           },
           {
             "unit_in": [
@@ -1639,9 +1786,55 @@
           "gcp_target": "Firestore / Bigtable / Spanner",
           "strategy": "map",
           "confidence_max": 0.5,
-          "guidance": "Decision rule: GetItem/PutItem/Query/Scan → Firestore; BatchWrite/high-volume throughput → Bigtable; transactional/ACID workloads → Cloud Spanner. Conversion assumption: 1 RCU ≈ 1 doc read, 1 WCU ≈ 1 doc write. rcu/wcu/table_mode not in CUR — infer workload scale from total_usage."
+          "guidance": "Decision rule: GetItem/PutItem/Query/Scan → Firestore; BatchWrite/high-volume throughput → Bigtable; transactional/ACID workloads → Cloud Spanner. Conversion assumption: 1 RCU ≈ 1 doc read, 1 WCU ≈ 1 doc write. Tunable assumptions dynamodb_rcu_to_reads_sec and dynamodb_wcu_to_writes_sec scale provisioned RCU/WCU (e.g. 1.0 = 3600 reads/hr). rcu/wcu/table_mode not in CUR — infer workload scale from total_usage."
         },
         "source_rule": "misc (DynamoDB throughput rows deliberately guided to Firestore/Bigtable/Spanner)"
+      },
+      {
+        "id": "dynamodb_backup",
+        "description": "On-demand backup storage -> Cloud Firestore Backup Storage / Cloud Storage.",
+        "match": {
+          "usage_type_re": "TimedBackupStorage-ByteHrs"
+        },
+        "mechanic": "dynamodb_storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "dynamodb_storage (backup storage)"
+      },
+      {
+        "id": "dynamodb_restore",
+        "description": "Table restore data size -> Cloud Firestore Backup Restore Operation.",
+        "match": {
+          "usage_type_re": "RestoreDataSize-Bytes"
+        },
+        "mechanic": "dynamodb_storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "dynamodb_storage (restore op)"
       },
       {
         "id": "dynamodb_storage",
@@ -2438,7 +2631,7 @@
           "DiscountedUsage",
           "SavingsPlanCoveredUsage"
         ],
-        "mechanic": "managed_db",
+        "mechanic": "elasticache",
         "fields": [
           {
             "name": "instance_type",
@@ -2477,7 +2670,8 @@
             "required": true
           }
         ],
-        "source_rule": "managed_db"
+        "source_rule": "managed_db",
+        "notes": "FIX-3 (inert-assumptions workorder): route to elasticache so map_elasticache's is_memdb branch + memorydb_node_gib assumption apply (map_managed_db does not read that assumption)."
       },
       {
         "id": "storage",
@@ -3106,7 +3300,9 @@
           "operation_re": "NatGateway|NAT Gateway"
         },
         "parsed_match": {
-          "sub_type_in": ["gateway_hours"],
+          "sub_type_in": [
+            "gateway_hours"
+          ],
           "exclude_any_field_re": "transitgateway|transit gateway|vpn|loadbalancer|elb"
         },
         "mechanic": "flat_hourly",

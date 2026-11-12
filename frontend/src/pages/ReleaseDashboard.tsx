@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { listJobs, downloadURL, type Job } from '../api/jobs'
@@ -6,6 +6,7 @@ import type { UserInfo } from '../api/auth'
 import { useTitle } from '../lib/useTitle'
 import { formatMoney } from '../lib/preferencesContext'
 import { BackButton } from '../components/BackButton'
+import { useNotifications } from '../lib/notificationsContext'
 
 function statusBadge(status: string) {
   switch (status) {
@@ -28,13 +29,61 @@ export function ReleaseDashboard({ user }: Readonly<{ user: UserInfo }>) {
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [ownerFilter, setOwnerFilter] = useState<string>('all')
   const [sortBy, setSortBy] = useState<string>('created_desc')
+  const { feed: notifFeed } = useNotifications()
+
+  const refreshJobs = useCallback(async (isCancelled?: () => boolean) => {
+    try {
+      const res = await listJobs()
+      if (!isCancelled || !isCancelled()) {
+        setJobs(res)
+      }
+    } catch {
+      // ignore transient error
+    } finally {
+      if (!isCancelled || !isCancelled()) {
+        setLoading(false)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     setLoading(true)
-    listJobs()
-      .then(setJobs)
-      .finally(() => setLoading(false))
-  }, [])
+    let cancelled = false
+    refreshJobs(() => cancelled)
+    return () => { cancelled = true }
+  }, [refreshJobs])
+
+  // Pattern A — refresh when notifications feed changes
+  useEffect(() => {
+    let cancelled = false
+    refreshJobs(() => cancelled)
+    return () => { cancelled = true }
+  }, [notifFeed, refreshJobs])
+
+  // Pattern C — resilient local poll every 15s + focus/visibility listener
+  useEffect(() => {
+    let cancelled = false
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        refreshJobs(() => cancelled)
+      }
+    }, 15_000)
+
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        refreshJobs(() => cancelled)
+      }
+    }
+    window.addEventListener('focus', onFocusOrVisible)
+    document.addEventListener('visibilitychange', onFocusOrVisible)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+      window.removeEventListener('focus', onFocusOrVisible)
+      document.removeEventListener('visibilitychange', onFocusOrVisible)
+    }
+  }, [refreshJobs])
 
   const uniqueOwners = useMemo(() => {
     return Array.from(new Set(jobs.map(j => j.owner).filter(Boolean)))

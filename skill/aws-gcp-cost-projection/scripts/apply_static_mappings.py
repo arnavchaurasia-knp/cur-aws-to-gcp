@@ -138,6 +138,32 @@ GCP_CLOUD_STORAGE       = "Cloud Storage"
 GCP_CLOUD_SQL           = "Cloud SQL"
 GCP_MEMORYSTORE         = "Cloud Memorystore for Redis"
 GCP_MEMORYSTORE_MEMCACHED = "Cloud Memorystore for Memcached"
+GCP_MEMORYSTORE_VALKEY  = "Memorystore for Valkey"
+
+_MANAGED_AVAIL_CACHE = None
+
+
+def is_managed_service_available(api_host, region):
+    """True if the GCP managed service (by API host, e.g. 'memorystore.googleapis.com')
+    is offered in `region`. Consults data/managed_service_availability.json — the
+    managed-service analogue of verify_compute_availability.py's gate
+    (WORKORDER_best_fit_target_selector §3.3). Never-break: a missing file or an
+    un-curated host defaults to True (don't block a mapping on absent data); only a
+    host that IS curated gates its unlisted regions."""
+    global _MANAGED_AVAIL_CACHE
+    if not region or region == "global":
+        return True
+    if _MANAGED_AVAIL_CACHE is None:
+        try:
+            with open(os.path.join(DATA_DIR, "managed_service_availability.json"),
+                      encoding="utf-8") as _f:
+                _MANAGED_AVAIL_CACHE = json.load(_f)
+        except Exception:
+            _MANAGED_AVAIL_CACHE = {}
+    host_map = _MANAGED_AVAIL_CACHE.get(api_host)
+    if not isinstance(host_map, dict):
+        return True
+    return bool(host_map.get(region, False))
 GCP_FILESTORE_HDD       = "Filestore Capacity Basic HDD"
 GCP_DATAPROC            = "Dataproc"
 
@@ -5654,6 +5680,46 @@ def map_elasticache(rows: list) -> list:
                     f"single-instance vs Multi-AZ/Cluster mode; Standard HA tier would cost "
                     f"~1.3-1.9x if this is actually HA. [architecture review recommended: "
                     f"verify ElastiCache replication topology with customer]")
+        # Best-Fit Target Selection for Redis (WORKORDER_best_fit_target_selector §5.1):
+        # A burstable, single-node (non-HA) ElastiCache node has no burstable tier on
+        # Memorystore for Redis (dedicated per-GiB capacity → ~2x over-projection).
+        # Memorystore for Valkey's Shared Core Nano node is the like-for-like burstable
+        # fit at ~half the per-GiB cost. Gated on regional availability; never silently
+        # self-hosts. Verified: cloud.google.com/memorystore/docs/valkey/pricing
+        is_burstable = bool(re.search(r"\bt[234]g?\b",
+                                      f"{r.get('instance_type') or ''} {r.get('usage_type') or ''}",
+                                      re.IGNORECASE))
+        if (is_burstable and not is_ha and not is_dax and not is_memdb
+                and is_managed_service_available("memorystore.googleapis.com", region)):
+            # The bundled catalog has no separate "Memorystore for Valkey" service; the
+            # Shared Core Nano node is published under Cloud Memorystore for Redis as
+            # "Redis Cluster Node Shared Core Nano <region>" (serviceId 5AF5-2C11-D467).
+            # Price from that real SKU — the closest published shared-core rate — and
+            # disclose it. Verified: cloud.google.com/memorystore/docs/valkey/pricing
+            try:
+                valkey_sku = resolve_sku(GCP_MEMORYSTORE, "Redis Cluster Node Shared Core Nano", region)
+            except Exception:
+                valkey_sku = None
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        GCP_MEMORYSTORE_VALKEY,
+                "gcp_sku_id":         str(valkey_sku) if valkey_sku else None,
+                "gcp_sku_name":       "Shared Core Nano Node",
+                "component":          "cache",
+                "strategy":           "map" if valkey_sku else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    (
+                    f"Selected Memorystore for Valkey (Shared Core Nano Node; best-fit for "
+                    f"burstable {r.get('instance_type') or 't-family'} node — no burstable "
+                    f"Redis tier). Priced from the catalog's Redis Cluster Shared Core Nano "
+                    f"SKU (no separate Valkey SKU bundled). Alternatives considered: "
+                    f"Memorystore for Redis Basic {size_tier} ($0.049/GiB-h dedicated capacity)"),
+                "mapping_confidence": 0.85 if has_deployment_signal else 0.70,
+                "is_assumption":      False,
+                "assumption":         None,
+            })
+            continue
         out.append({
             "aws_li_key":         r["aws_li_key"],
             "gcp_service":        GCP_MEMORYSTORE,

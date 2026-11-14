@@ -90,10 +90,11 @@ def _load_cud_fallback() -> dict:
         "Cloud SQL": (0.75, 0.48),
         "Cloud Spanner": (0.75, 0.60),
         "Cloud Bigtable": (0.75, 0.60),
-        "Memorystore": (0.75, 0.48),
-        "Cloud Memorystore": (0.75, 0.48),
-        "Cloud Memorystore for Redis": (0.75, 0.48),
-        "Cloud Memorystore for Memcached": (0.75, 0.48),
+        "Memorystore": (0.80, 0.60),
+        "Cloud Memorystore": (0.80, 0.60),
+        "Cloud Memorystore for Redis": (0.80, 0.60),
+        "Cloud Memorystore for Memcached": (0.80, 0.60),
+        "Memorystore for Valkey": (0.80, 0.60),
         "AlloyDB": (0.75, 0.60),
         "Cloud Run": (0.83, 0.67),
         "DEFAULT": (1.0, 1.0),
@@ -3689,10 +3690,29 @@ def map_block_storage(rows):
             gp3_like = "gp3" in blob.lower() or "gp2" in blob.lower()
             
             if is_managed_db:
+                is_io_iops = "io1" in blob.lower() or "io2" in blob.lower() or ("piops" in blob.lower() and not gp3_like)
+                if is_io_iops:
+                    strategy = "passthrough"
+                    note = "RDS io1/io2 Provisioned IOPS — high-IOPS provisioned tier requiring dedicated IOPS allocation in Cloud SQL Enterprise Plus; passthrough at AWS cost. Source: https://cloud.google.com/sql/pricing"
+                    out.append({
+                        "aws_li_key":       r["aws_li_key"],
+                        "gcp_service":      GCP_CLOUD_SQL,
+                        "gcp_sku_name":     None,
+                        "component":        "iops",
+                        "strategy":         strategy,
+                        "unit_multiplier":  1.0,
+                        "gcp_region":       gcp_region,
+                        "projection_note":  note,
+                        "mapping_confidence": 0.70,
+                        "is_assumption":    False,
+                        "assumption":       None,
+                    })
+                    continue
+
                 rds_iops_included = float(_ASSUMPTIONS.get("rds_iops_included_in_storage", 1.0)) >= 0.5
                 if rds_iops_included:
                     strategy = "ignore"
-                    note = "RDS Provisioned IOPS/throughput fee — performance scaling is included in Cloud SQL storage tier (rds_iops_included_in_storage=1)"
+                    note = "RDS GP3 Provisioned IOPS/throughput fee — performance scaling is included in Cloud SQL storage tier (rds_iops_included_in_storage=1). Source: https://cloud.google.com/sql/pricing"
                     assumption = "rds_iops_included_in_storage=1"
                 else:
                     strategy = "passthrough"
@@ -5422,6 +5442,21 @@ def _elasticache_ram(r: dict) -> float | None:
     if is_dax:
         return float(_ASSUMPTIONS.get("dax_node_gib", 16.0))
     if is_memdb:
+        # Step 1 (§4.4.5): Real node sizing for MemoryDB from instance_type / EC2 types
+        # Fall back to memorydb_node_gib assumption when instance_type is unknown.
+        # Note: If CUR has explicit instance_type, use it. If instance_type is absent,
+        # fallback to memorydb_node_gib assumption.
+        itype = (r.get("instance_type") or "").strip()
+        parsed = parse_instance(itype) if itype else None
+        if parsed and parsed.get("ram_gb"):
+            return float(parsed["ram_gb"])
+        # Check instance_ram_gb
+        ram = r.get("instance_ram_gb")
+        if ram:
+            return float(ram)
+        # Check _ELASTICACHE_RAM_GIB
+        if itype and itype.lower() in _ELASTICACHE_RAM_GIB:
+            return _ELASTICACHE_RAM_GIB[itype.lower()]
         return float(_ASSUMPTIONS.get("memorydb_node_gib", 16.0))
 
     # instance_ram_gb is populated by ingest.py for rows that have instance_type
@@ -5545,69 +5580,66 @@ def map_elasticache(rows: list) -> list:
     for r in rows:
         region = r.get("gcp_region")
 
-        # Memcached is a genuinely different GCP product (Cloud Memorystore for
-        # Memcached), billed per-vCPU-core-hour rather than Redis's per-GiB-hour
-        # — engine text only appears in `operation` free text (product is always
-        # the generic "Amazon ElastiCache for X" or blank), never in a dedicated
-        # column, so check operation/product directly.
+        # Memcached deprecation (WORKORDER_followup_fixes A1):
+        # Cloud Memorystore for Memcached is DEPRECATED on GCP (docs.cloud.google.com/memorystore).
+        # Rather than mapping new projections onto a deprecated product, retarget ElastiCache
+        # Memcached nodes to Memorystore for Redis Basic with a disclosed architecture note.
         engine_blob = f"{r.get('product') or ''} {r.get('operation') or ''}".lower()
         if "memcached" in engine_blob:
-            itype = (r.get("instance_type") or "").lower()
-            ec2_key = itype[len("cache."):] if itype.startswith("cache.") else itype
-            # ec2-instance-types.json uses "vcpus" (plural) — "vcpu" was the old wrong key
-            vcpus = (_EC2_TYPES_FOR_VCPU.get(ec2_key) or {}).get("vcpus")
-            ram_gib = _ELASTICACHE_RAM_GIB.get(itype) or _ELASTICACHE_RAM_GIB.get("cache." + ec2_key)
-            if not vcpus:
+            ram = _elasticache_ram(r)
+            if ram is None:
                 out.append({
                     "aws_li_key":         r["aws_li_key"],
-                    "gcp_service":        GCP_MEMORYSTORE_MEMCACHED,
+                    "gcp_service":        GCP_MEMORYSTORE,
                     "gcp_sku_id":         None,
-                    "gcp_sku_name":       "Custom Core M1",
+                    "gcp_sku_name":       "Redis Capacity Basic M1",
                     "component":          "cache",
                     "strategy":           "passthrough",
                     "unit_multiplier":    1.0,
                     "gcp_region":         region,
-                    "projection_note":    ("ElastiCache for Memcached → Memorystore for Memcached; "
-                                           "node vCPU count unknown (instance_type missing/unrecognized) "
-                                           "— passthrough at cost parity"),
+                    "projection_note":    ("ElastiCache for Memcached → Memorystore for Redis; "
+                                           "Memorystore for Memcached is DEPRECATED on GCP (https://cloud.google.com/memorystore); "
+                                           "node RAM unknown (instance_type missing from CUR) — passthrough at cost parity"),
                     "mapping_confidence": 0.50,
                 })
                 continue
-            core_sku = resolve_sku(GCP_MEMORYSTORE_MEMCACHED, "Custom Core M1", region)
-            # Memorystore Memcached bills per-vCPU-hour (Custom Core) AND per-GiBy-hour (Custom RAM M1)
+            sku_name, size_tier = _cheapest_memorystore_tier("Basic", ram, region)
+            if sku_name is None:
+                tiers = _discover_memorystore_tiers()
+                largest = max((t for t in tiers if t[0] == "Basic"), key=lambda t: t[2], default=None)
+                size_tier = largest[1] if largest else "M1"
+                sku_name = f"Redis Capacity Basic {size_tier}"
+            sku_id = resolve_sku(GCP_MEMORYSTORE, sku_name, region)
             out.append({
                 "aws_li_key":         r["aws_li_key"],
-                "gcp_service":        GCP_MEMORYSTORE_MEMCACHED,
-                "gcp_sku_id":         str(core_sku) if core_sku else None,
-                "gcp_sku_name":       "Custom Core M1",
-                "component":          "cache_cpu",
-                "strategy":           "map" if core_sku else "passthrough",
-                "unit_multiplier":    float(vcpus),
+                "gcp_service":        GCP_MEMORYSTORE,
+                "gcp_sku_id":         sku_id,
+                "gcp_sku_name":       sku_name,
+                "component":          "cache",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    ram,
                 "gcp_region":         region,
-                "projection_note":    (f"ElastiCache for Memcached → Memorystore for Memcached "
-                                       f"Custom Core; node vCPU={vcpus} → unit_multiplier={vcpus} (core-hours)"),
-                "mapping_confidence": 0.75,
+                "projection_note":    (f"ElastiCache for Memcached → Memorystore for Redis Basic ({sku_name}); "
+                                       f"Memorystore for Memcached is DEPRECATED on GCP (https://cloud.google.com/memorystore) — "
+                                       f"retargeted to Memorystore for Redis; "
+                                       f"node RAM={ram:.2f} GiB → unit_multiplier={ram:.2f} (GiBy.h); "
+                                       f"architecture migration to Redis/Valkey required"),
+                "mapping_confidence": 0.70,
+                "is_assumption":      False,
+                "assumption":         None,
             })
-            if ram_gib:
-                ram_sku = resolve_sku(GCP_MEMORYSTORE_MEMCACHED, "Custom RAM M1", region)
-                out.append({
-                    "aws_li_key":         r["aws_li_key"],
-                    "gcp_service":        GCP_MEMORYSTORE_MEMCACHED,
-                    "gcp_sku_id":         str(ram_sku) if ram_sku else None,
-                    "gcp_sku_name":       "Custom RAM M1",
-                    "component":          "cache_ram",
-                    "strategy":           "map" if ram_sku else "passthrough",
-                    "unit_multiplier":    float(ram_gib),
-                    "gcp_region":         region,
-                    "projection_note":    (f"ElastiCache for Memcached → Memorystore for Memcached "
-                                           f"Custom RAM; node RAM={ram_gib} GiB → unit_multiplier={ram_gib} (GiBy-hours)"),
-                    "mapping_confidence": 0.75,
-                })
             continue
+
+        prod_low = (r.get("product") or "").lower()
+        pc_low = (r.get("product_code") or "").lower()
+        is_dax = "dax" in prod_low or "dynamodb accelerator" in prod_low or "dax" in pc_low
+        is_memdb = "memorydb" in prod_low or "memorydb" in pc_low
 
         ram = _elasticache_ram(r)
         deployment_raw = (r.get("deployment_option") or "").strip().lower()
-        is_ha = deployment_raw == "multi-az"
+        # MemoryDB is an inherently durable Multi-AZ primary database with a transaction log;
+        # it MUST map to Standard HA tier (never Basic).
+        is_ha = (deployment_raw == "multi-az") or is_memdb
         cache_tier = "Standard" if is_ha else "Basic"
         # deployment_option itself absent (not just "Single-AZ") means CUR gave
         # no topology signal at all for this row — genuine ambiguity, same
@@ -5647,11 +5679,6 @@ def map_elasticache(rows: list) -> list:
             sku_name = f"Redis Capacity {cache_tier} {size_tier}"
         sku_id = resolve_sku(GCP_MEMORYSTORE, sku_name, region)
         strategy = "map" if sku_id else "passthrough"
-        prod_low = (r.get("product") or "").lower()
-        pc_low = (r.get("product_code") or "").lower()
-        is_dax = "dax" in prod_low or "dynamodb accelerator" in prod_low or "dax" in pc_low
-        is_memdb = "memorydb" in prod_low or "memorydb" in pc_low
-
         is_assump = False
         assump_text = None
         if is_dax:
@@ -5660,10 +5687,19 @@ def map_elasticache(rows: list) -> list:
             note = (f"DynamoDB Accelerator (DAX) node-hours → Memorystore for Redis Basic ({sku_name}); "
                     f"node RAM={ram:.2f} GiB via assumption {assump_text} → unit_multiplier={ram:.2f} (GiBy.h)")
         elif is_memdb:
-            is_assump = True
-            assump_text = f"memorydb_node_gib={ram:g}"
-            note = (f"Amazon MemoryDB node-hours → Memorystore for Redis Basic ({sku_name}); "
-                    f"node RAM={ram:.2f} GiB via assumption {assump_text} → unit_multiplier={ram:.2f} (GiBy.h)")
+            itype = (r.get("instance_type") or "").strip()
+            parsed = parse_instance(itype) if itype else None
+            has_real_sizing = bool((parsed and parsed.get("ram_gb")) or r.get("instance_ram_gb") or (itype and itype.lower() in _ELASTICACHE_RAM_GIB))
+            if has_real_sizing:
+                note = (f"Amazon MemoryDB node-hours → Memorystore for Redis Standard HA ({sku_name}); "
+                        f"node RAM={ram:.2f} GiB (from instance type {itype}); "
+                        f"durable Multi-AZ primary database guarantee preserved (never downgraded to Basic)")
+            else:
+                is_assump = True
+                assump_text = f"memorydb_node_gib={ram:g}"
+                note = (f"Amazon MemoryDB node-hours → Memorystore for Redis Standard HA ({sku_name}); "
+                        f"node RAM={ram:.2f} GiB via assumption {assump_text} → unit_multiplier={ram:.2f} (GiBy.h); "
+                        f"durable Multi-AZ primary database guarantee preserved (never downgraded to Basic)")
         elif is_ha:
             note = (f"ElastiCache Multi-AZ → Memorystore for Redis Standard HA ({sku_name}); "
                     f"node RAM={ram:.2f} GiB → unit_multiplier={ram:.2f} (GiBy.h); "
@@ -6954,8 +6990,8 @@ GCP_DATAFLOW = "Cloud Dataflow"
 # its vCPU and RAM components and priced against each rate independently.
 _GLUE_DPU_VCPU    = _ASSUMPTIONS.get("glue_dpu_vcpu", 4.0)
 _GLUE_DPU_RAM_GIB = _ASSUMPTIONS.get("glue_dpu_ram_gib", 16.0)
-_ACU_VCPU         = _ASSUMPTIONS.get("aurora_acu_vcpu", 2.0)
-_ACU_RAM_GIB      = _ASSUMPTIONS.get("aurora_acu_ram_gib", 16.0)
+_ACU_VCPU         = _ASSUMPTIONS.get("aurora_acu_vcpu", 0.25)
+_ACU_RAM_GIB      = _ASSUMPTIONS.get("aurora_acu_ram_gib", 2.0)
 _LAMBDA_MB_PER_VCPU = _ASSUMPTIONS.get("lambda_mb_per_vcpu", 1769.0)
 # Batch vs Streaming pricing differs (~23% higher for Streaming on both vCPU
 # and RAM SKUs) but Glue's CUR usage_type/operation never distinguish Streaming
@@ -6973,12 +7009,16 @@ def map_lambda(rows):
     (GiB-s) and CPU (vCPU-s) on separate SKUs.
     This mapper splits GB-second rows into both 'memory' and 'cpu' components.
     Lambda invocations (Requests / Count) map to Cloud Run Functions Invocations.
+    Lambda Provisioned Concurrency maps to Cloud Run min-instances (idle/instance-based billing).
+    Lambda Ephemeral storage (/tmp > 512 MB) maps to ignore ($0, covered by memory allocation).
     """
     out = []
     # Anchored patterns strictly excluding Min-Instance and 1st Gen variants
     mem_pattern = r"^(?!.*(?:Min.Instance|1st Gen)).*Cloud Run functions Memory \(Request-based billing\)"
     cpu_pattern = r"^(?!.*(?:Min.Instance|1st Gen)).*Cloud Run functions CPU \(Request-based billing\)"
     inv_pattern = r"^(?!.*(?:Min.Instance)).*Cloud Run Functions (?:(?:\(1st Gen\) )?Invocations)"
+    pc_mem_pattern = r"^(?!.*1st Gen).*Cloud Run functions Min-Instance Memory \(Request-based billing\)"
+    pc_cpu_pattern = r"^(?!.*1st Gen).*Cloud Run functions Min-Instance CPU \(Request-based billing\)"
 
     for r in rows:
         gcp_region = r.get("gcp_region")
@@ -6986,6 +7026,64 @@ def map_lambda(rows):
         ut = (r.get("usage_type") or "").strip()
         prod = (r.get("product") or "").strip()
         blob = f"{prod} {ut} {unit}".lower()
+
+        # Ephemeral storage branch: detect /tmp GB-s or capacity -> ignore
+        # Cloud Run covers local filesystem space inside the container's memory allocation (no separate charge).
+        # Source: cloud.google.com/run/docs/configuring/services/memory-limits
+        is_ephemeral = bool(re.search(r"storage[- ]duration|lambda[- ]storage|ephemeral[- ]?storage|gb[- ]second[- ]storage|storage[- ]byte", blob, re.IGNORECASE))
+        if is_ephemeral:
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Run Functions",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "storage",
+                "strategy":           "ignore",
+                "unit_multiplier":    0.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "Cloud Run folds ephemeral /tmp into the memory allocation — no separate charge. Source: cloud.google.com/run/docs/configuring/services/memory-limits",
+                "mapping_confidence": 0.95,
+            })
+            continue
+
+        # Provisioned Concurrency branch: kept-warm capacity -> Cloud Run min-instances idle billing
+        # Source: cloud.google.com/run/docs/configuring/min-instances
+        is_pc = bool(re.search(r"provisioned[- ]?concurrency|gb[- ]second[- ]provisioned|provisionedconcurrency", blob, re.IGNORECASE))
+        if is_pc:
+            mem_sku = _strict_resolve_sku("Cloud Run Functions", pc_mem_pattern, gcp_region)
+            cpu_sku = _strict_resolve_sku("Cloud Run Functions", pc_cpu_pattern, gcp_region)
+
+            cpu_mult = 1.0 / (_LAMBDA_MB_PER_VCPU / 1024.0)
+            mem_mult = 1.0
+
+            note = (
+                "Lambda Provisioned Concurrency -> Cloud Run min-instances (kept-warm idle memory + CPU). "
+                "Source: cloud.google.com/run/docs/configuring/min-instances"
+            )
+
+            components = [
+                ("memory", mem_sku, mem_mult, "Cloud Run functions Min-Instance Memory (Request-based billing)"),
+                ("cpu",    cpu_sku, cpu_mult, "Cloud Run functions Min-Instance CPU (Request-based billing)"),
+            ]
+            for comp, sku, mult, desc in components:
+                strategy = "map" if sku else "passthrough"
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud Run Functions",
+                    "gcp_sku_id":         sku if sku else None,
+                    "gcp_sku_name":       desc,
+                    "component":          comp,
+                    "strategy":           strategy,
+                    "unit_multiplier":    mult,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    note + _no_rate_suffix(sku, gcp_region),
+                    "mapping_confidence": 0.85,
+                    "break_down":         True,
+                }
+                if sku:
+                    entry["gcp_sku_unit"] = sku.unit
+                out.append(entry)
+            continue
 
         is_gb_sec = (unit.lower() == "lambda-gb-second" or "gb-second" in ut.lower() or "gb-second" in blob)
 
@@ -7050,7 +7148,7 @@ def map_lambda(rows):
             out.append(entry)
 
         else:
-            # Other Lambda rows (e.g. ephemeral storage GB-Mo) pass through untouched
+            # Other unhandled Lambda rows pass through untouched
             out.append({
                 "aws_li_key":         r["aws_li_key"],
                 "gcp_service":        "Cloud Run Functions",
@@ -8398,7 +8496,7 @@ def parse_instance(itype):
     if not itype:
         return None
     raw = itype.lower().strip()
-    clean = re.sub(r'^(?:db\.|cache\.|kafka\.)', '', raw)
+    clean = re.sub(r'^(?:db\.|cache\.|kafka\.|ml\.)', '', raw)
     entry = _EC2_TYPES.get(clean)
     if entry:
         fam, _, sz = clean.partition(".")
@@ -9092,43 +9190,153 @@ def map_db_row(r, parsed):
     gcp_family, arm_sku = get_gcp_family(parsed)
     if not gcp_family:
         return None
-    arm_source_note = (" [source is a Graviton/ARM64 RDS instance — Cloud SQL has no ARM "
-                       "machine type at all, so x86 is the only option regardless of cost; "
-                       "no compatibility concern for the DB engine itself, but note for any "
-                       "ARM-specific client tooling]") if arm_sku else ""
+    arm_source_note = (" [source is a Graviton/ARM64 RDS instance — Cloud SQL Enterprise (default) runs on x86; "
+                       "Enterprise Plus candidate offers C4A Arm compatibility — evaluate with customer if Arm architecture is required]") if arm_sku else ""
 
     gcp_region = r.get("gcp_region")
     aws_key = r["aws_li_key"]
     vcpus = r.get("instance_vcpus") or 2
     ram = r.get("instance_ram_gb") or 8.0
     is_ha = r.get("deployment_option") == "Multi-AZ" or "multi-az" in (r.get("operation") or "").lower()
+    is_cluster = "cluster" in (r.get("deployment_option") or "").lower() or "cluster" in (r.get("operation") or "").lower()
+    is_ha = is_ha or is_cluster
 
     engine = (r.get("database_engine") or "").strip().lower()
+    prod_op = f"{r.get('product') or ''} {r.get('operation') or ''} {r.get('usage_type') or ''}".lower()
     engine_note = ""
     engine_confidence = 0.90
-    if "postgres" in engine:
+
+    # 1. Db2 (RDS for Db2 has no native GCP managed equivalent)
+    if "db2" in engine or "db2" in prod_op:
+        return [{
+            "aws_li_key": aws_key,
+            "gcp_service": "Manual Review",
+            "gcp_sku_name": "RDS for Db2 (no native GCP managed Db2)",
+            "component": "db_instance",
+            "strategy": "passthrough",
+            "unit_multiplier": 1.0,
+            "gcp_region": gcp_region,
+            "projection_note": "RDS for Db2 has no native GCP managed database equivalent; passthrough at AWS cost for migration architecture review (self-hosted on Compute Engine or IBM Cloud Pak). Source: https://cloud.google.com/sql/docs",
+            "mapping_confidence": 0.50,
+            "is_workload": True,
+            "break_down": False
+        }]
+
+    # 2. Oracle (Oracle Database@Google Cloud - OCI in GCP data centers; region-gated)
+    elif "oracle" in engine or "oracle" in prod_op:
+        is_oracle_avail = is_managed_service_available("oracledatabase.googleapis.com", gcp_region)
+        license_model = (r.get("license_model") or "").strip()
+        lic_suffix = f" (license model: {license_model})" if license_model else ""
+        if is_oracle_avail:
+            svc_label = "Oracle Database@Google Cloud"
+            sku_label = f"Oracle Database@Google Cloud (Base Database / Exadata / Autonomous){lic_suffix}"
+            proj_note = (f"Oracle Database@Google Cloud: Oracle workloads map to Oracle Database@Google Cloud in {gcp_region} "
+                         f"(co-located OCI in GCP data centers); list PAYG rate exists on Oracle Marketplace but is unbundled "
+                         f"from GCP billing catalog — passthrough at AWS cost with manual review. "
+                         f"Source: https://cloud.google.com/oracle/database/docs/overview")
+        else:
+            svc_label = "Oracle Database@Google Cloud"
+            sku_label = f"Oracle Database@Google Cloud (unavailable in region {gcp_region}){lic_suffix}"
+            proj_note = (f"Oracle Database@Google Cloud is not offered in region {gcp_region}; "
+                         f"passthrough at AWS cost for migration architecture review. "
+                         f"Source: https://cloud.google.com/oracle/database/docs/regions-and-zones")
+
+        return [{
+            "aws_li_key": aws_key,
+            "gcp_service": svc_label,
+            "gcp_sku_name": sku_label,
+            "component": "db_instance",
+            "strategy": "passthrough",
+            "unit_multiplier": 1.0,
+            "gcp_region": gcp_region,
+            "projection_note": proj_note,
+            "mapping_confidence": 0.60,
+            "is_workload": True,
+            "break_down": False
+        }]
+
+    # 3. SQL Server (Cloud SQL for SQL Server native engine)
+    elif any(k in engine for k in ("sqlserver", "sql server", "sql-server", "mssql")) or any(k in prod_op for k in ("sqlserver", "sql server", "sql-server", "mssql")):
+        cloud_sql_engine = "SQL Server"
+        engine_confidence = 0.90
+        engine_note = " [Cloud SQL for SQL Server native engine mapping. Source: https://cloud.google.com/sql/docs/sqlserver]"
+
+    # 4. MariaDB (disclosed MySQL substitution)
+    elif "mariadb" in engine or "mariadb" in prod_op:
+        cloud_sql_engine = "MySQL"
+        engine_confidence = 0.85
+        engine_note = (" [engine substitution: Cloud SQL has no native MariaDB offering — "
+                       "MySQL used as the closest available equivalent (MariaDB is a MySQL "
+                       "fork, largely wire-compatible but not identical); verify application "
+                       "compatibility with customer before migrating. Source: https://cloud.google.com/sql/docs/mysql]")
+
+    # 5. Aurora PostgreSQL (default to Cloud SQL for PostgreSQL; AlloyDB disclosed as alternative)
+    elif ("aurora" in engine or "aurora" in prod_op) and ("postgres" in engine or "postgres" in prod_op):
         cloud_sql_engine = "PostgreSQL"
+        engine_confidence = 0.90
+        engine_note = (" [Aurora PostgreSQL mapped to Cloud SQL for PostgreSQL; disclosed alternative: "
+                       "AlloyDB for PostgreSQL (GCP's high-performance, scale-out PostgreSQL-compatible database, "
+                       "~+39%/vCPU, evaluate with customer if analytics/scaling requires it). "
+                       "Source: https://cloud.google.com/sql/docs/postgres and https://cloud.google.com/alloydb/docs/overview]")
+
+    # 6. Standard PostgreSQL (Cloud SQL for PostgreSQL, AlloyDB as architectural candidate)
+    elif "postgres" in engine or "postgres" in prod_op:
+        cloud_sql_engine = "PostgreSQL"
+        engine_confidence = 0.90
         engine_note = (" [possible architectural alternative: AlloyDB for PostgreSQL — a fully "
                        "PostgreSQL-compatible managed service with better read-scaling/analytics "
                        "performance than Cloud SQL, at a real price premium; requires workload "
                        "context this bill alone doesn't provide, so not auto-mapped — worth "
-                       "evaluating with customer if analytics/scaling was a driver for this instance]")
-    elif "mariadb" in engine:
+                       "evaluating with customer if analytics/scaling was a driver for this instance. "
+                       "Source: https://cloud.google.com/sql/docs/postgres]")
+
+    # 7. MySQL (incl. aurora-mysql)
+    elif "mysql" in engine or "mysql" in prod_op:
         cloud_sql_engine = "MySQL"
-        engine_note = (" [engine substitution: Cloud SQL has no native MariaDB offering — "
-                       "MySQL used as the closest available equivalent (MariaDB is a MySQL "
-                       "fork, largely wire-compatible but not identical); verify application "
-                       "compatibility with customer before migrating]")
-    elif "mysql" in engine:
-        cloud_sql_engine = "MySQL"
+        engine_confidence = 0.90
+        engine_note = " [Cloud SQL for MySQL native engine mapping. Source: https://cloud.google.com/sql/docs/mysql]"
+
+    # 8. DocumentDB (MongoDB-compatible document database -> Firestore with MongoDB compatibility; NEVER Cloud SQL MySQL!)
+    elif "docdb" in engine or "documentdb" in engine or "docdb" in prod_op or "documentdb" in prod_op:
+        return [{
+            "aws_li_key": aws_key,
+            "gcp_service": "Firestore",
+            "gcp_sku_name": "Firestore (MongoDB compatibility)",
+            "component": "db_instance",
+            "strategy": "passthrough",
+            "unit_multiplier": 1.0,
+            "gcp_region": gcp_region,
+            "projection_note": ("Amazon DocumentDB (MongoDB-compatible) -> Cloud Firestore with MongoDB compatibility (review). "
+                                "Disclosed candidates: Cloud Firestore Enterprise (MongoDB API compat default); "
+                                "MongoDB Atlas on GCP (Marketplace PAYG/contract); self-hosted MongoDB on Compute Engine. "
+                                "Firestore bills per-operation (reads/writes/deletes) and storage, while DocumentDB bills "
+                                "provisioned instance-hours — unit models differ, requiring workload review; passthrough at AWS cost. "
+                                "Source: https://cloud.google.com/firestore/mongodb-compatibility"),
+            "mapping_confidence": 0.55,
+            "is_workload": True,
+            "break_down": False
+        }]
+
+    # 9. Unknown engine (never guess MySQL!)
     else:
-        cloud_sql_engine = "MySQL"
-        engine_note = (" [engine could not be determined from CUR — MySQL assumed as a "
-                       "default, not a detected engine; verify actual database engine with "
-                       "customer before finalizing]")
-        engine_confidence = 0.55
+        return [{
+            "aws_li_key": aws_key,
+            "gcp_service": "Manual Review",
+            "gcp_sku_name": "Manual Review — DB Engine Unknown",
+            "component": "db_instance",
+            "strategy": "passthrough",
+            "unit_multiplier": 1.0,
+            "gcp_region": gcp_region,
+            "projection_note": ("[engine could not be determined from CUR — manual review required "
+                                "to confirm target engine (Cloud SQL MySQL/Postgres/SQL Server or "
+                                "Oracle@GCP); passthrough at AWS cost]"),
+            "mapping_confidence": 0.40,
+            "is_workload": True,
+            "break_down": False
+        }]
 
     tier = "Regional" if is_ha else "Zonal"
+    topology_note = " [Multi-AZ DB cluster (2 readable standbys) mapped to Regional HA with replica topology recommendation]" if is_cluster else ""
     core_desc = f"Cloud SQL for {cloud_sql_engine}: {tier} - vCPU"
     ram_desc = f"Cloud SQL for {cloud_sql_engine}: {tier} - RAM"
 
@@ -9141,13 +9349,13 @@ def map_db_row(r, parsed):
         "strategy": "map" if core_sku else "passthrough",
         "unit_multiplier": float(vcpus),
         "gcp_region": gcp_region,
-        "projection_note": f"Deterministic DB mapping: Cloud SQL for {cloud_sql_engine} {tier} vCPU ({gcp_family} family equivalent)" + engine_note + arm_source_note + _no_rate_suffix(core_sku, gcp_region),
+        "projection_note": f"Deterministic DB mapping: Cloud SQL for {cloud_sql_engine} {tier} vCPU ({gcp_family} family equivalent)" + engine_note + topology_note + arm_source_note + _no_rate_suffix(core_sku, gcp_region),
         "mapping_confidence": engine_confidence,
         "is_workload": True,
         "break_down": True
     }
     if core_sku:
-        core_entry["gcp_sku_id"] = core_sku
+        core_entry["gcp_sku_id"] = str(core_sku)
         core_entry["gcp_sku_unit"] = core_sku.unit
 
     ram_sku = resolve_sku("Cloud SQL", ram_desc, gcp_region)
@@ -9159,16 +9367,484 @@ def map_db_row(r, parsed):
         "strategy": "map" if ram_sku else "passthrough",
         "unit_multiplier": float(ram),
         "gcp_region": gcp_region,
-        "projection_note": f"Deterministic DB mapping: Cloud SQL for {cloud_sql_engine} {tier} RAM ({gcp_family} family equivalent)" + engine_note + arm_source_note + _no_rate_suffix(ram_sku, gcp_region),
+        "projection_note": f"Deterministic DB mapping: Cloud SQL for {cloud_sql_engine} {tier} RAM ({gcp_family} family equivalent)" + engine_note + topology_note + arm_source_note + _no_rate_suffix(ram_sku, gcp_region),
         "mapping_confidence": engine_confidence,
         "is_workload": True,
         "break_down": True
     }
     if ram_sku:
-        ram_entry["gcp_sku_id"] = ram_sku
+        ram_entry["gcp_sku_id"] = str(ram_sku)
         ram_entry["gcp_sku_unit"] = ram_sku.unit
 
     return [core_entry, ram_entry]
+
+
+# ─── SageMaker sub-type constants ────────────────────────────────────────────
+# Maps the charge-type id produced by spec_dispatch → the Vertex AI product
+# label used in gcp_sku_name / projection_note.
+# Source: aws.amazon.com/sagemaker/ai/pricing (verified 2026-11-13)
+#         docs.cloud.google.com/vertex-ai/docs/training/overview
+#         docs.cloud.google.com/vertex-ai/docs/predictions/overview
+#         docs.cloud.google.com/vertex-ai/docs/workbench/overview
+_SM_SUBTYPE_TO_VERTEX_PRODUCT: dict = {
+    "sagemaker_training":    "Custom Training",
+    "sagemaker_realtime":    "Online Prediction",
+    "sagemaker_batch":       "Batch Prediction",
+    "sagemaker_notebook":    "Workbench",
+    "sagemaker_processing":  "Custom Processing",
+    "sagemaker_hyperpod":    "GCE Cluster (HyperPod analogue)",
+}
+# Sub-types that have no GCP equivalent → deterministic passthrough with reason.
+_SM_PASSTHROUGH_SUBTYPES: dict = {
+    "sagemaker_serverless": (
+        "Serverless Inference → passthrough/review; no per-ms Vertex serverless-inference "
+        "SKU. Closest: Cloud Run (request-based) or Vertex AI Online Prediction. "
+        "Disclose, do not force."
+    ),
+    "sagemaker_datawrangler": (
+        "Data Wrangler → passthrough/review; closest GCP analogue is Dataflow or Dataproc "
+        "data-prep compute, but unit model differs. Review with customer."
+    ),
+    "sagemaker_groundtruth": (
+        "Ground Truth → passthrough; GCP Data Labeling Service is deprecated (no managed "
+        "replacement). Never project $0 — carry AWS cost as the floor."
+    ),
+    "sagemaker_mlflow": (
+        "MLflow tracking server → passthrough/review; no managed GCP MLflow equivalent. "
+        "Closest: Cloud Logging + GCS artifact store + Vertex Experiments, but no "
+        "single managed SKU."
+    ),
+    "sagemaker_featurestore": (
+        "Feature Store → passthrough/review; Vertex AI Feature Store V2 is the analogue "
+        "(legacy FS deprecated 2027-02-17). Storage is deterministic; online-serving "
+        "node sizing needs workload review."
+    ),
+}
+
+
+# GPU family map for SageMaker accelerator instance types.
+# AWS prefix → (GCP accelerator description, GiB-of-accelerator-RAM-per-card)
+# verified from: aws.amazon.com/sagemaker/ai/pricing (instance specs tab, 2026-11-13)
+# and cloud.google.com/compute/docs/gpus (SKU name patterns, 2026-11-13).
+_SM_GPU_INSTANCE_MAP: dict = {
+    "g4dn":  ("NVIDIA T4",   16),  # g4dn → T4 GPU
+    "g5":    ("NVIDIA A10G", 24),  # g5 → A10G (Vertex: closest if A10G absent → A100)
+    "p3":    ("NVIDIA V100", 16),  # p3 → V100
+    "p4d":   ("NVIDIA A100", 40),  # p4d.24xlarge → 8×A100 40GB
+    "p4de":  ("NVIDIA A100", 80),  # p4de → A100 80GB
+    "p5":    ("NVIDIA H100", 80),  # p5 → H100
+    "g5g":   ("NVIDIA T4",   16),  # g5g → T4 Graviton (Vertex: T4)
+}
+
+
+def map_sagemaker(rows: list) -> tuple:
+    """SageMaker sub-service router → Vertex AI (Custom Training / Online Prediction /
+    Batch Prediction / Workbench / Custom Processing) + GCE for HyperPod.
+
+    Sizing strategy (reuses existing compute helpers):
+    - `parse_instance(ml.<family>.<size>)` now works (Step 1 added ml. strip).
+    - Compute sub-types (training/realtime/batch/notebook/processing/hyperpod):
+        • parse_instance → vcpus + ram_gb → emit core + ram rows (Vertex N1/N4/etc.)
+        • GPU instances (g4dn/g5/p3/p4d/p5) → emit additional accelerator row
+        • Inferentia/Trainium (inf/trn) → passthrough (no GCP equivalent)
+    - Non-compute sub-types (serverless/datawrangler/groundtruth/mlflow/featurestore):
+        → passthrough with disclosed reason (never $0)
+    - Unknown catch-all → review passthrough
+
+    Returns (mapped: list, llm_rows: list) matching map_compute_breakdown contract.
+    """
+    mapped: list = []
+    llm_rows: list = []
+
+    for r in rows:
+        region = r.get("gcp_region")
+        aws_key = r["aws_li_key"]
+        itype_raw = (r.get("instance_type") or "").strip()
+        rule_val = str(r.get("mechanic_rule") or "")
+        if rule_val.startswith("spec:"):
+            # Format: 'spec:sagemaker.sagemaker_training' -> 'sagemaker_training'
+            charge_type = rule_val.split(".", 1)[-1] if "." in rule_val else rule_val.split(":", 1)[-1]
+        else:
+            charge_type = rule_val
+        usage_type_low = (r.get("usage_type") or "").lower()
+
+        # ── 1. Feature Store: passthrough/review (storage det; serving review) ──────
+        if charge_type == "sagemaker_featurestore" or "featurestore" in usage_type_low:
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        "Vertex AI",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       "Feature Store V2",
+                "component":          "featurestore",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    _SM_PASSTHROUGH_SUBTYPES["sagemaker_featurestore"],
+                "mapping_confidence": 0.55,
+            })
+            continue
+
+        # ── 2. No-equivalent sub-types: deterministic passthrough ────────────────────
+        pt_reason = _SM_PASSTHROUGH_SUBTYPES.get(charge_type)
+        if pt_reason is None and charge_type == "sagemaker_all":
+            # Catch-all unknown sub-type
+            pt_reason = (
+                f"Unknown SageMaker sub-type ({r.get('usage_type', '?')!r}); "
+                "routing to Vertex AI review passthrough. Inspect usage_type to identify "
+                "the sub-service and add an explicit charge-type."
+            )
+        if pt_reason:
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        "Vertex AI",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       "Manual Review",
+                "component":          "sagemaker",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    pt_reason,
+                "mapping_confidence": 0.40,
+            })
+            continue
+
+        # ── 3. Compute sub-types: size from ml.* instance type ──────────────────────
+        vertex_product = _SM_SUBTYPE_TO_VERTEX_PRODUCT.get(charge_type, "Custom Training")
+        # HyperPod → Compute Engine (self-hosted cluster)
+        gcp_svc = "Compute Engine" if charge_type == "sagemaker_hyperpod" else "Vertex AI"
+
+        # Inferentia / Trainium: no GCP equivalent → passthrough
+        itype_low = itype_raw.lower()
+        if re.search(r'\b(?:inf|trn)\d', itype_low):
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        "Vertex AI",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       "Manual Review",
+                "component":          "sagemaker",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    (
+                    f"SageMaker {charge_type} on {itype_raw} (Inferentia/Trainium) → "
+                    "passthrough/review; no GCP Inferentia/Trainium equivalent. "
+                    "Closest: Cloud TPU (TPU v4/v5), but unit model and pricing differ. "
+                    "Disclose, do not force."
+                ),
+                "mapping_confidence": 0.35,
+            })
+            continue
+
+        parsed = parse_instance(itype_raw) if itype_raw else None
+        if not parsed:
+            # Can't size → LLM review
+            llm_rows.append(r)
+            continue
+
+        vcpus   = parsed.get("vcpus") or 0
+        ram_gb  = parsed.get("ram_gb") or 0.0
+        prefix  = parsed.get("prefix", "")
+
+        # Determine GPU type from instance prefix
+        gpu_info = None
+        # Build full instance family string (e.g. "g5", "g4dn", "p4d") for GPU lookup
+        _fam_str = f"{prefix}{parsed.get('gen', '')}{parsed.get('suffixes', '')}"
+        for gpu_prefix, (gpu_name, gpu_vram_gib) in _SM_GPU_INSTANCE_MAP.items():
+            if _fam_str == gpu_prefix or _fam_str.startswith(gpu_prefix):
+                gpu_info = (gpu_name, gpu_vram_gib)
+                break
+
+        emitted = 0
+        gcp_family = get_gcp_family(parsed)
+        family_label = gcp_family[0] if gcp_family and gcp_family[0] else "N1"
+
+        # Emit core row
+        if vcpus > 0:
+            core_sku = resolve_sku(gcp_svc, f"{family_label} Instance Core", region)
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        gcp_svc,
+                "gcp_sku_id":         str(core_sku) if core_sku else None,
+                "gcp_sku_name":       f"{family_label} Instance Core",
+                "component":          "core",
+                "strategy":           "map" if core_sku else "passthrough",
+                "unit_multiplier":    float(vcpus),
+                "gcp_region":         region,
+                "projection_note":    (
+                    f"SageMaker {vertex_product} ({itype_raw}) → {gcp_svc} "
+                    f"{family_label} vCPU-hours; vcpus={vcpus}"
+                ),
+                "mapping_confidence": 0.75,
+            })
+            emitted += 1
+
+        # Emit RAM row
+        if ram_gb > 0:
+            ram_sku = resolve_sku(gcp_svc, f"{family_label} Instance Ram", region)
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        gcp_svc,
+                "gcp_sku_id":         str(ram_sku) if ram_sku else None,
+                "gcp_sku_name":       f"{family_label} Instance Ram",
+                "component":          "ram",
+                "strategy":           "map" if ram_sku else "passthrough",
+                "unit_multiplier":    float(ram_gb),
+                "gcp_region":         region,
+                "projection_note":    (
+                    f"SageMaker {vertex_product} ({itype_raw}) → {gcp_svc} "
+                    f"{family_label} RAM GiB-hours; ram={ram_gb:.1f} GiB"
+                ),
+                "mapping_confidence": 0.75,
+            })
+            emitted += 1
+
+        # Emit GPU accelerator row (if applicable)
+        if gpu_info:
+            gpu_name, _gpu_vram = gpu_info
+            # Vertex AI bills GPU accelerators separately via accelerator SKUs.
+            # cloud.google.com/vertex-ai/docs/predictions/configure-compute#gpu-types
+            gpu_sku = resolve_sku(gcp_svc, gpu_name, region)
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        gcp_svc,
+                "gcp_sku_id":         str(gpu_sku) if gpu_sku else None,
+                "gcp_sku_name":       gpu_name,
+                "component":          "accelerator",
+                "strategy":           "map" if gpu_sku else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    (
+                    f"SageMaker {vertex_product} ({itype_raw}) → {gcp_svc} GPU "
+                    f"{gpu_name} accelerator; billed per-GPU-hour by Vertex AI"
+                ),
+                "mapping_confidence": 0.70,
+            })
+            emitted += 1
+
+        # If nothing emitted (e.g. vcpus=0 and ram=0), route to LLM
+        if emitted == 0:
+            llm_rows.append(r)
+
+    return mapped, llm_rows
+
+
+# ─── AWS Backup source-type mapper ───────────────────────────────────────────
+def map_backup(rows: list) -> tuple:
+    """AWS Backup vault storage and operations router.
+
+    Core invariant: An AWS Backup row must NEVER be priced as live Hyperdisk/PD capacity.
+    Source-type routing:
+    - EBS / AMI -> Compute Engine Storage PD Snapshot (~$0.05/GB-mo)
+    - Cold storage (EBS Archive, ColdStorage) -> Cloud Storage Archive / PD Archive Snapshot
+    - Managed Databases (RDS, Aurora, DocumentDB, Neptune) -> Cloud SQL: Backups
+    - EFS / FSx / DynamoDB / S3 -> Cloud Storage Nearline
+    - Restore -> Cloud Storage Data Retrieval
+    - Copy (cross-region/account) -> Compute Engine Inter-Region Egress
+    - Audit / Search / Malware -> passthrough with explicit reason
+    - Unknown source warm storage -> Compute Engine Storage PD Snapshot (conservative default, NEVER live disk)
+    """
+    mapped = []
+    llm_rows = []
+
+    for r in rows:
+        region = r.get("gcp_region")
+        aws_key = r["aws_li_key"]
+        rule_val = str(r.get("mechanic_rule") or "")
+        if rule_val.startswith("spec:"):
+            charge_type = rule_val.split(".", 1)[-1] if "." in rule_val else rule_val.split(":", 1)[-1]
+        else:
+            charge_type = rule_val
+
+        ut_low = (r.get("usage_type") or "").lower()
+        op_low = (r.get("operation") or "").lower()
+        blob = f"{ut_low} {op_low}"
+
+        # 1. Audit / Search / Malware -> passthrough
+        if charge_type == "backup_audit" or "evaluation" in blob or "audit" in blob:
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        "Manual Review",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       "Backup Audit Manager",
+                "component":          "backup_audit",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    "AWS Backup Audit Manager evaluations -> passthrough at cost parity (no direct GCP equivalent)",
+                "mapping_confidence": 0.60,
+            })
+            continue
+
+        if charge_type == "backup_search" or "search" in blob:
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        "Manual Review",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       "Backup Search",
+                "component":          "backup_search",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    "AWS Backup Search indexing and query units -> passthrough at cost parity (no direct GCP equivalent)",
+                "mapping_confidence": 0.60,
+            })
+            continue
+
+        if charge_type == "backup_malware" or "malware" in blob or "scan" in blob:
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        "Manual Review",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       "Backup Malware Protection",
+                "component":          "backup_malware",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    "AWS Backup Malware Protection scan bytes -> passthrough at cost parity (no direct GCP equivalent)",
+                "mapping_confidence": 0.60,
+            })
+            continue
+
+        # 2. Restore operations
+        if charge_type == "backup_restore" or "restore" in blob:
+            sku_id = resolve_sku(GCP_CLOUD_STORAGE, "Data Retrieval", region)
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        GCP_CLOUD_STORAGE,
+                "gcp_sku_id":         str(sku_id) if sku_id else None,
+                "gcp_sku_name":       "Data Retrieval",
+                "component":          "backup_restore",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    "AWS Backup restore operations -> Cloud Storage Data Retrieval",
+                "mapping_confidence": 0.75,
+            })
+            continue
+
+        # 3. Cross-Region / Cross-Account copy
+        if charge_type == "backup_copy" or "crossregion" in blob or "crossaccount" in blob or "copy" in blob:
+            sku_id = resolve_sku(GCP_COMPUTE_ENGINE, "Inter-region", region)
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        GCP_COMPUTE_ENGINE,
+                "gcp_sku_id":         str(sku_id) if sku_id else None,
+                "gcp_sku_name":       "Inter-region",
+                "component":          "backup_copy",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    "AWS Backup cross-region/account copy data transfer -> Compute Engine Inter-Region Egress",
+                "mapping_confidence": 0.80,
+            })
+            continue
+
+        # 4. Cold / Archive tier
+        if charge_type == "backup_cold" or "cold" in blob or "archive" in blob:
+            sku_id = resolve_sku(GCP_CLOUD_STORAGE, "Archive Storage", region)
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        GCP_CLOUD_STORAGE,
+                "gcp_sku_id":         str(sku_id) if sku_id else None,
+                "gcp_sku_name":       "Archive Storage",
+                "component":          "backup_storage",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    "AWS Backup cold/archive tier -> Cloud Storage Archive Storage (90-day retention tier)",
+                "mapping_confidence": 0.85,
+            })
+            continue
+
+        # 5. DocumentDB backup storage -> Cloud Storage Nearline / Firestore backup (NEVER Cloud SQL Backups!)
+        if charge_type in ("documentdb_backup", "backup_documentdb") or "docdb" in blob or "documentdb" in blob:
+            sku_id = resolve_sku(GCP_CLOUD_STORAGE, "Nearline Storage", region)
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        GCP_CLOUD_STORAGE,
+                "gcp_sku_id":         str(sku_id) if sku_id else None,
+                "gcp_sku_name":       "Nearline Storage",
+                "component":          "backup_storage",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    ("DocumentDB backup storage -> Cloud Storage Nearline (backup tier for NoSQL/MongoDB; "
+                                       "not Cloud SQL Backups, DocumentDB is non-relational). "
+                                       "Source: https://cloud.google.com/firestore/mongodb-compatibility"),
+                "mapping_confidence": 0.80,
+            })
+            continue
+
+        # 5b. Neptune backup storage -> Cloud Storage Nearline (NEVER Cloud SQL Backups — Neptune is a graph DB!)
+        if charge_type in ("neptune_backup", "backup_neptune") or "neptune" in blob:
+            sku_id = resolve_sku(GCP_CLOUD_STORAGE, "Nearline Storage", region)
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        GCP_CLOUD_STORAGE,
+                "gcp_sku_id":         str(sku_id) if sku_id else None,
+                "gcp_sku_name":       "Nearline Storage",
+                "component":          "backup_storage",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    ("Neptune backup storage -> Cloud Storage Nearline (backup tier for graph DB; "
+                                       "not Cloud SQL Backups, Neptune is non-relational/graph DB). "
+                                       "Source: AWS Neptune / GCP Spanner Graph architecture docs"),
+                "mapping_confidence": 0.80,
+            })
+            continue
+
+        # 6. Relational Managed Databases: RDS / Aurora -> Cloud SQL: Backups (Neptune excluded: graph DB)
+        if charge_type == "backup_db" or any(k in blob for k in ("rds", "aurora")):
+            sku_id = resolve_sku(GCP_CLOUD_SQL, "Cloud SQL: Backups", region)
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        GCP_CLOUD_SQL,
+                "gcp_sku_id":         str(sku_id) if sku_id else None,
+                "gcp_sku_name":       "Cloud SQL: Backups",
+                "component":          "backup_storage",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    "AWS Backup (managed database: RDS/Aurora) -> Cloud SQL: Backups",
+                "mapping_confidence": 0.85,
+            })
+            continue
+
+        # 6. EFS / FSx / DynamoDB / S3 file & object backup -> Cloud Storage Nearline
+        if charge_type in ("backup_efs", "backup_fsx", "backup_dynamodb", "backup_s3") or any(k in blob for k in ("efs", "fsx", "dynamodb", "ddb", "-s3", ":s3")):
+            sku_id = resolve_sku(GCP_CLOUD_STORAGE, "Nearline Storage", region)
+            mapped.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        GCP_CLOUD_STORAGE,
+                "gcp_sku_id":         str(sku_id) if sku_id else None,
+                "gcp_sku_name":       "Nearline Storage",
+                "component":          "backup_storage",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         region,
+                "projection_note":    "AWS Backup (EFS/FSx/DynamoDB/S3) -> Cloud Storage Nearline Storage (backup tier)",
+                "mapping_confidence": 0.80,
+            })
+            continue
+
+        # 7. EBS / AMI or default warm backup -> Compute Engine Storage PD Snapshot
+        # NEVER emit live Hyperdisk / PD capacity!
+        sku_id = resolve_sku(GCP_COMPUTE_ENGINE, "Storage PD Snapshot", region)
+        mapped.append({
+            "aws_li_key":         aws_key,
+            "gcp_service":        GCP_COMPUTE_ENGINE,
+            "gcp_sku_id":         str(sku_id) if sku_id else None,
+            "gcp_sku_name":       "Storage PD Snapshot",
+            "component":          "backup_storage",
+            "strategy":           "map" if sku_id else "passthrough",
+            "unit_multiplier":    1.0,
+            "gcp_region":         region,
+            "projection_note":    "AWS Backup (EBS/AMI/unspecified warm storage) -> Compute Engine Storage PD Snapshot (conservative snapshot-class rate; NEVER live disk capacity)",
+            "mapping_confidence": 0.85,
+        })
+
+    return mapped, llm_rows
 
 
 def map_compute_breakdown(rows: list[dict]):
@@ -9217,8 +9893,8 @@ def main():
         _ASSUMPTIONS = load_assumptions(os.getcwd())
     _GLUE_DPU_VCPU    = _ASSUMPTIONS.get("glue_dpu_vcpu", 4.0)
     _GLUE_DPU_RAM_GIB = _ASSUMPTIONS.get("glue_dpu_ram_gib", 16.0)
-    _ACU_VCPU         = _ASSUMPTIONS.get("aurora_acu_vcpu", 2.0)
-    _ACU_RAM_GIB      = _ASSUMPTIONS.get("aurora_acu_ram_gib", 16.0)
+    _ACU_VCPU         = _ASSUMPTIONS.get("aurora_acu_vcpu", 0.25)
+    _ACU_RAM_GIB      = _ASSUMPTIONS.get("aurora_acu_ram_gib", 2.0)
     GCP_LOOKER_STUDIO_PRO_RATE = _ASSUMPTIONS.get("looker_studio_pro_seat_usd", 9.0)
     _LAMBDA_MB_PER_VCPU = _ASSUMPTIONS.get("lambda_mb_per_vcpu", 1769.0)
 
@@ -9249,7 +9925,7 @@ def main():
               ('flat_hourly', 'object_storage', 'per_request', 'block_storage', 'data_transfer',
                'non_workload', 'cloudwatch', 'guardduty', 'inspector', 'marketplace_thirdparty', 'quicksight', 'redshift', 'athena', 'kinesis', 'efs',
                'xray', 'fsx', 'emr', 'elasticache', 'msk', 'compute_windows', 'compute_arm',
-               'compute_burstable', 'compute_breakdown', 'managed_db', 'opensearch', 'commitment_discount', 'rds_extended_support', 'glue', 'shield', 'dynamodb_storage', 'dynamodb_capacity', 'mwaa', 'ssm_parameter_store')
+               'compute_burstable', 'compute_breakdown', 'managed_db', 'opensearch', 'commitment_discount', 'rds_extended_support', 'glue', 'shield', 'dynamodb_storage', 'dynamodb_capacity', 'mwaa', 'ssm_parameter_store', 'sagemaker', 'backup')
     """).fetchall()
     con.close()
 
@@ -9259,7 +9935,7 @@ def main():
                                   "block_storage", "data_transfer", "non_workload", "cloudwatch", "msk",
                                   "guardduty", "inspector", "marketplace_thirdparty", "quicksight", "redshift", "athena", "kinesis", "efs", "xray",
                                   "fsx", "emr", "elasticache", "compute_windows", "compute_arm",
-                                  "compute_burstable", "compute_breakdown", "managed_db", "opensearch", "commitment_discount", "rds_extended_support", "glue", "shield", "dynamodb_storage", "dynamodb_capacity", "mwaa", "ssm_parameter_store")}
+                                  "compute_burstable", "compute_breakdown", "managed_db", "opensearch", "commitment_discount", "rds_extended_support", "glue", "shield", "dynamodb_storage", "dynamodb_capacity", "mwaa", "ssm_parameter_store", "sagemaker", "backup")}
     for raw in rows:
         r = dict(zip(cols, raw))
         by_group[r["mechanic_group"]].append(r)
@@ -9302,6 +9978,8 @@ def main():
         "dynamodb_capacity":    map_dynamodb_capacity,
         "mwaa":                 map_mwaa,
         "ssm_parameter_store":  map_ssm_parameter_store,
+        "sagemaker":            map_sagemaker,
+        "backup":               map_backup,
     }
     all_llm_rows: list[dict] = []
 

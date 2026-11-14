@@ -394,11 +394,11 @@ def test_pdf_whitespace_and_nbsp_normalization():
 
 
 def test_sagemaker_instance_excluded_from_compute_breakdown():
-    # SageMaker ML instance-hour row must route to misc (not compute_breakdown)
+    # SageMaker ML instance-hour row must route to sagemaker mechanic (not compute_breakdown)
     r = row(product="Amazon SageMaker",
             usage_type="APS3-ml.p4d.24xlarge-Hour", operation="RunInstance", unit="Hrs",
             canonical="sagemaker", instance_type="ml.p4d.24xlarge")
-    assert classify(r) == "misc"
+    assert classify(r) == "sagemaker"
 
 
 # ---------------------------------------------------------------------------

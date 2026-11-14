@@ -857,10 +857,11 @@ def main():
 
         # Known service aliases between mapper labels, catalog service_names, and cud_pct keys (BUG-3)
         CUD_SERVICE_ALIASES = {
-            "Cloud Memorystore for Redis": {"Memorystore", "Cloud Memorystore", "Cloud Memorystore for Redis"},
+            "Cloud Memorystore for Redis": {"Memorystore", "Cloud Memorystore", "Cloud Memorystore for Redis", "Memorystore for Valkey"},
             "Cloud Memorystore for Memcached": {"Memorystore", "Cloud Memorystore", "Cloud Memorystore for Memcached"},
-            "Cloud Memorystore": {"Memorystore", "Cloud Memorystore", "Cloud Memorystore for Redis", "Cloud Memorystore for Memcached"},
-            "Memorystore": {"Memorystore", "Cloud Memorystore", "Cloud Memorystore for Redis", "Cloud Memorystore for Memcached"},
+            "Cloud Memorystore": {"Memorystore", "Cloud Memorystore", "Cloud Memorystore for Redis", "Cloud Memorystore for Memcached", "Memorystore for Valkey"},
+            "Memorystore": {"Memorystore", "Cloud Memorystore", "Cloud Memorystore for Redis", "Cloud Memorystore for Memcached", "Memorystore for Valkey"},
+            "Memorystore for Valkey": {"Memorystore", "Cloud Memorystore", "Cloud Memorystore for Redis", "Memorystore for Valkey"},
             "AlloyDB": {"AlloyDB", "AlloyDB for PostgreSQL", "Cloud AlloyDB"},
             "Cloud SQL": {"Cloud SQL"},
             "Compute Engine": {"Compute Engine"},

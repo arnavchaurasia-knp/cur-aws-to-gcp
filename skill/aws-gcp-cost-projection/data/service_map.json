@@ -280,7 +280,7 @@
       "gcp_service": "Memorystore",
       "mode": "keep",
       "confidence": 78,
-      "reason": "Redis/Memcached -> Memorystore; priced by node GB + tier (GiB-hour formula, or an honest passthrough when node RAM/SKU can't be resolved). Verify cluster mode: ElastiCache Redis Cluster mode maps to Memorystore Redis Cluster (different SKU, 30-40% higher) \u2014 confidence held lower until cluster topology is confirmed."
+      "reason": "Redis/Memcached -> Memorystore; priced by node GB + tier (GiB-hour formula, or an honest passthrough when node RAM/SKU can't be resolved). Note: Memorystore for Memcached is deprecated on GCP (docs.cloud.google.com/memorystore); Memcached workloads retarget to Memorystore for Redis/Valkey with disclosed note. Verify cluster mode: ElastiCache Redis Cluster mode maps to Memorystore Redis Cluster (different SKU, 30-40% higher) \u2014 confidence held lower until cluster topology is confirmed."
     },
     {
       "match": "dynamodb accelerator",
@@ -334,17 +334,17 @@
       "match": "database migration",
       "category": "Migration",
       "gcp_service": "Database Migration Service",
-      "mode": "review",
-      "confidence": 88,
-      "reason": "AWS DMS billed per replication-instance-hour; GCP DMS billed per GiB of data copied ($2.08/GiB CDC in Mumbai, $0 for full dump). Ongoing CDC use (typical for $900+/mo spend) has real GCP cost but units are incompatible \u2014 passthrough until CDC data volume is known."
+      "mode": "ignore",
+      "confidence": 95,
+      "reason": "GCP Database Migration Service is free \u2014 destination DB + optional reverse-SSH VM + network are billed separately. Source: cloud.google.com/database-migration/pricing"
     },
     {
       "match": "sagemaker",
       "category": "AI/ML",
       "gcp_service": "Vertex AI",
       "mode": "review",
-      "confidence": 65,
-      "reason": "SageMaker -> Vertex AI (training/prediction/notebooks). Instance-hour pricing differs by accelerator and Vertex managed premium; passthrough baseline until a per-instance-type pricer exists. Kills observed 4-way target variance (echo/GCE/Manual/Vertex)."
+      "confidence": 40,
+      "reason": "SageMaker fallback: sub-types not matched by the sagemaker mechanic (sagemaker_training/realtime/batch/notebook/processing/hyperpod/featurestore/serverless/groundtruth/mlflow) land here as a last resort. The sagemaker mechanic in apply_static_mappings handles all known sub-types with sized Vertex AI targets. This entry only catches genuinely unknown sub-types and forces Vertex AI review \u2014 never a flat map."
     },
     {
       "match": "transfer family",

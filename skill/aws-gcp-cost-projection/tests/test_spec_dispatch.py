@@ -324,10 +324,14 @@ CASES = [
      _row(product="AWS Lambda", product_code="AWSLambda",
           usage_type="APS3-Request", unit="Requests"),
      "per_request", "lambda_metered"),
-    ("lambda_ephemeral_storage_fallback",
+    ("lambda_provisioned_concurrency",
+     _row(product="AWS Lambda", product_code="AWSLambda",
+          usage_type="APS3-Lambda-Provisioned-Concurrency", unit="Lambda-GB-Second"),
+     "per_request", "lambda_provisioned_concurrency"),
+    ("lambda_ephemeral_storage",
      _row(product="AWS Lambda", product_code="AWSLambda",
           usage_type="APS3-Lambda-Storage-Duration", unit="GB-Mo"),
-     "misc", None),  # excluded from block/object storage & per_request -> misc
+     "per_request", "lambda_ephemeral_storage"),
 
     # ---- ELB ----
     ("elb_hours",
@@ -407,14 +411,14 @@ CASES = [
      "misc", "ses_all"),
     ("sagemaker_notebook",
      _row(product="Amazon SageMaker", usage_type="APS3-Notebook:ml.t3.medium", unit="Hrs"),
-     "misc", "sagemaker_all"),
+     "sagemaker", "sagemaker_notebook"),
     ("dms_instance",
      _row(product="AWS Database Migration Service",
           usage_type="APS3-CreateDMSReplicationInstance:dms.r5.large", unit="Hrs"),
-     "misc", "dms_all"),
+     "ignore", "dms_instance"),
     ("backup_storage",
      _row(product="AWS Backup", usage_type="APS3-BackupStorage", unit="GB-Mo"),
-     "block_storage", "backup_storage"),
+     "backup", "backup_storage_warm"),
     ("cloudtrail_events",
      _row(product="AWS CloudTrail", usage_type="APS3-PaidEventsRecorded", unit="Count"),
      "per_request", "cloudtrail_events"),
@@ -555,6 +559,8 @@ EXPECTED_DIVERGENCES = {
     "opensearch_storage": "block_storage",
     "ecs_management": "ignore",
     "acm_public_cert": "ignore",
+    "dms_instance": "ignore",
+    "lambda_ephemeral_storage": "per_request",
 }
 
 

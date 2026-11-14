@@ -65,5 +65,25 @@
     "southamerica-east1": true,
     "northamerica-northeast1": true,
     "northamerica-northeast2": true
+  },
+  "oracledatabase.googleapis.com": {
+    "us-east4": true,
+    "us-east1": true,
+    "us-central1": true,
+    "us-west1": true,
+    "us-west2": true,
+    "us-south1": true,
+    "europe-west1": true,
+    "europe-west2": true,
+    "europe-west3": true,
+    "europe-west4": true,
+    "europe-west9": true,
+    "europe-north1": true,
+    "asia-southeast1": true,
+    "asia-northeast1": true,
+    "asia-south1": true,
+    "australia-southeast1": true,
+    "southamerica-east1": true,
+    "me-central1": true
   }
 }

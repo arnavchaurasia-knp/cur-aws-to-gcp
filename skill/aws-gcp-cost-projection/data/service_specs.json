@@ -1,7 +1,7 @@
 {
   "_meta": {
-    "purpose": "Per-service charge-type specification registry (Layer-1.5). ONE uniform schema for every AWS service: given a row whose service identity is already resolved (canonical_service, product_code-first), this declares the service's charge-types, how each is recognised, which reusable pricing mechanic prices it, and which fields it needs for full context. Replaces the greedy global regex rules in classify_mechanics.py with explicit per-service dispatch. The mechanic vocabulary (compute_breakdown/block_storage/...) is UNCHANGED — this only changes HOW a row's mechanic is chosen (per-service + explicit) instead of by global pattern order.",
-    "status": "SEED — ec2 + rds only. Faithfully carried over from classify_mechanics.py RULES (each charge_type cites its source_rule). Field names grounded in the authoritative AWS CUR data dictionary. NOT YET consumed by any script. classify_mechanics.py still owns classification until the dispatch engine lands (see docs/SERVICE_SPECS_DESIGN.md migration plan). Grow one service at a time, ranked by spend.",
+    "purpose": "Per-service charge-type specification registry (Layer-1.5). ONE uniform schema for every AWS service: given a row whose service identity is already resolved (canonical_service, product_code-first), this declares the service's charge-types, how each is recognised, which reusable pricing mechanic prices it, and which fields it needs for full context. Replaces the greedy global regex rules in classify_mechanics.py with explicit per-service dispatch. The mechanic vocabulary (compute_breakdown/block_storage/...) is UNCHANGED \u2014 this only changes HOW a row's mechanic is chosen (per-service + explicit) instead of by global pattern order.",
+    "status": "SEED \u2014 ec2 + rds only. Faithfully carried over from classify_mechanics.py RULES (each charge_type cites its source_rule). Field names grounded in the authoritative AWS CUR data dictionary. NOT YET consumed by any script. classify_mechanics.py still owns classification until the dispatch engine lands (see docs/SERVICE_SPECS_DESIGN.md migration plan). Grow one service at a time, ranked by spend.",
     "schema_version": 2,
     "evidence_source": "Service seeding order = global spend ranking across all 75 historical job DBs (AGENTS.md global_sku_audit). Field names from AWS CUR product/line_item/pricing columns (https://docs.aws.amazon.com/cur/latest/userguide/table-dictionary-cur2-product.html) cross-checked against the columns ingest.py actually parses.",
     "dispatch_model": "canonical_service (identity, done) -> service_specs[canonical] -> test charge_types in order, FIRST MATCH WINS (same semantics as today's rule chain, but scoped to one service) -> assign (charge_type, mechanic) + compute field_state over the charge_type's fields. A row whose service has no spec here falls back to the legacy generic mechanic rules.",
@@ -14,14 +14,14 @@
       "exclude_usage_type_re": "row does NOT match if this hits usage_type",
       "exclude_operation_re": "row does NOT match if this hits operation",
       "unit_in": "pricing_unit (lowercased) is in this list",
-      "unit_hourly": "true => _is_hourly_unit(unit): unit in {hrs,hours,hour,hr,accelerator-hours,''} — '' included because PDF/flat bills leave unit blank",
+      "unit_hourly": "true => _is_hourly_unit(unit): unit in {hrs,hours,hour,hr,accelerator-hours,''} \u2014 '' included because PDF/flat bills leave unit blank",
       "pricing_model_in": "pricing_model in this list (OnDemand|Spot|Reserved|SavingsPlan|Committed)",
       "line_item_type_in": "line_item_type in this list",
       "cost_lt_zero": "true => aws_amortized_cost < 0",
       "is_accelerator": "true => _is_accelerator(row): Inferentia/Trainium/Habana/GPU family token"
     },
     "mechanic_vocabulary": {
-      "_note": "Output contract — unchanged from classify_mechanics.py so apply_static_mappings.py / family_mapper.py need no changes. 'ignore' and 'passthrough' are terminal (no GCP SKU math).",
+      "_note": "Output contract \u2014 unchanged from classify_mechanics.py so apply_static_mappings.py / family_mapper.py need no changes. 'ignore' and 'passthrough' are terminal (no GCP SKU math).",
       "compute_breakdown": "x86/GPU EC2 & self-host-on-GCE: core+RAM (+accelerator) SKU breakdown (family_mapper).",
       "compute_windows": "EC2 running Windows: core+RAM+Windows-license components (static mapper).",
       "compute_burstable": "t2/t3/t3a/t4g EC2 -> E2 (static mapper).",
@@ -35,9 +35,9 @@
       "rds_extended_support": "post-EOL engine surcharge -> Cloud SQL Extended Support vCPU SKU (or ignore if none).",
       "ignore": "not a real GCP cost (credits, CPU credits, taxes) -> $0.",
       "passthrough": "known service, no fair GCP conversion -> carry AWS cost, manual review.",
-      "negative_cost": "GLOBAL pre-filter label (credits/refunds/negations) — applied before per-service dispatch.",
-      "commitment_discount": "GLOBAL pre-filter label (RIFee/SP recurring/EDP) — applied before per-service dispatch.",
-      "non_workload": "GLOBAL pre-filter label (marketplace/support/tax, EC2 CPU credits) — applied before per-service dispatch.",
+      "negative_cost": "GLOBAL pre-filter label (credits/refunds/negations) \u2014 applied before per-service dispatch.",
+      "commitment_discount": "GLOBAL pre-filter label (RIFee/SP recurring/EDP) \u2014 applied before per-service dispatch.",
+      "non_workload": "GLOBAL pre-filter label (marketplace/support/tax, EC2 CPU credits) \u2014 applied before per-service dispatch.",
       "opensearch": "Service-specific mechanic_group (dedicated static mapper for opensearch).",
       "redshift": "Service-specific mechanic_group (dedicated static mapper for redshift).",
       "elasticache": "Service-specific mechanic_group (dedicated static mapper for elasticache).",
@@ -59,7 +59,7 @@
     },
     "field_descriptor": {
       "_note": "Each field: name (internal), cur_column (authoritative AWS CUR attribute it comes from, legacy slash form as ingest.py uses; null = AWS does not expose it in the bill at all), source (where we REALISTICALLY obtain the value), required.",
-      "cur_column": "The AWS CUR column/attribute. null means AWS never bills this field — it MUST be enriched (api/llm).",
+      "cur_column": "The AWS CUR column/attribute. null means AWS never bills this field \u2014 it MUST be enriched (api/llm).",
       "source_enum": {
         "cur": "present in the bill (ingest.py parses the cur_column directly).",
         "table": "cur_column may be present but we derive authoritatively from a bundled table (ec2-instance-types.json / rds-instance-types.json / instance-specs.json) keyed by instance type.",
@@ -83,7 +83,7 @@
         "mechanic": "non_workload",
         "fields": [],
         "source_rule": "non_workload (CPUCredits branch)",
-        "notes": "Faithful label = 'non_workload' (what classify_mechanics returns today). Downstream pricing outcome is $0/ignore. Checked across usage_type AND product: PDF bills carry 'T3ACPUCredits' in product with usage_type blank. NOTE: in the pipeline this is caught by the GLOBAL non_workload pre-filter before per-service dispatch — this entry documents EC2's charge-type taxonomy completely and is defensive."
+        "notes": "Faithful label = 'non_workload' (what classify_mechanics returns today). Downstream pricing outcome is $0/ignore. Checked across usage_type AND product: PDF bills carry 'T3ACPUCredits' in product with usage_type blank. NOTE: in the pipeline this is caught by the GLOBAL non_workload pre-filter before per-service dispatch \u2014 this entry documents EC2's charge-type taxonomy completely and is defensive."
       },
       {
         "id": "instance_hour",
@@ -109,7 +109,7 @@
         "children": [
           {
             "id": "instance_hour_windows",
-            "description": "EC2 instance-hours running Windows — needs core+RAM+Windows Server license.",
+            "description": "EC2 instance-hours running Windows \u2014 needs core+RAM+Windows Server license.",
             "match": {
               "any_field_re": "running Windows|Windows",
               "is_accelerator": false
@@ -288,7 +288,7 @@
           },
           {
             "id": "instance_hour_standard",
-            "description": "Plain x86 Linux/UNIX instance-hours — the default when no more specific variant applies.",
+            "description": "Plain x86 Linux/UNIX instance-hours \u2014 the default when no more specific variant applies.",
             "match": {},
             "mechanic": "compute_breakdown",
             "fields": [
@@ -360,7 +360,7 @@
               }
             ],
             "source_rule": "compute_breakdown",
-            "notes": "Inferentia/Trainium (inf*/trn*) are handled by family_mapper's TPU branch (map_tpu_row -> Cloud TPU v5e, chip-count parity); dl* (Gaudi) stays no-equivalent passthrough. gpu_model/gpu_count have no CUR column — enriched from the instance table / gcp-model-config.json."
+            "notes": "Inferentia/Trainium (inf*/trn*) are handled by family_mapper's TPU branch (map_tpu_row -> Cloud TPU v5e, chip-count parity); dl* (Gaudi) stays no-equivalent passthrough. gpu_model/gpu_count have no CUR column \u2014 enriched from the instance table / gcp-model-config.json."
           }
         ],
         "source_rule": "compute_windows / compute_burstable / compute_arm / compute_breakdown"
@@ -444,7 +444,7 @@
           }
         ],
         "source_rule": "block_storage (EBS branch)",
-        "notes": "EBS provisioned IOPS/throughput are billed on separate line items (own usage_type), not as attributes of the capacity row — 'iops' here is the volume's provisioned IOPS for sizing, which CUR does not expose per-row; enrich if needed. fallback_match widened for PDF/XLSX rows after the ebs->ec2 canonical fold moved three rows ($184) here that matched nothing: those bills carry no usage_type and describe the charge in operation as 'USD 0.1464/GB-month provisioned iops', '$0.162 per GB-month of general purpose ...'. See work order 2.7."
+        "notes": "EBS provisioned IOPS/throughput are billed on separate line items (own usage_type), not as attributes of the capacity row \u2014 'iops' here is the volume's provisioned IOPS for sizing, which CUR does not expose per-row; enrich if needed. fallback_match widened for PDF/XLSX rows after the ebs->ec2 canonical fold moved three rows ($184) here that matched nothing: those bills carry no usage_type and describe the charge in operation as 'USD 0.1464/GB-month provisioned iops', '$0.162 per GB-month of general purpose ...'. See work order 2.7."
       },
       {
         "id": "data_transfer",
@@ -486,7 +486,7 @@
       },
       {
         "id": "nat_and_flat_hourly",
-        "description": "NAT gateway-hours, Elastic IP, public IPv4, VPN connection-hours, and ALB/NLB load-balancer-hours (billed under the EC2 product) — fixed hourly fees.",
+        "description": "NAT gateway-hours, Elastic IP, public IPv4, VPN connection-hours, and ALB/NLB load-balancer-hours (billed under the EC2 product) \u2014 fixed hourly fees.",
         "match": {
           "usage_type_re": "NatGateway-Hours|ElasticIP|IPAddress|PublicIPv4|VPN-Connections|VPNConnection|LoadBalancerUsage"
         },
@@ -556,8 +556,80 @@
         "notes": "engine_version lives in the usage_type suffix (ExtendedSupport:Yr1-Yr2:MySQL8.0), not a dedicated CUR column. map_rds_extended_support() decides map-vs-ignore per version against the Cloud SQL Extended Support SKU catalog (MySQL 8.0 has no GCP SKU today -> ignore)."
       },
       {
+        "id": "performance_insights",
+        "description": "RDS Performance Insights long-term retention (Hrs). Free tier / Cloud SQL Insights equivalent.",
+        "match": {
+          "any_field_re": "PI_LongTermRetention|PerformanceInsights"
+        },
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "rds_performance_insights",
+        "llm_guidance": {
+          "gcp_target": "Cloud SQL",
+          "strategy": "passthrough",
+          "confidence_max": 0.5,
+          "guidance": "RDS Performance Insights long-term retention. Cloud SQL Insights basic tier is free (7-day retention); carry long-term retention at cost parity."
+        }
+      },
+      {
+        "id": "rds_proxy",
+        "description": "RDS Proxy endpoint hours. Managed connection pooling has no direct Cloud SQL equivalent.",
+        "match": {
+          "any_field_re": "RDSProxy|ProxyUsage|RDS:Proxy"
+        },
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "rds_proxy",
+        "llm_guidance": {
+          "gcp_target": "Cloud SQL",
+          "strategy": "passthrough",
+          "confidence_max": 0.5,
+          "guidance": "RDS Proxy has no direct GCP managed connection pooling service (Cloud SQL uses built-in connection limits or self-hosted PgBouncer/ProxySQL). Passthrough at AWS cost with manual review."
+        }
+      },
+      {
         "id": "instance_hour",
         "description": "DB instance-hours (incl Aurora Serverless v2 ACU-Hr, RI/SP-covered). -> Cloud SQL sizing.",
+        "gcp_candidates": [
+          {
+            "service": "Cloud SQL",
+            "role": "default",
+            "fit_class": "managed_like_for_like",
+            "safety": "safe",
+            "cud_eligible": true,
+            "note": "Managed MySQL, PostgreSQL, and SQL Server on GCP; Enterprise edition default (99.95% SLA)"
+          },
+          {
+            "service": "AlloyDB",
+            "role": "preferred_for_aurora_pg",
+            "fit_class": "managed_like_for_like",
+            "safety": "safe",
+            "cud_eligible": true,
+            "note": "Managed PostgreSQL-compatible engine with high scale/HTAP performance; default for Aurora-PostgreSQL, candidate for PostgreSQL"
+          },
+          {
+            "service": "Oracle Database@Google Cloud",
+            "role": "oracle_workloads",
+            "fit_class": "managed_like_for_like",
+            "safety": "safe",
+            "cud_eligible": false,
+            "note": "Co-located OCI Oracle database services in GCP data centers; region-gated"
+          }
+        ],
         "match": {
           "unit_in": [
             "hrs",
@@ -570,7 +642,7 @@
           ]
         },
         "fallback_match": {
-          "any_field_re": "InstanceUsage:|InstanceUsageIOOptimized:|Multi-AZUsage:|RDS:Proxy|Aurora:ServerlessV2"
+          "any_field_re": "InstanceUsage:|InstanceUsageIOOptimized:|Multi-AZUsage:|Aurora:ServerlessV2"
         },
         "also_match_line_item_type_in": [
           "DiscountedUsage",
@@ -640,14 +712,14 @@
           }
         ],
         "source_rule": "managed_db",
-        "notes": "Unit gate is critical: GB-Mo storage rows must NOT match here (sending them to the instance-sizing path priced GB at $/hr = 10,000x inflation). Storage falls to the 'storage' charge_type below. Deployment_option (Multi-AZ) doubles the real footprint — must be carried for capacity reconciliation. Default edition = Enterprise (standard), not Enterprise Plus (~2x). Plus requires explicit CUR evidence (near-zero-downtime failover, Data Cache) or C4A ARM compatibility. When CUR gives no evidence, default to Enterprise or price-proximity with note [tier chosen by price-proximity — no CUR evidence of edition; confirm with customer]. Multi-AZUsage: and InstanceUsageIOOptimized: added after real bills showed Multi-AZ instance-hours matching no charge_type at all (docs/ANALYSIS_spec_dispatch_validation.md). DECIDED (spec vs legacy): 16 rows / $3,050 of Multi-AZUsage:db.* that the legacy chain sent to misc are classified here as managed_db. Verified against real rows: usage_type 'APS5-Multi-AZUsage:db.m7g.xl' with operation 'CreateDBInstance:0014' is unambiguously an RDS instance-hour. The spec is right; legacy was handing a deterministic charge to the LLM.",
+        "notes": "Unit gate is critical: GB-Mo storage rows must NOT match here (sending them to the instance-sizing path priced GB at $/hr = 10,000x inflation). Storage falls to the 'storage' charge_type below. Deployment_option (Multi-AZ) doubles the real footprint \u2014 must be carried for capacity reconciliation. Default edition = Enterprise (standard), not Enterprise Plus (~2x). Plus requires explicit CUR evidence (near-zero-downtime failover, Data Cache) or C4A ARM compatibility. When CUR gives no evidence, default to Enterprise or price-proximity with note [tier chosen by price-proximity \u2014 no CUR evidence of edition; confirm with customer]. Multi-AZUsage: and InstanceUsageIOOptimized: added after real bills showed Multi-AZ instance-hours matching no charge_type at all (docs/ANALYSIS_spec_dispatch_validation.md). DECIDED (spec vs legacy): 16 rows / $3,050 of Multi-AZUsage:db.* that the legacy chain sent to misc are classified here as managed_db. Verified against real rows: usage_type 'APS5-Multi-AZUsage:db.m7g.xl' with operation 'CreateDBInstance:0014' is unambiguously an RDS instance-hour. The spec is right; legacy was handing a deterministic charge to the LLM.",
         "default_edition": "Enterprise"
       },
       {
         "id": "provisioned_iops",
         "description": "Provisioned GP3/io IOPS-month. Cloud SQL bundles IOPS into storage price.",
         "match": {
-          "any_field_re": "iops-month|IOPS-Mo|provisioned (?:IOPS|GP3 IOPS)"
+          "any_field_re": "iops-month|IOPS-Mo|provisioned\\s*(?:IOPS|GP3 IOPS)|ProvisionedIOPS"
         },
         "mechanic": "block_storage",
         "fields": [
@@ -665,7 +737,7 @@
           }
         ],
         "source_rule": "block_storage (managed-db non-Hrs branch) + final_mapping_sanity_check.py",
-        "notes": "Faithful label = 'block_storage' (what classify_mechanics returns today). The IGNORE pricing decision (gp3 IOPS included in pd-balanced capacity) is made DOWNSTREAM by map_block_storage/final_mapping_sanity_check, not at classification. io2 IOPS is a separate case (pd-extreme DOES bill IOPS) — flagged for review, not yet split. Having its own charge_type keeps the distinction visible for when the downstream ignore becomes spec-driven."
+        "notes": "Faithful label = 'block_storage' (what classify_mechanics returns today). The IGNORE pricing decision (gp3 IOPS included in pd-balanced capacity) is made DOWNSTREAM by map_block_storage/final_mapping_sanity_check, not at classification. io2 IOPS is a separate case (pd-extreme DOES bill IOPS) \u2014 flagged for review, not yet split. Having its own charge_type keeps the distinction visible for when the downstream ignore becomes spec-driven."
       },
       {
         "id": "backup",
@@ -749,7 +821,7 @@
       },
       {
         "id": "replicated_write_io",
-        "description": "Aurora storage I/O operations (Replicated Write IOs, Storage/Volume IO usage). Per-I/O rows (unit=IOs) — NOT storage capacity. Cloud SQL bundles I/O into disk price, so these passthrough; pricing them as GB-Mo storage is the 1300x-inflation bug this branch guards against.",
+        "description": "Aurora storage I/O operations (Replicated Write IOs, Storage/Volume IO usage). Per-I/O rows (unit=IOs) \u2014 NOT storage capacity. Cloud SQL bundles I/O into disk price, so these passthrough; pricing them as GB-Mo storage is the 1300x-inflation bug this branch guards against.",
         "match": {
           "any_field_re": "ReplicatedWriteIO|IOUsage"
         },
@@ -767,7 +839,7 @@
           "gcp_target": "Cloud SQL",
           "strategy": "passthrough",
           "confidence_max": 0.3,
-          "guidance": "Aurora Replicated Write IOs have no direct Cloud SQL equivalent — Cloud SQL bundles storage I/O into disk capacity price. Carry at cost parity with manual review."
+          "guidance": "Aurora Replicated Write IOs have no direct Cloud SQL equivalent \u2014 Cloud SQL bundles storage I/O into disk capacity price. Carry at cost parity with manual review."
         }
       }
     ]
@@ -1064,7 +1136,7 @@
           }
         ],
         "source_rule": "block_storage (was swallowed by opensearch_all in classify_mechanics; registry yields to shared mechanic)",
-        "notes": "DECIDED (spec vs legacy): 2 rows / $182 that legacy kept in the opensearch mechanic are classified here as block_storage. Verified against real rows: operation 'GB-month provisioned gp3 storage', unit GB-Mo — EBS-style provisioned disk attached to a domain, whose GCP equivalent is persistent disk. Matches the greedy-service-split principle: a service rule must yield peripheral storage to block_storage rather than swallow it."
+        "notes": "DECIDED (spec vs legacy): 2 rows / $182 that legacy kept in the opensearch mechanic are classified here as block_storage. Verified against real rows: operation 'GB-month provisioned gp3 storage', unit GB-Mo \u2014 EBS-style provisioned disk attached to a domain, whose GCP equivalent is persistent disk. Matches the greedy-service-split principle: a service rule must yield peripheral storage to block_storage rather than swallow it."
       },
       {
         "id": "opensearch_compute",
@@ -1150,7 +1222,7 @@
     "charge_types": [
       {
         "id": "elasticache_all",
-        "description": "Node-hours -> Memorystore GiB-h (node RAM from instance table).",
+        "description": "Node-hours -> Memorystore GiB-h (node RAM from instance table; Memorystore for Memcached is deprecated on GCP, workloads retarget to Memorystore for Redis/Valkey).",
         "match": {},
         "mechanic": "elasticache",
         "gcp_target": "Cloud Memorystore for Redis",
@@ -1172,7 +1244,7 @@
             "safety": "safe",
             "cud_eligible": true,
             "availability_key": "memorystore.googleapis.com",
-            "note": "shared-core node ≈ burstable; ~½ per-GiB cost"
+            "note": "shared-core node \u2248 burstable; ~\u00bd per-GiB cost"
           },
           {
             "service": "Compute Engine (self-hosted)",
@@ -1786,7 +1858,7 @@
           "gcp_target": "Firestore / Bigtable / Spanner",
           "strategy": "map",
           "confidence_max": 0.5,
-          "guidance": "Decision rule: GetItem/PutItem/Query/Scan → Firestore; BatchWrite/high-volume throughput → Bigtable; transactional/ACID workloads → Cloud Spanner. Conversion assumption: 1 RCU ≈ 1 doc read, 1 WCU ≈ 1 doc write. Tunable assumptions dynamodb_rcu_to_reads_sec and dynamodb_wcu_to_writes_sec scale provisioned RCU/WCU (e.g. 1.0 = 3600 reads/hr). rcu/wcu/table_mode not in CUR — infer workload scale from total_usage."
+          "guidance": "Decision rule: GetItem/PutItem/Query/Scan \u2192 Firestore; BatchWrite/high-volume throughput \u2192 Bigtable; transactional/ACID workloads \u2192 Cloud Spanner. Conversion assumption: 1 RCU \u2248 1 doc read, 1 WCU \u2248 1 doc write. Tunable assumptions dynamodb_rcu_to_reads_sec and dynamodb_wcu_to_writes_sec scale provisioned RCU/WCU (e.g. 1.0 = 3600 reads/hr). rcu/wcu/table_mode not in CUR \u2014 infer workload scale from total_usage."
         },
         "source_rule": "misc (DynamoDB throughput rows deliberately guided to Firestore/Bigtable/Spanner)"
       },
@@ -2226,8 +2298,86 @@
     ],
     "charge_types": [
       {
+        "id": "lambda_provisioned_concurrency",
+        "description": "Provisioned Concurrency kept-warm capacity -> Cloud Run min-instances (idle/instance-based billing).",
+        "match": {
+          "usage_type_re": "Provisioned[- ]?Concurrency|GB[- ]Second[- ]Provisioned|ProvisionedConcurrency"
+        },
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "metric",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Lambda Provisioned Concurrency -> Cloud Run min-instances)"
+      },
+      {
+        "id": "lambda_ephemeral_storage",
+        "description": "Lambda ephemeral storage (/tmp > 512MB) -> $0 (IGNORE on GCP; Cloud Run folds ephemeral /tmp into the memory allocation — no separate charge).",
+        "match": {
+          "usage_type_re": "Storage[- ]Duration|Storage[- ]Byte|Lambda[- ]Storage|EphemeralStorage|GB[- ]Second[- ]Storage|Storage"
+        },
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "metric",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Lambda ephemeral /tmp storage -> ignore)"
+      },
+      {
+        "id": "lambda_data_transfer",
+        "description": "Lambda cross-region or internet data transfer.",
+        "match": {
+          "usage_type_re": "DataTransfer|Out-Bytes|In-Bytes"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "data_transfer (Lambda data transfer)"
+      },
+      {
         "id": "lambda_metered",
-        "description": "GB-seconds (compute) and requests/invocations -> Cloud Run. Ephemeral-storage GB-Mo rows are NOT matched here (excluded from block/object storage too) and fall through to misc, exactly as today.",
+        "description": "GB-seconds (compute) and requests/invocations -> Cloud Run.",
+        "exclude_when": {
+          "usage_type_re": "Provisioned[- ]?Concurrency|GB[- ]Second[- ]Provisioned|ProvisionedConcurrency|Storage|EphemeralStorage|DataTransfer|Out-Bytes|In-Bytes|SnapStart"
+        },
         "any_of": [
           {
             "unit_in": [
@@ -2266,6 +2416,33 @@
         ],
         "source_rule": "per_request (Lambda-GB-Second / requests branches)",
         "notes": "any_of[2] changed product_re -> any_field_re: 'Lambda[- ]GB[- ]Second' is a charge-type token that appears in the product field on some bill formats, not a service name. any_field_re covers product plus usage_type/operation, so no row that matched before stops matching."
+      },
+      {
+        "id": "lambda_other",
+        "description": "Other unclassified Lambda charges (SnapStart, Lambda@Edge, etc.) -> review catch-all.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (Lambda unclassified catch-all)",
+        "llm_guidance": {
+          "gcp_target": "Cloud Run Functions",
+          "strategy": "review",
+          "confidence_max": 0.4,
+          "guidance": "GCP Cloud Run functions has no direct equivalent for Lambda SnapStart/Edge tiers — review workload."
+        }
       }
     ]
   },
@@ -2617,6 +2794,93 @@
     "product_codes": [],
     "charge_types": [
       {
+        "id": "memorydb_data_written",
+        "description": "MemoryDB data-written ($0.20/GB write billing; reads free). Memorystore bills capacity, not write throughput -> passthrough/review.",
+        "any_of": [
+          {
+            "usage_type_re": "DataWritten-Bytes|DataWritten"
+          }
+        ],
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "llm_guidance": {
+          "gcp_target": "Cloud Memorystore for Redis / Memorystore for Valkey",
+          "strategy": "passthrough",
+          "confidence_max": 0.5,
+          "guidance": "MemoryDB bills writes at $0.20/GB. Memorystore (Redis/Valkey) does not bill write throughput, bundling throughput into instance/capacity pricing. Passthrough at cost parity with manual review."
+        },
+        "source_rule": "misc (MemoryDB data-written -> passthrough/review)"
+      },
+      {
+        "id": "memorydb_snapshot",
+        "description": "MemoryDB snapshot storage (GB-Mo) -> Cloud Storage / Memorystore RDB backup.",
+        "any_of": [
+          {
+            "usage_type_re": "SnapshotUsage|Snapshot"
+          }
+        ],
+        "exclude_when": {
+          "unit_hourly": true
+        },
+        "mechanic": "backup",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup (MemoryDB snapshot storage)"
+      },
+      {
+        "id": "storage",
+        "description": "Storage/backup GB-Mo -> Persistent Disk / managed storage.",
+        "any_of": [
+          {
+            "any_field_re": "gb-mo|storage|backup|snapshot"
+          }
+        ],
+        "exclude_when": {
+          "unit_hourly": true
+        },
+        "mechanic": "block_storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "block_storage (managed-db branch)"
+      },
+      {
         "id": "instance_hour",
         "description": "Node/instance-hours -> managed DB sizing.",
         "match": {
@@ -2672,10 +2936,125 @@
         ],
         "source_rule": "managed_db",
         "notes": "FIX-3 (inert-assumptions workorder): route to elasticache so map_elasticache's is_memdb branch + memorydb_node_gib assumption apply (map_managed_db does not read that assumption)."
+      }
+    ]
+  },
+  "documentdb": {
+    "display": "Amazon DocumentDB",
+    "product_codes": [],
+    "charge_types": [
+      {
+        "id": "documentdb_io",
+        "description": "DocumentDB database I/O (Standard per-million I/O requests). Firestore has no separate per-I/O charge -> passthrough (never fold into storage).",
+        "any_of": [
+          {
+            "usage_type_re": "StorageIOUsage|IORequest|DatabaseIO"
+          }
+        ],
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "ios",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "llm_guidance": {
+          "gcp_target": "Firestore with MongoDB compatibility",
+          "strategy": "passthrough",
+          "confidence_max": 0.5,
+          "guidance": "DocumentDB database I/O has no separate per-I/O charge in Cloud Firestore. Carry at cost parity with manual review; do NOT fold into storage capacity."
+        },
+        "source_rule": "misc (DocumentDB I/O -> passthrough/review)"
+      },
+      {
+        "id": "documentdb_backup",
+        "description": "DocumentDB backup storage (GB-Mo) -> Firestore / Cloud Storage backup (NOT Cloud SQL Backups).",
+        "any_of": [
+          {
+            "usage_type_re": "BackupUsage"
+          }
+        ],
+        "exclude_when": {
+          "unit_hourly": true
+        },
+        "mechanic": "backup",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup (DocumentDB backup storage)"
+      },
+      {
+        "id": "documentdb_elastic",
+        "description": "DocumentDB Elastic Clusters (vCPU-hours).",
+        "any_of": [
+          {
+            "usage_type_re": "ElasticCluster"
+          }
+        ],
+        "mechanic": "managed_db",
+        "fields": [
+          {
+            "name": "vcpus",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "managed_db (DocumentDB Elastic Clusters)"
+      },
+      {
+        "id": "documentdb_serverless",
+        "description": "DocumentDB Serverless (DCU-hours).",
+        "any_of": [
+          {
+            "usage_type_re": "ServerlessUsage"
+          }
+        ],
+        "mechanic": "managed_db",
+        "fields": [
+          {
+            "name": "dcu_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "managed_db (DocumentDB Serverless DCU)"
       },
       {
         "id": "storage",
-        "description": "Storage/backup GB-Mo -> Persistent Disk / managed storage.",
+        "description": "Storage GB-Mo -> Persistent Disk / managed storage.",
         "any_of": [
           {
             "any_field_re": "gb-mo|storage|backup|snapshot"
@@ -2700,13 +3079,7 @@
           }
         ],
         "source_rule": "block_storage (managed-db branch)"
-      }
-    ]
-  },
-  "documentdb": {
-    "display": "Amazon DocumentDB",
-    "product_codes": [],
-    "charge_types": [
+      },
       {
         "id": "instance_hour",
         "description": "Node/instance-hours -> managed DB sizing.",
@@ -2762,34 +3135,6 @@
           }
         ],
         "source_rule": "managed_db"
-      },
-      {
-        "id": "storage",
-        "description": "Storage/backup GB-Mo -> Persistent Disk / managed storage.",
-        "any_of": [
-          {
-            "any_field_re": "gb-mo|storage|backup|snapshot"
-          }
-        ],
-        "exclude_when": {
-          "unit_hourly": true
-        },
-        "mechanic": "block_storage",
-        "fields": [
-          {
-            "name": "gb_mo",
-            "cur_column": "lineItem/UsageAmount",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "region",
-            "cur_column": "product/region",
-            "source": "cur",
-            "required": true
-          }
-        ],
-        "source_rule": "block_storage (managed-db branch)"
       }
     ]
   },
@@ -2827,8 +3172,8 @@
           "gcp_target": "Identity Platform",
           "strategy": "map",
           "confidence_max": 0.45,
-          "formula": "MAU ≈ total_usage ÷ 20",
-          "guidance": "CUR bills auth requests, not MAU — estimate MAU and document the assumption."
+          "formula": "MAU \u2248 total_usage \u00f7 20",
+          "guidance": "CUR bills auth requests, not MAU \u2014 estimate MAU and document the assumption."
         }
       }
     ]
@@ -2876,28 +3221,21 @@
   },
   "sagemaker": {
     "display": "Amazon SageMaker",
-    "product_codes": [],
+    "product_codes": [
+      "AmazonSageMaker"
+    ],
     "charge_types": [
       {
-        "id": "sagemaker_all",
-        "description": "Training/inference/notebook/volume -> Vertex AI (service_map review). SageMaker is explicitly excluded from block_storage, so its volume rows also land in misc.",
-        "match": {},
-        "mechanic": "misc",
+        "id": "sagemaker_storage_gp3",
+        "description": "Gp3 EBS volume provisioned for SageMaker (CreateVolume-Gp3) \u2192 block_storage / pd-balanced. FIX: was excluded from block_storage and silently dropped.",
+        "match": {
+          "usage_type_re": "CreateVolume-Gp3"
+        },
+        "mechanic": "block_storage",
+        "gcp_target": "Compute Engine",
         "fields": [
           {
-            "name": "instance_type",
-            "cur_column": "product/instanceType",
-            "source": "cur",
-            "required": false
-          },
-          {
-            "name": "component",
-            "cur_column": "lineItem/UsageType",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "usage_amount",
+            "name": "volume_gb",
             "cur_column": "lineItem/UsageAmount",
             "source": "cur",
             "required": true
@@ -2909,12 +3247,286 @@
             "required": true
           }
         ],
-        "source_rule": "misc (no dedicated rule; service_map -> Vertex AI review)",
+        "source_rule": "sagemaker_storage_gp3"
+      },
+      {
+        "id": "sagemaker_training",
+        "description": "Training instance-hours (\u2026Train:ml.*) \u2192 Vertex AI Custom Training (sized by ml.* instance type).",
+        "match": {
+          "usage_type_re": "(?i)Train:ml\\."
+        },
+        "mechanic": "sagemaker",
+        "gcp_target": "Vertex AI",
+        "gcp_sku_name": "Custom Training",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "sagemaker_training"
+      },
+      {
+        "id": "sagemaker_realtime",
+        "description": "Hosting/inference endpoint-hours (\u2026Host:ml.* / Endpoint*) \u2192 Vertex AI Online Prediction (sized).",
+        "match": {
+          "usage_type_re": "(?i)Host:ml\\.|Endpoint"
+        },
+        "mechanic": "sagemaker",
+        "gcp_target": "Vertex AI",
+        "gcp_sku_name": "Online Prediction",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "sagemaker_realtime"
+      },
+      {
+        "id": "sagemaker_batch",
+        "description": "Batch Transform instance-hours (\u2026Tsform:ml.*) \u2192 Vertex AI Batch Prediction (sized).",
+        "match": {
+          "usage_type_re": "(?i)Tsform:ml\\.|BatchTransform|Batch-Transform"
+        },
+        "mechanic": "sagemaker",
+        "gcp_target": "Vertex AI",
+        "gcp_sku_name": "Batch Prediction",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "sagemaker_batch"
+      },
+      {
+        "id": "sagemaker_notebook",
+        "description": "Notebook/Studio/JupyterLab/CodeEditor/RStudio instance-hours \u2192 Vertex AI Workbench (Compute Engine VM; Studio itself is free, pay the underlying VM).",
+        "match": {
+          "usage_type_re": "(?i)Notebk:|Notebook|Studio|JupyterLab|CodeEditor|RStudio"
+        },
+        "mechanic": "sagemaker",
+        "gcp_target": "Vertex AI",
+        "gcp_sku_name": "Workbench",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "sagemaker_notebook"
+      },
+      {
+        "id": "sagemaker_processing",
+        "description": "Processing job instance-hours (\u2026Process:ml.*) \u2192 Vertex AI Custom Job / Dataproc (sized).",
+        "match": {
+          "usage_type_re": "(?i)Process:ml\\."
+        },
+        "mechanic": "sagemaker",
+        "gcp_target": "Vertex AI",
+        "gcp_sku_name": "Custom Processing",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "sagemaker_processing"
+      },
+      {
+        "id": "sagemaker_hyperpod",
+        "description": "HyperPod cluster instance-hours \u2192 self-managed GCE cluster (compute_breakdown sizing).",
+        "match": {
+          "usage_type_re": "(?i)HyperPod|Hyperpod"
+        },
+        "mechanic": "sagemaker",
+        "gcp_target": "Compute Engine",
+        "gcp_sku_name": "HyperPod Cluster (GCE)",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "sagemaker_hyperpod"
+      },
+      {
+        "id": "sagemaker_featurestore",
+        "description": "Feature Store storage (GB-mo) + read/write units \u2192 Vertex AI Feature Store V2 (legacy FS deprecated 2027-02-17).",
+        "match": {
+          "usage_type_re": "(?i)FeatureStore|Feature-Store|FeatureGroup"
+        },
+        "mechanic": "sagemaker",
+        "gcp_target": "Vertex AI",
+        "gcp_sku_name": "Feature Store V2",
+        "fields": [
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "sagemaker_featurestore"
+      },
+      {
+        "id": "sagemaker_serverless",
+        "description": "Serverless Inference compute (per-ms) + data processed (GB) \u2192 passthrough/review; no clean per-ms Vertex serverless-inference SKU.",
+        "match": {
+          "usage_type_re": "(?i)Serverless"
+        },
+        "mechanic": "sagemaker",
+        "gcp_target": "Manual Review",
+        "gcp_sku_name": "Serverless Inference (review)",
+        "fields": [
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "sagemaker_serverless",
+        "llm_guidance": {
+          "gcp_target": "Cloud Run / Vertex AI Online Prediction",
+          "strategy": "review",
+          "confidence_max": 0.5,
+          "guidance": "Serverless Inference has no per-ms GCP equivalent. Closest: Cloud Run (per-request billed) or Vertex Online Prediction. Disclose, do not force."
+        }
+      },
+      {
+        "id": "sagemaker_datawrangler",
+        "description": "Data Wrangler (per-sec compute) \u2192 Dataflow / Dataproc analogue; review.",
+        "match": {
+          "usage_type_re": "(?i)DataWrangler|Data-Wrangler"
+        },
+        "mechanic": "sagemaker",
+        "gcp_target": "Manual Review",
+        "gcp_sku_name": "Data Wrangler (Dataflow/Dataproc review)",
+        "fields": [
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "sagemaker_datawrangler"
+      },
+      {
+        "id": "sagemaker_groundtruth",
+        "description": "Ground Truth labeling (per object) \u2192 passthrough/review; GCP Data Labeling Service is deprecated.",
+        "match": {
+          "usage_type_re": "(?i)GroundTruth|Ground-Truth|Labeling"
+        },
+        "mechanic": "sagemaker",
+        "gcp_target": "Manual Review",
+        "gcp_sku_name": "Ground Truth (no GCP equivalent)",
+        "fields": [
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "sagemaker_groundtruth"
+      },
+      {
+        "id": "sagemaker_mlflow",
+        "description": "MLflow tracking server hours \u2192 passthrough/review; no managed GCP MLflow equivalent.",
+        "match": {
+          "usage_type_re": "(?i)MLflow|MlFlow"
+        },
+        "mechanic": "sagemaker",
+        "gcp_target": "Manual Review",
+        "gcp_sku_name": "MLflow (no GCP equivalent)",
+        "fields": [
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "sagemaker_mlflow"
+      },
+      {
+        "id": "sagemaker_all",
+        "description": "Fallback: any SageMaker sub-type not matched above \u2192 Vertex AI review (passthrough). Never a flat map.",
+        "match": {},
+        "mechanic": "sagemaker",
+        "gcp_target": "Vertex AI",
+        "gcp_sku_name": "Unknown SageMaker Sub-type (review)",
+        "fields": [
+          {
+            "name": "instance_type",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "sagemaker_all",
         "llm_guidance": {
           "gcp_target": "Vertex AI",
           "strategy": "review",
           "confidence_max": 0.4,
-          "guidance": "service_map forces Vertex AI; training/inference/notebook/volume all route there; do not size a CPU VM."
+          "guidance": "Unknown SageMaker sub-type. Review usage_type to identify the sub-service (Training/Inference/Notebook/Storage/FeatureStore/etc.) and map to the appropriate Vertex AI or GCE target."
         }
       }
     ]
@@ -2925,7 +3537,7 @@
     "charge_types": [
       {
         "id": "dms_data_transfer",
-        "description": "DMS data transfer.",
+        "description": "DMS data transfer (cross-region egress; in-region and ingress free).",
         "match": {
           "usage_type_re": "DataTransfer|Out-Bytes|In-Bytes"
         },
@@ -2938,14 +3550,22 @@
             "required": true
           }
         ],
-        "source_rule": "data_transfer (precedes misc)"
+        "source_rule": "data_transfer (DMS cross-region egress)"
       },
       {
-        "id": "dms_all",
-        "description": "Replication-instance hours -> misc; GCP DMS is free for homogeneous migrations, service_map decides.",
-        "match": {},
-        "mechanic": "misc",
+        "id": "dms_instance",
+        "description": "DMS replication instance-hours -> $0 (IGNORE on GCP; Database Migration Service has no service charge, destination DB + optional reverse-SSH VM + network are billed separately).",
+        "match": {
+          "usage_type_re": "InstanceUsage|ReplicationInstance"
+        },
+        "mechanic": "ignore",
         "fields": [
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
           {
             "name": "instance_type",
             "cur_column": "product/instanceType",
@@ -2953,11 +3573,71 @@
             "required": false
           },
           {
-            "name": "engine",
-            "cur_column": "product/databaseEngine",
+            "name": "region",
+            "cur_column": "product/region",
             "source": "cur",
-            "required": false
+            "required": true
+          }
+        ],
+        "source_rule": "ignore (GCP Database Migration Service is free \u2014 destination DB + optional reverse-SSH VM + network are billed separately. Source: cloud.google.com/database-migration/pricing)"
+      },
+      {
+        "id": "dms_serverless",
+        "description": "DMS Serverless DCU-hours -> $0 (IGNORE on GCP; migration service itself is not billed).",
+        "match": {
+          "usage_type_re": "ServerlessUsage|DCU"
+        },
+        "mechanic": "ignore",
+        "fields": [
+          {
+            "name": "dcu_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
           },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "ignore (GCP Database Migration Service is free \u2014 destination DB + optional reverse-SSH VM + network are billed separately. Source: cloud.google.com/database-migration/pricing)"
+      },
+      {
+        "id": "dms_storage",
+        "description": "DMS storage (included + overage) -> $0 (IGNORE on GCP; migration-transient, no GCP DMS storage charge).",
+        "match": {
+          "usage_type_re": "Storage"
+        },
+        "exclude_when": {
+          "unit_hourly": true
+        },
+        "mechanic": "ignore",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "ignore (GCP Database Migration Service is free \u2014 destination DB + optional reverse-SSH VM + network are billed separately. Source: cloud.google.com/database-migration/pricing)"
+      },
+      {
+        "id": "dms_schema_conversion",
+        "description": "DMS Schema Conversion -> $0 (IGNORE on GCP; free on both AWS and GCP).",
+        "match": {
+          "usage_type_re": "SchemaConversion|DMS-SCT"
+        },
+        "mechanic": "ignore",
+        "fields": [
           {
             "name": "usage_amount",
             "cur_column": "lineItem/UsageAmount",
@@ -2971,51 +3651,19 @@
             "required": true
           }
         ],
-        "source_rule": "misc (no BoxUsage signal -> not compute_breakdown; service_map review)",
-        "llm_guidance": {
-          "gcp_target": "Database Migration Service",
-          "strategy": "review",
-          "confidence_max": 0.4,
-          "guidance": "GCP Database Migration Service is free for homogeneous migrations; passthrough replication-instance hours, flag for review."
-        }
-      }
-    ]
-  },
-  "backup": {
-    "display": "AWS Backup",
-    "product_codes": [],
-    "charge_types": [
+        "source_rule": "ignore (GCP Database Migration Service is free \u2014 destination DB + optional reverse-SSH VM + network are billed separately. Source: cloud.google.com/database-migration/pricing)"
+      },
       {
-        "id": "backup_storage",
-        "description": "Backup vault storage GB-Mo -> PD/GCS snapshot (generic Storage rule, AWS Backup not excluded).",
-        "any_of": [
-          {
-            "any_field_re": "storage"
-          },
-          {
-            "unit_in": [
-              "gb-mo",
-              "gb month",
-              "gb-month"
-            ]
-          }
-        ],
-        "exclude_when": {
-          "unit_hourly": true
-        },
-        "mechanic": "block_storage",
+        "id": "dms_other",
+        "description": "Other DMS charges -> review catch-all.",
+        "match": {},
+        "mechanic": "misc",
         "fields": [
           {
-            "name": "gb_mo",
+            "name": "usage_amount",
             "cur_column": "lineItem/UsageAmount",
             "source": "cur",
             "required": true
-          },
-          {
-            "name": "source_type",
-            "cur_column": "lineItem/UsageType",
-            "source": "cur",
-            "required": false
           },
           {
             "name": "region",
@@ -3024,13 +3672,354 @@
             "required": true
           }
         ],
-        "source_rule": "block_storage (generic Storage rule)"
+        "source_rule": "misc (DMS unclassified catch-all)",
+        "llm_guidance": {
+          "gcp_target": "Database Migration Service",
+          "strategy": "review",
+          "confidence_max": 0.4,
+          "guidance": "GCP Database Migration Service is free \u2014 destination DB + optional reverse-SSH VM + network are billed separately. Review unknown DMS dimension."
+        }
+      }
+    ]
+  },
+  "backup": {
+    "display": "AWS Backup",
+    "product_codes": [
+      "AWSBackup"
+    ],
+    "charge_types": [
+      {
+        "id": "backup_restore",
+        "description": "Restore data retrieval (per GB) -> Cloud Storage / Snapshot retrieval fee.",
+        "match": {
+          "usage_type_re": "(?i)restore"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Cloud Storage",
+        "gcp_sku_name": "Data Retrieval",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_restore"
+      },
+      {
+        "id": "backup_copy",
+        "description": "Cross-region or cross-account backup copy data transfer -> Network Inter-region Data Transfer.",
+        "match": {
+          "usage_type_re": "(?i)crossregion|cross-region|crossaccount|cross-account|copy"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Compute Engine",
+        "gcp_sku_name": "Inter-Region Egress",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_copy"
+      },
+      {
+        "id": "backup_audit",
+        "description": "Backup Audit Manager evaluations -> passthrough / review.",
+        "match": {
+          "usage_type_re": "(?i)evaluation|audit"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Manual Review",
+        "gcp_sku_name": "Backup Audit Evaluations (no direct GCP equivalent)",
+        "fields": [
+          {
+            "name": "count",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_audit"
+      },
+      {
+        "id": "backup_search",
+        "description": "Backup Search indexing and search units -> passthrough / review.",
+        "match": {
+          "usage_type_re": "(?i)backupsearch|search"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Manual Review",
+        "gcp_sku_name": "Backup Search (no direct GCP equivalent)",
+        "fields": [
+          {
+            "name": "count",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_search"
+      },
+      {
+        "id": "backup_malware",
+        "description": "Backup Malware Protection scan bytes -> passthrough / review.",
+        "match": {
+          "usage_type_re": "(?i)malware|scan"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Manual Review",
+        "gcp_sku_name": "Malware Protection Scan (no direct GCP equivalent)",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_malware"
+      },
+      {
+        "id": "backup_cold",
+        "description": "Cold/Archive backup vault storage -> Cloud Storage Archive / PD Archive Snapshot.",
+        "match": {
+          "usage_type_re": "(?i)coldstorage|cold-storage|snapshotarchive|archive"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Cloud Storage",
+        "gcp_sku_name": "Archive Storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_cold"
+      },
+      {
+        "id": "backup_ebs",
+        "description": "EBS / AMI backup vault storage -> Compute Engine Storage PD Snapshot (snapshot-class rate, NOT live Hyperdisk capacity).",
+        "match": {
+          "usage_type_re": "(?i)ebs|ami|volume"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Compute Engine",
+        "gcp_sku_name": "Storage PD Snapshot",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_ebs"
+      },
+      {
+        "id": "backup_db",
+        "description": "Managed DB (RDS, Aurora, DocumentDB, Neptune) backup vault storage -> Cloud SQL: Backups.",
+        "match": {
+          "usage_type_re": "(?i)rds|aurora|docdb|documentdb|neptune"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Cloud SQL",
+        "gcp_sku_name": "Cloud SQL: Backups",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_db"
+      },
+      {
+        "id": "backup_efs",
+        "description": "EFS file system backup vault storage -> Cloud Storage Nearline.",
+        "match": {
+          "usage_type_re": "(?i)efs"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Cloud Storage",
+        "gcp_sku_name": "Nearline Storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_efs"
+      },
+      {
+        "id": "backup_fsx",
+        "description": "FSx file system backup vault storage -> Cloud Storage Nearline.",
+        "match": {
+          "usage_type_re": "(?i)fsx"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Cloud Storage",
+        "gcp_sku_name": "Nearline Storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_fsx"
+      },
+      {
+        "id": "backup_dynamodb",
+        "description": "DynamoDB table backup vault storage -> Cloud Storage Nearline.",
+        "match": {
+          "usage_type_re": "(?i)dynamodb|ddb"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Cloud Storage",
+        "gcp_sku_name": "Nearline Storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_dynamodb"
+      },
+      {
+        "id": "backup_s3",
+        "description": "S3 bucket backup vault storage -> Cloud Storage Nearline.",
+        "match": {
+          "usage_type_re": "(?i)\\bs3\\b|s3backup"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Cloud Storage",
+        "gcp_sku_name": "Nearline Storage",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_s3"
+      },
+      {
+        "id": "backup_storage_warm",
+        "description": "Warm backup vault storage with unspecified source -> Compute Engine Storage PD Snapshot (conservative snapshot-class rate, NOT live Hyperdisk capacity).",
+        "match": {
+          "usage_type_re": "(?i)warmstorage|warm-storage|storage|backup"
+        },
+        "mechanic": "backup",
+        "gcp_target": "Compute Engine",
+        "gcp_sku_name": "Storage PD Snapshot",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "backup_storage_warm"
       },
       {
         "id": "backup_other",
-        "description": "Non-storage backup charges -> misc.",
+        "description": "Fallback for any other AWS Backup charge -> Compute Engine Storage PD Snapshot (never live disk capacity).",
         "match": {},
-        "mechanic": "misc",
+        "mechanic": "backup",
+        "gcp_target": "Compute Engine",
+        "gcp_sku_name": "Storage PD Snapshot",
         "fields": [
           {
             "name": "metric",
@@ -3051,12 +4040,12 @@
             "required": true
           }
         ],
-        "source_rule": "misc",
+        "source_rule": "backup_other",
         "llm_guidance": {
-          "gcp_target": "(no GCP equivalent)",
-          "strategy": "passthrough",
-          "confidence_max": 0.3,
-          "guidance": "non-storage backup charges have no clean GCP equivalent; passthrough."
+          "gcp_target": "Compute Engine Storage PD Snapshot",
+          "strategy": "map",
+          "confidence_max": 0.7,
+          "guidance": "AWS Backup charges should map to snapshot-class storage (e.g. Storage PD Snapshot or Cloud Storage Nearline/Archive), NEVER live Hyperdisk or PD capacity."
         }
       }
     ]
@@ -3132,7 +4121,7 @@
           "gcp_target": "Cloud Logging",
           "strategy": "review",
           "confidence_max": 0.4,
-          "guidance": "event→log-volume conversion has no reliable basis; passthrough until a sizing model exists."
+          "guidance": "event\u2192log-volume conversion has no reliable basis; passthrough until a sizing model exists."
         }
       }
     ]
@@ -3340,7 +4329,7 @@
           "gcp_target": "Private Service Connect",
           "strategy": "review",
           "confidence_max": 0.4,
-          "guidance": "VPC endpoints/PrivateLink → PSC; passthrough until a PSC pricer exists."
+          "guidance": "VPC endpoints/PrivateLink \u2192 PSC; passthrough until a PSC pricer exists."
         }
       }
     ]

@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "description": "Known AWS usage-type catalog per service for partition completeness testing (WORKORDER_spec_partition_completeness §2/§4). Every signature must dispatch to an explicit charge_type, never the spec_gap fallback.",
+    "description": "Known AWS usage-type catalog per service for partition completeness testing (WORKORDER_spec_partition_completeness \u00a72/\u00a74). Every signature must dispatch to an explicit charge_type, never the spec_gap fallback.",
     "version": "1.0.0"
   },
   "dynamodb": [
@@ -82,6 +82,775 @@
       "expected_charge_type": "dynamodb_restore",
       "description": "Table restore data size"
     }
+  ],
+  "rds": [
+    {
+      "usage_type": "APS3-InstanceUsage:db.m5.large",
+      "unit": "Hrs",
+      "expected_mechanic": "managed_db",
+      "expected_charge_type": "instance_hour",
+      "description": "Single-AZ instance-hours"
+    },
+    {
+      "usage_type": "APS3-Multi-AZUsage:db.r5.xlarge",
+      "unit": "Hrs",
+      "expected_mechanic": "managed_db",
+      "expected_charge_type": "instance_hour",
+      "description": "Multi-AZ instance-hours"
+    },
+    {
+      "usage_type": "InstanceUsageIOOptimized:db.r6g.2xlarge",
+      "unit": "Hrs",
+      "expected_mechanic": "managed_db",
+      "expected_charge_type": "instance_hour",
+      "description": "Aurora I/O-Optimized instance-hours"
+    },
+    {
+      "usage_type": "APS3-ServerlessV2Usage",
+      "unit": "ACU-Hr",
+      "expected_mechanic": "managed_db",
+      "expected_charge_type": "instance_hour",
+      "description": "Aurora Serverless v2 ACU-hours"
+    },
+    {
+      "usage_type": "APS3-ExtendedSupport:Yr1-Yr2:MySQL8.0",
+      "unit": "Hrs",
+      "expected_mechanic": "rds_extended_support",
+      "expected_charge_type": "extended_support",
+      "description": "Extended Support post-EOL surcharge"
+    },
+    {
+      "usage_type": "APS3-GP2-Storage",
+      "unit": "GB-Mo",
+      "expected_mechanic": "block_storage",
+      "expected_charge_type": "storage",
+      "description": "General Purpose SSD (gp2) storage"
+    },
+    {
+      "usage_type": "APS3-GP3-Storage",
+      "unit": "GB-Mo",
+      "expected_mechanic": "block_storage",
+      "expected_charge_type": "storage",
+      "description": "General Purpose SSD (gp3) storage"
+    },
+    {
+      "usage_type": "APS3-StorageUsage",
+      "unit": "GB-Mo",
+      "expected_mechanic": "block_storage",
+      "expected_charge_type": "storage",
+      "description": "Standard DB storage"
+    },
+    {
+      "usage_type": "APS3-Magnetic-Storage",
+      "unit": "GB-Mo",
+      "expected_mechanic": "block_storage",
+      "expected_charge_type": "storage",
+      "description": "Magnetic DB storage"
+    },
+    {
+      "usage_type": "APS3-Aurora:StorageUsage",
+      "unit": "GB-Mo",
+      "expected_mechanic": "block_storage",
+      "expected_charge_type": "storage",
+      "description": "Aurora cluster storage capacity"
+    },
+    {
+      "usage_type": "APS3-Aurora:IO-OptimizedStorage",
+      "unit": "GB-Mo",
+      "expected_mechanic": "block_storage",
+      "expected_charge_type": "storage",
+      "description": "Aurora I/O-Optimized storage capacity"
+    },
+    {
+      "usage_type": "APS3-StorageIOUsage",
+      "unit": "IOs",
+      "expected_mechanic": "misc",
+      "expected_charge_type": "replicated_write_io",
+      "description": "Aurora storage I/O usage"
+    },
+    {
+      "usage_type": "APS3-ReplicatedWriteIO",
+      "unit": "IOs",
+      "expected_mechanic": "misc",
+      "expected_charge_type": "replicated_write_io",
+      "description": "Aurora replicated write I/O operations"
+    },
+    {
+      "usage_type": "APS3-PIOPS-Storage",
+      "unit": "GB-Mo",
+      "expected_mechanic": "block_storage",
+      "expected_charge_type": "storage",
+      "description": "Provisioned IOPS SSD storage capacity"
+    },
+    {
+      "usage_type": "APS3-ProvisionedIOPS",
+      "unit": "IOPS-Mo",
+      "expected_mechanic": "block_storage",
+      "expected_charge_type": "provisioned_iops",
+      "description": "RDS provisioned IOPS"
+    },
+    {
+      "usage_type": "APS3-GP3-ProvisionedIOPS",
+      "unit": "IOPS-Mo",
+      "expected_mechanic": "block_storage",
+      "expected_charge_type": "provisioned_iops",
+      "description": "RDS GP3 provisioned IOPS"
+    },
+    {
+      "usage_type": "APS3-BackupUsage",
+      "unit": "GB-Mo",
+      "expected_mechanic": "block_storage",
+      "expected_charge_type": "backup",
+      "description": "Automated and manual backup storage"
+    },
+    {
+      "usage_type": "APS3-RDS:SnapshotExportToS3",
+      "unit": "GB",
+      "expected_mechanic": "block_storage",
+      "expected_charge_type": "backup",
+      "description": "RDS snapshot export to S3"
+    },
+    {
+      "usage_type": "APS3-DataTransfer-Out-Bytes",
+      "unit": "GB",
+      "expected_mechanic": "data_transfer",
+      "expected_charge_type": "rds_data_transfer",
+      "description": "Internet data transfer out"
+    },
+    {
+      "usage_type": "APS3-AWS-Out-Bytes",
+      "unit": "GB",
+      "expected_mechanic": "data_transfer",
+      "expected_charge_type": "rds_data_transfer",
+      "description": "Inter-region data transfer out"
+    },
+    {
+      "usage_type": "APS3-AWS-In-Bytes",
+      "unit": "GB",
+      "expected_mechanic": "data_transfer",
+      "expected_charge_type": "rds_data_transfer",
+      "description": "Inter-region data transfer in"
+    },
+    {
+      "usage_type": "APS3-PI_LongTermRetention",
+      "unit": "Hrs",
+      "expected_mechanic": "misc",
+      "expected_charge_type": "performance_insights",
+      "description": "Performance Insights long-term retention"
+    },
+    {
+      "usage_type": "APS3-RDS:ProxyUsage",
+      "unit": "Hrs",
+      "expected_mechanic": "misc",
+      "expected_charge_type": "rds_proxy",
+      "description": "RDS Proxy endpoint hours"
+    }
+  ],
+  "sagemaker": [
+    {
+      "usage_type": "USE1-Train:ml.m5.xlarge",
+      "unit": "Hrs",
+      "description": "Training instance-hours (CPU)",
+      "expected_charge_type": "sagemaker_training",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-Train:ml.g5.xlarge",
+      "unit": "Hrs",
+      "description": "Training instance-hours (GPU g5)",
+      "expected_charge_type": "sagemaker_training",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-Train:ml.p4d.24xlarge",
+      "unit": "Hrs",
+      "description": "Training instance-hours (GPU p4d)",
+      "expected_charge_type": "sagemaker_training",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-Train:ml.inf1.xlarge",
+      "unit": "Hrs",
+      "description": "Training instance-hours (Inferentia)",
+      "expected_charge_type": "sagemaker_training",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-Train:ml.trn1.2xlarge",
+      "unit": "Hrs",
+      "description": "Training instance-hours (Trainium)",
+      "expected_charge_type": "sagemaker_training",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-Host:ml.m5.xlarge",
+      "unit": "Hrs",
+      "description": "Real-time inference endpoint-hours (CPU)",
+      "expected_charge_type": "sagemaker_realtime",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-Host:ml.g5.xlarge",
+      "unit": "Hrs",
+      "description": "Real-time inference endpoint-hours (GPU)",
+      "expected_charge_type": "sagemaker_realtime",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-Tsform:ml.m5.xlarge",
+      "unit": "Hrs",
+      "description": "Batch Transform instance-hours",
+      "expected_charge_type": "sagemaker_batch",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-Notebk:ml.m5.large",
+      "unit": "Hrs",
+      "description": "Notebook instance-hours",
+      "expected_charge_type": "sagemaker_notebook",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-JupyterLab:ml.t3.medium",
+      "unit": "Hrs",
+      "description": "JupyterLab Studio instance-hours",
+      "expected_charge_type": "sagemaker_notebook",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-CodeEditor:ml.t3.medium",
+      "unit": "Hrs",
+      "description": "Code Editor Studio instance-hours",
+      "expected_charge_type": "sagemaker_notebook",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-RStudio:ml.m5.large",
+      "unit": "Hrs",
+      "description": "RStudio instance-hours",
+      "expected_charge_type": "sagemaker_notebook",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "StudioDomainUsage",
+      "unit": "Hrs",
+      "description": "SageMaker Studio domain hours",
+      "expected_charge_type": "sagemaker_notebook",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-Process:ml.c5.xlarge",
+      "unit": "Hrs",
+      "description": "Processing job instance-hours",
+      "expected_charge_type": "sagemaker_processing",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "USE1-HyperPod:ml.p4d.24xlarge",
+      "unit": "Hrs",
+      "description": "HyperPod cluster instance-hours",
+      "expected_charge_type": "sagemaker_hyperpod",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "FeatureStoreOnlineStorage",
+      "unit": "GB-Mo",
+      "description": "Feature Store online storage",
+      "expected_charge_type": "sagemaker_featurestore",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "FeatureStoreOfflineStorage",
+      "unit": "GB-Mo",
+      "description": "Feature Store offline (S3) storage",
+      "expected_charge_type": "sagemaker_featurestore",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "FeatureStoreReadUnits",
+      "unit": "Units",
+      "description": "Feature Store read units",
+      "expected_charge_type": "sagemaker_featurestore",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "FeatureStoreWriteUnits",
+      "unit": "Units",
+      "description": "Feature Store write units",
+      "expected_charge_type": "sagemaker_featurestore",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "ServerlessInferenceComputeDuration",
+      "unit": "Milliseconds",
+      "description": "Serverless Inference compute (per-ms)",
+      "expected_charge_type": "sagemaker_serverless",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "ServerlessInferenceDataProcessed",
+      "unit": "GB",
+      "description": "Serverless Inference data processed",
+      "expected_charge_type": "sagemaker_serverless",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "DataWranglerInteractiveSession",
+      "unit": "Hrs",
+      "description": "Data Wrangler interactive session",
+      "expected_charge_type": "sagemaker_datawrangler",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "GroundTruthImageAnnotation",
+      "unit": "Objects",
+      "description": "Ground Truth image annotations",
+      "expected_charge_type": "sagemaker_groundtruth",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "GroundTruthTextAnnotation",
+      "unit": "Objects",
+      "description": "Ground Truth text annotations",
+      "expected_charge_type": "sagemaker_groundtruth",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "MLflow-TrackingServer",
+      "unit": "Hrs",
+      "description": "MLflow tracking server hours",
+      "expected_charge_type": "sagemaker_mlflow",
+      "expected_mechanic": "sagemaker"
+    },
+    {
+      "usage_type": "CreateVolume-Gp3",
+      "unit": "GB-Mo",
+      "description": "Gp3 EBS volume provisioned for SageMaker",
+      "expected_charge_type": "sagemaker_storage_gp3",
+      "expected_mechanic": "block_storage"
+    }
+  ],
+  "backup": [
+    {
+      "usage_type": "APS3-BackupUsage",
+      "unit": "GB-Mo",
+      "description": "Generic AWS Backup vault usage",
+      "expected_charge_type": "backup_storage_warm",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-BackupStorage",
+      "unit": "GB-Mo",
+      "description": "AWS Backup storage",
+      "expected_charge_type": "backup_storage_warm",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-WarmStorage-ByteHrs",
+      "unit": "GB-Mo",
+      "description": "Warm backup storage byte-hours",
+      "expected_charge_type": "backup_storage_warm",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-WarmStorage-ByteHrs-EBS",
+      "unit": "GB-Mo",
+      "description": "EBS volume backup warm storage",
+      "expected_charge_type": "backup_ebs",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-WarmStorage-ByteHrs-EC2",
+      "unit": "GB-Mo",
+      "description": "EC2 AMI backup warm storage",
+      "expected_charge_type": "backup_storage_warm",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-ColdStorage-ByteHrs",
+      "unit": "GB-Mo",
+      "description": "Cold backup storage byte-hours",
+      "expected_charge_type": "backup_cold",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-ColdStorage-ByteHrs-EBS",
+      "unit": "GB-Mo",
+      "description": "EBS snapshot archive cold storage",
+      "expected_charge_type": "backup_cold",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-ColdStorage-ByteHrs-EFS",
+      "unit": "GB-Mo",
+      "description": "EFS archive cold storage",
+      "expected_charge_type": "backup_cold",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-ColdStorage-ByteHrs-DynamoDB",
+      "unit": "GB-Mo",
+      "description": "DynamoDB cold backup storage",
+      "expected_charge_type": "backup_cold",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-WarmStorage-ByteHrs-RDS",
+      "unit": "GB-Mo",
+      "description": "RDS database warm backup storage",
+      "expected_charge_type": "backup_db",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-WarmStorage-ByteHrs-Aurora",
+      "unit": "GB-Mo",
+      "description": "Aurora database warm backup storage",
+      "expected_charge_type": "backup_db",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-WarmStorage-ByteHrs-DocumentDB",
+      "unit": "GB-Mo",
+      "description": "DocumentDB warm backup storage",
+      "expected_charge_type": "backup_db",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-WarmStorage-ByteHrs-Neptune",
+      "unit": "GB-Mo",
+      "description": "Neptune graph database warm backup storage",
+      "expected_charge_type": "backup_db",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-WarmStorage-ByteHrs-EFS",
+      "unit": "GB-Mo",
+      "description": "EFS file system warm backup storage",
+      "expected_charge_type": "backup_efs",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-WarmStorage-ByteHrs-FSx",
+      "unit": "GB-Mo",
+      "description": "FSx file system warm backup storage",
+      "expected_charge_type": "backup_fsx",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-WarmStorage-ByteHrs-DynamoDB",
+      "unit": "GB-Mo",
+      "description": "DynamoDB table warm backup storage",
+      "expected_charge_type": "backup_dynamodb",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-WarmStorage-ByteHrs-S3",
+      "unit": "GB-Mo",
+      "description": "S3 bucket warm backup storage",
+      "expected_charge_type": "backup_s3",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-Restore-Bytes",
+      "unit": "GB",
+      "description": "Data restored from AWS Backup",
+      "expected_charge_type": "backup_restore",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-Restore-Bytes-EBS",
+      "unit": "GB",
+      "description": "EBS restore data volume",
+      "expected_charge_type": "backup_restore",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-Restore-Bytes-Aurora",
+      "unit": "GB",
+      "description": "Aurora restore data volume",
+      "expected_charge_type": "backup_restore",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-CrossRegion-Bytes",
+      "unit": "GB",
+      "description": "Cross-region copy data transfer",
+      "expected_charge_type": "backup_copy",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-CrossAccount-Bytes",
+      "unit": "GB",
+      "description": "Cross-account copy data transfer",
+      "expected_charge_type": "backup_copy",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "BackupAudit-Evaluations",
+      "unit": "Count",
+      "description": "Backup Audit Manager evaluations",
+      "expected_charge_type": "backup_audit",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "BackupSearch-ItemCount",
+      "unit": "Count",
+      "description": "Backup Search indexed items",
+      "expected_charge_type": "backup_search",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "Backup-Malware-ScanBytes",
+      "unit": "GB",
+      "description": "Backup Malware Protection scan bytes",
+      "expected_charge_type": "backup_malware",
+      "expected_mechanic": "backup"
+    }
+  ],
+  "memorydb": [
+    {
+      "usage_type": "APS3-NodeUsage:db.r6g.large",
+      "unit": "Hrs",
+      "description": "MemoryDB db.r6g.large node-hours",
+      "expected_charge_type": "instance_hour",
+      "expected_mechanic": "elasticache"
+    },
+    {
+      "usage_type": "APS3-NodeUsage:db.r6g.xlarge",
+      "unit": "Hrs",
+      "description": "MemoryDB db.r6g.xlarge node-hours",
+      "expected_charge_type": "instance_hour",
+      "expected_mechanic": "elasticache"
+    },
+    {
+      "usage_type": "APS3-NodeUsage:db.r6gd.2xlarge",
+      "unit": "Hrs",
+      "description": "MemoryDB db.r6gd.2xlarge data-tiering node-hours",
+      "expected_charge_type": "instance_hour",
+      "expected_mechanic": "elasticache"
+    },
+    {
+      "usage_type": "APS3-NodeUsage:db.r7g.2xlarge",
+      "unit": "Hrs",
+      "description": "MemoryDB db.r7g.2xlarge Graviton3 node-hours",
+      "expected_charge_type": "instance_hour",
+      "expected_mechanic": "elasticache"
+    },
+    {
+      "usage_type": "APS3-NodeUsage:db.t4g.small",
+      "unit": "Hrs",
+      "description": "MemoryDB db.t4g.small burstable node-hours",
+      "expected_charge_type": "instance_hour",
+      "expected_mechanic": "elasticache"
+    },
+    {
+      "usage_type": "APS3-DataWritten-Bytes",
+      "unit": "GB",
+      "description": "MemoryDB data-written bytes ($0.20/GB write billing)",
+      "expected_charge_type": "memorydb_data_written",
+      "expected_mechanic": "misc"
+    },
+    {
+      "usage_type": "APS3-SnapshotUsage",
+      "unit": "GB-Mo",
+      "description": "MemoryDB snapshot storage byte-hours",
+      "expected_charge_type": "memorydb_snapshot",
+      "expected_mechanic": "backup"
+    }
+  ],
+  "documentdb": [
+    {
+      "usage_type": "APS3-InstanceUsage:db.r5.large",
+      "unit": "Hrs",
+      "description": "DocumentDB db.r5.large instance-hours",
+      "expected_charge_type": "instance_hour",
+      "expected_mechanic": "managed_db"
+    },
+    {
+      "usage_type": "APS3-InstanceUsage:db.t3.medium",
+      "unit": "Hrs",
+      "description": "DocumentDB db.t3.medium instance-hours",
+      "expected_charge_type": "instance_hour",
+      "expected_mechanic": "managed_db"
+    },
+    {
+      "usage_type": "APS3-InstanceUsage:db.t4g.medium",
+      "unit": "Hrs",
+      "description": "DocumentDB db.t4g.medium instance-hours",
+      "expected_charge_type": "instance_hour",
+      "expected_mechanic": "managed_db"
+    },
+    {
+      "usage_type": "APS3-StorageIOUsage",
+      "unit": "Requests",
+      "description": "DocumentDB database I/O requests (Standard)",
+      "expected_charge_type": "documentdb_io",
+      "expected_mechanic": "misc"
+    },
+    {
+      "usage_type": "APS3-StorageUsage",
+      "unit": "GB-Mo",
+      "description": "DocumentDB cluster storage byte-hours",
+      "expected_charge_type": "storage",
+      "expected_mechanic": "block_storage"
+    },
+    {
+      "usage_type": "APS3-BackupUsage",
+      "unit": "GB-Mo",
+      "description": "DocumentDB backup storage byte-hours",
+      "expected_charge_type": "documentdb_backup",
+      "expected_mechanic": "backup"
+    },
+    {
+      "usage_type": "APS3-ElasticCluster-vCPU",
+      "unit": "Hrs",
+      "description": "DocumentDB Elastic Clusters vCPU-hours",
+      "expected_charge_type": "documentdb_elastic",
+      "expected_mechanic": "managed_db"
+    },
+    {
+      "usage_type": "APS3-ServerlessUsage",
+      "unit": "DCU-Hrs",
+      "description": "DocumentDB Serverless DCU-hours",
+      "expected_charge_type": "documentdb_serverless",
+      "expected_mechanic": "managed_db"
+    }
+  ],
+  "dms": [
+    {
+      "usage_type": "APS3-InstanceUsage:dms.c5.large",
+      "unit": "Hrs",
+      "description": "DMS replication instance-hours (c5.large)",
+      "expected_charge_type": "dms_instance",
+      "expected_mechanic": "ignore"
+    },
+    {
+      "usage_type": "APS3-InstanceUsage:dms.r5.xlarge",
+      "unit": "Hrs",
+      "description": "DMS replication instance-hours (r5.xlarge)",
+      "expected_charge_type": "dms_instance",
+      "expected_mechanic": "ignore"
+    },
+    {
+      "usage_type": "APS3-InstanceUsage:dms.t3.medium",
+      "unit": "Hrs",
+      "description": "DMS replication instance-hours (t3.medium)",
+      "expected_charge_type": "dms_instance",
+      "expected_mechanic": "ignore"
+    },
+    {
+      "usage_type": "APS3-ServerlessUsage",
+      "unit": "DCU-Hrs",
+      "description": "DMS Serverless DCU-hours",
+      "expected_charge_type": "dms_serverless",
+      "expected_mechanic": "ignore"
+    },
+    {
+      "usage_type": "APS3-StorageUsage",
+      "unit": "GB-Mo",
+      "description": "DMS replication storage byte-hours",
+      "expected_charge_type": "dms_storage",
+      "expected_mechanic": "ignore"
+    },
+    {
+      "usage_type": "APS3-SchemaConversion",
+      "unit": "Count",
+      "description": "DMS Schema Conversion units",
+      "expected_charge_type": "dms_schema_conversion",
+      "expected_mechanic": "ignore"
+    },
+    {
+      "usage_type": "APS3-DataTransfer-Out-Bytes",
+      "unit": "GB",
+      "description": "DMS cross-region data transfer out",
+      "expected_charge_type": "dms_data_transfer",
+      "expected_mechanic": "data_transfer"
+    }
+  ],
+  "lambda": [
+    {
+      "usage_type": "APS3-Lambda-GB-Second",
+      "unit": "Lambda-GB-Second",
+      "description": "Lambda compute duration (x86 architecture)",
+      "expected_charge_type": "lambda_metered",
+      "expected_mechanic": "per_request"
+    },
+    {
+      "usage_type": "APS3-Lambda-GB-Second-ARM",
+      "unit": "Lambda-GB-Second",
+      "description": "Lambda compute duration (Arm/Graviton architecture)",
+      "expected_charge_type": "lambda_metered",
+      "expected_mechanic": "per_request"
+    },
+    {
+      "usage_type": "APS3-Request",
+      "unit": "Requests",
+      "description": "Lambda function invocations",
+      "expected_charge_type": "lambda_metered",
+      "expected_mechanic": "per_request"
+    },
+    {
+      "usage_type": "APS3-Invocations",
+      "unit": "Count",
+      "description": "Lambda function invocation count",
+      "expected_charge_type": "lambda_metered",
+      "expected_mechanic": "per_request"
+    },
+    {
+      "usage_type": "APS3-Lambda-Provisioned-Concurrency",
+      "unit": "Lambda-GB-Second",
+      "description": "Lambda Provisioned Concurrency allocated memory duration",
+      "expected_charge_type": "lambda_provisioned_concurrency",
+      "expected_mechanic": "per_request"
+    },
+    {
+      "usage_type": "APS3-Lambda-GB-Second-Provisioned",
+      "unit": "Lambda-GB-Second",
+      "description": "Lambda execution while provisioned concurrency is enabled",
+      "expected_charge_type": "lambda_provisioned_concurrency",
+      "expected_mechanic": "per_request"
+    },
+    {
+      "usage_type": "APS3-ProvisionedConcurrency",
+      "unit": "Hrs",
+      "description": "Lambda provisioned concurrent executions",
+      "expected_charge_type": "lambda_provisioned_concurrency",
+      "expected_mechanic": "per_request"
+    },
+    {
+      "usage_type": "APS3-Lambda-Storage-Duration",
+      "unit": "GB-Mo",
+      "description": "Lambda ephemeral storage beyond 512 MB (/tmp allocation)",
+      "expected_charge_type": "lambda_ephemeral_storage",
+      "expected_mechanic": "per_request"
+    },
+    {
+      "usage_type": "APS3-Lambda-GB-Second-Storage",
+      "unit": "Lambda-GB-Second",
+      "description": "Lambda ephemeral storage duration beyond free tier",
+      "expected_charge_type": "lambda_ephemeral_storage",
+      "expected_mechanic": "per_request"
+    },
+    {
+      "usage_type": "APS3-Lambda-Storage-ByteHours",
+      "unit": "GB-Mo",
+      "description": "Lambda ephemeral storage byte-hours",
+      "expected_charge_type": "lambda_ephemeral_storage",
+      "expected_mechanic": "per_request"
+    },
+    {
+      "usage_type": "APS3-DataTransfer-Out-Bytes",
+      "unit": "GB",
+      "description": "Lambda network egress / data transfer out",
+      "expected_charge_type": "lambda_data_transfer",
+      "expected_mechanic": "data_transfer"
+    },
+    {
+      "usage_type": "APS3-Lambda-SnapStart-Restoration",
+      "unit": "Count",
+      "description": "Lambda SnapStart restoration requests",
+      "expected_charge_type": "lambda_other",
+      "expected_mechanic": "misc"
+    }
   ]
 }
-

@@ -116,3 +116,125 @@ def cdn_egress_rate(bucket, total_gb):
             return info["sku_id"], info["sku_name"], tier["rate_usd_per_gb"]
     last = info["tiers"][-1]
     return info["sku_id"], info["sku_name"], last["rate_usd_per_gb"]
+
+
+# Internet Egress (Premium Tier) — tiered rates per destination continent and monthly volume.
+# Source: cloud.google.com/vpc/network-pricing
+_internet_cfg = {
+    k: v for k, v in _cfg("egress-rates").get("internet_egress", {}).items()
+    if not k.startswith("_")
+}
+INTERNET_EGRESS_TIERS = _internet_cfg
+
+# Inter-Region Egress Matrix — $/GiB by continent pair (from_continent -> to_continent).
+# Source: cloud.google.com/vpc/network-pricing
+_interregion_cfg = {
+    k: v for k, v in _cfg("egress-rates").get("interregion_matrix", {}).items()
+    if not k.startswith("_")
+}
+INTERREGION_MATRIX = _interregion_cfg
+
+
+def region_to_continent(region: str | None) -> str:
+    """Map a GCP or normalized region string to its pricing continent.
+    Reference: https://cloud.google.com/vpc/network-pricing
+    """
+    if not region:
+        return "northamerica"
+    r = str(region).strip().lower()
+    if r.startswith("southamerica-"):
+        return "southamerica"
+    if r.startswith("us-") or r.startswith("northamerica-"):
+        return "northamerica"
+    if r.startswith("europe-"):
+        return "europe"
+    if r == "asia-southeast2":
+        return "indonesia"
+    if r == "asia-northeast3":
+        return "korea"
+    if r.startswith("australia-") or r.startswith("australasia-"):
+        return "oceania"
+    if r.startswith("asia-"):
+        return "asia"
+    if r == "me-central2":
+        return "saudi"
+    if r.startswith("me-"):
+        return "middleeast"
+    if r.startswith("africa-"):
+        return "africa"
+    return "northamerica"
+
+
+def dest_bucket_for_internet(parts: dict) -> str:
+    """Infer destination continent bucket for internet egress from row fields.
+    Buckets: americas, europe, asia, australia_special, middleeast_africa, china.
+    Reference: https://cloud.google.com/vpc/network-pricing
+    """
+    to_reg = parts.get("to_region")
+    if to_reg:
+        cont = region_to_continent(to_reg)
+        if cont in ("oceania", "indonesia", "korea", "southamerica", "saudi"):
+            return "australia_special"
+        if cont in ("middleeast", "africa"):
+            return "middleeast_africa"
+        if cont == "china":
+            return "china"
+        if cont == "europe":
+            return "europe"
+        if cont == "asia":
+            return "asia"
+        return "americas"
+
+    ut = str(parts.get("usage_type") or "").lower()
+    op = str(parts.get("operation") or "").lower()
+    prod = str(parts.get("product") or "").lower()
+    blob = f"{ut} {op} {prod}"
+
+    if any(k in blob for k in ("china", "-cn-", "(cn)")):
+        return "china"
+    if any(k in blob for k in ("australia", "sydney", "melbourne", "-au-", "(au)", "indonesia", "jakarta", "korea", "seoul", "saudi", "dammam", "southamerica", "sao paulo", "chile")):
+        return "australia_special"
+    if any(k in blob for k in ("middleeast", "middle-east", "dubai", "doha", "tel aviv", "africa", "johannesburg", "me-", "af-")):
+        return "middleeast_africa"
+    if any(k in blob for k in ("europe", "frankfurt", "london", "ireland", "paris", "amsterdam", "milan", "madrid", "-eu-", "(eu)", "eu-", "euc", "euw")):
+        return "europe"
+    if any(k in blob for k in ("asia", "tokyo", "singapore", "hong kong", "mumbai", "delhi", "osaka", "taiwan", "-ap-", "(ap)", "aps", "apn")):
+        return "asia"
+    return "americas"
+
+
+def internet_egress_rate(bucket: str | None, total_gb: float) -> tuple[str, str, float]:
+    """Return (sku_id, sku_name, rate_usd_per_gb) for Premium Tier internet egress.
+
+    bucket   — Destination bucket: americas, europe, asia, australia_special, middleeast_africa, china
+    total_gb — Total monthly volume in GB for tier placement (0-1 TB / 1-10 TB / >10 TB)
+    Reference: https://cloud.google.com/vpc/network-pricing
+    """
+    b = bucket or "americas"
+    info = INTERNET_EGRESS_TIERS.get(b) or INTERNET_EGRESS_TIERS.get("americas")
+    if not info:
+        return EGRESS_SKUS["internet"]
+
+    for tier in info["tiers"]:
+        if tier["up_to_gb"] is None or total_gb <= tier["up_to_gb"]:
+            label = f"{info['sku_name']} (Tier <= {tier['up_to_gb']} GB)" if tier["up_to_gb"] else f"{info['sku_name']} (Tier > 10 TB)"
+            return tier["sku_id"], label, tier["rate_usd_per_gb"]
+    last = info["tiers"][-1]
+    return last["sku_id"], f"{info['sku_name']} (Tier > 10 TB)", last["rate_usd_per_gb"]
+
+
+def interregion_rate(from_region: str | None, to_region: str | None) -> tuple[str, str, float]:
+    """Return (sku_id, sku_name, rate_usd_per_gb) for inter-region egress from continent pair matrix.
+    Reference: https://cloud.google.com/vpc/network-pricing
+    """
+    from_c = region_to_continent(from_region)
+    to_c = region_to_continent(to_region)
+
+    matrix_row = INTERREGION_MATRIX.get(from_c) or INTERREGION_MATRIX.get("northamerica", {})
+    rate = matrix_row.get(to_c)
+    if rate is None:
+        rate = 0.08  # Default published fallback
+
+    sku_id = f"GCP-EGRESS-INTERREGION-{from_c[:4].upper()}-{to_c[:4].upper()}"
+    sku_name = f"Network Inter-Region Egress ({from_c.title()} to {to_c.title()})"
+    return (sku_id, sku_name, rate)

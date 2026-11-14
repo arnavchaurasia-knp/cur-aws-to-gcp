@@ -9,7 +9,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from log_utils import get_logger, fatal
 from projection_view import create_projection_view, compute_dominant_region
-from egress_rates import EGRESS_SKUS
+from egress_rates import EGRESS_SKUS, CDN_EGRESS_TIERS, INTERNET_EGRESS_TIERS, INTERREGION_MATRIX
 from synthetic_skus import SYNTHETIC_SKU_IDS
 from resolve_sku import resolve_intent_to_sku
 from apply_static_mappings import GCP_COMPUTE_ENGINE, CUD_PCT_FALLBACK as _CUD_PCT_FALLBACK
@@ -1035,6 +1035,47 @@ def main():
                 (?, 'Compute Engine', ?, 'Network', 'Egress', 'OnDemand', 'global', 'gibibyte', ?, 'canonical-egress', 'published GCP egress list')
                 ON CONFLICT DO NOTHING
             """, (_sku_id, _sku_name, eff_rate))
+
+        # Inject tiered internet egress synthetic SKUs (Premium Tier volume x destination continent)
+        for bucket_info in INTERNET_EGRESS_TIERS.values():
+            if not isinstance(bucket_info, dict) or "tiers" not in bucket_info:
+                continue
+            for tier in bucket_info["tiers"]:
+                t_sku = tier["sku_id"]
+                t_name = f"{bucket_info.get('sku_name', 'Internet Egress')} (Tier <= {tier['up_to_gb']} GB)" if tier.get("up_to_gb") else f"{bucket_info.get('sku_name', 'Internet Egress')} (Tier > 10 TB)"
+                t_rate = tier["rate_usd_per_gb"]
+                conn.execute("""
+                    INSERT INTO gcp_sku_rates VALUES
+                    (?, 'Compute Engine', ?, 'Network', 'Egress', 'OnDemand', 'global', 'gibibyte', ?, 'canonical-egress', 'https://cloud.google.com/vpc/network-pricing')
+                    ON CONFLICT (gcp_sku_id, pricing_type, region) DO UPDATE SET rate_usd = ?, source = 'canonical-egress'
+                """, (t_sku, t_name, t_rate, t_rate))
+
+        # Inject continent-pair inter-region synthetic SKUs
+        for from_c, dest_map in INTERREGION_MATRIX.items():
+            if not isinstance(dest_map, dict):
+                continue
+            for to_c, ir_rate in dest_map.items():
+                ir_sku = f"GCP-EGRESS-INTERREGION-{from_c[:4].upper()}-{to_c[:4].upper()}"
+                ir_name = f"Network Inter-Region Egress ({from_c.title()} to {to_c.title()})"
+                conn.execute("""
+                    INSERT INTO gcp_sku_rates VALUES
+                    (?, 'Compute Engine', ?, 'Network', 'Egress', 'OnDemand', 'global', 'gibibyte', ?, 'canonical-egress', 'https://cloud.google.com/vpc/network-pricing')
+                    ON CONFLICT (gcp_sku_id, pricing_type, region) DO UPDATE SET rate_usd = ?, source = 'canonical-egress'
+                """, (ir_sku, ir_name, ir_rate, ir_rate))
+
+        # Inject Cloud CDN Cache Egress synthetic SKUs
+        for cdn_info in CDN_EGRESS_TIERS.values():
+            if not isinstance(cdn_info, dict) or "tiers" not in cdn_info:
+                continue
+            c_sku = cdn_info.get("sku_id")
+            c_name = cdn_info.get("sku_name", "Cloud CDN Cache Egress")
+            c_rate = cdn_info["tiers"][0]["rate_usd_per_gb"]
+            if c_sku:
+                conn.execute("""
+                    INSERT INTO gcp_sku_rates VALUES
+                    (?, 'Cloud CDN', ?, 'Network', 'Egress', 'OnDemand', 'global', 'gibibyte', ?, 'canonical-egress', 'https://cloud.google.com/cdn/pricing')
+                    ON CONFLICT (gcp_sku_id, pricing_type, region) DO UPDATE SET rate_usd = ?, source = 'canonical-egress'
+                """, (c_sku, c_name, c_rate, c_rate))
 
         # Inter-zone data transfer is $0.01/GiB across all regions (DE9E-AFBC-A15A).
         # Catalog has regional rows for 5 legacy regions but lacks other regions, and

@@ -504,33 +504,36 @@ def test_efs_data_access_elastic_throughput_is_ignored_not_passthrough():
 # FSx → Filestore
 # ---------------------------------------------------------------------------
 
-def test_fsx_lustre_maps_to_high_scale_ssd():
+def test_fsx_lustre_maps_to_managed_lustre():
     rows = [row(product="Amazon FSx for Lustre",
                 usage_type="FSx:Lustre-Storage", unit="GB-Mo")]
     out = _with_sku(map_fsx, rows)
-    assert out[0]["gcp_service"] == "Cloud Filestore"
-    assert "High Scale" in out[0]["gcp_sku_name"]
+    assert out[0]["gcp_service"] in ("Google Cloud Managed Lustre", "Cloud Filestore")
+    assert out[0]["strategy"] == "map"
 
 
-def test_fsx_windows_maps_to_enterprise():
+def test_fsx_windows_maps_to_netapp_or_enterprise():
     rows = [row(product="Amazon FSx for Windows File Server",
                 usage_type="FSx:Windows-HDD-Storage", unit="GB-Mo")]
     out = _with_sku(map_fsx, rows)
-    assert "Enterprise" in out[0]["gcp_sku_name"]
+    assert out[0]["strategy"] == "map"
+    assert "NetApp Volumes" in out[0]["gcp_service"] or "Enterprise" in out[0]["gcp_sku_name"]
 
 
-def test_fsx_ontap_passthrough():
+def test_fsx_ontap_maps_to_netapp_volumes():
     rows = [row(product="Amazon FSx for NetApp ONTAP",
                 usage_type="FSx:ONTAP-Storage", unit="GB-Mo")]
     out = _with_sku(map_fsx, rows)
-    assert out[0]["strategy"] == "passthrough"
+    assert out[0]["gcp_service"] == "Google Cloud NetApp Volumes"
+    assert out[0]["strategy"] == "map"
 
 
-def test_fsx_backup_passthrough():
+def test_fsx_backup_maps_to_backup_sku():
     rows = [row(product="Amazon FSx",
                 usage_type="FSx:Backup-GB-Mo", unit="GB-Mo")]
     out = _with_sku(map_fsx, rows)
-    assert out[0]["strategy"] == "passthrough"
+    assert out[0]["strategy"] == "map"
+    assert "Backup" in out[0]["gcp_sku_name"]
 
 
 # ---------------------------------------------------------------------------

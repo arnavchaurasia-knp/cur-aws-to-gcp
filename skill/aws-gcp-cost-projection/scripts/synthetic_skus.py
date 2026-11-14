@@ -16,9 +16,24 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    from egress_rates import EGRESS_SKUS, CDN_EGRESS_TIERS
+    from egress_rates import (
+        EGRESS_SKUS,
+        CDN_EGRESS_TIERS,
+        INTERNET_EGRESS_TIERS,
+        INTERREGION_MATRIX,
+    )
     _EGRESS_IDS = {sku_id for sku_id, _, _ in EGRESS_SKUS.values()}
     _CDN_IDS = {v["sku_id"] for v in CDN_EGRESS_TIERS.values() if isinstance(v, dict) and "sku_id" in v}
+    _INTERNET_IDS = {
+        tier["sku_id"]
+        for b_info in INTERNET_EGRESS_TIERS.values() if isinstance(b_info, dict)
+        for tier in b_info.get("tiers", []) if isinstance(tier, dict) and "sku_id" in tier
+    }
+    _INTERREGION_IDS = {
+        f"GCP-EGRESS-INTERREGION-{from_c[:4].upper()}-{to_c[:4].upper()}"
+        for from_c, dest_map in INTERREGION_MATRIX.items() if isinstance(dest_map, dict)
+        for to_c in dest_map.keys()
+    }
 except Exception:
     _EGRESS_IDS = {
         "GCP-EGRESS-INTERZONE",
@@ -32,6 +47,8 @@ except Exception:
         "GCP-CDN-EGRESS-APAC-AU",
         "GCP-CDN-EGRESS-CHINA",
     }
+    _INTERNET_IDS = set()
+    _INTERREGION_IDS = set()
 
 # Pinned SaaS / non-catalog services:
 # - Looker Studio Pro: SaaS seat pricing outside Google Cloud Billing catalog.
@@ -41,9 +58,15 @@ _PINNED_SYNTHETIC_IDS = {
     "TPU-V5E-ONDEMAND",
 }
 
-SYNTHETIC_SKU_IDS: set[str] = _EGRESS_IDS | _CDN_IDS | _PINNED_SYNTHETIC_IDS
+SYNTHETIC_SKU_IDS: set[str] = _EGRESS_IDS | _CDN_IDS | _PINNED_SYNTHETIC_IDS | _INTERNET_IDS | _INTERREGION_IDS
 
 
 def is_synthetic_sku(sku_id: str | None) -> bool:
     """Return True if sku_id is a recognized synthetic SKU ID."""
-    return bool(sku_id and sku_id in SYNTHETIC_SKU_IDS)
+    if not sku_id:
+        return False
+    if sku_id in SYNTHETIC_SKU_IDS:
+        return True
+    if sku_id.startswith("GCP-EGRESS-") or sku_id.startswith("GCP-CDN-"):
+        return True
+    return False

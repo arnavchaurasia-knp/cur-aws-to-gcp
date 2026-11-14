@@ -22,7 +22,16 @@ if sys.platform == "win32":
 import duckdb
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from egress_rates import EGRESS_SKUS, cdn_egress_rate, interzone_sku_for_region
+from egress_rates import (
+    EGRESS_SKUS,
+    cdn_egress_rate,
+    interzone_sku_for_region,
+    dest_bucket_for_internet,
+    internet_egress_rate,
+    interregion_rate,
+    region_to_continent,
+)
+from region_prefix import UT_PAIR_RE, UT_PREFIX_TO_GCP
 from usage_type_parser import transfer_direction
 from config_loader import load_data_config as _cfg, load_assumptions
 try:
@@ -4086,19 +4095,26 @@ _CF_DEST_TO_BUCKET = {
 def map_data_transfer(rows):
     """Classify transfer direction deterministically and pin the canonical egress
     SKU + rate (no fuzzy catalog matching — see egress_rates.py). Ingress → ignore."""
-    # Pre-pass: sum CloudFront bandwidth GB per destination bucket so tier selection
-    # uses total monthly volume rather than each individual tier-band row's volume.
+    # Pre-pass: sum CloudFront bandwidth GB per destination bucket and internet egress
+    # bandwidth GB per destination continent so tier selection uses total monthly volume.
     _cf_bucket_totals = {}
+    _internet_bucket_totals = {}
     for _r in rows:
-        if "cloudfront" not in (_r.get("product") or "").lower():
-            continue
-        _m = _CF_BW_RE.match(_r.get("usage_type") or "")
-        if not _m:
-            continue
-        _bucket = _CF_DEST_TO_BUCKET.get(_m.group(1).upper(), "apac")
-        _cf_bucket_totals[_bucket] = (
-            _cf_bucket_totals.get(_bucket, 0.0) + float(_r.get("total_usage") or 0)
-        )
+        _p = (_r.get("product") or "").lower()
+        if "cloudfront" in _p:
+            _m = _CF_BW_RE.match(_r.get("usage_type") or "")
+            if _m:
+                _bucket = _CF_DEST_TO_BUCKET.get(_m.group(1).upper(), "apac")
+                _cf_bucket_totals[_bucket] = (
+                    _cf_bucket_totals.get(_bucket, 0.0) + float(_r.get("total_usage") or 0.0)
+                )
+        elif "natgateway" not in _p:
+            _strat, _dir, _ = transfer_direction(_r)
+            if _strat == "map" and _dir == "internet":
+                _b = dest_bucket_for_internet(_r)
+                _internet_bucket_totals[_b] = (
+                    _internet_bucket_totals.get(_b, 0.0) + float(_r.get("total_usage") or 0.0)
+                )
 
     out = []
     for r in rows:
@@ -4339,15 +4355,43 @@ def map_data_transfer(rows):
         if strategy == "map" and direction is not None:
             if direction == "interzone":
                 sku_id, sku_name, _rate = interzone_sku_for_region(r.get("gcp_region"))
+                note = f"inter-zone egress ($0.01/GiB; paid SKU DE9E-AFBC-A15A; cloud.google.com/vpc/network-pricing)"
+            elif direction == "internet":
+                _b = dest_bucket_for_internet(r)
+                _tot_gb = _internet_bucket_totals.get(_b, float(r.get("total_usage") or 0.0))
+                sku_id, sku_name, _rate = internet_egress_rate(_b, _tot_gb)
+                note = f"internet egress → {sku_name} (dest: {_b}, monthly volume: {_tot_gb:,.1f} GB @ ${_rate:.4f}/GiB; cloud.google.com/vpc/network-pricing)"
+            elif direction == "interregion":
+                from_reg = r.get("from_region")
+                to_reg = r.get("to_region")
+                if not (from_reg and to_reg):
+                    _pm = UT_PAIR_RE.search(r.get("usage_type") or "")
+                    if _pm:
+                        from_reg = from_reg or UT_PREFIX_TO_GCP.get(_pm.group(1).lower())
+                        to_reg = to_reg or UT_PREFIX_TO_GCP.get(_pm.group(2).lower())
+                from_reg = from_reg or r.get("gcp_region") or "us-central1"
+                to_reg = to_reg or "europe-west1"
+                sku_id, sku_name, _rate = interregion_rate(from_reg, to_reg)
+                from_c = region_to_continent(from_reg)
+                to_c = region_to_continent(to_reg)
+                note = f"inter-region egress ({from_reg} [{from_c}] → {to_reg} [{to_c}]) → {sku_name} (${_rate:.4f}/GiB; cloud.google.com/vpc/network-pricing)"
             elif direction in EGRESS_SKUS:
                 sku_id, sku_name, _rate = EGRESS_SKUS[direction]
             else:
                 sku_id = sku_name = None
+
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
                 entry["gcp_sku_unit"] = None
                 entry["gcp_sku_name"] = sku_name
+                entry["strategy"] = "map"
+                entry["projection_note"] = f"data_transfer: {note}"
+            else:
+                entry["gcp_sku_id"] = None
+                entry["gcp_sku_name"] = None
+                entry["strategy"] = "passthrough"
         else:
+            entry["gcp_sku_id"] = None
             entry["gcp_sku_name"] = None
         out.append(entry)
     return out
@@ -6720,6 +6764,8 @@ def map_kinesis(rows):
 GCP_FILESTORE_REGIONAL = "Filestore Capacity Regional and Enterprise"
 GCP_FILESTORE_ZONAL    = "Filestore Capacity Zonal and High Scale"
 GCP_FILESTORE_BACKUP   = "Filestore Backup Usage"
+GCP_MANAGED_LUSTRE     = "Google Cloud Managed Lustre"
+GCP_NETAPP_VOLUMES     = "Google Cloud NetApp Volumes"
 
 _EFS_STORAGE_MAP = {
     # One-Zone variants match first before generic standard
@@ -6872,76 +6918,329 @@ def map_efs(rows):
 
 
 def map_fsx(rows):
-    """FSx variants → Filestore or passthrough.
+    """FSx variants → protocol-matched GCP targets per WORKORDER §4.10.
 
-    FSx for Lustre → Filestore High Scale (closest performance tier).
-    FSx for Windows → Filestore Enterprise (SMB-compatible).
-    FSx for NetApp ONTAP, OpenZFS → passthrough (no direct GCP equivalent).
-    Backup/snapshot rows → passthrough.
+    - FSx for Lustre → Google Cloud Managed Lustre (fallback Filestore High Scale SSD)
+    - FSx for NetApp ONTAP → Google Cloud NetApp Volumes (Extreme/Premium/Standard)
+    - FSx for Windows → Google Cloud NetApp Volumes (native SMB; fallback Filestore Enterprise)
+    - FSx for OpenZFS → Cloud Filestore (Single-AZ: Zonal; Multi-AZ: Regional)
+    - Throughput / IOPS → $0 (IGNORE; bundled into provisioned capacity)
+    - Intelligent-Tiering cold storage → passthrough review with Cloud Storage cold-tier disclosure
+    - Backups → parent file system backup SKU (never blanket passthrough; never live disk)
+    - Data transfer → data_transfer inter-zone mechanic
     """
     out = []
     for r in rows:
         product = (r.get("product") or "").lower()
         ut      = (r.get("usage_type") or "").lower()
+        op      = (r.get("operation") or "").lower()
         gcp_region = r.get("gcp_region")
-        blob = f"{product} {ut}"
+        blob = f"{product} {ut} {op}"
 
-        # Backup rows → passthrough regardless of FSx type
+        # 1. Inter-AZ data transfer / replication
+        if any(k in blob for k in ("inter-az", "datatransfer", "data-transfer", "interzone", "replication")):
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Data Transfer",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "network",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "FSx inter-AZ data transfer ($0.01/GB) — route to inter-zone data transfer",
+                "mapping_confidence": 0.80,
+            })
+            continue
+
+        # 2. Backups (all types) -> SKU by parent file system (never blanket passthrough, never live disk)
         if "backup" in blob or "snapshot" in blob:
+            if "lustre" in blob:
+                parent_svc = GCP_MANAGED_LUSTRE
+                candidates = [
+                    (GCP_MANAGED_LUSTRE, "Backup", f"{GCP_MANAGED_LUSTRE} Backup"),
+                    ("Cloud Filestore", GCP_FILESTORE_BACKUP, GCP_FILESTORE_BACKUP),
+                ]
+            elif "ontap" in blob or "netapp" in blob or "windows" in blob:
+                parent_svc = GCP_NETAPP_VOLUMES
+                candidates = [
+                    (GCP_NETAPP_VOLUMES, "Backup", f"{GCP_NETAPP_VOLUMES} Backup"),
+                    ("Cloud Filestore", GCP_FILESTORE_BACKUP, GCP_FILESTORE_BACKUP),
+                ]
+            else:
+                parent_svc = "Cloud Filestore"
+                candidates = [
+                    ("Cloud Filestore", GCP_FILESTORE_BACKUP, GCP_FILESTORE_BACKUP),
+                ]
+
+            sku_id, display_name, fallback_used, orig_name = resolve_sku_with_fallback(candidates, gcp_region)
+            if sku_id:
+                matched_svc = "Cloud Filestore" if GCP_FILESTORE_BACKUP in display_name else parent_svc
+                note = f"FSx backup → {display_name} ($0.08/GiB-mo; cloud.google.com/filestore/pricing)."
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        matched_svc,
+                    "gcp_sku_id":         sku_id,
+                    "gcp_sku_name":       display_name,
+                    "gcp_sku_unit":       sku_id.unit,
+                    "component":          "backup",
+                    "strategy":           "map",
+                    "unit_multiplier":    GB_TO_GIB,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    note + _no_rate_suffix(sku_id, gcp_region),
+                    "mapping_confidence": 0.80,
+                }
+            else:
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        parent_svc,
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "backup",
+                    "strategy":           "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    f"FSx backup → {parent_svc} Backup (NetApp Volumes backup: usage $0.032/GiB-mo + storage $0.045/GiB-mo; cloud.google.com/netapp/volumes/pricing; Filestore backup: $0.08/GiB-mo; cloud.google.com/filestore/pricing); passthrough at cost parity",
+                    "mapping_confidence": 0.65,
+                }
+            out.append(entry)
+            continue
+
+        # 3. Throughput capacity & IOPS -> bundled $0 ignore
+        if any(k in blob for k in ("throughput", "mbps", "iops", "metadataiops", "ssdiops")):
+            if "lustre" in blob:
+                svc = GCP_MANAGED_LUSTRE
+                note = "FSx for Lustre throughput/IOPS — bundled into Managed Lustre / Filestore provisioned capacity; no separate GCP SKU."
+            elif "ontap" in blob or "netapp" in blob:
+                svc = GCP_NETAPP_VOLUMES
+                note = "FSx for NetApp ONTAP throughput/IOPS — bundled into NetApp Volumes provisioned capacity (throughput-per-GiB); no separate GCP SKU."
+            elif "windows" in blob:
+                svc = GCP_NETAPP_VOLUMES
+                note = "FSx for Windows throughput/IOPS — bundled into NetApp Volumes / Filestore provisioned capacity; no separate GCP SKU."
+            else:
+                svc = "Cloud Filestore"
+                note = "FSx throughput/IOPS — bundled into Filestore provisioned capacity (custom performance OFF); no separate GCP SKU."
             out.append({
                 "aws_li_key":         r["aws_li_key"],
-                "gcp_service":        "Cloud Filestore",
+                "gcp_service":        svc,
                 "gcp_sku_id":         None,
                 "gcp_sku_name":       None,
-                "component":          "storage",
-                "strategy":           "passthrough",
-                "unit_multiplier":    1.0,
+                "component":          "throughput",
+                "strategy":           "ignore",
+                "unit_multiplier":    0.0,
                 "gcp_region":         gcp_region,
-                "projection_note":    "FSx backup — no Filestore equivalent; passthrough at cost parity",
-                "mapping_confidence": 0.70,
+                "projection_note":    note,
+                "mapping_confidence": 0.90,
             })
             continue
 
+        # 4. Capacity Pool (ONTAP)
+        if "capacitypool" in blob:
+            if any(k in blob for k in ("request", "read", "write")):
+                out.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        GCP_NETAPP_VOLUMES,
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "storage",
+                    "strategy":           "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    "FSx for NetApp ONTAP Capacity Pool requests — NetApp Volumes has no per-request tier-access charge; passthrough review.",
+                    "mapping_confidence": 0.70,
+                })
+            else:
+                sku_name = "NetApp Volumes Auto-tiering Cold Capacity"
+                candidates = [(GCP_NETAPP_VOLUMES, "Standard", sku_name)]
+                sku_id, display_name, fallback_used, orig_name = resolve_sku_with_fallback(candidates, gcp_region)
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        GCP_NETAPP_VOLUMES,
+                    "gcp_sku_name":       display_name if sku_id else None,
+                    "component":          "storage",
+                    "strategy":           "map" if sku_id else "passthrough",
+                    "unit_multiplier":    GB_TO_GIB if sku_id else 1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    "FSx for NetApp ONTAP Capacity Pool tiered storage → NetApp Volumes auto-tiering cold capacity ($0.03–$0.06/GiB-mo; cloud.google.com/netapp/volumes/pricing; passthrough review if uncataloged)." + _no_rate_suffix(sku_id, gcp_region),
+                    "mapping_confidence": 0.80 if sku_id else 0.65,
+                }
+                if sku_id:
+                    entry["gcp_sku_id"] = sku_id
+                    entry["gcp_sku_unit"] = sku_id.unit
+                out.append(entry)
+            continue
+
+        # 5. Intelligent-Tiering (Lustre / OpenZFS)
+        if any(k in blob for k in ("frequentaccess", "infrequentaccess", "archiveinstant", "intelligenttiering", "readcache", "monitoring", "-ia-")):
+            if any(k in blob for k in ("monitoring", "request")):
+                out.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud Filestore",
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "storage",
+                    "strategy":           "ignore",
+                    "unit_multiplier":    0.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    "FSx Intelligent-Tiering monitoring/requests — no per-request file charge on GCP; $0 ignore.",
+                    "mapping_confidence": 0.85,
+                })
+            else:
+                out.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud Filestore",
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "storage",
+                    "strategy":           "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    "FSx Intelligent-Tiering cold storage — no direct in-filesystem cold tier in Managed Lustre/Filestore; Cloud Storage Coldline/Archive (~$0.004–0.010/GB-mo) applies if data leaves the filesystem; passthrough at cost parity.",
+                    "mapping_confidence": 0.65,
+                })
+            continue
+
+        # 6. Primary Storage Capacity (GB-Mo)
         if "lustre" in blob:
-            sku_name = "Filestore Capacity Zonal and High Scale"
-            note = "FSx for Lustre → Filestore High Scale SSD (high-throughput parallel workloads)"
-            confidence = 0.65
+            candidates = [
+                (GCP_MANAGED_LUSTRE, "Storage", f"{GCP_MANAGED_LUSTRE} Storage"),
+                ("Cloud Filestore", GCP_FILESTORE_ZONAL, GCP_FILESTORE_ZONAL),
+            ]
+            sku_id, display_name, fallback_used, orig_name = resolve_sku_with_fallback(candidates, gcp_region)
+            if sku_id:
+                matched_svc = "Cloud Filestore" if GCP_FILESTORE_ZONAL in display_name else GCP_MANAGED_LUSTRE
+                note = f"FSx for Lustre → {display_name} (high-throughput parallel HPC; cloud.google.com/filestore/pricing)."
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        matched_svc,
+                    "gcp_sku_id":         sku_id,
+                    "gcp_sku_name":       display_name,
+                    "gcp_sku_unit":       sku_id.unit,
+                    "component":          "storage",
+                    "strategy":           "map",
+                    "unit_multiplier":    GB_TO_GIB,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    note + _no_rate_suffix(sku_id, gcp_region),
+                    "mapping_confidence": 0.80,
+                }
+            else:
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        GCP_MANAGED_LUSTRE,
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "storage",
+                    "strategy":           "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    f"FSx for Lustre → {GCP_MANAGED_LUSTRE} (5 performance tiers $0.06–$0.60/GiB-mo; cloud.google.com/products/managed-lustre/pricing); passthrough at cost parity.",
+                    "mapping_confidence": 0.65,
+                }
+            out.append(entry)
+
+        elif "ontap" in blob or "netapp" in blob:
+            sku_name = "NetApp Volumes Premium Storage"
+            candidates = [
+                (GCP_NETAPP_VOLUMES, "Premium", sku_name),
+                ("Cloud Filestore", GCP_FILESTORE_REGIONAL, GCP_FILESTORE_REGIONAL),
+            ]
+            sku_id, display_name, fallback_used, orig_name = resolve_sku_with_fallback(candidates, gcp_region)
+            matched_svc = "Cloud Filestore" if GCP_FILESTORE_REGIONAL in display_name else GCP_NETAPP_VOLUMES
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        matched_svc,
+                "gcp_sku_name":       display_name if sku_id else None,
+                "component":          "storage",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    GB_TO_GIB if sku_id else 1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    f"FSx for NetApp ONTAP SSD storage → {display_name} (Premium $0.29/GiB-mo; cloud.google.com/netapp/volumes/pricing; fallback Filestore Regional $0.45/GiB-mo)." + _no_rate_suffix(sku_id, gcp_region),
+                "mapping_confidence": 0.80 if sku_id else 0.65,
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
+            out.append(entry)
+
         elif "windows" in blob:
-            sku_name = "Filestore Capacity Regional and Enterprise"
-            note = "FSx for Windows → Filestore Enterprise (SMB-compatible; Kerberos/AD auth differs)"
-            confidence = 0.65
-        else:
-            # NetApp ONTAP, OpenZFS — no direct GCP equivalent
-            out.append({
+            candidates = [
+                (GCP_NETAPP_VOLUMES, "NetApp Volumes", f"{GCP_NETAPP_VOLUMES} (SMB)"),
+                ("Cloud Filestore", GCP_FILESTORE_REGIONAL, GCP_FILESTORE_REGIONAL),
+            ]
+            sku_id, display_name, fallback_used, orig_name = resolve_sku_with_fallback(candidates, gcp_region)
+            if sku_id:
+                matched_svc = "Cloud Filestore" if GCP_FILESTORE_REGIONAL in display_name else GCP_NETAPP_VOLUMES
+                note = f"FSx for Windows → {display_name} (SMB-compatible; cloud.google.com/filestore/pricing)."
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        matched_svc,
+                    "gcp_sku_id":         sku_id,
+                    "gcp_sku_name":       display_name,
+                    "gcp_sku_unit":       sku_id.unit,
+                    "component":          "storage",
+                    "strategy":           "map",
+                    "unit_multiplier":    GB_TO_GIB,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    note + _no_rate_suffix(sku_id, gcp_region),
+                    "mapping_confidence": 0.75,
+                }
+            else:
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        GCP_NETAPP_VOLUMES,
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "storage",
+                    "strategy":           "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    f"FSx for Windows → {GCP_NETAPP_VOLUMES} (SMB: $0.20–$0.39/GiB-mo; cloud.google.com/netapp/volumes/pricing; fallback Filestore Enterprise $0.45/GiB-mo; cloud.google.com/filestore/pricing); passthrough at cost parity.",
+                    "mapping_confidence": 0.65,
+                }
+            out.append(entry)
+
+        elif "openzfs" in blob or "zfs" in blob:
+            is_multiaz = any(k in blob for k in ("multi-az", "multiaz", "-mz-"))
+            sku_name = GCP_FILESTORE_REGIONAL if is_multiaz else GCP_FILESTORE_ZONAL
+            tier_desc = "Regional" if is_multiaz else "Zonal"
+            sku_id = resolve_sku("Cloud Filestore", sku_name, gcp_region)
+            note = f"FSx for OpenZFS → Filestore {tier_desc} (NFS semantics; cloud.google.com/filestore/pricing)."
+            entry = {
                 "aws_li_key":         r["aws_li_key"],
                 "gcp_service":        "Cloud Filestore",
-                "gcp_sku_id":         None,
-                "gcp_sku_name":       None,
+                "gcp_sku_name":       sku_name if sku_id else None,
                 "component":          "storage",
-                "strategy":           "passthrough",
-                "unit_multiplier":    1.0,
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    GB_TO_GIB if sku_id else 1.0,
                 "gcp_region":         gcp_region,
-                "projection_note":    f"FSx ({r.get('product')!r}) — no direct GCP equivalent; passthrough at cost parity",
-                "mapping_confidence": 0.50,
-            })
-            continue
+                "projection_note":    note + _no_rate_suffix(sku_id, gcp_region),
+                "mapping_confidence": 0.85 if sku_id else 0.70,
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
+            out.append(entry)
 
-        sku_id = resolve_sku("Cloud Filestore", sku_name, gcp_region)
-        entry = {
-            "aws_li_key":         r["aws_li_key"],
-            "gcp_service":        "Cloud Filestore",
-            "gcp_sku_name":       sku_name,
-            "component":          "storage",
-            "strategy":           "map" if sku_id else "passthrough",
-            "unit_multiplier":    GB_TO_GIB,
-            "gcp_region":         gcp_region,
-            "projection_note":    note + _no_rate_suffix(sku_id, gcp_region),
-            "mapping_confidence": confidence,
-        }
-        if sku_id:
-            entry["gcp_sku_id"] = sku_id
-            entry["gcp_sku_unit"] = sku_id.unit
-        out.append(entry)
+        else:
+            # Generic FSx fallback → Filestore Zonal
+            sku_id = resolve_sku("Cloud Filestore", GCP_FILESTORE_ZONAL, gcp_region)
+            note = f"FSx generic storage → Filestore Zonal (cloud.google.com/filestore/pricing)."
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Filestore",
+                "gcp_sku_name":       GCP_FILESTORE_ZONAL if sku_id else None,
+                "component":          "storage",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    GB_TO_GIB if sku_id else 1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    note + _no_rate_suffix(sku_id, gcp_region),
+                "mapping_confidence": 0.70 if sku_id else 0.50,
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
+            out.append(entry)
+
     return out
 
 

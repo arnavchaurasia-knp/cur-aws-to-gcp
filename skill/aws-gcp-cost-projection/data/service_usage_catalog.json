@@ -1066,5 +1066,261 @@
       "expected_charge_type": "efs_replication",
       "expected_mechanic": "data_transfer"
     }
+  ],
+  "fsx": [
+    {
+      "usage_type": "APS3-FSx:Lustre-Storage",
+      "unit": "GB-Mo",
+      "description": "FSx for Lustre SSD storage",
+      "expected_charge_type": "fsx_storage",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:Lustre-HDD-Storage",
+      "unit": "GB-Mo",
+      "description": "FSx for Lustre HDD storage",
+      "expected_charge_type": "fsx_storage",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:ONTAP-Storage",
+      "unit": "GB-Mo",
+      "description": "FSx for NetApp ONTAP SSD primary storage",
+      "expected_charge_type": "fsx_storage",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:Windows-HDD-Storage",
+      "unit": "GB-Mo",
+      "description": "FSx for Windows File Server HDD storage",
+      "expected_charge_type": "fsx_storage",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:Windows-SSD-Storage",
+      "unit": "GB-Mo",
+      "description": "FSx for Windows File Server SSD storage",
+      "expected_charge_type": "fsx_storage",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:OpenZFS-Storage",
+      "unit": "GB-Mo",
+      "description": "FSx for OpenZFS SSD storage",
+      "expected_charge_type": "fsx_storage",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:Throughput-MBps",
+      "unit": "MBps-Mo",
+      "description": "FSx provisioned throughput capacity",
+      "expected_charge_type": "fsx_throughput",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:ThroughputCapacity",
+      "unit": "MBps-Mo",
+      "description": "FSx provisioned throughput capacity alternative",
+      "expected_charge_type": "fsx_throughput",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:SSD-IOPS",
+      "unit": "IOPS-Mo",
+      "description": "FSx provisioned SSD IOPS above baseline",
+      "expected_charge_type": "fsx_iops",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:MetadataIOPS",
+      "unit": "IOPS-Mo",
+      "description": "FSx for Lustre metadata IOPS",
+      "expected_charge_type": "fsx_iops",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:CapacityPool-GB",
+      "unit": "GB-Mo",
+      "description": "FSx for NetApp ONTAP capacity pool cold storage",
+      "expected_charge_type": "fsx_capacity_pool",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:CapacityPoolRequests",
+      "unit": "Requests",
+      "description": "FSx for NetApp ONTAP capacity pool access requests",
+      "expected_charge_type": "fsx_capacity_pool",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:FrequentAccess-GB",
+      "unit": "GB-Mo",
+      "description": "FSx Intelligent-Tiering frequent access storage",
+      "expected_charge_type": "fsx_intelligent_tiering",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:InfrequentAccess-GB",
+      "unit": "GB-Mo",
+      "description": "FSx Intelligent-Tiering infrequent access storage",
+      "expected_charge_type": "fsx_intelligent_tiering",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:ArchiveInstant-GB",
+      "unit": "GB-Mo",
+      "description": "FSx Intelligent-Tiering archive instant storage",
+      "expected_charge_type": "fsx_intelligent_tiering",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:ReadCache-GB",
+      "unit": "GB-Mo",
+      "description": "FSx Intelligent-Tiering read cache storage",
+      "expected_charge_type": "fsx_intelligent_tiering",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:Backup-GB-Mo",
+      "unit": "GB-Mo",
+      "description": "FSx backup storage",
+      "expected_charge_type": "fsx_backup",
+      "expected_mechanic": "fsx"
+    },
+    {
+      "usage_type": "APS3-FSx:DataTransfer-Out-Bytes",
+      "unit": "GB",
+      "description": "FSx inter-AZ data transfer",
+      "expected_charge_type": "fsx_data_transfer",
+      "expected_mechanic": "data_transfer"
+    }
+  ],
+  "datatransfer": [
+    {
+      "usage_type": "DataTransfer-In-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "Internet ingress (free on GCP -> ignore)"
+    },
+    {
+      "usage_type": "DataTransfer-Out-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "Internet egress generic (Premium Tier volume-tiered)"
+    },
+    {
+      "usage_type": "USE1-DataTransfer-Out-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "Internet egress from US East (Americas destination bucket)"
+    },
+    {
+      "usage_type": "EU-DataTransfer-Out-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "Internet egress from Europe (Europe destination bucket)"
+    },
+    {
+      "usage_type": "APS1-DataTransfer-Out-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "Internet egress from Singapore (Asia destination bucket)"
+    },
+    {
+      "usage_type": "USE1-USE2-AWS-Out-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "Inter-region egress intra-North America (.02/GiB matrix)"
+    },
+    {
+      "usage_type": "USE1-EU-AWS-Out-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "Inter-region egress North America to Europe (.05/GiB matrix)"
+    },
+    {
+      "usage_type": "APS1-WAW1-AWS-Out-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "Inter-region egress Asia to Europe (.08/GiB matrix)"
+    },
+    {
+      "usage_type": "USE1-Regional-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "Inter-zone data transfer in us-east-1 (.01/GiB paid SKU DE9E-AFBC-A15A)"
+    },
+    {
+      "usage_type": "APS1-Regional-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "Inter-zone data transfer in ap-southeast-1 (.01/GiB paid SKU DE9E-AFBC-A15A)"
+    },
+    {
+      "usage_type": "VpcPeering-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "VPC Peering inter-zone private traffic"
+    },
+    {
+      "usage_type": "NatGateway-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "NAT Gateway data processing -> Cloud NAT Data Processing"
+    },
+    {
+      "usage_type": "NatGateway-Hours",
+      "unit": "Hrs",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "NAT Gateway uptime hours -> Private Nat Gateway Uptime"
+    },
+    {
+      "usage_type": "TransitGateway-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "Transit Gateway data processing (peering assumption -> )"
+    },
+    {
+      "usage_type": "LoadBalancer-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "Load balancer data processing (LCU-equivalent)"
+    },
+    {
+      "usage_type": "CloudFront-Out-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "CloudFront CDN bandwidth egress -> Cloud CDN Cache Egress"
+    },
+    {
+      "usage_type": "IN-DataTransfer-Out-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "CloudFront CDN bandwidth egress India"
+    },
+    {
+      "usage_type": "US-DataTransfer-Out-Bytes",
+      "unit": "GB",
+      "expected_charge_type": "data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "CloudFront CDN bandwidth egress US"
+    }
   ]
 }

@@ -263,7 +263,7 @@ CASES = [
     ("fsx_storage",
      _row(product="Amazon FSx", product_code="AmazonFSx",
           usage_type="APS3-FSx-Storage", unit="GB-Mo"),
-     "fsx", "fsx_all"),
+     "fsx", "fsx_storage"),
 
     # ---- GuardDuty / Security Hub ----
     ("guardduty_analyzed",

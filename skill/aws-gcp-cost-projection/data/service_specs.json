@@ -2320,17 +2320,13 @@
     ],
     "charge_types": [
       {
-        "id": "fsx_all",
-        "description": "FSx Lustre/Windows/ONTAP GB-Mo -> Filestore High Scale/Enterprise.",
-        "match": {},
+        "id": "fsx_backup",
+        "description": "FSx backup storage -> parent-type backup SKU (Filestore Backup Usage $0.08/GiB-mo or NetApp Volumes backup).",
+        "match": {
+          "usage_type_re": "(?i)backup"
+        },
         "mechanic": "fsx",
         "fields": [
-          {
-            "name": "fsx_type",
-            "cur_column": "product/fileSystemType",
-            "source": "cur",
-            "required": false
-          },
           {
             "name": "gb_mo",
             "cur_column": "lineItem/UsageAmount",
@@ -2344,7 +2340,172 @@
             "required": true
           }
         ],
-        "source_rule": "fsx (runs before block_storage)"
+        "source_rule": "fsx (FSx Backup -> parent backup SKU)"
+      },
+      {
+        "id": "fsx_capacity_pool",
+        "description": "FSx ONTAP capacity-pool tiered storage and requests -> NetApp Volumes auto-tiering cold capacity ($0.03-0.06/GiB-mo).",
+        "match": {
+          "usage_type_re": "(?i)capacitypool"
+        },
+        "mechanic": "fsx",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "fsx (FSx ONTAP capacity pool -> NetApp Volumes cold capacity)"
+      },
+      {
+        "id": "fsx_intelligent_tiering",
+        "description": "FSx Lustre/OpenZFS Intelligent-Tiering (Frequent, IA, Archive, Monitoring, Requests) -> passthrough with cold-tier disclosure.",
+        "match": {
+          "usage_type_re": "(?i)frequentaccess|infrequentaccess|archiveinstant|readcache|tiertransition"
+        },
+        "mechanic": "fsx",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "fsx (FSx Intelligent-Tiering -> passthrough with cold disclosure)"
+      },
+      {
+        "id": "fsx_throughput",
+        "description": "FSx throughput capacity (MBps-mo) -> $0 (IGNORE on GCP; bundled into target provisioned capacity for Lustre/ONTAP/Windows/OpenZFS).",
+        "match": {
+          "usage_type_re": "(?i)throughput|throughputcapacity"
+        },
+        "mechanic": "fsx",
+        "fields": [
+          {
+            "name": "mbps_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "fsx (FSx Throughput -> bundled $0 ignore)"
+      },
+      {
+        "id": "fsx_iops",
+        "description": "FSx SSD-IOPS and Metadata-IOPS -> $0 (IGNORE on GCP; bundled into target provisioned capacity).",
+        "match": {
+          "usage_type_re": "(?i)ssd-iops|metadataiops|\\biops\\b"
+        },
+        "mechanic": "fsx",
+        "fields": [
+          {
+            "name": "iops_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "fsx (FSx IOPS -> bundled $0 ignore)"
+      },
+      {
+        "id": "fsx_data_transfer",
+        "description": "FSx cross-AZ data transfer -> data_transfer mechanic.",
+        "match": {
+          "usage_type_re": "(?i)datatransfer|interzone|inter-zone"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "data_transfer (FSx Inter-AZ data transfer)"
+      },
+      {
+        "id": "fsx_storage",
+        "description": "FSx SSD/HDD storage (Lustre, ONTAP, Windows, OpenZFS) -> protocol-matched GCP file storage (Managed Lustre, NetApp Volumes, Filestore).",
+        "match": {
+          "usage_type_re": "(?i)storage|bytehrs"
+        },
+        "mechanic": "fsx",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "fsx (FSx storage -> protocol-matched targets)"
+      },
+      {
+        "id": "fsx_other",
+        "description": "Auxiliary or unclassified FSx charges -> passthrough review.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (FSx other charges)",
+        "llm_guidance": {
+          "gcp_target": "Cloud Filestore",
+          "strategy": "review",
+          "confidence_max": 0.5,
+          "guidance": "Auxiliary FSx charges map to Cloud Filestore or Google Cloud NetApp Volumes; passthrough review."
+        }
       }
     ]
   },

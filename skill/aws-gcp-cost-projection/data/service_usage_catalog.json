@@ -852,5 +852,98 @@
       "expected_charge_type": "lambda_other",
       "expected_mechanic": "misc"
     }
+  ],
+  "redshift": [
+    {
+      "usage_type": "APS3-Node:ra3.4xlarge",
+      "unit": "Hrs",
+      "description": "Redshift RA3 4xlarge provisioned compute node-hours",
+      "expected_charge_type": "redshift_node",
+      "expected_mechanic": "redshift"
+    },
+    {
+      "usage_type": "APS3-Node:ra3.xlplus",
+      "unit": "Hrs",
+      "description": "Redshift RA3 xlplus provisioned compute node-hours",
+      "expected_charge_type": "redshift_node",
+      "expected_mechanic": "redshift"
+    },
+    {
+      "usage_type": "APS3-Node:ra3.16xlarge",
+      "unit": "Hrs",
+      "description": "Redshift RA3 16xlarge provisioned compute node-hours",
+      "expected_charge_type": "redshift_node",
+      "expected_mechanic": "redshift"
+    },
+    {
+      "usage_type": "APS3-Node:dc2.large",
+      "unit": "Hrs",
+      "description": "Redshift DC2 dense compute large node-hours",
+      "expected_charge_type": "redshift_node",
+      "expected_mechanic": "redshift"
+    },
+    {
+      "usage_type": "APS3-Node:dc2.8xlarge",
+      "unit": "Hrs",
+      "description": "Redshift DC2 dense compute 8xlarge node-hours",
+      "expected_charge_type": "redshift_node",
+      "expected_mechanic": "redshift"
+    },
+    {
+      "usage_type": "APS3-RMS:ra3.4xlarge",
+      "unit": "GB-Mo",
+      "description": "Redshift RA3 Managed Storage (RMS)",
+      "expected_charge_type": "redshift_storage",
+      "expected_mechanic": "redshift"
+    },
+    {
+      "usage_type": "APS3-ManagedStorage",
+      "unit": "GB-Mo",
+      "description": "Redshift Managed Storage capacity",
+      "expected_charge_type": "redshift_storage",
+      "expected_mechanic": "redshift"
+    },
+    {
+      "usage_type": "APS3-ServerlessUsage",
+      "unit": "RPU-Hrs",
+      "description": "Redshift Serverless RPU-hours",
+      "expected_charge_type": "redshift_serverless",
+      "expected_mechanic": "redshift"
+    },
+    {
+      "usage_type": "APS3-Spectrum",
+      "unit": "TB",
+      "description": "Redshift Spectrum data scanned",
+      "expected_charge_type": "redshift_spectrum",
+      "expected_mechanic": "redshift"
+    },
+    {
+      "usage_type": "APS3-ScannedBytes",
+      "unit": "Bytes",
+      "description": "Redshift Spectrum scanned bytes",
+      "expected_charge_type": "redshift_spectrum",
+      "expected_mechanic": "redshift"
+    },
+    {
+      "usage_type": "APS3-CS:ra3.4xlarge",
+      "unit": "Seconds",
+      "description": "Redshift Concurrency Scaling burst usage",
+      "expected_charge_type": "redshift_concurrency_scaling",
+      "expected_mechanic": "redshift"
+    },
+    {
+      "usage_type": "APS3-BackupUsage",
+      "unit": "GB-Mo",
+      "description": "Redshift backup and snapshot storage",
+      "expected_charge_type": "redshift_backup",
+      "expected_mechanic": "redshift"
+    },
+    {
+      "usage_type": "APS3-DataTransfer-Out-Bytes",
+      "unit": "GB",
+      "description": "Redshift cross-region data transfer / data sharing",
+      "expected_charge_type": "redshift_data_transfer",
+      "expected_mechanic": "data_transfer"
+    }
   ]
 }

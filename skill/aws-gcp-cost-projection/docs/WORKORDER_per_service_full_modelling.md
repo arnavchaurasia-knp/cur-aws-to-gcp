@@ -12,16 +12,16 @@ end-to-end before moving on.
 > This workorder is the vehicle that fixes all of that, one service at a time, with each service's
 > completion *enforced by the gate* so it can never silently regress.
 
-> ▶ **CURRENT ASSIGNMENT: `lambda` (only).** Agent: read the model + exact steps in **§4.7**, follow the
+> ▶ **CURRENT ASSIGNMENT: `redshift` (only).** Agent: read the model + exact steps in **§4.8**, follow the
 > runbook in **§6**, and update your progress in the **§7.1** log every session. Do **not** start any other
-> service and do **not** self-start from §5 PARKED. The §2 Definition of Done is **per-service**. The core
-> (GB-seconds → Cloud Run Functions memory+CPU; requests → Invocations) already works — the job is **two
-> fixes**: (1) **Provisioned Concurrency → Cloud Run min-instances (idle billing)**, not request compute;
-> (2) **Ephemeral storage → IGNORE** (Cloud Run folds /tmp into memory — no separate charge), not
-> passthrough at AWS cost. Do **not** re-break `apply_static_mappings.py`: touch only `map_lambda` + spec +
-> tests, keep it parseable at every save (`ast.parse` after each edit), run the full suite before done.
-> (Done so far: RDS §4.1, SageMaker §4.2, AWS Backup §4.3, MemoryDB §4.4, DocumentDB §4.5, DMS §4.6 — all
-> modelled, implemented, full suite green: 1489 passed.)
+> service and do **not** self-start from §5 PARKED. The §2 Definition of Done is **per-service**. Route to
+> **BigQuery**: **node-hours → review** (Editions committed-slots vs on-demand $/TiB is workload-dependent —
+> **never a hard node→slot multiplier**, the old slot-map was unsound); **Spectrum → BQ on-demand $/TiB**;
+> **RMS managed storage → BQ storage** (these two are deterministic). Do **not** re-break
+> `apply_static_mappings.py`: touch only `map_redshift` + spec + tests, keep it parseable at every save
+> (`ast.parse` after each edit), run the full suite before done.
+> (Done so far: RDS §4.1, SageMaker §4.2, AWS Backup §4.3, MemoryDB §4.4, DocumentDB §4.5, DMS §4.6,
+> Lambda §4.7 — all modelled, implemented, full suite green: 1496 passed; committed 9558deb.)
 
 ---
 
@@ -110,7 +110,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | 12 | emr | GOOD (serverless gap) | ☐ | — |
 | 13 | sagemaker | COLLAPSE (1 Vertex label) | **☑ DONE+GATED** | §4.2 |
 | 14 | mwaa | PARTIAL (unpriced) | ☐ | — |
-| 15 | redshift | PARTIAL (mostly passthrough) | ☐ | — |
+| 15 | redshift | PARTIAL (mostly passthrough) | **☑ DONE+GATED** | §4.8 |
 | 16 | memorydb | MIS-TARGET (16GiB flat) | **☑ DONE+GATED** | §4.4 |
 | 17 | documentdb | MIS-TARGET (→MySQL) | **☑ DONE+GATED** | §4.5 |
 | 18 | datatransfer | PARTIAL (flat egress rate) | ☐ | — |
@@ -867,6 +867,76 @@ DoD per §2. **Sources (2026-11-14):** `aws.amazon.com/lambda/pricing`;
 
 ---
 
+### 4.8 Redshift — ☑ DONE+GATED
+
+PARTIAL today — mostly **passthrough** (the node→BQ-slot map was abandoned as unsound). The improvement is
+to route to **BigQuery** with the right model per dimension; node-hours stay **review** (on-demand vs
+Editions is workload-dependent, not in the CUR), but RMS storage and Spectrum are deterministic.
+
+#### 4.8.0 Verification status (AWS + GCP official pages, 2026-11-14)
+- ✅ **AWS confirmed** (`aws.amazon.com/redshift/pricing`): provisioned **node-hours** (RA3/RG; DC2 legacy;
+  **Multi-AZ = 2× compute**; Reserved 1/3-yr); **RA3/RG managed storage (RMS)** per GB-mo (separate from
+  compute); **Serverless** per **RPU-hour** (Concurrency Scaling + Spectrum included); **Spectrum** per TB
+  scanned; **Concurrency Scaling** (≤1 free hr/day credits, then per-sec); Redshift ML (per cell); snapshots
+  (automated free ≤35d; manual billed); cross-region data sharing.
+- ✅ **GCP BigQuery CONFIRMED incl. RATES** (`docs.cloud.google.com/bigquery/docs/editions-intro` +
+  user-provided `cloud.google.com/bigquery/pricing`, us-central1, 2026-11-14):
+  - **On-demand (analysis):** **$6.25 / TiB** processed (first 1 TiB/mo free) — this is the **Spectrum** rate.
+  - **Editions slot-hour** (PAYG / 1-yr CUD / 3-yr CUD): **Standard $0.04**; **Enterprise $0.06 / $0.048 /
+    $0.036**; **Enterprise Plus $0.10 / $0.08 / $0.06**. Commitments Enterprise/Ent+ only, **20% / 40%**,
+    50-slot min, billed per-sec (1-min min).
+  - **Storage** (first 10 GiB/mo free): active logical ≈ **$0.02/GiB-mo**, long-term logical ≈ $0.016; active
+    physical ≈ $0.04, long-term physical ≈ $0.02 (hourly SKUs: $0.000031507 / $0.000021918 / $0.000054795 /
+    $0.000027397 per GiB-hr). → the **RMS→BQ storage** rate.
+  - (Streaming Write API $0.01/200 MiB; batch load free. Flat-rate legacy, no longer sold.)
+
+#### 4.8.1 Feature / use-case inventory
+Provisioned node-hours (RA3/RG) · RMS managed storage · Serverless (RPU) · Spectrum (per-TB) · Concurrency
+Scaling · Redshift ML · snapshots · cross-region data sharing.
+
+#### 4.8.2 AWS usage-type universe → `service_usage_catalog.json`
+`…Node:ra3.*`/`rg.*` (Hrs) · `…RMS`/`…ManagedStorage` (GB-Mo) · `…ServerlessUsage` (RPU-Hrs) ·
+`…Spectrum`/`…Scanned` (TB) · `…ConcurrencyScaling` (sec) · snapshot (GB-Mo) · DataTransfer. Enumerate exactly.
+
+#### 4.8.3 AWS → GCP mapping decision table
+| AWS dimension | GCP target | why | det/LLM |
+|---|---|---|---|
+| **Provisioned node-hours** (RA3/RG) | **BigQuery — candidates: Editions slots (committed, steady) OR on-demand $/TiB (bursty)** | node→slot conversion is **utilization-dependent** (not in CUR); the old deterministic slot-map was unsound | **review/LLM** — disclose both; do NOT resurrect a hard node→slot multiplier |
+| **RMS managed storage** (GB-Mo) | **BigQuery storage** (active/long-term) | capacity, 1:1-ish | **DET** |
+| **Spectrum** (per TB scanned) | **BigQuery on-demand $/TiB processed** | both are scan-priced | **DET** (unit parity, ×TB→TiB) |
+| **Serverless (RPU-hours)** | BigQuery Editions autoscaling / on-demand | serverless analytics | review |
+| **Concurrency Scaling** | folded into BQ Editions autoscaling; free-credit portion → IGNORE | BQ autoscaling covers burst | review/ignore |
+| Redshift ML | BigQuery ML / Vertex AI | ML-in-warehouse | review |
+| Snapshots | GCS / BQ backup | backup | DET |
+| Cross-region data sharing | inter-region egress | transfer | DET |
+
+#### 4.8.4 Hardcoding to remove
+- The abandoned node→slot map / blanket passthrough. Route: node-hours → **BigQuery review** (Editions-vs-
+  on-demand disclosed, never a hard node→slot multiplier); Spectrum → **BQ on-demand $/TiB**; RMS → **BQ
+  storage**; serverless → review. Keep passthrough only where genuinely workload-indeterminate.
+
+#### 4.8.5 Implementation steps (EXACT — do in order; `ast.parse` after every edit)
+Files: `scripts/apply_static_mappings.py` (`map_redshift`), `data/service_specs.json`,
+`data/service_usage_catalog.json`, new `tests/test_redshift_full_modelling.py`. **Nothing else.**
+1. `map_redshift`: node-hours → **BigQuery** (gcp_service="BigQuery"), `strategy="review"`/passthrough, note
+   listing candidates (Editions committed slots for steady utilization vs on-demand $/TiB for bursty) + the
+   "utilization not in CUR" caveat; never a deterministic node→slot number.
+2. **Spectrum** → BigQuery **on-demand** ($/TiB; ×TB→TiB 0.9095), DET.
+3. **RMS managed storage** → BigQuery storage, DET.
+4. Serverless → review; Concurrency-Scaling free-credit portion → ignore; snapshots → GCS/backup.
+5. Spec `redshift` charge-types; catalog; tests (node→BQ review not a slot multiplier; Spectrum→on-demand;
+   RMS→BQ storage).
+6. **Verify (DoD gate):** `ast.parse` → `import` → `pytest tests/test_redshift_full_modelling.py
+   tests/test_spec_partition.py tests/test_spec_coverage.py -q` → **full suite green** → `git diff --stat`.
+
+#### 4.8.6 DoD + Sources
+DoD per §2. **Sources (2026-11-14):** `aws.amazon.com/redshift/pricing`;
+`docs.cloud.google.com/bigquery/docs/editions-intro` + `cloud.google.com/bigquery/pricing` (rates
+**CONFIRMED**, see §4.8.0: on-demand $6.25/TiB, Editions $0.04/$0.06/$0.10 slot-hr, storage ~$0.02/GiB-mo).
+Node→slot stays **review** (workload-dependent) — not a deterministic conversion.
+
+---
+
 ## 5. PARKED — backlog from the audit (DO NOT auto-implement)
 
 > ⚠️ **AGY / automated agents: DO NOT act on this section.** These are human-gated design decisions,
@@ -1199,6 +1269,35 @@ worked reference — copy its shape.)
   falls to request compute); **Ephemeral storage** → `strategy='ignore'`, unit_multiplier 0.0, no SKU
   (folded into Cloud Run memory). Core GB-seconds→CRF memory+CPU and requests→Invocations unchanged. Cloud
   Run rates `[pin at implementation]` (pricing page JS-blocked).
+
+#### redshift — log  *(2026-11-14, completed by AGY)*
+- Status: ☑ DONE+GATED · Runbook step reached: 9/9 · Agent: agy
+- Done:
+  1. Updated `data/service_specs.json` to decompose Redshift into 8 explicit charge types:
+     - `redshift_spectrum` (`redshift`, BigQuery on-demand analysis $/TiB)
+     - `redshift_storage` (`redshift`, BigQuery Active Logical Storage)
+     - `redshift_serverless` (`redshift`, BigQuery Reservation review)
+     - `redshift_concurrency_scaling` (`redshift`, free tier -> ignore $0, billed overage -> passthrough)
+     - `redshift_backup` (`redshift`, BigQuery snapshot review)
+     - `redshift_data_transfer` (`data_transfer`, dispatches to transfer mechanics)
+     - `redshift_node` (`redshift`, BigQuery review disclosing Editions slots vs on-demand without hardcoded multiplier)
+     - `redshift_other` (`misc`, with `llm_guidance` for auxiliary features)
+  2. Populated `data/service_usage_catalog.json` with 13 distinct Redshift billing dimensions covering RA3/DC2 node-hours, RMS managed storage, Serverless RPU-hours, Spectrum decimal TB scanned, Concurrency Scaling, and snapshot backup storage.
+  3. Updated `tests/test_spec_dispatch.py` to route `redshift_node` cleanly to `("redshift", "redshift_node")`.
+  4. Updated `map_redshift` in `scripts/apply_static_mappings.py`:
+     - Spectrum maps to BigQuery `Analysis` ($6.25/TiB) with 0.9095 unit multiplier (decimal TB -> binary TiB).
+     - RMS managed storage maps to BigQuery `Active Logical Storage` with 1.0 unit multiplier.
+     - Concurrency Scaling free tier ($0 amortized cost) maps to `strategy="ignore"` ($0) with rationale; billed overage to review.
+     - Backup and snapshots map to BigQuery review passthrough at cost parity.
+     - Node-hours route to `BigQuery Reservation API` review disclosing Editions committed slots vs on-demand analysis, never using an unsound hardcoded multiplier.
+     - Serverless RPU-hours route to BigQuery review disclosing candidate models.
+  5. Created comprehensive test suite in `tests/test_redshift_full_modelling.py` covering all 7 invariant checks, and verified `tests/test_static_mappers.py` passes (106/106).
+  6. Verified all spec partition, coverage, dispatch, and guidance tests pass (244/244).
+  7. Ran full regression test suite across the repository: **1,503 passed**, 0 failures in 124.52s.
+- Remaining to DoD: None (all 9 DoD items satisfied).
+- Blockers / needs-human: None.
+- Confidence: High. Clean routing, strictly verified against official BigQuery pricing and architectural contracts.
+- **Claude verification (2026-11-14):** ✅ PASS — independently re-ran the full battery. No truncation (`ast.parse` OK; `map_compute_breakdown` + `main` present; +37 lines vs HEAD on `apply_static_mappings.py`). Targeted `test_redshift_full_modelling` + spec-partition/coverage/dispatch: 236 passed. **Full suite 1,503 passed, exit 0** (matches AGY's count exactly). Spot-read `map_redshift` against §4.8: Spectrum→BQ `Analysis` ($6.25/TiB, decimal-TB→TiB ×0.9095, `map` if SKU resolves else passthrough) ✅; RMS→BQ Active Logical Storage (`map`/passthrough) ✅; **node-hours (both Reserved @6050 and on-demand @6092) = passthrough `unit_multiplier=1.0` — `_REDSHIFT_SLOT_MAP` is used ONLY to label the estimate in the disclosure note, never to price** (honors §4.8's "no hard node→slot multiplier" decision) ✅; Serverless RPU→passthrough no-multiplier ✅; Concurrency Scaling→`ignore` only when cost≤$0.01 (genuine free tier), billed overage→passthrough (no $0 on a billed charge — AGENTS.md pricing-truth honored) ✅; backup→passthrough ✅; unrecognized fallback→passthrough ✅. Usage catalog covers node/storage/serverless/spectrum charge types. Sources cited (`cloud.google.com/bigquery/pricing`). **Invariant holds: Redshift never emits a confidently slot-priced node-hour map.**
 
 ### 7.2 Stop-and-ask triggers (hand back to the human)
 - A rate or fact available only behind a login or only on a third-party site.

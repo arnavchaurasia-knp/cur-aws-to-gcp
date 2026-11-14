@@ -5852,39 +5852,76 @@ def map_redshift(rows):
         gcp_region = r.get("gcp_region")
         blob = f"{ut} {op} {(r.get('product') or '').lower()}"
 
-        # Concurrency Scaling ("APS3-CS:ra3.4xlarge") → passthrough, never the
-        # node-hour/slot-hour path below. CONFIRMED REAL BUG: this usage_type's
-        # instance-family substring ("ra3.4xlarge") still matches the node-hour
-        # family-map loop further down, which assumes total_usage is in HOURS.
-        # But AWS bills Concurrency Scaling in raw SECONDS (pricing_unit=
-        # 'seconds' on the actual CUR row) — feeding that straight into the
-        # slots × hourly-slot-rate formula as if it were hours produced a
-        # ~3600x unit blowup on top of the mapping itself: one job's CS: row
-        # (total_usage=1,094,494 seconds ≈ 304 real node-hours, AWS cost
-        # $1,116) priced out to $75,520,086/mo — a 67,660x overprojection on a
-        # single line item, the dominant line in the entire report. Concurrency
-        # Scaling is also a fundamentally different AWS charge (bursty,
-        # per-second temporary capacity for query spikes beyond the free
-        # credits) with no distinct BigQuery line item — BigQuery Reservations
-        # autoscale slots within the reservation rather than billing a
-        # separate burst-capacity SKU — so there is no unit-compatible target
-        # to map to even after fixing the seconds/hours conversion.
-        if re.search(r'\bcs:', ut):
-            out.append({
+        # Spectrum: per-TB scanned -> BigQuery on-demand analysis ($6.25/TiB)
+        if re.search(r"spectrum|scannedbytes|bytes[- ]scanned", blob, re.IGNORECASE):
+            sku_id = _strict_resolve_sku("BigQuery", r"^Analysis\b", gcp_region)
+            unit_lower = (r.get("unit") or "").lower()
+            if "gb" in unit_lower or "gib" in unit_lower:
+                mult = 0.9095 / 1000.0
+            elif "tb" in unit_lower or "tib" in unit_lower:
+                mult = 0.9095
+            elif "byte" in unit_lower:
+                mult = 1.0 / (1024.0 ** 4)
+            else:  # default TB
+                mult = 0.9095
+
+            note = (
+                "Redshift Spectrum (per-TB scanned) -> BigQuery on-demand analysis ($6.25/TiB processed). "
+                "Unit converted from decimal TB to binary TiB (x0.9095). Source: cloud.google.com/bigquery/pricing"
+            )
+            entry = {
                 "aws_li_key":         r["aws_li_key"],
                 "gcp_service":        "BigQuery",
-                "gcp_sku_id":         None,
-                "gcp_sku_name":       None,
-                "component":          "compute",
-                "strategy":           "passthrough",
-                "unit_multiplier":    1.0,
+                "gcp_sku_id":         sku_id if sku_id else None,
+                "gcp_sku_name":       "Analysis",
+                "component":          "analysis",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    mult,
                 "gcp_region":         gcp_region,
-                "projection_note":    ("Redshift Concurrency Scaling (per-second burst capacity) — "
-                                       "no BigQuery equivalent charge (BQ Reservations autoscale "
-                                       "slots within the reservation, no separate burst SKU); "
-                                       "passthrough at cost parity"),
-                "mapping_confidence": 0.60,
-            })
+                "projection_note":    note + _no_rate_suffix(sku_id, gcp_region),
+                "mapping_confidence": 0.85,
+            }
+            if sku_id:
+                entry["gcp_sku_unit"] = sku_id.unit
+            out.append(entry)
+            continue
+
+        # Concurrency Scaling ("APS3-CS:ra3.4xlarge") → free credit portion to ignore ($0);
+        # overage beyond free credits to passthrough review.
+        if re.search(r'\bcs:', ut) or "concurrencyscaling" in blob:
+            cost = float(r.get("aws_amortized_cost") or 0.0)
+            if cost <= 0.01:
+                out.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "BigQuery",
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "compute",
+                    "strategy":           "ignore",
+                    "unit_multiplier":    0.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    ("Redshift Concurrency Scaling free tier -> $0 on GCP. "
+                                           "BigQuery dynamic slot autoscaling handles burst capacity "
+                                           "within reservations with no separate burst charge. "
+                                           "Source: cloud.google.com/bigquery/pricing"),
+                    "mapping_confidence": 0.95,
+                })
+            else:
+                out.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "BigQuery",
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "compute",
+                    "strategy":           "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    ("Redshift Concurrency Scaling (per-second burst capacity) — "
+                                           "no BigQuery equivalent charge (BQ Editions autoscaling dynamically "
+                                           "scales slots within the reservation, no separate burst SKU); "
+                                           "passthrough at cost parity. Source: cloud.google.com/bigquery/pricing"),
+                    "mapping_confidence": 0.60,
+                })
             continue
 
         # Backup and snapshot rows → passthrough (no BQ equivalent charge)
@@ -5898,7 +5935,9 @@ def map_redshift(rows):
                 "strategy":           "passthrough",
                 "unit_multiplier":    1.0,
                 "gcp_region":         gcp_region,
-                "projection_note":    "Redshift backup/snapshot — no BigQuery equivalent charge; passthrough at cost parity",
+                "projection_note":    ("Redshift backup/snapshot — no BigQuery equivalent charge; "
+                                       "passthrough at cost parity. Table snapshots/retention policy review. "
+                                       "Source: cloud.google.com/bigquery/pricing"),
                 "mapping_confidence": 0.70,
             })
             continue
@@ -5922,7 +5961,8 @@ def map_redshift(rows):
                 "strategy":           "map" if sku_id else "passthrough",
                 "unit_multiplier":    1.0,
                 "gcp_region":         gcp_region,
-                "projection_note":    "Redshift RA3 ManagedStorage → BigQuery Active Storage" + _no_rate_suffix(sku_id, gcp_region),
+                "projection_note":    ("Redshift RA3 ManagedStorage → BigQuery Active Logical Storage. "
+                                       "Source: cloud.google.com/bigquery/pricing" + _no_rate_suffix(sku_id, gcp_region)),
                 "mapping_confidence": 0.80,
             }
             if sku_id:
@@ -5939,29 +5979,23 @@ def map_redshift(rows):
         # third-party sources; AWS doesn't state vCPU officially either), and
         # Google's own BigQuery slots doc explicitly does not publish a
         # slot-to-vCPU/RAM ratio — so there is no official basis for "128" any
-        # more than there was for the node-hour table. Using the same ~0.5
-        # vCPU/slot community estimate applied there, 1 RPU (~2 vCPU) would
-        # land closer to ~4 slots, not 128 — a ~32x gap in the same direction
-        # (overstated) as the node-hour bug. Passthrough for the same reason:
-        # no defensible slot-to-price ratio from real evidence.
+        # more than there was for the node-hour table. Passthrough to BigQuery
+        # review disclosing candidate models (Editions autoscaling vs on-demand analysis).
         if "serverless" in blob or re.search(r"\brpu\b", ut):
             entry = {
                 "aws_li_key":         r["aws_li_key"],
-                "gcp_service":        GCP_BIGQUERY_RESERVATION,
+                "gcp_service":        "BigQuery",
                 "gcp_sku_id":         None,
                 "gcp_sku_name":       None,
                 "component":          "compute",
                 "strategy":           "passthrough",
                 "unit_multiplier":    1.0,
                 "gcp_region":         gcp_region,
-                "projection_note":    ("Redshift Serverless RPU-hour — passthrough at AWS cost. No "
-                                       "official AWS or Google source publishes an RPU-to-BigQuery-slot "
-                                       "equivalence; a commonly-cited RPU spec (~2 vCPU) against "
-                                       "BigQuery's own unofficial ~0.5 vCPU/slot estimate suggests the "
-                                       "previous 128-slot assumption overstated real slot requirements "
-                                       "by roughly 32x. Passthrough pending a real BigQuery Reservation "
-                                       "sizing exercise with the customer's actual query workload."),
-                "mapping_confidence": 0.45,
+                "projection_note":    ("Redshift Serverless RPU-hour — passthrough at AWS cost. "
+                                       "Disclose candidate models: BigQuery Editions autoscaling or on-demand analysis. "
+                                       "No official AWS or Google source publishes an RPU-to-BigQuery-slot equivalence. "
+                                       "Source: cloud.google.com/bigquery/pricing"),
+                "mapping_confidence": 0.50,
             }
             out.append(entry)
             continue
@@ -6051,7 +6085,10 @@ def map_redshift(rows):
                         f"inconsistent estimate that independent cross-checks suggest overstate real "
                         f"slot requirements by roughly 15-60x, which would silently overprice this row "
                         f"by the same factor if mapped with confidence. Passthrough pending a real "
-                        f"BigQuery Reservation sizing exercise with the customer's actual query workload.")
+                        f"BigQuery Reservation sizing exercise with the customer's actual query workload. "
+                        f"Disclose candidates: BigQuery Editions committed slots (Standard $0.04/slot-hr, Enterprise $0.06/slot-hr "
+                        f"with 20%/40% 1yr/3yr CUD) for steady utilization vs on-demand query pricing ($6.25/TiB processed) "
+                        f"for bursty workloads. Utilization not in CUR. Source: cloud.google.com/bigquery/pricing")
                 entry = {
                     "aws_li_key":         r["aws_li_key"],
                     "gcp_service":        GCP_BIGQUERY_RESERVATION,
@@ -6062,7 +6099,7 @@ def map_redshift(rows):
                     "unit_multiplier":    1.0,
                     "gcp_region":         gcp_region,
                     "projection_note":    note,
-                    "mapping_confidence": 0.45,
+                    "mapping_confidence": 0.50,
                 }
                 out.append(entry)
         else:

@@ -1186,9 +1186,143 @@
     ],
     "charge_types": [
       {
-        "id": "redshift_all",
-        "description": "Node-hours -> BQ slot-hours; storage/backup passthrough (static mapper decides).",
-        "match": {},
+        "id": "redshift_spectrum",
+        "description": "Redshift Spectrum (per-TB scanned) -> BigQuery on-demand analysis ($/TiB).",
+        "match": {
+          "usage_type_re": "Spectrum|ScannedBytes"
+        },
+        "mechanic": "redshift",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "redshift (Spectrum -> BigQuery on-demand analysis)"
+      },
+      {
+        "id": "redshift_storage",
+        "description": "Redshift Managed Storage (RMS) -> BigQuery Active Logical Storage.",
+        "match": {
+          "usage_type_re": "ManagedStorage|\\bRMS\\b|\\bRMS:"
+        },
+        "mechanic": "redshift",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "redshift (RMS managed storage -> BigQuery storage)"
+      },
+      {
+        "id": "redshift_serverless",
+        "description": "Redshift Serverless (RPU-hours) -> BigQuery review (Editions autoscaling / on-demand).",
+        "match": {
+          "usage_type_re": "Serverless|\\bRPU\\b"
+        },
+        "mechanic": "redshift",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "redshift (Serverless RPU-hours -> BigQuery review)"
+      },
+      {
+        "id": "redshift_concurrency_scaling",
+        "description": "Redshift Concurrency Scaling (burst capacity) -> BigQuery review (free credits -> ignore).",
+        "match": {
+          "usage_type_re": "\\bCS:|ConcurrencyScaling"
+        },
+        "mechanic": "redshift",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "redshift (Concurrency Scaling -> BigQuery review/ignore)"
+      },
+      {
+        "id": "redshift_backup",
+        "description": "Redshift backup / snapshot storage -> BigQuery storage (table snapshots).",
+        "match": {
+          "usage_type_re": "Backup|Snapshot"
+        },
+        "mechanic": "redshift",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "redshift (Redshift backup/snapshot -> BigQuery storage)"
+      },
+      {
+        "id": "redshift_data_transfer",
+        "description": "Redshift cross-region data transfer / data sharing egress.",
+        "match": {
+          "usage_type_re": "DataTransfer|Out-Bytes|In-Bytes"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "data_transfer (Redshift data transfer)"
+      },
+      {
+        "id": "redshift_node",
+        "description": "Provisioned Redshift node-hours (RA3/DC2) -> BigQuery review (Editions slots vs on-demand $/TiB).",
+        "match": {
+          "usage_type_re": "Node:|NodeUsage|ra3\\.|dc2\\.|ds2\\.|rg\\."
+        },
         "mechanic": "redshift",
         "fields": [
           {
@@ -1210,7 +1344,34 @@
             "required": true
           }
         ],
-        "source_rule": "redshift"
+        "source_rule": "redshift (Redshift node-hours -> BigQuery review)"
+      },
+      {
+        "id": "redshift_other",
+        "description": "Other Redshift charges (Redshift ML, unclassified) -> review catch-all.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (Redshift other charges)",
+        "llm_guidance": {
+          "gcp_target": "BigQuery",
+          "strategy": "review",
+          "confidence_max": 0.5,
+          "guidance": "Auxiliary Redshift charges (Redshift ML, unclassified) map to BigQuery ML or Vertex AI; passthrough review."
+        }
       }
     ]
   },

@@ -177,7 +177,7 @@ CASES = [
     ("redshift_node",
      _row(product="Amazon Redshift", product_code="AmazonRedshift",
           usage_type="APS3-Node:ra3.4xlarge", unit="Hrs"),
-     "redshift", "redshift_all"),
+     "redshift", "redshift_node"),
 
     # ---- ElastiCache ----
     ("elasticache_node",

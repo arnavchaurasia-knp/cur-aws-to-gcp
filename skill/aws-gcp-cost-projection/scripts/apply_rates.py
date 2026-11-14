@@ -66,6 +66,41 @@ def inject_tpu_rates(conn):
         )
 
 
+def inject_oracle_rates(conn):
+    """Insert pinned Oracle Database@Google Cloud Base Database Service ECPU rates
+    into gcp_sku_rates for all supported regions plus a 'global' fallback.
+    Rates per oracle.com/.../oracle-database-at-google-cloud/pricing (user-verified 2026-11-14):
+    - Base Standard Edition: $0.0538 / ECPU-hr (RDS Oracle SE2)
+    - Base Enterprise Edition: $0.1075 / ECPU-hr (RDS Oracle EE)
+    - Base BYOL: $0.0484 / ECPU-hr (RDS Oracle BYOL)
+    - Base High-Performance: $0.2218 / ECPU-hr
+    Conversion: 1 OCPU = 2 vCPU = 4 ECPU -> 1 vCPU = 2 ECPUs.
+    Source: https://www.oracle.com/cloud/price-list/#database-google-cloud
+    """
+    oracle_skus = [
+        ("ORACLE-BASE-DB-SE-ECPU", "Oracle Database@Google Cloud: Base Database Service - Standard Edition (ECPU)", 0.0538),
+        ("ORACLE-BASE-DB-EE-ECPU", "Oracle Database@Google Cloud: Base Database Service - Enterprise Edition (ECPU)", 0.1075),
+        ("ORACLE-BASE-DB-BYOL-ECPU", "Oracle Database@Google Cloud: Base Database Service - BYOL (ECPU)", 0.0484),
+        ("ORACLE-BASE-DB-HP-ECPU", "Oracle Database@Google Cloud: Base Database Service - High Performance (ECPU)", 0.2218),
+    ]
+    oracle_regions = [
+        "global", "us-east4", "us-east1", "us-central1", "us-west1", "us-west2", "us-south1",
+        "europe-west1", "europe-west2", "europe-west3", "europe-west4", "europe-west9",
+        "europe-north1", "asia-southeast1", "asia-northeast1", "asia-south1",
+        "australia-southeast1", "southamerica-east1", "me-central1",
+    ]
+    for sku_id, sku_name, rate in oracle_skus:
+        for reg in oracle_regions:
+            conn.execute(
+                """
+                INSERT INTO gcp_sku_rates VALUES
+                (?, 'Oracle Database@Google Cloud', ?, 'Database', 'ManagedDatabase', 'OnDemand', ?, 'ECPU-hour', ?, 'canonical-oracle-gcp', 'https://www.oracle.com/cloud/price-list/#database-google-cloud')
+                ON CONFLICT DO NOTHING
+                """,
+                (sku_id, sku_name, reg, rate),
+            )
+
+
 def load_cud_pct():
     """Load CUD multipliers from data/cud_pct.json, falling back to the dict above."""
     json_path = os.path.join(DATA_DIR, "cud_pct.json")
@@ -1032,6 +1067,9 @@ def main():
         # rows mapped by family_mapper.map_tpu_row(). No on-demand TPU SKU exists in the
         # bundled catalog, so inject it the same way egress / Looker Studio are injected.
         inject_tpu_rates(conn)
+
+        # Oracle Database@Google Cloud Base Database Service (ECPU-hour): pinned on-demand rates
+        inject_oracle_rates(conn)
 
         # Cloud Logging Log Ingestion: NOT injected as a pseudo-SKU — the real
         # catalog SKU "Log Storage cost" (143F-A1B0-E0BE) already carries the

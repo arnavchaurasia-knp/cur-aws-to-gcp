@@ -141,9 +141,9 @@ def test_p3_aurora_serverless_v2_ram_multiplier_is_2():
     components = {e["component"]: e for e in out}
     assert "core" in components
     assert "ram" in components
-    assert components["ram"]["unit_multiplier"] == 16.0
-    assert components["core"]["unit_multiplier"] == 2.0
-    assert "1 ACU = 2 vCPU + 16 GiB" in components["ram"]["projection_note"]
+    assert components["ram"]["unit_multiplier"] == 2.0
+    assert components["core"]["unit_multiplier"] == 0.25
+    assert "1 ACU = 0.25 vCPU + 2 GiB" in components["ram"]["projection_note"]
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +256,7 @@ def test_p8_efs_standard_containing_ia_does_not_match_hdd():
     )]
     out = _with_sku(map_efs, rows)
     assert len(out) == 1
-    assert "Basic SSD" in out[0]["gcp_sku_name"]
+    assert "Regional" in out[0]["gcp_sku_name"]
 
 
 # ---------------------------------------------------------------------------

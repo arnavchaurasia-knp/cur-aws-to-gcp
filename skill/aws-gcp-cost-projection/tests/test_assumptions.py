@@ -45,8 +45,8 @@ def test_load_assumptions_returns_defaults_when_file_absent():
     assert result["glue_dpu_vcpu"] == 4.0
     assert result["glue_dpu_ram_gib"] == 16.0
     assert result["looker_studio_pro_seat_usd"] == 9.0
-    assert result["aurora_acu_vcpu"] == 2.0
-    assert result["aurora_acu_ram_gib"] == 16.0
+    assert result["aurora_acu_vcpu"] == 0.25
+    assert result["aurora_acu_ram_gib"] == 2.0
     assert "cognito_requests_per_mau" not in result
 
 
@@ -158,9 +158,9 @@ def test_load_assumptions_rejects_out_of_band_ratio():
             json.dump(snapshot, f)
 
         result = load_assumptions(job_dir)
-        # Must fall back to default values (2.0 and 16.0 -> 1:8)
-        assert result["aurora_acu_vcpu"] == 2.0
-        assert result["aurora_acu_ram_gib"] == 16.0
+        # Must fall back to default values (0.25 and 2.0 -> 1:8)
+        assert result["aurora_acu_vcpu"] == 0.25
+        assert result["aurora_acu_ram_gib"] == 2.0
 
 
 if __name__ == "__main__":

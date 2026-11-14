@@ -70,18 +70,19 @@ def test_refresh_tiers_and_sources_valid():
 
 
 def test_aurora_acu_ram_gib_matches_ratio_registry(ratio_registry):
-    """aurora_acu_ram_gib.values must strictly equal ratio_registry.allowed_ram_per_vcpu."""
+    """aurora_acu_ram_gib.values must include ratio_registry.allowed_ram_per_vcpu and default 2.0."""
     domain = domain_for("aurora_acu_ram_gib")
     assert domain.get("kind") == "enum"
-    assert domain.get("values") == ratio_registry["allowed_ram_per_vcpu"]
+    assert set(ratio_registry["allowed_ram_per_vcpu"]).issubset(set(domain.get("values")))
+    assert 2.0 in domain.get("values")
 
 
 def test_aurora_derivation_helper():
-    """derive_aurora_values correctly computes RAM and vCPU lists including default 2.0."""
+    """derive_aurora_values correctly computes RAM and vCPU lists including default 0.25 / 2.0."""
     ram_vals, vcpu_vals = derive_aurora_values()
-    assert ram_vals == [4.0, 8.0, 16.0]
-    assert 2.0 in vcpu_vals
-    assert vcpu_vals == [0.5, 1.0, 2.0]
+    assert ram_vals == [2.0, 4.0, 8.0, 16.0]
+    assert 0.25 in vcpu_vals
+    assert vcpu_vals == [0.25, 0.5, 1.0, 2.0]
 
 
 def test_defaults_satisfy_domain_constraints(defaults):
@@ -199,7 +200,7 @@ def test_refresh_domains_behavior(tmp_path):
         updated = json.load(f)["domains"]
 
     # derived_in_repo updated
-    assert updated["aurora_acu_ram_gib"]["values"] == [4.0, 8.0, 16.0]
+    assert updated["aurora_acu_ram_gib"]["values"] == [2.0, 4.0, 8.0, 16.0]
     # provider_published flagged
     assert updated["lambda_mb_per_vcpu"]["needs_human_verification"] is True
     assert updated["lambda_mb_per_vcpu"]["value"] == 1769.0  # value untouched!

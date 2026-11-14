@@ -6712,29 +6712,36 @@ def map_kinesis(rows):
 
 
 # EFS storage class → Filestore tier
+# Availability-matched flat targets (Custom Performance OFF):
+# Standard Regional -> Filestore Regional ($0.45/GiB-mo)
+# Standard One-Zone -> Filestore Zonal ($0.25/GiB-mo)
+# Sub-1 TiB -> Filestore Regional (100 GiB min capacity)
+# IA and Archive are handled in a dedicated branch in map_efs (passthrough with Agent Volumes Cold disclosure)
+GCP_FILESTORE_REGIONAL = "Filestore Capacity Regional and Enterprise"
+GCP_FILESTORE_ZONAL    = "Filestore Capacity Zonal and High Scale"
+GCP_FILESTORE_BACKUP   = "Filestore Backup Usage"
+
 _EFS_STORAGE_MAP = {
-    # Standard (infrequent access) and Intelligent-Tiering → Filestore Basic HDD.
-    # Note: bare "ia" key removed per P-8 so standard rows containing "ia" (e.g. California)
-    # don't match Basic HDD before "standard".
-    "standardia":      ("Cloud Filestore", GCP_FILESTORE_HDD,                   GB_TO_GIB),  # AWS decimal GB-Mo → GCP GiBy.mo
-    "standard-ia":     ("Cloud Filestore", GCP_FILESTORE_HDD,                   GB_TO_GIB),
-    "-ia":             ("Cloud Filestore", GCP_FILESTORE_HDD,                   GB_TO_GIB),
-    "timedstorage-ia": ("Cloud Filestore", GCP_FILESTORE_HDD,                   GB_TO_GIB),
-    # Standard (frequent access) → Filestore Basic SSD (closer performance profile)
-    "standard":        ("Cloud Filestore", "Filestore Capacity Basic SSD",       GB_TO_GIB),
+    # One-Zone variants match first before generic standard
+    "onezone":         ("Cloud Filestore", GCP_FILESTORE_ZONAL,    GB_TO_GIB),
+    "-z-":             ("Cloud Filestore", GCP_FILESTORE_ZONAL,    GB_TO_GIB),
+    "one-zone":        ("Cloud Filestore", GCP_FILESTORE_ZONAL,    GB_TO_GIB),
+    # Standard Regional
+    "standard":        ("Cloud Filestore", GCP_FILESTORE_REGIONAL, GB_TO_GIB),
 }
-_EFS_DEFAULT_STORAGE = ("Cloud Filestore", "Filestore Capacity Basic SSD", GB_TO_GIB)
+_EFS_DEFAULT_STORAGE = ("Cloud Filestore", GCP_FILESTORE_REGIONAL, GB_TO_GIB)
 
 
 def map_efs(rows):
     """EFS → Filestore mapping.
 
-    Standard storage → Filestore Basic SSD ($0.20/GB-mo).
-    Infrequent Access → Filestore Basic HDD ($0.10/GB-mo).
-    Provisioned Throughput (MB/s-month) → $0 (ignore): Filestore Basic tier's
-    throughput/IOPS are fixed and bundled into the flat capacity price.
-    Data access / I/O requests (Elastic Throughput mode) → $0 (ignore): same
-    reason — GCP Basic tier has no per-GB-transferred charge to carry forward.
+    Standard Regional storage → Filestore Regional ($0.45/GiB-mo, custom-perf OFF).
+    Standard One-Zone storage → Filestore Zonal ($0.25/GiB-mo, custom-perf OFF).
+    Infrequent Access (IA) & Archive → passthrough at AWS cost with mandatory disclosure
+    naming Filestore Agent Volumes Cold ($0.02/GiB-mo) as the cold-NFS architecture target.
+    Provisioned Throughput (MB/s-month) → $0 (ignore): bundled into capacity, no separate SKU.
+    Elastic Throughput read/write (per GB) → $0 (ignore): bundled into capacity, no separate SKU.
+    EFS Backup → Filestore Backup Usage ($0.08/GiB-mo) map.
     """
     out = []
     for r in rows:
@@ -6743,22 +6750,8 @@ def map_efs(rows):
         gcp_region = r.get("gcp_region")
         blob = f"{ut} {op}"
 
-        # Provisioned Throughput (MB/s-month) → $0 on GCP.
-        # CONFIRMED REAL BUG: strategy was "passthrough" (carry the full AWS
-        # cost forward) despite the note's own reasoning — "Filestore includes
-        # throughput in capacity price" — meaning a GCP customer pays nothing
-        # extra for this. Verified directly against Google's own Filestore
-        # docs: Basic tier throughput/IOPS are fixed and bundled with capacity
-        # regardless of actual usage (Basic HDD: 100-180 MiB/s, 600-5000 IOPS;
-        # Basic SSD: up to 1200 MiB/s read / 350 MiB/s write, 60k/25k IOPS —
-        # none of it separately metered or billed). Since this mapper only
-        # ever targets Filestore Basic SSD/HDD for storage (see
-        # _EFS_STORAGE_MAP below — Zonal/Regional/Enterprise, which DO have a
-        # real "Filestore Instance IOPS" SKU, are never selected here), the
-        # correct GCP-side cost for this AWS line item is genuinely $0, not
-        # "carry AWS's cost forward" — same treatment this project already
-        # gives EBS gp3's provisioned-IOPS charge (also bundled into capacity).
-        if re.search(r"provisioned.?throughput|throughput.?capacity", blob):
+        # Provisioned Throughput (MB/s-month) → $0 (ignore): bundled into Filestore capacity, no separate SKU
+        if re.search(r"provisioned.?throughput|throughput.?capacity|provisionedtp", blob):
             out.append({
                 "aws_li_key":         r["aws_li_key"],
                 "gcp_service":        "Cloud Filestore",
@@ -6768,67 +6761,80 @@ def map_efs(rows):
                 "strategy":           "ignore",
                 "unit_multiplier":    0.0,
                 "gcp_region":         gcp_region,
-                "projection_note":    ("EFS Provisioned Throughput — $0 on GCP: Filestore Basic tier's "
-                                       "throughput/IOPS are fixed and bundled into the flat capacity "
-                                       "price regardless of actual usage, not separately metered"),
-                "mapping_confidence": 0.80,
+                "projection_note":    ("EFS Provisioned Throughput — bundled into Filestore capacity — "
+                                       "no separate SKU (Custom Performance OFF: Per-IOPS $0). "
+                                       "Source: cloud.google.com/filestore/pricing"),
+                "mapping_confidence": 0.85,
             })
             continue
 
-        # AWS Backup for EFS ("warm backup storage") is a distinct, much cheaper
-        # charge type ($0.055/GB-mo) than primary EFS storage — routing it through
-        # the same Basic SSD/HDD Filestore capacity SKU (~$0.20-0.30/GB-mo) as
-        # primary storage was a ~6.5x over-projection. GCP has no direct backup-
-        # tier equivalent at this price point, so passthrough at cost parity.
-        if re.search(r"backup.?storage|warm.?backup", blob):
+        # Data access requests / IO charges (EFS Elastic Throughput mode) → $0 (ignore): bundled into capacity
+        if re.search(r"data.?access|io.?request|meteredthroughput|elasticthroughput|meterediobytes", blob):
             out.append({
                 "aws_li_key":         r["aws_li_key"],
                 "gcp_service":        "Cloud Filestore",
                 "gcp_sku_id":         None,
                 "gcp_sku_name":       None,
+                "component":          "storage",
+                "strategy":           "ignore",
+                "unit_multiplier":    0.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    ("EFS Elastic Throughput data-access charge — bundled into Filestore "
+                                       "capacity — no separate SKU (Custom Performance OFF: Per-IOPS $0). "
+                                       "Source: cloud.google.com/filestore/pricing"),
+                "mapping_confidence": 0.85,
+            })
+            continue
+
+        # AWS Backup for EFS → Filestore Backup Usage ($0.08/GiB-mo) map
+        if re.search(r"backup.?storage|warm.?backup|backupusage|\bbackup\b", blob):
+            sku_id = resolve_sku("Cloud Filestore", GCP_FILESTORE_BACKUP, gcp_region)
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Filestore",
+                "gcp_sku_id":         sku_id if sku_id else None,
+                "gcp_sku_name":       GCP_FILESTORE_BACKUP,
                 "component":          "backup",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    GB_TO_GIB,
+                "gcp_region":         gcp_region,
+                "projection_note":    (f"EFS backup storage → {GCP_FILESTORE_BACKUP} ($0.08/GiB-mo). "
+                                       "Source: cloud.google.com/filestore/pricing" + _no_rate_suffix(sku_id, gcp_region)),
+                "mapping_confidence": 0.85 if sku_id else 0.60,
+            }
+            if sku_id:
+                entry["gcp_sku_unit"] = sku_id.unit
+            out.append(entry)
+            continue
+
+        # IA and Archive storage: passthrough at AWS cost with mandatory disclosure naming Filestore Agent Volumes Cold
+        # (avoiding the 10x-20x Basic HDD overprojection trap)
+        is_ia = bool(re.search(r"standard.?ia|-ia\b|timedstorage-ia", blob))
+        is_archive = bool(re.search(r"archive", blob))
+        if is_ia or is_archive:
+            tier_name = "Archive" if is_archive else "IA"
+            aws_rate = "$0.008/GB" if is_archive else "$0.016/GB"
+            overproj = "20×" if is_archive else "10×"
+            note = (f"EFS {tier_name} ({aws_rate}) has no general-NFS cold equivalent on Filestore "
+                    f"(Basic HDD $0.16 would be {overproj} over); passthrough at AWS cost. "
+                    "Accurate target: Filestore Agent Volumes Cold/Frozen ~$0.02/GiB-mo (architecture review — "
+                    "agent-scoped, not yet GA/documented). GCS Nearline/Coldline only if the workload can leave NFS. "
+                    "Source: cloud.google.com/filestore/pricing")
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Filestore",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "storage",
                 "strategy":           "passthrough",
                 "unit_multiplier":    1.0,
                 "gcp_region":         gcp_region,
-                "projection_note":    "EFS backup storage — no GCP equivalent at this price tier; passthrough at cost parity",
-                "mapping_confidence": 0.60,
+                "projection_note":    note,
+                "mapping_confidence": 0.65,
             })
             continue
 
-        # Data access requests / IO charges (EFS Elastic Throughput mode,
-        # "*DataAccess-Bytes" usage_type) → $0 on GCP.
-        # CONFIRMED REAL BUG, same class as Provisioned Throughput above.
-        # Verified against AWS's own pricing docs: Elastic Throughput mode
-        # (the default since 2023) bills $0.03/GB read + $0.06/GB written —
-        # this row's own rate confirms it exactly (this job's Read row:
-        # $938.82 / 31,293.84 GB = $0.03000/GB; Write row: ~$0.07/GB, a
-        # regional premium over the $0.06 US baseline). Verified GCP Filestore
-        # Basic tier (the only tier this mapper ever selects) has fixed,
-        # capacity-bundled throughput/IOPS with no per-GB-transferred charge
-        # at all — so there is no GCP-side cost to carry forward here, the
-        # same conclusion as the Provisioned Throughput case just above.
-        # Passthrough was overstating this bill's GCP projection by ~$2,000/mo
-        # (Read $938.82 + Write $1,007.24 + IA-Read $52.18) for a charge type
-        # that costs $0 on the actual mapped GCP tier.
-        if re.search(r"data.?access|io.?request|meteredthroughput", blob):
-            out.append({
-                "aws_li_key":         r["aws_li_key"],
-                "gcp_service":        "Cloud Filestore",
-                "gcp_sku_id":         None,
-                "gcp_sku_name":       None,
-                "component":          "storage",
-                "strategy":           "ignore",
-                "unit_multiplier":    0.0,
-                "gcp_region":         gcp_region,
-                "projection_note":    ("EFS Elastic Throughput data-access charge — $0 on GCP: "
-                                       "Filestore Basic tier's throughput/IOPS are fixed and bundled "
-                                       "into the flat capacity price regardless of actual data read/"
-                                       "written, not separately metered like AWS's per-GB charge"),
-                "mapping_confidence": 0.80,
-            })
-            continue
-
-        # Storage rows — detect access tier
+        # Storage rows — Standard availability tiers (Regional vs Zonal)
         service, sku_name, mult = _EFS_DEFAULT_STORAGE
         for key, val in _EFS_STORAGE_MAP.items():
             if key in blob:
@@ -6836,25 +6842,17 @@ def map_efs(rows):
                 break
 
         sku_id = resolve_sku(service, sku_name, gcp_region)
-        # A cheaper-looking "Filestore Instance Capacity Zonal" tier exists
-        # ($0.12/GiBy.mo vs Basic SSD's $0.30/GiBy.mo, confirmed via
-        # find-sku.sh) but it is NOT a like-for-like capacity swap — Zonal is
-        # a genuinely different, multi-component pricing shape: a fixed
-        # ~$20/mo "Filestore Instance Count" fee PLUS a separate per-IOPS
-        # charge on top of the cheaper capacity rate, vs Basic SSD's single
-        # flat $/GiBy.mo rate covering everything. AWS EFS bills (General
-        # Purpose / non-Provisioned-Throughput) typically only report GB-Mo
-        # storage usage, with no discrete IOPS-provisioning figure to price
-        # that component from — silently switching would either omit the
-        # fixed+IOPS components (understating cost) or require evidence this
-        # pipeline doesn't have. Per this project's evidence-vs-fabrication
-        # principle, disclose it as an architecture-review option instead of
-        # silently substituting.
-        zonal_note = (" [architecture review recommended: GCP Filestore Zonal tier has a lower "
-                      "per-GB rate ($0.12 vs $0.30/GiBy.mo here) but a different multi-component "
-                      "pricing shape (fixed instance fee + separate IOPS charge) that this bill's "
-                      "GB-Mo-only usage data can't fully price — verify total Zonal cost with "
-                      "customer before switching]") if sku_name == "Filestore Capacity Basic SSD" else ""
+        note_parts = [f"EFS storage → {sku_name}"]
+        if sku_name == GCP_FILESTORE_REGIONAL:
+            note_parts.append("(availability-matched multi-AZ resilience; Filestore Zonal $0.25/GiB-mo or "
+                              "Basic SSD $0.30/GiB-mo available if zonal redundancy is acceptable; "
+                              "sub-1 TiB supported from 100 GiB minimum)")
+        elif sku_name == GCP_FILESTORE_ZONAL:
+            note_parts.append("(availability-matched One-Zone storage; Filestore Zonal single flat rate with custom-perf OFF)")
+        note_parts.append("Source: cloud.google.com/filestore/pricing")
+        if not sku_id:
+            note_parts.append(_no_rate_suffix(sku_id, gcp_region))
+
         entry = {
             "aws_li_key":         r["aws_li_key"],
             "gcp_service":        service,
@@ -6863,8 +6861,8 @@ def map_efs(rows):
             "strategy":           "map" if sku_id else "passthrough",
             "unit_multiplier":    mult,
             "gcp_region":         gcp_region,
-            "projection_note":    f"EFS storage → {sku_name}" + zonal_note + _no_rate_suffix(sku_id, gcp_region),
-            "mapping_confidence": 0.75,
+            "projection_note":    " ".join(note_parts),
+            "mapping_confidence": 0.85 if sku_id else 0.70,
         }
         if sku_id:
             entry["gcp_sku_id"] = sku_id
@@ -9266,11 +9264,52 @@ def map_db_row(r, parsed):
         lic_suffix = f" (license model: {license_model})" if license_model else ""
         if is_oracle_avail:
             svc_label = "Oracle Database@Google Cloud"
-            sku_label = f"Oracle Database@Google Cloud (Base Database / Exadata / Autonomous){lic_suffix}"
-            proj_note = (f"Oracle Database@Google Cloud: Oracle workloads map to Oracle Database@Google Cloud in {gcp_region} "
-                         f"(co-located OCI in GCP data centers); list PAYG rate exists on Oracle Marketplace but is unbundled "
-                         f"from GCP billing catalog — passthrough at AWS cost with manual review. "
-                         f"Source: https://cloud.google.com/oracle/database/docs/overview")
+            is_byol = "byol" in license_model.lower() or "bring-your-own-license" in license_model.lower() or "byol" in prod_op
+
+            if is_byol:
+                edition_name = "BYOL"
+                sku_id = "ORACLE-BASE-DB-BYOL-ECPU"
+                sku_name = "Oracle Database@Google Cloud: Base Database Service - BYOL (ECPU)"
+                rate_str = "$0.0484/ECPU-hr ($0.0968/vCPU-hr)"
+            elif any(k in engine for k in ("ee", "enterprise")) or any(k in prod_op for k in ("ee", "enterprise")):
+                edition_name = "Enterprise Edition"
+                sku_id = "ORACLE-BASE-DB-EE-ECPU"
+                sku_name = "Oracle Database@Google Cloud: Base Database Service - Enterprise Edition (ECPU)"
+                rate_str = "$0.1075/ECPU-hr ($0.2150/vCPU-hr)"
+            else:
+                edition_name = "Standard Edition"
+                sku_id = "ORACLE-BASE-DB-SE-ECPU"
+                sku_name = "Oracle Database@Google Cloud: Base Database Service - Standard Edition (ECPU)"
+                rate_str = "$0.0538/ECPU-hr ($0.1076/vCPU-hr)"
+
+            # 1 OCPU = 2 vCPU = 4 ECPU (therefore 1 vCPU = 2 ECPUs per Oracle PaaS docs).
+            # Base Database Service bundles memory into the ECPU shape.
+            ha_mult = 2.0 if is_ha else 1.0
+            total_ecpus = float(vcpus) * 2.0 * ha_mult
+            ha_note = " (Multi-AZ / HA 2-node deployment)" if is_ha else ""
+
+            proj_note = (
+                f"Oracle Database@Google Cloud: Base Database Service {edition_name} in {gcp_region}{lic_suffix}{ha_note}. "
+                f"Sized at 1 vCPU = 2 ECPUs ({vcpus} vCPU -> {float(vcpus) * 2.0:.0f} ECPU{ha_note}; memory bundled in ECPU allocation). "
+                f"Rate: {rate_str} via Oracle Marketplace on GCP. "
+                f"Source: https://www.oracle.com/cloud/price-list/#database-google-cloud and https://cloud.google.com/oracle/database/docs/overview"
+            )
+
+            return [{
+                "aws_li_key": aws_key,
+                "gcp_service": svc_label,
+                "gcp_sku_id": sku_id,
+                "gcp_sku_name": sku_name,
+                "gcp_sku_unit": "ECPU-hour",
+                "component": "db_instance",
+                "strategy": "map",
+                "unit_multiplier": total_ecpus,
+                "gcp_region": gcp_region,
+                "projection_note": proj_note,
+                "mapping_confidence": 0.85,
+                "is_workload": True,
+                "break_down": False
+            }]
         else:
             svc_label = "Oracle Database@Google Cloud"
             sku_label = f"Oracle Database@Google Cloud (unavailable in region {gcp_region}){lic_suffix}"
@@ -9278,19 +9317,19 @@ def map_db_row(r, parsed):
                          f"passthrough at AWS cost for migration architecture review. "
                          f"Source: https://cloud.google.com/oracle/database/docs/regions-and-zones")
 
-        return [{
-            "aws_li_key": aws_key,
-            "gcp_service": svc_label,
-            "gcp_sku_name": sku_label,
-            "component": "db_instance",
-            "strategy": "passthrough",
-            "unit_multiplier": 1.0,
-            "gcp_region": gcp_region,
-            "projection_note": proj_note,
-            "mapping_confidence": 0.60,
-            "is_workload": True,
-            "break_down": False
-        }]
+            return [{
+                "aws_li_key": aws_key,
+                "gcp_service": svc_label,
+                "gcp_sku_name": sku_label,
+                "component": "db_instance",
+                "strategy": "passthrough",
+                "unit_multiplier": 1.0,
+                "gcp_region": gcp_region,
+                "projection_note": proj_note,
+                "mapping_confidence": 0.60,
+                "is_workload": True,
+                "break_down": False
+            }]
 
     # 3. SQL Server (Cloud SQL for SQL Server native engine)
     elif any(k in engine for k in ("sqlserver", "sql server", "sql-server", "mssql")) or any(k in prod_op for k in ("sqlserver", "sql server", "sql-server", "mssql")):

@@ -1,7 +1,7 @@
 {
   "state": "retrying",
-  "started_at": "2026-11-12T05:47:54Z",
-  "finished_at": "2026-11-12T05:47:54Z",
+  "started_at": "2026-11-14T12:00:28Z",
+  "finished_at": "2026-11-14T12:00:28Z",
   "exit_code": 1,
   "trigger": "manual",
   "actor": "a@facets.cloud",
@@ -16,6 +16,6 @@
   "source": "gcp_catalog",
   "complete": true,
   "attempt": 1,
-  "next_retry_at": "2026-11-12T05:52:54Z",
-  "consecutive_failures": 28
+  "next_retry_at": "2026-11-14T12:05:28Z",
+  "consecutive_failures": 51
 }

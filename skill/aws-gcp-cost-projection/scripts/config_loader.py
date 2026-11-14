@@ -37,8 +37,16 @@ def load_data_config(name: str) -> dict:
         return {}
 
 
+_LAST_REJECTIONS: dict[str, str] = {}
+
+
+def get_assumption_rejections() -> dict[str, str]:
+    """Return map of assumption group -> rejection reason from the most recent load_assumptions() call."""
+    return dict(_LAST_REJECTIONS)
+
+
 def load_assumptions(job_dir: str | None = None) -> dict:
-    """Assumption values for THIS job, from <job_dir>/assumptions.json.
+    """Assumption values for THIS job, from <job_dir>/assumptions.json (or cwd/assumptions.json).
 
     Falls back to the committed defaults in data/assumption-defaults.json when
     the snapshot is absent (local runs, older jobs). Never raises.
@@ -56,9 +64,15 @@ def load_assumptions(job_dir: str | None = None) -> dict:
         pass
 
     res = dict(defaults)
-    # Try job snapshot first
-    if job_dir:
-        snapshot_path = os.path.join(job_dir, "assumptions.json")
+    # Try job snapshot first (explicit job_dir or cwd if assumptions.json present)
+    target_dir = job_dir
+    if not target_dir:
+        cwd = os.getcwd()
+        if os.path.exists(os.path.join(cwd, "assumptions.json")):
+            target_dir = cwd
+
+    if target_dir:
+        snapshot_path = os.path.join(target_dir, "assumptions.json")
         try:
             with open(snapshot_path, encoding="utf-8") as f:
                 data = json.load(f)
@@ -84,17 +98,24 @@ def load_assumptions(job_dir: str | None = None) -> dict:
 
             is_valid = any(abs(ratio - r) < 1e-3 for r in allowed)
             if not is_valid:
+                reason = (
+                    f"Stored aurora_acu ratio 1:{ratio:.1f} ({vcpu} vCPU, {ram} GiB) "
+                    f"is out of band (allowed GCP ratios: {allowed}); falling back to default"
+                )
+                _LAST_REJECTIONS["aurora_acu"] = reason
                 try:
                     from diagnostics import diag, WARN
                     diag(WARN, "assumption_ratio_out_of_band", "config_loader",
-                         f"Stored aurora_acu ratio 1:{ratio:.1f} ({vcpu} vCPU, {ram} GiB) is out of band; falling back to default",
-                         job_dir=job_dir)
+                         reason,
+                         job_dir=target_dir)
                 except Exception:
                     pass
                 if "aurora_acu_vcpu" in defaults:
                     res["aurora_acu_vcpu"] = defaults["aurora_acu_vcpu"]
                 if "aurora_acu_ram_gib" in defaults:
                     res["aurora_acu_ram_gib"] = defaults["aurora_acu_ram_gib"]
+            else:
+                _LAST_REJECTIONS.pop("aurora_acu", None)
 
     return res
 

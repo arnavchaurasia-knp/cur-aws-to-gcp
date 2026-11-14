@@ -16,7 +16,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config_loader import load_assumptions
 
-_ASSUMPTIONS = load_assumptions()
+# Module-level default SQL for callers that need static definition
+_PROJECTION_VIEW_SQL = None
 
 
 def compute_dominant_region(conn) -> str:
@@ -93,9 +94,14 @@ def classify_commitment_basis(pricing_model: str | None, usage_type: str | None 
     return "on_demand"
 
 
-def _build_projection_view_sql(dominant_region: str, assumptions: dict | None = None, catalog_cols: set[str] | None = None) -> str:
+def _build_projection_view_sql(
+    dominant_region: str,
+    assumptions: dict | None = None,
+    catalog_cols: set[str] | None = None,
+    has_custom_assumptions: bool = False,
+) -> str:
     dom = re.sub(r'[^a-zA-Z0-9-]', '', str(dominant_region)) or "us-central1"
-    assump = assumptions or _ASSUMPTIONS or {}
+    assump = assumptions if assumptions is not None else load_assumptions()
     spot_disc = float(assump.get("aws_spot_discount_pct", 0.70))
     ri1_disc = float(assump.get("aws_ri_1yr_discount_pct", 0.38))
     ri3_disc = float(assump.get("aws_ri_3yr_discount_pct", 0.52))
@@ -155,7 +161,12 @@ def _build_projection_view_sql(dominant_region: str, assumptions: dict | None = 
           ELSE c.aws_amortized_cost
         END"""
 
-    od_cost_expr = f"COALESCE(c.aws_od_cost, {reconstructed_od_expr})" if has_aws_od else reconstructed_od_expr
+    if has_aws_od and has_od_basis and has_custom_assumptions:
+        od_cost_expr = f"CASE WHEN c.od_basis = 'reconstructed_default' THEN {reconstructed_od_expr} ELSE COALESCE(c.aws_od_cost, {reconstructed_od_expr}) END"
+    elif has_aws_od:
+        od_cost_expr = f"COALESCE(c.aws_od_cost, {reconstructed_od_expr})"
+    else:
+        od_cost_expr = reconstructed_od_expr
 
     od_basis_expr = (
         f"""COALESCE(c.od_basis,
@@ -416,13 +427,17 @@ LEFT JOIN passthrough_rank pr ON pr.row_id = m.rowid;
 _PROJECTION_VIEW_SQL = _build_projection_view_sql("us-central1")
 
 
-def create_projection_view(conn, dominant_region=None, assumptions=None):
+def create_projection_view(conn, dominant_region=None, assumptions=None, job_dir=None):
     """(Re)create the gcp_projection VIEW with dominant region fallback.
     Requires aws_li_catalog, aws_li_to_gcp_li, and gcp_sku_rates to exist. Idempotent.
     """
     if dominant_region is None:
         dominant_region = compute_dominant_region(conn)
     clean_reg = re.sub(r'[^a-zA-Z0-9-]', '', str(dominant_region)) or "us-central1"
+
+    has_custom = assumptions is not None
+    if assumptions is None:
+        assumptions = load_assumptions(job_dir)
 
     conn.execute("""
         SELECT table_type FROM information_schema.tables WHERE table_name = 'gcp_projection'
@@ -444,4 +459,4 @@ def create_projection_view(conn, dominant_region=None, assumptions=None):
     except Exception:
         pass
 
-    conn.execute(_build_projection_view_sql(clean_reg, assumptions, cat_cols))
+    conn.execute(_build_projection_view_sql(clean_reg, assumptions, cat_cols, has_custom_assumptions=has_custom))

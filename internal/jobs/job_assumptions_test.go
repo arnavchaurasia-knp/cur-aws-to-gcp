@@ -99,6 +99,15 @@ func TestJobAssumptions_GetAndRerun(t *testing.T) {
 		h.RerunJobAssumptions(rec2, req2)
 		assert.Equal(t, http.StatusBadRequest, rec2.Code)
 		assert.Contains(t, rec2.Body.String(), "out of allowed range")
+
+		// Out-of-band ratio group (e.g. RAM 7 / vCPU 2 -> 3.5, not 4, 8, or 16)
+		bodyBadRatio := `{"overrides": {"aurora_acu_ram_gib": 7.0, "aurora_acu_vcpu": 2.0}}`
+		req3, _ := http.NewRequestWithContext(ctxWithFullSession(aliceEmail, "Alice", "viewer"), "POST", "/api/jobs/"+jobID+"/assumptions/rerun", bytes.NewBufferString(bodyBadRatio))
+		req3 = req3.WithContext(withChiID(req3.Context(), jobID))
+		rec3 := httptest.NewRecorder()
+		h.RerunJobAssumptions(rec3, req3)
+		assert.Equal(t, http.StatusBadRequest, rec3.Code)
+		assert.Contains(t, rec3.Body.String(), "invalid Aurora ACU ratio")
 	})
 
 	t.Run("4. Valid rerun: writes merged assumptions.json, preserves baseline, launches rerun", func(t *testing.T) {

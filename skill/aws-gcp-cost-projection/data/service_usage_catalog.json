@@ -945,5 +945,126 @@
       "expected_charge_type": "redshift_data_transfer",
       "expected_mechanic": "data_transfer"
     }
+  ],
+  "efs": [
+    {
+      "usage_type": "APS3-TimedStorage-ByteHrs",
+      "unit": "GB-Mo",
+      "description": "EFS Standard Regional multi-AZ storage (binary GB-Mo)",
+      "expected_charge_type": "efs_storage_standard",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-StorageUsage",
+      "unit": "GB-Mo",
+      "description": "EFS Standard storage usage",
+      "expected_charge_type": "efs_storage_standard",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-TimedStorage-Z-ByteHrs",
+      "unit": "GB-Mo",
+      "description": "EFS Standard One-Zone storage",
+      "expected_charge_type": "efs_storage_standard",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-OneZone-StorageUsage",
+      "unit": "GB-Mo",
+      "description": "EFS One-Zone storage usage",
+      "expected_charge_type": "efs_storage_standard",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-TimedStorage-IA-ByteHrs",
+      "unit": "GB-Mo",
+      "description": "EFS Infrequent Access (IA) Regional storage",
+      "expected_charge_type": "efs_storage_ia",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-TimedStorage-Z-IA-ByteHrs",
+      "unit": "GB-Mo",
+      "description": "EFS Infrequent Access (IA) One-Zone storage",
+      "expected_charge_type": "efs_storage_ia",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-TimedStorage-Archive-ByteHrs",
+      "unit": "GB-Mo",
+      "description": "EFS Archive storage class",
+      "expected_charge_type": "efs_storage_archive",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-ProvisionedTP-MiBpsHrs",
+      "unit": "MBps-Mo",
+      "description": "EFS Provisioned Throughput above baseline",
+      "expected_charge_type": "efs_throughput_provisioned",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-ProvisionedThroughput-MBps",
+      "unit": "MBps-Mo",
+      "description": "EFS Provisioned Throughput usage",
+      "expected_charge_type": "efs_throughput_provisioned",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-ETDataAccess-Bytes",
+      "unit": "GB",
+      "description": "EFS Elastic Throughput metered IO read/write data access",
+      "expected_charge_type": "efs_throughput_elastic",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-MeteredIOBytes",
+      "unit": "GB",
+      "description": "EFS Elastic Throughput metered IO bytes",
+      "expected_charge_type": "efs_throughput_elastic",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-TierTransition-Bytes",
+      "unit": "GB",
+      "description": "EFS lifecycle transition between Standard and IA/Archive",
+      "expected_charge_type": "efs_lifecycle_tiering",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-IATotalBytesRead",
+      "unit": "GB",
+      "description": "EFS Infrequent Access data retrieval / read requests",
+      "expected_charge_type": "efs_lifecycle_tiering",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-ArchiveTotalBytesRead",
+      "unit": "GB",
+      "description": "EFS Archive data retrieval / read requests",
+      "expected_charge_type": "efs_lifecycle_tiering",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-BackupUsage",
+      "unit": "GB-Mo",
+      "description": "EFS backup storage",
+      "expected_charge_type": "efs_backup",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-WarmBackupStorage",
+      "unit": "GB-Mo",
+      "description": "EFS warm backup vault storage",
+      "expected_charge_type": "efs_backup",
+      "expected_mechanic": "efs"
+    },
+    {
+      "usage_type": "APS3-Replication-DataTransfer-Bytes",
+      "unit": "GB",
+      "description": "EFS cross-region replication data transfer",
+      "expected_charge_type": "efs_replication",
+      "expected_mechanic": "data_transfer"
+    }
   ]
 }

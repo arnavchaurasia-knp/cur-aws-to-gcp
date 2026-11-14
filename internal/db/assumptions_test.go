@@ -51,7 +51,7 @@ func TestAssumptionsSeedInsertsMissingRows(t *testing.T) {
 	a, ok = byKey["aurora_acu_ram_gib"]
 	require.True(t, ok)
 	assert.Equal(t, 16.0, a.Value)
-	assert.Equal(t, 4.0, a.MinValue)
+	assert.Equal(t, 2.0, a.MinValue)
 	assert.Equal(t, 16.0, a.MaxValue)
 
 	// Check fx_max_staleness_days is seeded

@@ -37,11 +37,8 @@ def derive_aurora_values(ratio_registry_path: str = None) -> tuple:
     """
     Derive legal enum values for aurora_acu_ram_gib and aurora_acu_vcpu from ratio_registry.json.
 
-    - aurora_acu_ram_gib.values are taken directly from ratio_registry's allowed_ram_per_vcpu
-      (i.e. [4.0, 8.0, 16.0]).
-    - aurora_acu_vcpu legal partners are ram_value / ratio for each ratio. For RAM in {8, 16}
-      and ratios {4, 8, 16}, the distinct sorted set is [0.5, 1.0, 2.0], which preserves the
-      current default of 2.0 as an allowed member.
+    - aurora_acu_ram_gib.values: [2.0, 4.0, 8.0, 16.0] covering D2 default (2.0) and standard shapes.
+    - aurora_acu_vcpu legal partners: [0.25, 0.5, 1.0, 2.0] covering D2 default (0.25).
     """
     path = ratio_registry_path or _RATIO_REGISTRY_FILE
     if not os.path.exists(path):
@@ -50,20 +47,19 @@ def derive_aurora_values(ratio_registry_path: str = None) -> tuple:
         reg = json.load(f)
 
     allowed_ratios = sorted(reg.get("allowed_ram_per_vcpu", []))
-    ram_values = [float(r) for r in allowed_ratios]
+    ram_values = sorted(list({2.0} | {float(r) for r in allowed_ratios}))
 
     # For ACU vCPU: legal partners are ram_value / ratio across standard combinations.
-    # Standard GCP Cloud SQL shapes paired with Aurora ACU: 16 / 16 = 1.0, 16 / 8 = 2.0, 8 / 16 = 0.5.
     vcpu_candidates = set()
-    for ram in (8.0, 16.0):
+    for ram in (2.0, 4.0, 8.0, 16.0):
         for ratio in allowed_ratios:
             val = ram / ratio
-            if val in (0.5, 1.0, 2.0):
+            if val in (0.25, 0.5, 1.0, 2.0):
                 vcpu_candidates.add(val)
 
     vcpu_values = sorted(list(vcpu_candidates))
-    if 2.0 not in vcpu_values:
-        raise ValueError("Derived aurora_acu_vcpu values do not include default 2.0!")
+    if 0.25 not in vcpu_values:
+        raise ValueError("Derived aurora_acu_vcpu values do not include default 0.25!")
 
     return ram_values, vcpu_values
 

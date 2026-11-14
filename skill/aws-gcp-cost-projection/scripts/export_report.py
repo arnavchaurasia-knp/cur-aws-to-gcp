@@ -259,6 +259,7 @@ def _build_query(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=None):
     sku_name_col = "m.gcp_sku_id"
     comp_col = "m.component"
     machine_type_col = "NULL"
+    od_cost_col = "c.aws_amortized_cost"
     if conn is not None:
         try:
             m_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
@@ -268,6 +269,17 @@ def _build_query(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=None):
                 comp_col = "'default'"
             if "gcp_machine_type" in m_cols:
                 machine_type_col = "m.gcp_machine_type"
+
+            p_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('gcp_projection')").fetchall()}
+            c_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+            if "aws_od_cost" in p_cols and "aws_od_cost" in c_cols:
+                od_cost_col = "COALESCE(p.aws_od_cost, c.aws_od_cost, c.aws_amortized_cost)"
+            elif "aws_od_cost" in p_cols:
+                od_cost_col = "COALESCE(p.aws_od_cost, c.aws_amortized_cost)"
+            elif "aws_od_cost" in c_cols:
+                od_cost_col = "COALESCE(c.aws_od_cost, c.aws_amortized_cost)"
+            else:
+                od_cost_col = "c.aws_amortized_cost"
         except Exception:
             pass
 
@@ -276,6 +288,7 @@ WITH per_component AS (
     SELECT
         c.aws_li_key,
         c.aws_amortized_cost,
+        {od_cost_col} AS aws_od_cost,
         c.product,
         c.instance_type,
         c.is_workload,
@@ -320,6 +333,7 @@ per_item AS (
         ANY_VALUE(mapping_confidence) AS mapping_confidence,
         ANY_VALUE(aws_amortized_cost) AS raw_aws_cost,
         ANY_VALUE(aws_amortized_cost) * {aws_fx_rate} AS aws_cost,
+        ANY_VALUE(aws_od_cost) * {aws_fx_rate} AS aws_od_cost,
         CASE
             WHEN ANY_VALUE(strategy) = 'ignore' THEN 0.0
             WHEN ANY_VALUE(strategy) IN ('map', 'break_down') AND COUNT(comp_od_cost) > 0
@@ -361,7 +375,7 @@ SELECT
     ROUND(base_cost, 2)                                  AS "instance_cost",
     COALESCE(lic_name, '')                               AS "license_name",
     ROUND(lic_cost, 2)                                   AS "license_cost",
-    ROUND(aws_cost - gcp_od_cost, 2)                     AS "Diff{cur_sym}",
+    ROUND(COALESCE(aws_od_cost, aws_cost) - gcp_od_cost, 2) AS "Diff{cur_sym}",
     ROUND(gcp_1yr_cost, 2)                               AS "GCP 1yr CUD{cur_sym}",
     ROUND(gcp_3yr_cost, 2)                               AS "GCP 3yr CUD{cur_sym}",
     section                                              AS "Section",
@@ -376,6 +390,7 @@ def _build_query_by_instance(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn
     sku_name_col = "m.gcp_sku_id"
     comp_col = "m.component"
     machine_type_col = "NULL"
+    od_cost_col = "c.aws_amortized_cost"
     if conn is not None:
         try:
             m_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
@@ -385,6 +400,17 @@ def _build_query_by_instance(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn
                 comp_col = "'default'"
             if "gcp_machine_type" in m_cols:
                 machine_type_col = "m.gcp_machine_type"
+
+            p_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('gcp_projection')").fetchall()}
+            c_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+            if "aws_od_cost" in p_cols and "aws_od_cost" in c_cols:
+                od_cost_col = "COALESCE(p.aws_od_cost, c.aws_od_cost, c.aws_amortized_cost)"
+            elif "aws_od_cost" in p_cols:
+                od_cost_col = "COALESCE(p.aws_od_cost, c.aws_amortized_cost)"
+            elif "aws_od_cost" in c_cols:
+                od_cost_col = "COALESCE(c.aws_od_cost, c.aws_amortized_cost)"
+            else:
+                od_cost_col = "c.aws_amortized_cost"
         except Exception:
             pass
 
@@ -402,6 +428,8 @@ per_line_item AS (
         COALESCE(p.gcp_region, c.gcp_region, '')                AS region,
         (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN c.aws_amortized_cost ELSE 0 END) * {aws_fx_rate}
                                                                 AS aws_cost,
+        (CASE WHEN COALESCE(cr.rn, 1) = 1 THEN {od_cost_col} ELSE 0 END) * {aws_fx_rate}
+                                                                AS aws_od_cost,
         COALESCE(p.gcp_projected_cost, 0) * {fx_rate}          AS gcp_od_cost,
         (CASE WHEN {comp_col} NOT IN ('license', 'sql_license') THEN COALESCE(p.gcp_projected_cost, 0) ELSE 0 END) * {fx_rate} AS base_cost,
         (CASE WHEN {comp_col} IN ('license', 'sql_license') THEN COALESCE(NULLIF({sku_name_col}, ''), {comp_col}) ELSE NULL END) AS lic_name,
@@ -426,7 +454,7 @@ SELECT
     ROUND(SUM(base_cost), 2)                            AS "instance_cost",
     COALESCE(STRING_AGG(DISTINCT lic_name, ', '), '')    AS "license_name",
     ROUND(SUM(lic_cost), 2)                             AS "license_cost",
-    ROUND(SUM(aws_cost) - SUM(gcp_od_cost), 2)          AS "Diff{cur_sym}",
+    ROUND(SUM(COALESCE(aws_od_cost, aws_cost)) - SUM(gcp_od_cost), 2) AS "Diff{cur_sym}",
     ROUND(SUM(gcp_1yr_cost), 2)                         AS "GCP 1yr CUD{cur_sym}",
     ROUND(SUM(gcp_3yr_cost), 2)                         AS "GCP 3yr CUD{cur_sym}"
 FROM per_line_item

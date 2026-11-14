@@ -458,19 +458,21 @@ def test_kinesis_shard_hours_passthrough_pubsub():
 # EFS → Filestore
 # ---------------------------------------------------------------------------
 
-def test_efs_standard_maps_to_basic_ssd():
+def test_efs_standard_maps_to_regional():
     rows = [row(product="Amazon Elastic File System",
                 usage_type="TimedStorage-EFS-ByteHrs", unit="GB-Mo")]
     out = _with_sku(map_efs, rows)
     assert out[0]["gcp_service"] == "Cloud Filestore"
-    assert "SSD" in out[0]["gcp_sku_name"]
+    assert "Regional" in out[0]["gcp_sku_name"]
 
 
-def test_efs_ia_maps_to_basic_hdd():
+def test_efs_ia_passthrough_with_agent_volumes_cold_disclosure():
     rows = [row(product="Amazon Elastic File System",
                 usage_type="TimedStorage-EFS-IA-ByteHrs", operation="Standard-IA", unit="GB-Mo")]
     out = _with_sku(map_efs, rows)
-    assert "HDD" in out[0]["gcp_sku_name"]
+    assert out[0]["strategy"] == "passthrough"
+    assert out[0]["unit_multiplier"] == 1.0
+    assert "Agent Volumes Cold" in out[0]["projection_note"]
 
 
 def test_efs_provisioned_throughput_is_ignored_not_passthrough():

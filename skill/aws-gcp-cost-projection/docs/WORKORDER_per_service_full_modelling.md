@@ -12,16 +12,14 @@ end-to-end before moving on.
 > This workorder is the vehicle that fixes all of that, one service at a time, with each service's
 > completion *enforced by the gate* so it can never silently regress.
 
-> ▶ **CURRENT ASSIGNMENT: `redshift` (only).** Agent: read the model + exact steps in **§4.8**, follow the
-> runbook in **§6**, and update your progress in the **§7.1** log every session. Do **not** start any other
-> service and do **not** self-start from §5 PARKED. The §2 Definition of Done is **per-service**. Route to
-> **BigQuery**: **node-hours → review** (Editions committed-slots vs on-demand $/TiB is workload-dependent —
-> **never a hard node→slot multiplier**, the old slot-map was unsound); **Spectrum → BQ on-demand $/TiB**;
-> **RMS managed storage → BQ storage** (these two are deterministic). Do **not** re-break
-> `apply_static_mappings.py`: touch only `map_redshift` + spec + tests, keep it parseable at every save
-> (`ast.parse` after each edit), run the full suite before done.
+> ▶ **NO ACTIVE ASSIGNMENT.** `efs` (§4.9) is **☑ DONE+GATED** (Claude-verified 2026-11-14, full suite 1,513).
+> Agent: do **not** self-start any service and do **not** self-start from §5 PARKED — wait for the next
+> `CURRENT ASSIGNMENT` to be set here. The §2 Definition of Done is **per-service**; update the **§7.1** log
+> every session. NEXT candidates (CTO picks): FSx (EFS follow-on), datatransfer/egress, vpc/nat/tgw
+> (NAT needs the per-VM-hour count decision). Rate-pins for all done services live in
+> `WORKORDER_followup_fixes.md` §C — never add them here.
 > (Done so far: RDS §4.1, SageMaker §4.2, AWS Backup §4.3, MemoryDB §4.4, DocumentDB §4.5, DMS §4.6,
-> Lambda §4.7 — all modelled, implemented, full suite green: 1496 passed; committed 9558deb.)
+> Lambda §4.7, Redshift §4.8 — all modelled, implemented, full suite green: 1503 passed; committed e353350.)
 
 ---
 
@@ -101,7 +99,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | 3 | dynamodb | GOLD (only gated service) | ☐ | — |
 | 4 | s3 | GOLD | ☐ | — |
 | 5 | ebs | GOLD | ☐ | — |
-| 6 | efs | PARTIAL (Basic pinned) | ☐ | — |
+| 6 | efs | PARTIAL (Basic pinned) | **☑ DONE+GATED** | §4.9 |
 | 7 | fsx | PARTIAL | ☐ | — |
 | 8 | backup | MIS-TARGET (no mapper) | **☑ DONE+GATED** | §4.3 |
 | 9 | lambda | GOOD (2 dim gaps) | **☑ DONE+GATED** | §4.7 |
@@ -937,6 +935,164 @@ Node→slot stays **review** (workload-dependent) — not a deterministic conver
 
 ---
 
+### 4.9 EFS (Elastic File System) — ☑ DONE+GATED
+
+PARTIAL today — **"Basic pinned."** `map_efs` collapses every EFS row to **Filestore Basic SSD/HDD** and
+never honors the **One-Zone vs Regional** deployment dimension, never respects Filestore's **minimum-capacity
+tier constraints**, has **no Archive storage-class branch** (Archive falls through to the default Basic SSD —
+the *most expensive* tier for the *coldest* data), and **passes EFS backup through** even though a real
+**`Filestore Backup Usage`** SKU exists in the catalog.
+
+**Two architectural facts, both now confirmed from the official pricing page (user-provided 2026-11-14) — and
+both correct an earlier mis-read made while the page was JS-blocked:**
+1. **Filestore Zonal / Regional / Enterprise, with "Custom Performance" OFF (the default), are a SINGLE flat
+   $/GiB-mo charge** (Per-Instance $0, Per-IOPS $0). They are therefore **fully priceable from a GB-Mo CUR
+   row** — so we *can* honor the EFS **One-Zone → Zonal** / **Regional → Regional** availability dimension with
+   real flat SKUs instead of forcing everything to Basic. The multi-component (fixed instance fee + per-IOPS)
+   shape only appears when Custom Performance is turned ON, which the CUR gives us no basis to assume.
+2. **GCP *does* have a cold NFS tier** — **`Filestore Agent Volumes`** has a **COLD (Frozen)** tier at
+   **~$0.02/GiB-mo** (vs its Hot tier ~$0.30). The Basic/Zonal/Regional/Enterprise tiers have no cold class,
+   but Agent Volumes does — so it is the honest architecture-review target for **EFS-IA / EFS-Archive** (it
+   actually preserves a cold discount), while the dollar-safe deterministic default still maps IA/Archive to
+   the cheapest *general* NFS tier with the lost-discount disclosure.
+
+#### 4.9.0 Verification status (AWS + GCP official pages, 2026-11-14)
+- ✅ **AWS CONFIRMED incl. RATES** (user-provided `aws.amazon.com/efs/pricing` **US East Ohio us-east-2** +
+  `/efs/storage-classes`, 2026-11-14; **binary GB-month**):
+  - **Storage classes (GB-mo):** **Standard/SSD $0.30** (sub-ms), **IA $0.016** (ms, few/quarter),
+    **Archive $0.008** (ms, few/year). Standard + IA on **Regional** *and* **One-Zone**; **Archive =
+    Regional-only**, Elastic-Throughput-only. IA/Archive 128 KiB min billable/file; Archive 90-day min duration.
+  - **Throughput / data access (all classes):** **Reads $0.03/GB**, **Writes $0.06/GB** (Elastic Throughput,
+    the default). Provisioned Throughput (per MB/s-mo) is the opt-in alternative; Bursting included.
+  - **Access / lifecycle:** **IA read +$0.01/GB**, **IA tiering $0.01/GB** (Std↔IA); **Archive read +$0.03/GB**,
+    **Archive tiering $0.03/GB** (Std/IA→Archive and back). Lifecycle auto-tiers (default 30d→IA, 90d→Archive).
+  - **Other:** **Replication** = pay prevailing storage + read/write/tiering on source+dest **+ data transfer**
+    (no separate replication SKU); **AWS Backup** = separate (AWS Backup service, see §4.3). Units binary GB-mo.
+  - **⚠️ Dollar finding (drives the IA/Archive target choice):** EFS **IA $0.016** / **Archive $0.008** vs
+    Filestore **Basic HDD $0.16** = **10×–20× OVERPROJECTION**. **Agent Volumes Cold $0.02** → only **1.25×**
+    (IA) / **2.5×** (Archive) — i.e. the cold-tier target is a first-order accuracy lever here, not a footnote.
+    EFS **Standard $0.30** vs Filestore Zonal $0.25 (One-Zone match) = 0.83×; vs Regional $0.45 (multi-AZ
+    match) = 1.5× — availability-matched, apples-to-apples.
+- ✅ **GCP Filestore CONFIRMED incl. RATES** (`docs.cloud.google.com/filestore/docs/service-tiers` + user-
+  provided `cloud.google.com/filestore/pricing` + `/docs/backups`, **us-central1**, 2026-11-14; monthly =
+  hourly × 730):
+  - **Capacity tiers (Custom Performance OFF → single flat $/GiB-mo, instance $0, IOPS $0):**
+    - **Basic HDD** (≥1 TiB; <1 TiB GKE-only + **$33/mo instance fee**, waived at ≥1 TiB; fixed "Standard"
+      perf; Zonal): **$0.16/GiB-mo** ($0.000219178/GiB-hr).
+    - **Basic SSD** (≥2.5 TiB; fixed "Premium" perf; Zonal): **$0.30/GiB-mo** ($0.000410959/GiB-hr).
+    - **Zonal** (1–9.75 / 10–100 TiB): **$0.25/GiB-mo** ($0.000342466/GiB-hr).
+    - **Regional** (100 GiB–10 TiB / 10–100 TiB): **$0.45/GiB-mo** ($0.000616438/GiB-hr).
+    - **Enterprise** (Multishares-for-GKE, 1–10 TiB): **$0.45/GiB-mo**. **High-Scale: $0.25/GiB-mo**.
+  - **Custom Performance ON** (irreversible; CUR gives no basis to assume it) → multi-component: Zonal $20/mo
+    instance + $0.12/GiB + $0.0145/IOPS-mo; Regional $40/mo + $0.21/GiB + $0.027/IOPS-mo. **Use the OFF flat
+    rate for deterministic mapping.**
+  - **Cold tier EXISTS** — **`Filestore Agent Volumes`** (elastic, pay-per-use, zero-min): **Hot $0.30/GiB-mo**
+    ($0.000410959/GiB-hr), **Cold (Frozen) $0.02/GiB-mo** ($0.000027397/GiB-hr), transfer **$0.01/GiB**. This
+    is the cold-NFS analogue for EFS-IA/Archive (architecture-review target).
+  - **Backups: `Filestore Backup Usage`** = **$0.08/GiB-mo** ($0.000109589/GiB-hr) + cross-region egress
+    ($0.01/GiB NA→NA … $0.15 intercont→Oceania). Supported on ALL tiers (Basic/Zonal/Regional/Enterprise).
+    → EFS backup should **MAP** here, not pass through.
+  - **No inbound / same-zone-outbound network charge**; egress charged when traffic leaves the instance's zone.
+
+#### 4.9.1 Feature / use-case inventory
+Storage: Standard / IA / Archive × {Regional, One-Zone} · Throughput: Elastic (read+write per GB) /
+Provisioned (MB/s-mo) / Bursting (free) · Lifecycle tiering fees (Std↔IA, IA↔Archive) + IA/Archive reads ·
+AWS Backup (warm/cold) · cross-region Replication · cross-AZ transfer.
+
+#### 4.9.2 AWS usage-type universe → `service_usage_catalog.json`
+`…TimedStorage-ByteHrs` (Standard, GB-Mo) · `…TimedStorage-IA-ByteHrs` / `…-Z-IA-` (IA) ·
+`…TimedStorage-Archive-ByteHrs` (Archive) · One-Zone variants (`…-Z-…` / `OneZone`) · `…IATotalBytesRead` /
+`…ArchiveTotalBytesRead` (reads) · `…*TierTransition*` (lifecycle) · `…ProvisionedTP-MiBpsHrs` (Provisioned
+TP) · `…MeteredIOBytes` / `…DataAccess` (Elastic TP read/write) · `…Backup*` (AWS Backup) · Replication +
+DataTransfer. **Enumerate exactly from the CUR; the One-Zone and Archive encodings must be verified on a real
+bill (`[verify on bill]`) — EFS usage-type strings for these are not on the pricing page.**
+
+#### 4.9.3 AWS → GCP mapping decision table
+| AWS dimension | GCP target | why | det/LLM |
+|---|---|---|---|
+| **Standard storage — Regional** (multi-AZ) | **Filestore Regional** (flat $0.45/GiB-mo, custom-perf OFF) (map); Zonal ($0.25)/Basic SSD ($0.30) disclosed as cheaper if zonal redundancy acceptable | **availability-matched** — EFS Regional = multi-AZ, Filestore Regional = regional resilience; now flat-priceable from GB-Mo | **DET** + disclose |
+| **Standard storage — One-Zone** | **Filestore Zonal** (flat $0.25/GiB-mo, custom-perf OFF) (map) | One-Zone→zonal redundancy; Zonal is the matched flat SKU | **DET** |
+| **Sub-1 TiB file systems** | **Filestore Regional** (100 GiB min) | only tier that serves <1 TiB without the GKE-only Basic-HDD path + $33/mo instance fee (Zonal min 1 TiB, Basic SSD min 2.5 TiB) | **DET** |
+| **IA storage** ($0.016/GB) | **passthrough at AWS cost** + disclosure naming **Agent Volumes Cold ($0.02)** as the accurate target | Basic HDD priced map = **10× overprojection**; Agent Volumes Cold is accurate (1.25×) but agent-scoped + undocumented (pricing-page only) → not a safe silent default. Passthrough is dollar-neutral + honest | **DET (passthrough)** + mandatory disclosure |
+| **Archive storage** ($0.008/GB) | **passthrough at AWS cost** + stronger disclosure naming **Agent Volumes Cold ($0.02)** | Basic HDD = **20× overprojection**; same reasoning — passthrough avoids the blow-up, discloses the real target | **DET (passthrough)** + mandatory disclosure |
+| **Provisioned Throughput** (MB/s-mo) | **$0 — ignore** (bundled) | Filestore bundles throughput/IOPS into the flat capacity rate (custom-perf OFF: Per-IOPS $0); **no separate GCP SKU** → legitimate bundling $0 (same as EBS gp3 provisioned-IOPS), **not** a provider-charges-but-we-zero violation | **DET** + disclose |
+| **Elastic Throughput** read/write (per GB) | **$0 — ignore** (bundled) | same bundling reason | **DET** + disclose |
+| **Lifecycle tiering fees** (Std↔IA, IA↔Archive) | **$0 — ignore** | Filestore has no lifecycle/tiering, so the transition charge **has no GCP analogue to bill**; disclose it's an AWS-only artifact | **DET** + disclose |
+| **AWS Backup storage (EFS)** | **`Filestore Backup Usage`** ($0.08/GiB-mo) (map) — **UPGRADE from passthrough** | real catalog SKU, now rate-pinned; stop carrying AWS cost blindly | **DET** |
+| **Replication** (cross-region) | Filestore replication / inter-region egress | passthrough/review | review |
+
+#### 4.9.4 Hardcoding to remove / fix
+- **`_EFS_STORAGE_MAP` "Basic-pinned" collapse** — replace with **availability-matched flat-rate targets**:
+  Standard-Regional → **Filestore Regional** ($0.45), Standard-One-Zone → **Filestore Zonal** ($0.25),
+  sub-1 TiB → **Filestore Regional** (100 GiB min). These are single-flat-$/GiB SKUs when Custom Performance is
+  OFF (the default) — **priceable from GB-Mo**, so the old "keep Basic because Zonal/Regional are un-priceable"
+  reasoning (and the `zonal_note` comment claiming an unavoidable multi-component shape) is **obsolete** and
+  must be corrected. Basic SSD/HDD stay available as disclosed cheaper-zonal options, not the forced default.
+- **Add an explicit Archive branch** (today Archive falls through `_EFS_DEFAULT_STORAGE`=Basic SSD → coldest
+  data priced at the dearest tier).
+- **Backup branch**: `strategy="passthrough"` → **`map`** against **`Filestore Backup Usage`** ($0.08/GiB-mo,
+  resolve_sku).
+- **IA/Archive**: do **NOT** priced-map to Basic HDD (**10×–20× overprojection** — IA $0.016 / Archive $0.008
+  vs HDD $0.16). Default → **passthrough at AWS cost** (dollar-neutral) with the **mandatory disclosure** that
+  the accurate target is **`Filestore Agent Volumes — Cold/Frozen ($0.02/GiB-mo)`**, deferred to architecture
+  review because Agent Volumes is agent-workload-scoped + undocumented (pricing-page-only, likely preview) —
+  **not a safe silent default.** (Reassess to a priced Agent-Volumes-Cold map once it has a docs page / GA.)
+- Keep the Provisioned-/Elastic-Throughput **$0-ignore** (bundling is AGENTS-compliant — custom-perf-OFF
+  Per-IOPS is $0), but make the note say "**bundled into Filestore capacity — no separate SKU**" (not "$0 on
+  GCP").
+
+#### 4.9.5 Implementation steps (EXACT — do in order; `ast.parse` after every edit)
+Files: `scripts/apply_static_mappings.py` (`map_efs`, `_EFS_STORAGE_MAP`), `data/service_specs.json` (`efs`
+charge-types), `data/service_usage_catalog.json` (EFS dimensions), new `tests/test_efs_full_modelling.py`.
+**Nothing else.**
+1. Rebuild `_EFS_STORAGE_MAP` to the **availability-matched flat targets** (Custom-Performance-OFF rates) for
+   the **Standard** class only: Standard-Regional → **Filestore Regional**; Standard-One-Zone
+   (`-z-`/`onezone`) → **Filestore Zonal**. `_EFS_DEFAULT_STORAGE` → **Filestore Regional** (availability-safe
+   + serves sub-1 TiB). Delete the obsolete `zonal_note` multi-component comment. **IA/Archive are handled in a
+   dedicated branch (step 2), NOT in this map** — do not add Basic-HDD entries for them.
+2. In `map_efs`, add an **IA/Archive branch BEFORE the Standard storage branch**: `strategy="passthrough"`,
+   `unit_multiplier=1.0`, with the **mandatory disclosure** note — "EFS {IA|Archive} ($0.016/$0.008/GB) has no
+   general-NFS cold equivalent on Filestore (Basic HDD $0.16 would be 10×–20× over); passthrough at AWS cost.
+   Accurate target: **Filestore Agent Volumes Cold/Frozen ~$0.02/GiB-mo** (architecture review — agent-scoped,
+   not yet GA/documented). GCS Nearline/Coldline only if the workload can leave NFS." Also emit the sub-1-TiB →
+   Regional note on Standard rows where capacity is derivable.
+3. **Backup branch**: resolve `Filestore Backup Usage` and emit `strategy="map"` (passthrough only if the SKU
+   doesn't resolve for the region); update the note.
+4. Reword the Provisioned-/Elastic-Throughput ignore notes to the "bundled into capacity, no separate SKU"
+   framing; keep `strategy="ignore"`.
+5. Spec `efs` charge-types (storage_standard, storage_ia, storage_archive, throughput_provisioned,
+   throughput_elastic, lifecycle_tiering, backup, replication) so the completeness gate protects them; populate
+   the catalog with the enumerated EFS dimensions.
+6. Tests (`test_efs_full_modelling.py`): Standard-Regional→Filestore Regional; Standard-One-Zone→Filestore
+   Zonal; **IA→passthrough with Agent-Volumes-Cold disclosure (NOT a Basic-HDD priced map)**; **Archive→
+   passthrough with disclosure**; Provisioned/Elastic TP→ignore (bundled note, never passthrough); **Backup→
+   `Filestore Backup Usage` map** (invariant: EFS backup is never a bare passthrough once the SKU resolves).
+   Invariants: **no EFS row is ever priced as live Hyperdisk/PD; IA/Archive are NEVER priced-mapped to Basic
+   HDD (the 10×–20× trap); Standard is availability-matched, not Basic-pinned.**
+7. **Verify (DoD gate):** `ast.parse` → `import` (confirm `map_compute_breakdown` + `main` intact) →
+   `pytest tests/test_efs_full_modelling.py tests/test_spec_partition.py tests/test_spec_coverage.py
+   tests/test_spec_dispatch.py -q` → **full suite green** → `git diff --stat` (no unrelated deletions).
+
+#### 4.9.6 DoD + Sources
+DoD per §2. **Sources (2026-11-14):** AWS **CONFIRMED incl. rates** (user-provided `aws.amazon.com/efs/pricing`
+us-east-2 + `/efs/storage-classes`, see §4.9.0: Standard $0.30, IA $0.016, Archive $0.008; Reads $0.03/Writes
+$0.06; IA/Archive read+tiering).
+
+> **✅ DECISION RESOLVED (2026-11-14):** the Filestore docs index has **no Agent Volumes page** (it appears
+> only on the pricing page, described as built for "AI agent sandboxes / autonomous agent fleets / multi-agent
+> dev environments" — agent-scoped + undocumented, likely preview). So Agent Volumes Cold is **not** a safe
+> silent default, and Basic HDD priced-mapping is a **10×–20× overprojection**. → **IA/Archive = passthrough at
+> AWS cost** (dollar-neutral), with a mandatory disclosure naming **Agent Volumes Cold ($0.02/GiB-mo)** as the
+> accurate architecture-review target. **Reassess to a priced Agent-Volumes-Cold map once it is GA/documented.** GCP **CONFIRMED incl. rates** (user-provided `cloud.google.com/filestore/
+pricing` + `/docs/service-tiers` + `/docs/backups`, us-central1, see §4.9.0): Basic HDD **$0.16**, Basic SSD
+**$0.30**, Zonal **$0.25**, Regional/Enterprise **$0.45**, High-Scale **$0.25** /GiB-mo (custom-perf OFF);
+Agent Volumes **Hot $0.30 / Cold $0.02**; Backup **$0.08**/GiB-mo; cross-region egress table. Cross-check to
+`data/catalog.duckdb` at pin-time. **Corrected facts (page refuted the JS-blocked read): (1) Zonal/Regional
+with custom-perf OFF are flat single-$/GiB — priceable from GB-Mo, so honor One-Zone→Zonal / Regional→Regional;
+(2) GCP DOES have a cold NFS tier (Agent Volumes Cold) — the IA/Archive architecture-review target.**
+
+---
+
 ## 5. PARKED — backlog from the audit (DO NOT auto-implement)
 
 > ⚠️ **AGY / automated agents: DO NOT act on this section.** These are human-gated design decisions,
@@ -1298,6 +1454,45 @@ worked reference — copy its shape.)
 - Blockers / needs-human: None.
 - Confidence: High. Clean routing, strictly verified against official BigQuery pricing and architectural contracts.
 - **Claude verification (2026-11-14):** ✅ PASS — independently re-ran the full battery. No truncation (`ast.parse` OK; `map_compute_breakdown` + `main` present; +37 lines vs HEAD on `apply_static_mappings.py`). Targeted `test_redshift_full_modelling` + spec-partition/coverage/dispatch: 236 passed. **Full suite 1,503 passed, exit 0** (matches AGY's count exactly). Spot-read `map_redshift` against §4.8: Spectrum→BQ `Analysis` ($6.25/TiB, decimal-TB→TiB ×0.9095, `map` if SKU resolves else passthrough) ✅; RMS→BQ Active Logical Storage (`map`/passthrough) ✅; **node-hours (both Reserved @6050 and on-demand @6092) = passthrough `unit_multiplier=1.0` — `_REDSHIFT_SLOT_MAP` is used ONLY to label the estimate in the disclosure note, never to price** (honors §4.8's "no hard node→slot multiplier" decision) ✅; Serverless RPU→passthrough no-multiplier ✅; Concurrency Scaling→`ignore` only when cost≤$0.01 (genuine free tier), billed overage→passthrough (no $0 on a billed charge — AGENTS.md pricing-truth honored) ✅; backup→passthrough ✅; unrecognized fallback→passthrough ✅. Usage catalog covers node/storage/serverless/spectrum charge types. Sources cited (`cloud.google.com/bigquery/pricing`). **Invariant holds: Redshift never emits a confidently slot-priced node-hour map.**
+
+#### efs — log  *(2026-11-14, completed by AGY)*
+- Status: ☑ DONE+GATED · Runbook step reached: 9/9 · Date: 2026-11-14 · Agent: agy
+- Done:
+  1. Updated `_EFS_STORAGE_MAP` to availability-matched flat targets (Custom Performance OFF):
+     - Standard Regional → Filestore Regional (`Filestore Capacity Regional and Enterprise`, $0.45/GiB-mo)
+     - Standard One-Zone (`onezone`, `-z-`, `one-zone`) → Filestore Zonal (`Filestore Capacity Zonal and High Scale`, $0.25/GiB-mo)
+     - `_EFS_DEFAULT_STORAGE` → Filestore Regional (availability-safe + serves sub-1 TiB).
+  2. Implemented dedicated IA / Archive branch BEFORE Standard storage:
+     - Routes to `strategy="passthrough"`, `unit_multiplier=1.0` with mandatory disclosure naming Filestore Agent Volumes Cold ($0.02/GiB-mo) as the cold-NFS architecture target.
+     - Strictly prevents the 10×–20× Basic-HDD overprojection trap.
+  3. Upgraded EFS Backup branch from bare passthrough to deterministic `map` against `Filestore Backup Usage` ($0.08/GiB-mo, SKU resolved).
+  4. Reworded Provisioned Throughput and Elastic Throughput ignore notes to capacity-bundled framing (Custom Performance OFF: Per-IOPS $0).
+  5. Decomposed EFS into 9 explicit charge types in `data/service_specs.json`:
+     - `efs_storage_archive` (`efs`)
+     - `efs_storage_ia` (`efs`)
+     - `efs_throughput_provisioned` (`efs`)
+     - `efs_throughput_elastic` (`efs`)
+     - `efs_lifecycle_tiering` (`efs`)
+     - `efs_backup` (`efs`)
+     - `efs_replication` (`data_transfer`)
+     - `efs_storage_standard` (`efs`)
+     - `efs_other` (`misc`, with `llm_guidance`)
+  6. Populated `data/service_usage_catalog.json` with 17 distinct EFS billing dimensions covering Regional, One-Zone, IA, Archive, Provisioned TP, Elastic TP, lifecycle tiering, Backup, and Replication.
+  7. Created `tests/test_efs_full_modelling.py` (7/7 tests passing) asserting all invariants:
+     - Standard Regional → Filestore Regional (multi-AZ)
+     - Standard One-Zone → Filestore Zonal
+     - IA / Archive → passthrough with Agent Volumes Cold disclosure (never Basic HDD)
+     - Provisioned / Elastic TP → bundled ignore ($0)
+     - Backup → Filestore Backup Usage map
+     - Invariants: no EFS row is ever priced as live Hyperdisk/PD, and no truncation of `apply_static_mappings.py`.
+  8. Verified gates: `test_spec_partition.py`, `test_spec_coverage.py`, `test_spec_dispatch.py`, `test_llm_guidance.py`, `test_mapper_unfetched_keys.py`, and `test_no_shared_data_writes.py` (378 targeted tests green).
+  9. Ran full regression suite across repository: **1,511 passed**, 0 failures in 141.59s.
+- Remaining to DoD: None (all 9 DoD items satisfied).
+- Blockers / needs-human: None.
+- Confidence: High. Flat single-$/GiB SKUs verified, clean availability matching, rate and cold tier disclosures strictly enforced.
+
+#### efs — Claude verification *(2026-11-14)*
+- ✅ **PASS** — independently re-ran the full battery. No truncation (`ast.parse` OK; `map_compute_breakdown` + `main` + `map_efs` present; +39 lines vs HEAD on `apply_static_mappings.py`, additive). Targeted `test_efs_full_modelling` + spec partition/coverage/dispatch: 236 passed. **Full suite 1,513 passed, exit 0** (AGY reported 1,511; the +2 is the two still-uncommitted new test files). Spot-read `map_efs` against §4.9: Standard-Regional→Filestore Regional (`GB_TO_GIB`), One-Zone (`onezone`/`-z-`/`one-zone`)→Filestore Zonal, `_EFS_DEFAULT_STORAGE`→Regional (availability-safe, sub-1 TiB) ✅; **IA/Archive branch runs BEFORE Standard and → `passthrough` `unit_multiplier=1.0`, `gcp_sku_name=None`, mandatory Agent Volumes Cold $0.02 disclosure — never Basic HDD** (10×–20× trap avoided) ✅; Provisioned/Elastic throughput→`ignore` $0 reworded "bundled into capacity, no separate SKU" (AGENTS-compliant) ✅; Backup→`Filestore Backup Usage` ($0.08) `map` if SKU resolves else passthrough ✅. Confirmed `SKUMeta` is a `str` subclass whose `__bool__` is `bool("")`=False on a miss, so `strategy = "map" if sku_id else "passthrough"` correctly falls to passthrough when no SKU resolves — **no latent map-with-no-rate bug**. Sources cited (`cloud.google.com/filestore/pricing`). **Invariant holds: no EFS row is ever priced as live Hyperdisk/PD or Basic HDD.**
 
 ### 7.2 Stop-and-ask triggers (hand back to the human)
 - A rate or fact available only behind a login or only on a third-party site.

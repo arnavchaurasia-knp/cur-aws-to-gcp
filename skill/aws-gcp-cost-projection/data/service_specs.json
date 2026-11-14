@@ -2101,17 +2101,13 @@
     ],
     "charge_types": [
       {
-        "id": "efs_all",
-        "description": "EFS Standard/IA GB-Mo -> Filestore.",
-        "match": {},
+        "id": "efs_storage_archive",
+        "description": "EFS Archive storage class -> passthrough at AWS cost with mandatory Filestore Agent Volumes Cold disclosure.",
+        "match": {
+          "usage_type_re": "(?i)archive(?!.*bytesread)"
+        },
         "mechanic": "efs",
         "fields": [
-          {
-            "name": "storage_class",
-            "cur_column": "lineItem/UsageType",
-            "source": "cur",
-            "required": false
-          },
           {
             "name": "gb_mo",
             "cur_column": "lineItem/UsageAmount",
@@ -2125,7 +2121,195 @@
             "required": true
           }
         ],
-        "source_rule": "efs (runs before block_storage so EFS 'Storage' rows don't hit the generic rule)"
+        "source_rule": "efs (EFS Archive storage -> passthrough review with Agent Volumes Cold disclosure)"
+      },
+      {
+        "id": "efs_storage_ia",
+        "description": "EFS Infrequent Access (IA) storage class -> passthrough at AWS cost with mandatory Filestore Agent Volumes Cold disclosure.",
+        "match": {
+          "usage_type_re": "(?i)standardia|standard-ia|-ia\\b|timedstorage-ia"
+        },
+        "mechanic": "efs",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "efs (EFS IA storage -> passthrough review with Agent Volumes Cold disclosure)"
+      },
+      {
+        "id": "efs_throughput_provisioned",
+        "description": "EFS Provisioned Throughput (MB/s-mo) -> $0 (IGNORE on GCP; bundled into Filestore capacity with Custom Performance OFF).",
+        "match": {
+          "usage_type_re": "(?i)provisioned.?throughput|throughput.?capacity|provisionedtp"
+        },
+        "mechanic": "efs",
+        "fields": [
+          {
+            "name": "mbps_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "efs (EFS Provisioned Throughput -> bundled $0 ignore)"
+      },
+      {
+        "id": "efs_throughput_elastic",
+        "description": "EFS Elastic Throughput read/write bytes / metered IO -> $0 (IGNORE on GCP; bundled into Filestore capacity).",
+        "match": {
+          "usage_type_re": "(?i)data.?access|io.?request|meteredthroughput|elasticthroughput|meterediobytes"
+        },
+        "mechanic": "efs",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "efs (EFS Elastic Throughput -> bundled $0 ignore)"
+      },
+      {
+        "id": "efs_lifecycle_tiering",
+        "description": "EFS lifecycle transition and read requests (tier transitions) -> $0 (IGNORE on GCP; Filestore has no lifecycle tiering charge).",
+        "match": {
+          "usage_type_re": "(?i)tiertransition|transition|iatotalbytesread|archivetotalbytesread"
+        },
+        "mechanic": "efs",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "efs (EFS lifecycle transitions -> $0 ignore)"
+      },
+      {
+        "id": "efs_backup",
+        "description": "EFS backup storage -> Filestore Backup Usage ($0.08/GiB-mo).",
+        "match": {
+          "usage_type_re": "(?i)backup.?storage|warm.?backup|backupusage|backup"
+        },
+        "mechanic": "efs",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "efs (EFS Backup -> Filestore Backup Usage)"
+      },
+      {
+        "id": "efs_replication",
+        "description": "EFS cross-region replication data transfer and storage -> data_transfer mechanic.",
+        "match": {
+          "usage_type_re": "(?i)replication|datatransfer"
+        },
+        "mechanic": "data_transfer",
+        "fields": [
+          {
+            "name": "gb",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "data_transfer (EFS Replication)"
+      },
+      {
+        "id": "efs_storage_standard",
+        "description": "EFS Standard storage (Regional multi-AZ or One-Zone) -> Filestore Regional or Filestore Zonal.",
+        "match": {
+          "usage_type_re": "(?i)timedstorage|storageusage|storage"
+        },
+        "mechanic": "efs",
+        "fields": [
+          {
+            "name": "gb_mo",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "efs (EFS Standard storage -> Filestore Regional/Zonal)"
+      },
+      {
+        "id": "efs_other",
+        "description": "Auxiliary or unclassified EFS charges -> passthrough review.",
+        "match": {},
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (EFS auxiliary / unclassified charges)",
+        "llm_guidance": {
+          "gcp_target": "Cloud Filestore",
+          "strategy": "review",
+          "confidence_max": 0.5,
+          "guidance": "Auxiliary or unclassified EFS charges map to Cloud Filestore or Filestore Backup; passthrough review."
+        }
       }
     ]
   },
@@ -2489,7 +2673,7 @@
       },
       {
         "id": "lambda_ephemeral_storage",
-        "description": "Lambda ephemeral storage (/tmp > 512MB) -> $0 (IGNORE on GCP; Cloud Run folds ephemeral /tmp into the memory allocation — no separate charge).",
+        "description": "Lambda ephemeral storage (/tmp > 512MB) -> $0 (IGNORE on GCP; Cloud Run folds ephemeral /tmp into the memory allocation \u2014 no separate charge).",
         "match": {
           "usage_type_re": "Storage[- ]Duration|Storage[- ]Byte|Lambda[- ]Storage|EphemeralStorage|GB[- ]Second[- ]Storage|Storage"
         },
@@ -2602,7 +2786,7 @@
           "gcp_target": "Cloud Run Functions",
           "strategy": "review",
           "confidence_max": 0.4,
-          "guidance": "GCP Cloud Run functions has no direct equivalent for Lambda SnapStart/Edge tiers — review workload."
+          "guidance": "GCP Cloud Run functions has no direct equivalent for Lambda SnapStart/Edge tiers \u2014 review workload."
         }
       }
     ]

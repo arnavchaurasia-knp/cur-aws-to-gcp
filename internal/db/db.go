@@ -530,8 +530,8 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 		tx, err := conn.Begin()
 		if err == nil {
 			_, _ = tx.Exec(`
-				UPDATE assumptions SET min_value = 4.0, max_value = 16.0 WHERE key = 'aurora_acu_ram_gib';
-				UPDATE assumptions SET min_value = 0.5, max_value = 2.0 WHERE key = 'aurora_acu_vcpu';
+				UPDATE assumptions SET min_value = 2.0, max_value = 16.0 WHERE key = 'aurora_acu_ram_gib';
+				UPDATE assumptions SET min_value = 0.25, max_value = 2.0 WHERE key = 'aurora_acu_vcpu';
 				UPDATE assumptions SET max_value = 1.0 WHERE key = 'rds_iops_included_in_storage';
 				INSERT INTO schema_migrations (name, applied_at) VALUES ('align_assumption_domain_bounds_2026_11', datetime('now'));
 			`)
@@ -654,8 +654,8 @@ func Open(path string, remoteURL ...string) (*DB, error) {
 			('glue_dpu_vcpu', 4.0, 4.0, 1.0, 32.0, 'vCPU', 'Glue DPU to vCPU', '1 AWS Glue standard DPU (G.1X worker) = 4 vCPU per AWS Glue worker-type spec', 'compute_sizing'),
 			('glue_dpu_ram_gib', 16.0, 16.0, 1.0, 256.0, 'GiB', 'Glue DPU to RAM', '1 AWS Glue standard DPU (G.1X worker) = 16 GiB per AWS Glue worker-type spec', 'compute_sizing'),
 			('looker_studio_pro_seat_usd', 9.0, 9.0, 0.0, 100.0, 'USD/user/project/mo', 'Data Studio Pro seat rate', 'Data Studio Pro (formerly Looker Studio Pro; Google reverted the name Apr 2026) — $9 per user per project per month published list price', 'other'),
-			('aurora_acu_vcpu', 2.0, 2.0, 0.5, 2.0, 'vCPU', 'Aurora ACU to vCPU', '1 Aurora Serverless v2 ACU ≈ 2 vCPU (empirical: 16 ACU ≈ 4 vCPU ≈ db.r5.xlarge)', 'compute_sizing'),
-			('aurora_acu_ram_gib', 16.0, 16.0, 4.0, 16.0, 'GiB', 'Aurora ACU to RAM', '1 Aurora Serverless v2 ACU ≈ 16 GiB RAM (empirical: 16 ACU ≈ 32 GiB ≈ db.r5.xlarge)', 'compute_sizing'),
+			('aurora_acu_vcpu', 2.0, 2.0, 0.25, 2.0, 'vCPU', 'Aurora ACU to vCPU', '1 Aurora Serverless v2 ACU ≈ 2 vCPU (empirical: 16 ACU ≈ 4 vCPU ≈ db.r5.xlarge)', 'compute_sizing'),
+			('aurora_acu_ram_gib', 16.0, 16.0, 2.0, 16.0, 'GiB', 'Aurora ACU to RAM', '1 Aurora Serverless v2 ACU ≈ 16 GiB RAM (empirical: 16 ACU ≈ 32 GiB ≈ db.r5.xlarge)', 'compute_sizing'),
 			('lambda_mb_per_vcpu', 2500.0, 2500.0, 512.0, 4096.0, 'MB', 'Lambda MB per vCPU (Cloud Run sizing)', 'Memory-per-vCPU used to size Cloud Run CPU for migrated Lambda functions. AWS allocates 1 vCPU/1769 MB; Cloud Run caps memory at 4096 MB/vCPU. 2500 = CPU right-sizing within that envelope, calibrated to AWS-OD/GCP-OD parity', 'compute_sizing'),
 			('aws_ri_1yr_discount_pct', 0.38, 0.38, 0.0, 0.90, 'fraction', 'AWS 1-Year RI Discount', 'Published typical AWS 1-year reserved instance discount rate (~38%)', 'commitment'),
 			('aws_ri_3yr_discount_pct', 0.52, 0.52, 0.0, 0.90, 'fraction', 'AWS 3-Year RI Discount', 'Published typical AWS 3-year reserved instance discount rate (~52%)', 'commitment'),

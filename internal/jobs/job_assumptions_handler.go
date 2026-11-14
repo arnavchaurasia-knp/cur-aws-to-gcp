@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -243,6 +244,36 @@ func (h *Handler) RerunJobAssumptions(w http.ResponseWriter, r *http.Request) {
 		}
 		if v < a.MinValue || v > a.MaxValue {
 			http.Error(w, fmt.Sprintf(`{"error":"value %g for %s out of allowed range [%g, %g]"}`, v, k, a.MinValue, a.MaxValue), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Validate ratio groups (WORKORDER_round3_audit.md A-2)
+	effVCPU := 2.0
+	if a, ok := assumpMap["aurora_acu_vcpu"]; ok {
+		effVCPU = a.Value
+	}
+	if v, ok := overrides["aurora_acu_vcpu"]; ok {
+		effVCPU = v
+	}
+	effRAM := 16.0
+	if a, ok := assumpMap["aurora_acu_ram_gib"]; ok {
+		effRAM = a.Value
+	}
+	if v, ok := overrides["aurora_acu_ram_gib"]; ok {
+		effRAM = v
+	}
+	if effVCPU > 0 {
+		ratio := effRAM / effVCPU
+		allowed := false
+		for _, r := range []float64{4.0, 8.0, 16.0} {
+			if math.Abs(ratio-r) < 1e-3 {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			http.Error(w, fmt.Sprintf(`{"error":"invalid Aurora ACU ratio 1:%.1f (RAM %.1f GiB / vCPU %.1f); GCP only supports ratios 1:4, 1:8, 1:16"}`, ratio, effRAM, effVCPU), http.StatusBadRequest)
 			return
 		}
 	}

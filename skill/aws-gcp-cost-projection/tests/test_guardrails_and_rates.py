@@ -1053,9 +1053,9 @@ def test_rv_d2_aurora_serverless_v2_acu_breakdown():
     components = {e["component"]: e for e in out}
     assert "core" in components
     assert "ram" in components
-    assert components["ram"]["unit_multiplier"] == 16.0
-    assert components["core"]["unit_multiplier"] == 2.0
-    assert "1 ACU = 2 vCPU + 16 GiB" in components["ram"]["projection_note"]
+    assert components["ram"]["unit_multiplier"] == 2.0
+    assert components["core"]["unit_multiplier"] == 0.25
+    assert "1 ACU = 0.25 vCPU + 2 GiB" in components["ram"]["projection_note"]
 
 
 def test_rv_minor_cheapest_region_confidence_capping():

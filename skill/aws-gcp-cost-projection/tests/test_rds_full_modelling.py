@@ -56,7 +56,7 @@ def test_rds_sqlserver_multi_az_maps_to_regional():
         assert e["strategy"] == "map"
 
 
-def test_rds_oracle_maps_to_oracle_gcp_passthrough():
+def test_rds_oracle_maps_to_oracle_gcp_priced_map():
     row = _make_row(engine="oracle-ee", itype="db.m5.large", region="us-central1")
     parsed = parse_instance("db.m5.large")
     res = map_db_row(row, parsed)
@@ -64,9 +64,63 @@ def test_rds_oracle_maps_to_oracle_gcp_passthrough():
     assert len(res) == 1
     e = res[0]
     assert e["gcp_service"] == "Oracle Database@Google Cloud"
-    assert e["strategy"] == "passthrough"
-    assert "Oracle Database@Google Cloud" in e["projection_note"]
-    assert "https://cloud.google.com/oracle/database/docs/overview" in e["projection_note"]
+    assert e["strategy"] == "map"
+    assert e["gcp_sku_id"] == "ORACLE-BASE-DB-EE-ECPU"
+    assert e["unit_multiplier"] == 4.0  # 2 vCPUs * 2 ECPUs/vCPU
+    assert e["gcp_sku_unit"] == "ECPU-hour"
+    assert e["mapping_confidence"] == 0.85
+    assert "1 vCPU = 2 ECPUs" in e["projection_note"]
+    assert "https://www.oracle.com/cloud/price-list/#database-google-cloud" in e["projection_note"]
+
+
+def test_rds_oracle_se2_and_byol_pricing():
+    # SE2
+    row_se2 = _make_row(engine="oracle-se2", itype="db.m5.large", region="us-central1")
+    parsed = parse_instance("db.m5.large")
+    res_se2 = map_db_row(row_se2, parsed)
+    assert res_se2[0]["strategy"] == "map"
+    assert res_se2[0]["gcp_sku_id"] == "ORACLE-BASE-DB-SE-ECPU"
+    assert res_se2[0]["unit_multiplier"] == 4.0
+
+    # BYOL
+    row_byol = _make_row(engine="oracle-ee", itype="db.m5.large", region="us-central1")
+    row_byol["license_model"] = "bring-your-own-license"
+    res_byol = map_db_row(row_byol, parsed)
+    assert res_byol[0]["strategy"] == "map"
+    assert res_byol[0]["gcp_sku_id"] == "ORACLE-BASE-DB-BYOL-ECPU"
+    assert res_byol[0]["unit_multiplier"] == 4.0
+
+    # Multi-AZ (2x ECPUs for 2 nodes)
+    row_ha = _make_row(engine="oracle-ee", itype="db.m5.large", region="us-central1")
+    row_ha["deployment_option"] = "Multi-AZ"
+    res_ha = map_db_row(row_ha, parsed)
+    assert res_ha[0]["strategy"] == "map"
+    assert res_ha[0]["unit_multiplier"] == 8.0  # 4.0 * 2.0
+
+
+def test_oracle_rate_injected_into_gcp_sku_rates():
+    import duckdb
+    from scripts import apply_rates
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        CREATE TABLE gcp_sku_rates (
+            gcp_sku_id VARCHAR, gcp_service VARCHAR, gcp_sku_name VARCHAR,
+            resource_family VARCHAR, resource_group VARCHAR, pricing_type VARCHAR,
+            region VARCHAR, unit VARCHAR, rate_usd DOUBLE, source VARCHAR, audit_url VARCHAR,
+            PRIMARY KEY (gcp_sku_id, pricing_type, region)
+        )
+        """
+    )
+    apply_rates.inject_oracle_rates(con)
+    rows = con.execute("SELECT gcp_sku_id, region, rate_usd, unit FROM gcp_sku_rates WHERE gcp_service = 'Oracle Database@Google Cloud'").fetchall()
+    con.close()
+    assert len(rows) > 0
+    skus_found = {r[0]: r[2] for r in rows if r[1] == "us-central1"}
+    assert skus_found["ORACLE-BASE-DB-SE-ECPU"] == 0.0538
+    assert skus_found["ORACLE-BASE-DB-EE-ECPU"] == 0.1075
+    assert skus_found["ORACLE-BASE-DB-BYOL-ECPU"] == 0.0484
+    assert skus_found["ORACLE-BASE-DB-HP-ECPU"] == 0.2218
 
 
 def test_rds_oracle_unavailable_region_passthrough():

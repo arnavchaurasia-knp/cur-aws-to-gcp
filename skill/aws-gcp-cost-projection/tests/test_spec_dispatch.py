@@ -257,7 +257,7 @@ CASES = [
     ("efs_storage",
      _row(product="Amazon Elastic File System", product_code="AmazonEFS",
           usage_type="APS3-TimedStorage-ByteHrs", unit="GB-Mo"),
-     "efs", "efs_all"),
+     "efs", "efs_storage_standard"),
 
     # ---- FSx ----
     ("fsx_storage",

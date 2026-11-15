@@ -308,6 +308,18 @@ CASES = [
      _row(product="Amazon Route 53", product_code="AmazonRoute53",
           usage_type="APS3-DNS-Queries", unit="Queries"),
      "per_request", "route53_dns"),
+    ("route53_zones",
+     _row(product="Amazon Route 53", product_code="AmazonRoute53",
+          usage_type="APS3-HostedZone", unit="Mo"),
+     "per_request", "route53_zones"),
+    ("route53_healthcheck",
+     _row(product="Amazon Route 53", product_code="AmazonRoute53",
+          usage_type="APS3-HealthCheck", unit="Count"),
+     "per_request", "route53_healthcheck"),
+    ("route53_trafficflow",
+     _row(product="Amazon Route 53", product_code="AmazonRoute53",
+          usage_type="APS3-TrafficFlow", unit="Count"),
+     "per_request", "route53_trafficflow"),
 
     # ---- EKS ----
     ("eks_cluster_hours",

@@ -1460,5 +1460,127 @@
       "expected_mechanic": "misc",
       "description": "GWLBE bytes -> PrivateLink / PSC passthrough"
     }
+  ],
+  "route53": [
+    {
+      "usage_type": "HostedZone",
+      "operation": "",
+      "unit": "Mo",
+      "expected_charge_type": "route53_zones",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 hosted zone fee -> Cloud DNS ManagedZone"
+    },
+    {
+      "usage_type": "USE1-HostedZone",
+      "operation": "",
+      "unit": "Mo",
+      "expected_charge_type": "route53_zones",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 hosted zone US East -> Cloud DNS ManagedZone"
+    },
+    {
+      "usage_type": "DNS-Queries",
+      "operation": "",
+      "unit": "Queries",
+      "expected_charge_type": "route53_dns",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 standard DNS queries -> Cloud DNS DNS Query"
+    },
+    {
+      "usage_type": "USE1-DNS-Queries",
+      "operation": "",
+      "unit": "Queries",
+      "expected_charge_type": "route53_dns",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 DNS queries US East -> Cloud DNS DNS Query"
+    },
+    {
+      "usage_type": "USE1-DNS-Queries-Latency",
+      "operation": "LatencyRouting",
+      "unit": "Queries",
+      "expected_charge_type": "route53_dns",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 latency-based routing queries"
+    },
+    {
+      "usage_type": "USE1-DNS-Queries-Geo",
+      "operation": "GeoRouting",
+      "unit": "Queries",
+      "expected_charge_type": "route53_dns",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 geo routing queries"
+    },
+    {
+      "usage_type": "HealthCheck",
+      "operation": "",
+      "unit": "Count",
+      "expected_charge_type": "route53_healthcheck",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 health check -> Cloud DNS Fast Health Check"
+    },
+    {
+      "usage_type": "USE1-HealthCheck",
+      "operation": "",
+      "unit": "Count",
+      "expected_charge_type": "route53_healthcheck",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 health check US East -> Cloud DNS Fast Health Check"
+    },
+    {
+      "usage_type": "USE1-HealthCheck-HTTPS",
+      "operation": "HTTPS",
+      "unit": "Count",
+      "expected_charge_type": "route53_healthcheck",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 HTTPS health check -> Cloud DNS Premium Health Check"
+    },
+    {
+      "usage_type": "TrafficFlow",
+      "operation": "",
+      "unit": "Count",
+      "expected_charge_type": "route53_trafficflow",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 Traffic Flow policy record fee -> passthrough"
+    },
+    {
+      "usage_type": "USE1-TrafficFlow",
+      "operation": "",
+      "unit": "Count",
+      "expected_charge_type": "route53_trafficflow",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 Traffic Flow US East -> passthrough"
+    },
+    {
+      "usage_type": "USE1-DNS-Firewall-Queries",
+      "operation": "",
+      "unit": "Queries",
+      "expected_charge_type": "route53_firewall",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 DNS Firewall queries -> passthrough"
+    },
+    {
+      "usage_type": "USE1-Resolver-Endpoint-Hours",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "route53_resolver",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 Resolver endpoint hours -> passthrough/review"
+    },
+    {
+      "usage_type": "USE1-Resolver-Queries",
+      "operation": "",
+      "unit": "Queries",
+      "expected_charge_type": "route53_resolver",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 Resolver queries -> passthrough/review"
+    },
+    {
+      "usage_type": "USE1-Records-Over-10k",
+      "operation": "",
+      "unit": "Count",
+      "expected_charge_type": "route53_dns",
+      "expected_mechanic": "per_request",
+      "description": "Route 53 records >10,000 per zone fee -> ignore ()"
+    }
   ]
 }

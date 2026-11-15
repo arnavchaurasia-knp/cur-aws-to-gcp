@@ -3000,13 +3000,148 @@ def map_per_request(rows):
                 out.append(entry)
                 continue
 
-        # Route 53 hosted-zone fees. These MUST be caught before the generic
+        # Route 53 billing dimensions. These MUST be caught before the generic
         # PER_REQUEST_MAP table below, whose "Route.?53" pattern would price a
-        # per-month zone charge against the per-query SKU — the same fabricated
+        # per-month zone/health-check charge against the per-query SKU — the same fabricated
         # number that the ARC rows used to produce. AWS charges $0.50/zone/mo;
         # Cloud DNS "ManagedZone" is $0.20/mo.
-        if re.search(r"route.?53|route53", product) and not re.search(r"recovery controller", product):
-            if re.search(r"hosted.?zone|hostedzone", f"{ut_raw} {(r.get('operation') or '').lower()}"):
+        if re.search(r"route.?53|route53", f"{product} {ut_raw}") and not re.search(r"recovery controller", product):
+            r53_blob = f"{ut_raw} {(r.get('operation') or '').lower()}"
+
+            # 1. Health checks → MAP to Cloud DNS routing-policy health-check SKUs
+            # (External fast 4D2F-E662-295E $2.00/mo; External premium 9284-9C28-65BE $4.00/mo).
+            if re.search(r"health.?check|healthcheck", r53_blob):
+                is_premium = bool(
+                    re.search(r"https|string|content|match|premium", r53_blob)
+                    and "fast" not in r53_blob
+                )
+                if is_premium:
+                    desc_pat = "Cloud DNS Routing Policy Internet Premium Health Check"
+                    label = "Premium Health Check"
+                    rate_str = "$4.00"
+                else:
+                    desc_pat = "Cloud DNS Routing Policy Internet Fast Health Check"
+                    label = "Fast Health Check"
+                    rate_str = "$2.00"
+
+                sku = resolve_sku("Networking", desc_pat, gcp_region or "global")
+                note = (
+                    f"Route 53 health check → Cloud DNS {label} "
+                    f"({rate_str}/check/mo vs AWS $0.50-$2.00; cloud.google.com/dns/pricing)"
+                )
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Networking",
+                    "gcp_sku_id":         sku if sku else None,
+                    "gcp_sku_name":       desc_pat if sku else None,
+                    "component":          "healthcheck",
+                    "strategy":           "map" if sku else "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region or "global",
+                    "projection_note":    note + _no_rate_suffix(sku, gcp_region or "global"),
+                    "mapping_confidence": 0.85 if sku else 0.70,
+                }
+                if sku:
+                    entry["gcp_sku_unit"] = sku.unit
+                out.append(entry)
+                continue
+
+            # 2. Traffic Flow policy records ($50.00/policy-record/mo)
+            if re.search(r"traffic.?flow|trafficflow|policy.?record|traffic.?policy", r53_blob):
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        None,
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "traffic_flow",
+                    "strategy":           "passthrough",
+                    # Intentional: GCP has no flat per-policy-record fee. Declare the reason
+                    # explicitly so it isn't defaulted to 'unclassified' (a DEFECT reason that
+                    # counts against the 5% defect budget) on a Traffic-Flow-heavy bill.
+                    "passthrough_reason": "no_gcp_equivalent",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    (
+                        "Route 53 Traffic Flow policy records ($50.00/policy-record/mo) — "
+                        "GCP Cloud DNS has no flat per-policy-record fee (routing policies are "
+                        "configured directly on record sets and surcharged on queries at $0.70/M instead); "
+                        "passthrough at AWS cost. Source: aws.amazon.com/route53/pricing, cloud.google.com/dns/pricing"
+                    ),
+                    "mapping_confidence": 0.80,
+                }
+                out.append(entry)
+                continue
+
+            # 3. DNS Firewall
+            if re.search(r"dns.?firewall|dnsfirewall|firewall", r53_blob):
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        None,
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "security",
+                    "strategy":           "passthrough",
+                    # Intentional: GCP DNS Armor is per-workload-unit, incompatible with AWS
+                    # per-query DNS Firewall — no unit-compatible equivalent to map to.
+                    "passthrough_reason": "no_gcp_equivalent",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    (
+                        "Route 53 DNS Firewall — GCP analogue is DNS Armor (advanced threat detection), "
+                        "billed per-workload-unit ($0.01/$0.005/$0.0024/unit) vs AWS per-query/rule-group; "
+                        "incompatible billing units, passthrough at AWS cost. Source: cloud.google.com/dns/pricing"
+                    ),
+                    "mapping_confidence": 0.75,
+                }
+                out.append(entry)
+                continue
+
+            # 4. Resolver endpoints and queries
+            if re.search(r"resolver", r53_blob):
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        None,
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "resolver",
+                    "strategy":           "passthrough",
+                    # Intentional: GCP Cloud DNS outbound endpoint is free in Preview (GA 2027-01-25)
+                    # and has no per-ENI fee today — no comparable billed SKU to map to.
+                    "passthrough_reason": "no_gcp_equivalent",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    (
+                        "Route 53 Resolver — GCP Cloud DNS outbound endpoint is $182.50/mo ($0.25/hr ≈ AWS 2×$0.125), "
+                        "free in Public Preview, charge takes effect at GA 2027-01-25; "
+                        "passthrough at AWS cost with architecture review recommended. Source: cloud.google.com/dns/pricing"
+                    ),
+                    "mapping_confidence": 0.70,
+                }
+                out.append(entry)
+                continue
+
+            # 5. Records >10,000 per zone fee ($0.0015/record/mo)
+            if re.search(r"record.*(?:tier|over|10000|10k)|over.*(?:10k|10000)|record.*fee", r53_blob):
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        None,
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "records",
+                    "strategy":           "ignore",
+                    "unit_multiplier":    0.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    (
+                        "Route 53 records >10,000 per zone fee ($0.0015/record/mo) — Cloud DNS includes all records "
+                        "in the managed zone fee with no per-record surcharge ($0 on GCP). Source: cloud.google.com/dns/pricing"
+                    ),
+                    "mapping_confidence": 0.90,
+                }
+                out.append(entry)
+                continue
+
+            # 6. Hosted zones
+            if re.search(r"hosted.?zone|hostedzone", r53_blob):
                 sku = resolve_sku("Cloud DNS", "^ManagedZone$", gcp_region or "global")
                 entry = {
                     "aws_li_key":         r["aws_li_key"],
@@ -3022,6 +3157,30 @@ def map_per_request(rows):
                         "($0.20/zone/mo vs AWS $0.50)" + _no_rate_suffix(sku, gcp_region)
                     ),
                     "mapping_confidence": 0.90,
+                }
+                if sku:
+                    entry["gcp_sku_unit"] = sku.unit
+                out.append(entry)
+                continue
+
+            # 7. Routing-policy queries (latency/geo/IP)
+            if re.search(r"latency|geo|geoproximity|ip.?based|routing.?policy", r53_blob):
+                sku = resolve_sku("Cloud DNS", "^DNS Query", gcp_region or "global")
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Cloud DNS",
+                    "gcp_sku_id":         sku if sku else None,
+                    "gcp_sku_name":       "DNS Query (Routing Policy)",
+                    "component":          "queries",
+                    "strategy":           "map" if sku else "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region or "global",
+                    "projection_note":    (
+                        "Route 53 routing-policy queries (latency/geo/IP) → Cloud DNS DNS Query "
+                        "(GCP surcharges routing-policy queries at $0.70/M first 1B, $0.35/M over vs AWS $0.60–0.80/M; "
+                        "cloud.google.com/dns/pricing)" + _no_rate_suffix(sku, gcp_region or "global")
+                    ),
+                    "mapping_confidence": 0.85 if sku else 0.70,
                 }
                 if sku:
                     entry["gcp_sku_unit"] = sku.unit

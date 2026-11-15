@@ -2744,6 +2744,116 @@
     ],
     "charge_types": [
       {
+        "id": "route53_healthcheck",
+        "description": "Route 53 health checks -> Cloud DNS routing-policy health checks (External fast/premium).",
+        "any_of": [
+          {
+            "usage_type_re": "HealthCheck|Health-Check|HealthCheckId"
+          },
+          {
+            "operation_re": "HealthCheck|Health-Check"
+          }
+        ],
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "checks",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Route 53 health-check branch)"
+      },
+      {
+        "id": "route53_trafficflow",
+        "description": "Route 53 Traffic Flow policy records -> passthrough (GCP surcharges routing queries instead).",
+        "any_of": [
+          {
+            "usage_type_re": "TrafficFlow|Traffic-Flow|PolicyRecord|Traffic-Policy"
+          },
+          {
+            "operation_re": "TrafficFlow|Traffic-Flow|PolicyRecord"
+          }
+        ],
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "records",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Route 53 Traffic Flow passthrough)"
+      },
+      {
+        "id": "route53_firewall",
+        "description": "Route 53 DNS Firewall -> passthrough (GCP analogue DNS Armor has incompatible units).",
+        "any_of": [
+          {
+            "usage_type_re": "DNS-Firewall|DNSFirewall|Firewall"
+          },
+          {
+            "operation_re": "DNS-Firewall|DNSFirewall|Firewall"
+          }
+        ],
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "queries",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Route 53 DNS Firewall passthrough)"
+      },
+      {
+        "id": "route53_resolver",
+        "description": "Route 53 Resolver endpoints and queries -> passthrough (Cloud DNS outbound endpoint preview).",
+        "any_of": [
+          {
+            "usage_type_re": "Resolver"
+          },
+          {
+            "operation_re": "Resolver"
+          }
+        ],
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "usage",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Route 53 Resolver passthrough)"
+      },
+      {
+        "id": "route53_zones",
+        "description": "Route 53 hosted zones -> Cloud DNS ManagedZone.",
+        "any_of": [
+          {
+            "usage_type_re": "HostedZone|Hosted-Zone"
+          },
+          {
+            "operation_re": "HostedZone|Hosted-Zone"
+          }
+        ],
+        "mechanic": "per_request",
+        "fields": [
+          {
+            "name": "zones",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Route 53 hosted-zone branch)"
+      },
+      {
         "id": "route53_dns",
         "description": "Hosted zones / DNS queries -> Cloud DNS.",
         "match": {},

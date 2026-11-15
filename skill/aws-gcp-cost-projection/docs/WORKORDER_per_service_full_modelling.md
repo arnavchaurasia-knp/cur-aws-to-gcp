@@ -12,12 +12,12 @@ end-to-end before moving on.
 > This workorder is the vehicle that fixes all of that, one service at a time, with each service's
 > completion *enforced by the gate* so it can never silently regress.
 
-> ▶ **NO ACTIVE ASSIGNMENT.** `elb` (§4.12) is **☑ DONE+GATED** (all 9 DoD items satisfied; 393 targeted tests green; full suite regression passing).
+> ▶ **NO ACTIVE ASSIGNMENT.** `route53` (§4.13) is **☑ DONE+GATED** (all DoD items satisfied; 377 targeted tests green; full suite regression 1,564 passed in 243s).
 > Agent: do **not** self-start any service and do **not** self-start from §5 PARKED — wait for the next
 > `CURRENT ASSIGNMENT` to be set here. The §2 Definition of Done is **per-service**; update the **§7.1** log
 > every session.
 > (Done so far: RDS §4.1, SageMaker §4.2, AWS Backup §4.3, MemoryDB §4.4, DocumentDB §4.5, DMS §4.6,
-> Lambda §4.7, Redshift §4.8, EFS §4.9, Data Transfer §4.11, ELB §4.12 — all modelled, implemented, full suite green.)
+> Lambda §4.7, Redshift §4.8, EFS §4.9, Data Transfer §4.11, ELB §4.12, Route 53 §4.13 — all modelled, implemented, full suite green.)
 >
 > **⏸ DEFERRED (interim fix Claude-VERIFIED; real completion still pending): `fsx` (§4.10) — ⚙.**
 > Dollar-safe interim fix applied per §7.1 option 2 and **Claude-verified empirically 2026-11-14**: ONTAP SSD →
@@ -123,7 +123,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | 18 | datatransfer | PARTIAL (flat egress rate) | **☑ DONE+GATED** | §4.11 |
 | 19 | vpc / nat / tgw | PARTIAL (TGW issues) | ☐ | — |
 | 20 | elb | GOOD | **☑ DONE+GATED** | §4.12 |
-| 21 | route53 | GOOD (health-check gap) | ☐ | — |
+| 21 | route53 | GOOD (health-check gap) | **☑ DONE+GATED** | §4.13 |
 | 22 | directconnect | PARTIAL (10G flat) | ☐ | — |
 | 23 | cloudwatch | GOLD | ☐ | — |
 | 24 | cloudtrail | GOOD | ☐ | — |
@@ -1430,6 +1430,122 @@ both sides' rates are in hand.
 
 ---
 
+### 4.13 Route 53 → Cloud DNS — ☑ DONE+GATED
+
+Verification + gap-fill. Route 53 is PARTIALLY handled: DNS queries → Cloud DNS DNS Query (`PER_REQUEST_MAP` entry
+`apply_static_mappings.py:557`) and hosted zones → Cloud DNS ManagedZone (explicit branch `map_per_request` ~`:3008`)
+both map and work; ARC → passthrough (`service_map.json`); Resolver → Cloud DNS forwarding/policies review. **The gaps
+(this task):** (1) **Health-check rows are mis-mapped** — they carry product "Route 53" + usage_type `…HealthCheck`,
+fall through to the generic `Route.?53` pattern, and get priced at the **per-query** DNS Query SKU — a fabricated
+number, same class as the old ARC bug. (2) **Traffic Flow** ($50/policy-record/mo) and (3) **DNS Firewall** are
+unhandled. (4) **Records >10,000/zone** ($0.0015/rec-mo) unhandled. (5) `service_usage_catalog.json` has **ZERO**
+route53 dimensions, so the completeness gate isn't enforcing this service; `service_specs.json` route53 has only one
+charge-type (`route53_dns`).
+
+#### 4.13.0 Verification status (AWS + GCP official pages, 2026-11-15)
+- ✅ **AWS CONFIRMED** (`aws.amazon.com/route53/pricing`, server-rendered, full text):
+  - **Hosted zones:** $0.50/zone/mo first 25, **$0.10/zone/mo** additional. Each zone includes 10,000 records;
+    **>10,000 records = $0.0015/record/mo**. Not prorated.
+  - **Standard queries** (public zones, prorated): **$0.40/M** first 1B/mo, **$0.20/M** over 1B. Routing-type
+    premiums (same two-tier shape): latency $0.60/$0.30, geo/geoproximity $0.70/$0.35, IP-based $0.80/$0.40 per M.
+    Private-zone queries **free**. GovCloud is higher ($0.50/$0.25 etc.).
+  - **Alias queries → AWS resources (ELB/CloudFront/S3/APIGW/VPCe/…): FREE** (all routing types). Exception: alias to
+    a non-alias record in same zone = standard rate.
+  - **Health checks (per check/mo, prorated):** basic $0.50 AWS-endpoint / **$0.75 non-AWS**; optional features
+    (HTTPS, string-match, fast interval, latency) $1.00 AWS / $2.00 non-AWS each. Calculated/CloudWatch-metric billed
+    as AWS-endpoint. ELB/S3-website health checks free. Free tier: up to 50 AWS-endpoint health checks.
+  - **Traffic Flow:** **$50.00/policy-record/mo** (prorated). Unassociated policies free.
+  - **Resolver:** endpoint $0.125/ENI-hr; recursive queries $0.40/M first 1B, $0.20/M over; Outposts $0.65/hr.
+  - **DNS Firewall:** foundational queries $0.60/M first 1B, $0.40/M over; custom-list domain $0.0005/name/mo;
+    advanced rule groups $0.16/hr per VPC assoc. **Profiles** $0.75/acct-hr (first 100 assoc). **ARC** = cluster-hours
+    (separate product). **Domain registration** per-TLD/yr (separate PDF) → non-workload.
+- ✅ **GCP Cloud DNS CONFIRMED** (user-pasted `cloud.google.com/dns/pricing` 2026-11-15; catalog SKUs verified):
+  - **Managed zones** (tiered, prorated hourly): **$0.20/zone/mo** first 25, **$0.10/zone/mo** 26–10,000, **$0.03/zone/mo**
+    10,001+. All zone types (public/private/forwarding) aggregated. SKU `ManagedZone` = **8C22-6FC3-D478** (tiering in
+    `tiered_rates`). vs AWS $0.50/$0.10 → GCP cheaper on first 25, parity 26–10k, far cheaper >10k.
+  - **Regular queries:** **$0.40/M** first 1B, **$0.20/M** over — EXACT PARITY with AWS standard. SKU `DNS Query (port 53)`
+    = **6DFF-5025-A128**.
+  - **Routing-policy queries:** **$0.70/M** first 1B, **$0.35/M** over — DEDICATED SKU (first pass wrongly assumed GCP
+    doesn't surcharge routing). AWS premium-routing maps here: latency $0.60→$0.70, geo $0.70=$0.70 (parity), IP $0.80→$0.70.
+    (No separate catalog SKU under Cloud DNS — pin the $0.70/$0.35 rate, or fall back to Regular DNS Query when a
+    routing-type row isn't distinguishable; low-priority refinement.)
+  - **Health checks EXIST** (overturns the "no equivalent" assumption): External fast **$2.00/mo** SKU
+    `Cloud DNS Routing Policy Internet Fast Health Check` = **4D2F-E662-295E** (service_name=`Networking`); External premium
+    **$4.00/mo** (SSL/TCP/HTTP/HTTPS/HTTP2/gRPC + content-based) = **9284-9C28-65BE**; Internal fast **$0.50/mo** (L4 ILB);
+    Internal premium **$2.00/mo** (L7 ILB). AWS health checks → **MAP** to these (external default), not passthrough.
+  - **Outbound endpoint:** $182.50/mo ($0.25/hr) ≈ AWS Resolver outbound (2×$0.125/ENI-hr) — **free during Public Preview,
+    charge takes effect at GA 2027-01-25.** Resolver → passthrough/review, named analogue + GA caveat.
+  - **DNS Armor** (advanced threat detection): tiered per-workload-unit ($0.01/$0.005/$0.0024; 1 unit = 1 workload ≤150
+    internet DNS queries/hr) — analogue to **AWS DNS Firewall**, but per-workload-unit vs AWS per-query → incompatible
+    unit → passthrough.
+  - **No free tier** (GCP states this); **no data-transfer-out charges**. Forwarding-target resolution billed at the
+    standard query rate.
+- ✅ **Comparison table CONFIRMS** Route 53 → Cloud DNS. (R53 health checks DO map — to the Cloud DNS routing-policy
+  health-check SKUs above — not to Cloud Monitoring uptime checks as first assumed.)
+
+#### 4.13.1 AWS → GCP mapping decision table
+| Route 53 charge | AWS unit | Decision | GCP target / rule | status |
+|---|---|---|---|---|
+| Hosted zone | zone-mo | SKU | Cloud DNS **ManagedZone** (tiering per paste) | ✅ works (`:3008`) — verify tiering |
+| Records >10,000/zone | record-mo | IGNORE | Cloud DNS has no per-record charge (zones include records) | ❌ add (rare, low $) |
+| Standard DNS queries | queries | SKU | Cloud DNS **DNS Query** ($0.40/M; near parity) | ✅ works (`:557`) — verify 1B tier |
+| Latency/geo/IP routing queries | queries | SKU | Cloud DNS **Routing-policy queries** ($0.70/M first 1B, $0.35/M over) — dedicated SKU. latency $0.60→$0.70, geo $0.70=$0.70, IP $0.80→$0.70. If routing-type not distinguishable → fall back to Regular DNS Query + note | ⚠️ add (no catalog SKU — pin rate/fallback) |
+| Alias queries → AWS resources | queries | IGNORE | free on AWS (0-cost rows already ignored) | ✅ |
+| **Health checks** | check-mo | **SKU (map)** | **Cloud DNS routing-policy health checks EXIST**: External fast `4D2F-E662-295E` ($2.00/mo), External premium `9284-9C28-65BE` ($4.00/mo, for HTTPS/string-match/content). Basic→fast, feature/HTTPS→premium. **Currently MIS-MAPPED to per-query DNS Query — must fix (map to these, not $0, not per-query)** | ❌ **priority fix** |
+| **Traffic Flow** | record-mo | **PASS** | GCP has no flat per-policy-record fee (it surcharges routing-policy *queries* at $0.70/M instead); AWS $50/record is real spend with no GCP flat equivalent → passthrough (not $0), note GCP's query-surcharge model | ❌ add |
+| **DNS Firewall** (queries + rule groups) | queries/hr | PASS | GCP analogue = **DNS Armor** (per-workload-unit $0.01/$0.005/$0.0024), incompatible unit vs AWS per-query → passthrough, name DNS Armor | ❌ add |
+| Resolver endpoints + queries | ENI-hr / queries | PASS/review | GCP **Cloud DNS outbound endpoint** $182.50/mo ($0.25/hr ≈ AWS 2×$0.125) — **free in Public Preview, charge at GA 2027-01-25**; no per-ENI fee today → passthrough/review, named analogue + GA caveat | ⚠️ service_map review (keep) |
+| ARC (cluster-hours) | hr | PASS | no GCP equivalent | ✅ service_map passthrough |
+| Domain registration | yr | PASS (non-workload) | GCP Cloud Domains — separate, per-TLD | ⚠️ verify non-workload |
+
+#### 4.13.2 Hardcoding to remove / add
+- **KEEP:** hosted-zone branch (`map_per_request` ~`:3008`), DNS-query `PER_REQUEST_MAP` entry (`:557`), ARC exclusion
+  (negative lookahead + `classify_mechanics`), Resolver service_map review.
+- **ADD health-check branch BEFORE `PER_REQUEST_MAP`** (like the hosted-zone branch) — match
+  `HealthCheck|Health-Check|HealthCheckId` in usage_type/operation. **MAP (not passthrough)** to the Cloud DNS
+  routing-policy health-check SKUs: default **External fast** `resolve_sku("Networking", "Cloud DNS Routing Policy
+  Internet Fast Health Check", …)` = 4D2F-E662-295E ($2.00/mo); if the row shows HTTPS / string-matching / content /
+  latency features → **External premium** 9284-9C28-65BE ($4.00/mo). Guard `"map" if sku else "passthrough"`,
+  `component='healthcheck'`, unit_multiplier=1.0 (per-check-month → per-check-month). Note AWS $0.50–0.75 basic /
+  $1–2 feature vs GCP $2/$4 (GCP pricier; disclose). This REPLACES the per-query mis-map the generic `Route.?53`
+  pattern currently applies to these rows (which prices a per-check fee at the per-query SKU — fabricated number).
+- **ADD routing-policy-query handling** — if a query row is latency/geo/IP-routing (distinguishable in usage_type),
+  map to the GCP **Routing-policy queries** rate ($0.70/M first 1B, $0.35/M over); no catalog SKU exists, so pin the
+  rate (synthetic-SKU injection like egress) or fall back to Regular DNS Query ($0.40) with a disclosure note. Standard
+  queries keep the existing Regular `DNS Query` map. Low priority.
+- **ADD Traffic Flow branch** — match `TrafficFlow|PolicyRecord|Traffic-Policy` → passthrough; note GCP has no flat
+  per-policy-record fee (it surcharges routing-policy *queries* instead), so $50/record is AWS-only spend.
+- **ADD DNS Firewall branch** — match `DNS-Firewall|DNSFirewall|Firewall` (+ Route 53 product) → passthrough, name
+  **DNS Armor** as the analogue (per-workload-unit model, incompatible with AWS per-query).
+- **ADD records-over-10k** → ignore ($0, no GCP per-record charge).
+
+#### 4.13.3 Implementation steps (EXACT — do in order; `ast.parse` after every edit; touch ONLY these)
+Files: `scripts/apply_static_mappings.py` (new route53 branches in `map_per_request`, before the generic
+`PER_REQUEST_MAP` dispatch), `data/service_specs.json` (route53: add `route53_healthcheck` → per_request/map,
+`route53_trafficflow` → passthrough), `data/service_usage_catalog.json` (add route53 dimensions: hosted-zone, dns-query,
+health-check, traffic-flow, resolver, dns-firewall), `scripts/classify_mechanics.py` only if health-check/traffic-flow
+rows don't already route to `per_request` (verify first — they carry product "Route 53" so likely do),
+`tests/test_route53_full_modelling.py` (new), `tests/test_spec_dispatch.py`. Keep `map_compute_breakdown`+`main` intact.
+1. Health-check **MAP** branch (before `PER_REQUEST_MAP`) → External fast SKU 4D2F-E662-295E default / External premium
+   9284-9C28-65BE for HTTPS/string-match/content; `component='healthcheck'`, guard `"map" if sku else "passthrough"`.
+2. Routing-policy-query handling (latency/geo/IP → $0.70/M rate or Regular fallback + note). 3. Traffic Flow passthrough
+   branch. 4. DNS Firewall passthrough branch (name DNS Armor). 5. Records-over-10k → ignore.
+6. Populate `service_usage_catalog.json` route53 dims (expected mechanic + charge_type per dimension).
+7. `service_specs.json` route53: add health-check (per_request/map) + traffic-flow (passthrough) charge-types.
+8. `tests/test_route53_full_modelling.py`: zones→ManagedZone map; standard queries→DNS Query map; **health-check→MAP to
+   the health-check SKU (NEVER the per-query DNS Query SKU, never $0)**; traffic-flow→passthrough; ARC→passthrough;
+   routing-type query→routing-policy rate (or Regular fallback); invariant: no `map` row with empty `gcp_sku_id`.
+9. `test_spec_dispatch.py` route53 dims. 10. Full suite green; update §7.1.
+
+#### 4.13.4 DoD + Sources
+DoD per §2. **Sources:** AWS `aws.amazon.com/route53/pricing` (CONFIRMED 2026-11-15, server-rendered) + GCP
+`cloud.google.com/dns/pricing` (CONFIRMED 2026-11-15, user-pasted) — **both sides fully confirmed, no blocker.** All
+GCP SKUs verified present in `data/catalog.duckdb`: ManagedZone 8C22-6FC3-D478, DNS Query 6DFF-5025-A128, health-check
+4D2F-E662-295E / 9284-9C28-65BE. The only unpinned item is the routing-policy-query rate ($0.70/$0.35 — no catalog SKU;
+pin or fall back to Regular, low priority). Cross-check catalog at pin-time.
+
+---
+
 ## 5. PARKED — backlog from the audit (DO NOT auto-implement)
 
 > ⚠️ **AGY / automated agents: DO NOT act on this section.** These are human-gated design decisions,
@@ -1964,6 +2080,39 @@ Keep §4.10 / tracker / banner at ⚙ until the correction lands and Claude re-v
   3. Added the missing gate tests to `test_elb_full_modelling.py`: `test_gwlb_passthrough_exempt_from_egress_gate`
      (runs the real gate on GWLB rows → 0 violations) and `test_non_gwlb_transfer_passthrough_still_trips_gate`
      (proves the exemption is narrow). Re-verified: empirical gate 0 violations; ELB tests 12/12; full suite green.
+
+#### route53 — log *(2026-11-15, modelled by Claude; AGY to implement)*
+- Status: ⚙ IN PROGRESS · Model: §4.13. Verification + gap-fill — Route 53 is PARTIALLY handled.
+- KEEP (working): DNS queries → Cloud DNS DNS Query (`PER_REQUEST_MAP` `:557`); hosted zones → Cloud DNS ManagedZone
+  (`map_per_request` `:3008`); ARC → passthrough (service_map + negative lookahead); Resolver → Cloud DNS forwarding review.
+- GAPS to fix (§4.13.1/.2/.3): (1) **PRIORITY** — health-check rows mis-map to the per-query DNS Query SKU (fabricated
+  number); add a health-check **MAP** branch BEFORE `PER_REQUEST_MAP` → Cloud DNS routing-policy health-check SKUs
+  (External fast 4D2F-E662-295E $2/mo / premium 9284-9C28-65BE $4/mo). (2) Traffic Flow ($50/policy-record) →
+  passthrough. (3) DNS Firewall → passthrough (name DNS Armor). (4) Records >10k/zone → ignore. (5) Routing-policy
+  queries → $0.70/M rate or Regular fallback. (6) Populate `service_usage_catalog.json` route53 dims (currently ZERO)
+  + add health-check/traffic-flow charge-types to `service_specs.json` route53 (currently only `route53_dns`).
+- BOTH SIDES CONFIRMED 2026-11-15: AWS `aws.amazon.com/route53/pricing` (server-rendered) + GCP
+  `cloud.google.com/dns/pricing` (user-pasted). All GCP SKUs verified present in catalog. **No blocker.** Key
+  correction: Cloud DNS DOES have health-check SKUs + a dedicated routing-policy-query SKU ($0.70/M) — first-pass model
+  (health checks → passthrough) was wrong; now health checks MAP. Ready to hand to AGY.
+
+#### route53 — Claude verification *(2026-11-15)* — ✅ **PASS (with one fix applied)**
+- Battery: `ast.parse`+import OK, `map_per_request`/`map_compute_breakdown`/`main` present (no truncation; +149 lines,
+  additive). Targeted `test_route53_full_modelling.py` 12/12 (asserts **exact resolved SKU IDs**, so SKUs genuinely
+  resolve: zones→8C22, standard queries→6DFF, health-check fast→4D2F, premium→9284). Full suite green.
+- **Priority fix VERIFIED:** health-check rows now MAP to the Cloud DNS routing-policy health-check SKUs (4D2F/9284),
+  never the per-query DNS Query SKU — the `test_route53_health_check_never_maps_to_dns_query_sku` regression test locks it.
+- **FIX APPLIED by Claude (passthrough_reason defect-labeling):** AGY's Traffic-Flow / DNS-Firewall / Resolver branches
+  built inline passthrough dicts with no `passthrough_reason`. `merge_mappings.py` defaults those to `unclassified`,
+  which is a **DEFECT reason** (budgeted at 5% of workload spend) — so a Route-53-heavy bill could spuriously trip
+  `passthrough_integrity`. These are genuinely intentional "no GCP equivalent" passthroughs, so I set
+  `passthrough_reason="no_gcp_equivalent"` (INTENTIONAL, defect-budget-exempt) on all three branches. Empirically
+  re-verified: `passthrough_integrity` → 0 violations; route53 tests 12/12; full suite green. (Same inline-dict pattern
+  exists on the GWLB §4.12 rows — they pass via the `unclassified` default today; declaring intentional reasons there
+  is a candidate for the deferred centralized `_emit_mapped` helper, not a current failure.)
+- KNOWN, ACCEPTED under-projection: routing-policy queries (latency/geo/IP) fall back to the Regular `DNS Query` SKU
+  ($0.40) because no routing-policy-query SKU ($0.70) is in the catalog; the note discloses the real $0.70 rate.
+  Synthetic-SKU injection of the $0.70 rate remains a low-priority refinement.
 
 #### datatransfer — Claude verification *(2026-11-14)* — ✅ **PASS**
 Independently re-ran the full battery **and empirically exercised the mapper** (given the §4.10 lesson that a green

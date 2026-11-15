@@ -891,6 +891,10 @@ def check_egress_strategy_invariant(con) -> list:
     """Phase 1 / Phase 3 / Phase 5 Egress Strategy Invariant:
     Any data transfer row must have strategy IN ('map', 'ignore') and must NOT have
     gcp_sku_id = 'needs_reprice', rate_source = 'needs_reprice', or strategy IS NULL.
+
+    Exempt components: 'nat', 'cdn', 'gwlb'. These are non-egress charges that have no
+    1:1 GCP egress SKU and are legitimately passthrough (GWLB → NSI is architecture-
+    dependent); forcing them to map/ignore would be wrong.
     """
     violations = []
     try:
@@ -918,7 +922,7 @@ def check_egress_strategy_invariant(con) -> list:
                   OR c.usage_type ILIKE '%DataTransfer%'
                   OR c.usage_type ILIKE '%-Bytes%'
               )
-              AND COALESCE(m.component, '') NOT IN ('nat', 'cdn')
+              AND COALESCE(m.component, '') NOT IN ('nat', 'cdn', 'gwlb')
               AND (
                   m.strategy IS NULL
                   OR m.strategy NOT IN ('map', 'ignore')

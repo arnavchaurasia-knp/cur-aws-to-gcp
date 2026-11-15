@@ -342,6 +342,14 @@ CASES = [
      _row(product="Elastic Load Balancing", product_code="AWSELB",
           usage_type="APS3-LCUUsage", unit="LCU-Hrs"),
      "data_transfer", "elb_data"),
+    ("elb_gwlb",
+     _row(product="Elastic Load Balancing", product_code="AWSELB",
+          usage_type="APS3-GatewayLoadBalancer-Usage", unit="Hrs"),
+     "flat_hourly", "elb_gwlb"),
+    ("elb_glcu",
+     _row(product="Elastic Load Balancing", product_code="AWSELB",
+          usage_type="APS3-GLCUUsage", unit="LCU-Hrs"),
+     "data_transfer", "elb_data"),
 
     # ---- SQS / SNS / API Gateway ----
     ("sqs_requests",

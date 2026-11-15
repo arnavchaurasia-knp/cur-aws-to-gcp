@@ -1322,5 +1322,143 @@
       "expected_mechanic": "data_transfer",
       "description": "CloudFront CDN bandwidth egress US"
     }
+  ],
+  "elb": [
+    {
+      "usage_type": "APS3-LoadBalancerUsage",
+      "operation": "LoadBalancerUsage:app",
+      "unit": "Hrs",
+      "expected_charge_type": "elb_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "ALB hours -> Regional External ALB Forwarding Rule Minimum"
+    },
+    {
+      "usage_type": "APS3-LoadBalancerUsage",
+      "operation": "LoadBalancerUsage:net",
+      "unit": "Hrs",
+      "expected_charge_type": "elb_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "NLB hours -> Global External Passthrough NLB Forwarding Rule (not Proxy)"
+    },
+    {
+      "usage_type": "LoadBalancerUsage",
+      "operation": "LoadBalancer-hour",
+      "unit": "Hrs",
+      "expected_charge_type": "elb_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "Classic ELB hours -> Cloud Load Balancer Forwarding Rule Minimum"
+    },
+    {
+      "usage_type": "USE1-LoadBalancerUsage",
+      "operation": "LoadBalancer-hour",
+      "unit": "Hrs",
+      "expected_charge_type": "elb_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "Classic ELB hours US East -> Cloud Load Balancer Forwarding Rule Minimum"
+    },
+    {
+      "usage_type": "APS3-LCUUsage",
+      "operation": "LCU-Hrs",
+      "unit": "LCU-Hrs",
+      "expected_charge_type": "elb_data",
+      "expected_mechanic": "data_transfer",
+      "description": "ALB LCU-hours -> Regional External ALB Inbound Data Processing"
+    },
+    {
+      "usage_type": "USE1-LCUUsage",
+      "operation": "LCU-Hrs",
+      "unit": "LCU-Hrs",
+      "expected_charge_type": "elb_data",
+      "expected_mechanic": "data_transfer",
+      "description": "NLB NLCU-hours -> External Passthrough NLB Inbound Data Processing"
+    },
+    {
+      "usage_type": "DataTransfer-Out-Bytes",
+      "operation": "",
+      "unit": "GB",
+      "expected_charge_type": "elb_data",
+      "expected_mechanic": "data_transfer",
+      "description": "Classic ELB data transferred out -> data processing"
+    },
+    {
+      "usage_type": "LoadBalancer-Bytes",
+      "operation": "",
+      "unit": "GB",
+      "expected_charge_type": "elb_data",
+      "expected_mechanic": "data_transfer",
+      "description": "Classic ELB processed bytes -> data processing"
+    },
+    {
+      "usage_type": "APS3-GatewayLoadBalancer-Usage",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "elb_gwlb",
+      "expected_mechanic": "flat_hourly",
+      "description": "Gateway Load Balancer hours (AZ) -> NSI / ILB passthrough"
+    },
+    {
+      "usage_type": "USE1-GatewayLoadBalancer-Usage",
+      "operation": "GatewayLoadBalancer",
+      "unit": "Hrs",
+      "expected_charge_type": "elb_gwlb",
+      "expected_mechanic": "flat_hourly",
+      "description": "Gateway Load Balancer hours US East -> NSI / ILB passthrough"
+    },
+    {
+      "usage_type": "USE1-GWLB-Usage",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "elb_gwlb",
+      "expected_mechanic": "flat_hourly",
+      "description": "GWLB hours -> NSI / ILB passthrough"
+    },
+    {
+      "usage_type": "APS3-GLCUUsage",
+      "operation": "GLCU-Hrs",
+      "unit": "LCU-Hrs",
+      "expected_charge_type": "elb_data",
+      "expected_mechanic": "data_transfer",
+      "description": "GWLB GLCU-hours -> NSI data processing / ILB passthrough"
+    },
+    {
+      "usage_type": "USE1-GLCUUsage",
+      "operation": "capacity unit-hour",
+      "unit": "LCU-Hrs",
+      "expected_charge_type": "elb_data",
+      "expected_mechanic": "data_transfer",
+      "description": "GWLB GLCU-hours US East -> NSI data processing / ILB passthrough"
+    },
+    {
+      "usage_type": "APS3-GatewayLoadBalancer-Endpoint-Usage",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "elb_gwlbe",
+      "expected_mechanic": "misc",
+      "description": "GWLB Endpoint hours -> PrivateLink / PSC passthrough"
+    },
+    {
+      "usage_type": "USE1-GWLBE-Usage",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "elb_gwlbe",
+      "expected_mechanic": "misc",
+      "description": "GWLBE hours -> PrivateLink / PSC passthrough"
+    },
+    {
+      "usage_type": "APS3-GatewayLoadBalancer-Endpoint-Bytes",
+      "operation": "",
+      "unit": "GB",
+      "expected_charge_type": "elb_gwlbe",
+      "expected_mechanic": "misc",
+      "description": "GWLB Endpoint bytes -> PrivateLink / PSC passthrough"
+    },
+    {
+      "usage_type": "USE1-GWLBE-Bytes",
+      "operation": "",
+      "unit": "GB",
+      "expected_charge_type": "elb_gwlbe",
+      "expected_mechanic": "misc",
+      "description": "GWLBE bytes -> PrivateLink / PSC passthrough"
+    }
   ]
 }

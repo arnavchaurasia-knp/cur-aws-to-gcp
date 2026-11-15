@@ -2752,6 +2752,42 @@ def map_flat_hourly(rows):
                 out.append(entry)
                 continue
 
+        # Gateway Load Balancer (GWLB) — dedicated passthrough branch with NSI disclosure.
+        # Must run BEFORE _match() / FLAT_HOURLY_MAP so GWLB rows don't match the
+        # generic LoadBalancerUsage rule and mis-map to ALB/NLB/CLB forwarding-rule SKUs.
+        gwlb_blob = f"{r.get('product') or ''} {r.get('usage_type') or ''} {r.get('operation') or ''}"
+        if re.search(r"GatewayLoadBalancer|GWLB|Gateway LoadBalancer", gwlb_blob, re.IGNORECASE):
+            is_gwlb_endpoint = bool(re.search(r"Endpoint|GWLBE", gwlb_blob, re.IGNORECASE))
+            if is_gwlb_endpoint:
+                gwlb_note = (
+                    "Gateway Load Balancer Endpoint (GWLBE) — route to PrivateLink/Private Service Connect (PSC) "
+                    "endpoint; passthrough at AWS cost pending PSC endpoint mapping."
+                )
+            else:
+                gwlb_note = (
+                    "GCP analogue is Network Security Integration (NSI, GENEVE-based appliance insertion) "
+                    "or ILB-as-next-hop; cost = NSI endpoint + internal passthrough NLB + appliance VMs "
+                    "(architecture-dependent) — passthrough at AWS cost pending arch input. "
+                    "Source: docs.cloud.google.com/network-security-integration/docs/nsi-overview."
+                )
+            out.append({
+                "aws_li_key":       r["aws_li_key"],
+                "gcp_service":      None,
+                "gcp_sku_id":       None,
+                "gcp_sku_name":     None,
+                # component='gwlb' (not 'hourly') so GWLB passthrough rows are exempt from the
+                # egress_strategy_invariant gate — same mechanism NAT ('nat') and CDN ('cdn') use.
+                # GWLB has no GCP egress/processing SKU (NSI is architecture-dependent), so passthrough
+                # is legitimate here and must not be forced to map/ignore like real egress.
+                "component":        "gwlb",
+                "strategy":         "passthrough",
+                "unit_multiplier":  1.0,
+                "gcp_region":       r.get("gcp_region"),
+                "projection_note":  gwlb_note,
+                "mapping_confidence": 0.70,
+            })
+            continue
+
         match = _match(r.get("usage_type"), r.get("product"), FLAT_HOURLY_MAP, r.get("operation"))
         if not match:
             out.append({
@@ -4227,7 +4263,7 @@ def map_data_transfer(rows):
 
         # "lcu"/"loadbalancer-bytes" catches CUR-format usage_type tokens; PDF bills
         # spell this out in `operation` as "...capacity unit-hour (or partial hour)"
-        # with no "lcu" substring anywhere.
+        # with no "lcu" substring anywhere. GWLB / GLCU / GWLBE tokens are also handled here.
         #
         # LCU-hours CAN be mapped to GCP data-processing rates using the AWS
         # approximation: 1 LCU-hr ≈ 1 GB processed when throughput (bytes) is the
@@ -4239,10 +4275,45 @@ def map_data_transfer(rows):
         # cheaper, same GiB/GB relationship as CloudWatch log ingestion.
         # Flag: connection-heavy workloads (WebSockets, long-lived TCP) may have
         # actual GB < LCU-hrs, making this an over-estimate of GCP cost.
-        if "lcu" in ut or "loadbalancer-bytes" in ut or "capacity unit-hour" in ut:
+        if "lcu" in ut or "loadbalancer-bytes" in ut or "capacity unit-hour" in ut or "gatewayloadbalancer" in ut or "gwlb" in ut or "glcu" in ut:
             lcu_blob = f"{ut} {product_lower} {op_lower}"
-            is_alb_lcu = bool(re.search(r"alb|application.{0,20}load.?balanc|loadbalancerusage.*application", lcu_blob))
-            is_nlb_lcu = bool(re.search(r"nlb|network.{0,20}load.?balanc|loadbalancerusage.*network", lcu_blob))
+            is_gwlb_lcu = bool(re.search(r"gwlb|glcu|gatewayloadbalancer|gateway.{0,20}load.?balanc", lcu_blob))
+            if is_gwlb_lcu:
+                is_endpoint = bool(re.search(r"endpoint|gwlbe", lcu_blob))
+                if is_endpoint:
+                    note = (
+                        "GWLB Endpoint (GWLBE) data processing — route to PrivateLink/Private Service Connect (PSC) "
+                        "endpoint; passthrough at AWS cost pending PSC endpoint mapping."
+                    )
+                else:
+                    note = (
+                        "GWLB GLCU-Hours — GCP analogue is Network Security Integration (NSI) "
+                        "data processing / ILB passthrough; cost is architecture-dependent — "
+                        "passthrough at AWS cost pending arch input. "
+                        "Source: docs.cloud.google.com/network-security-integration/docs/nsi-overview."
+                    )
+                entry = {
+                    "aws_li_key":       r["aws_li_key"],
+                    "gcp_service":      None,
+                    "gcp_sku_id":       None,
+                    "gcp_sku_name":     None,
+                    # component='gwlb' (NOT 'transfer'): GWLB GLCU / GWLB-Bytes / GWLBE-Bytes are
+                    # appliance-LB processing charges with no GCP egress SKU (NSI is architecture-
+                    # dependent), so passthrough is legitimate. 'transfer' would trip the
+                    # egress_strategy_invariant gate (data-transfer rows must be map/ignore) and fail
+                    # every bill carrying these rows. 'gwlb' is exempt from that gate, like 'nat'/'cdn'.
+                    "component":        "gwlb",
+                    "strategy":         "passthrough",
+                    "unit_multiplier":  1.0,
+                    "gcp_region":       r.get("gcp_region"),
+                    "projection_note":  note,
+                    "mapping_confidence": 0.70,
+                }
+                out.append(entry)
+                continue
+
+            is_alb_lcu = bool(re.search(r"\balb\b|application.{0,20}load.?balanc|load.?balanc.{0,20}application|loadbalancerusage.*application", lcu_blob))
+            is_nlb_lcu = bool(re.search(r"\bnlb\b|network.{0,20}load.?balanc|load.?balanc.{0,20}network|loadbalancerusage.*network", lcu_blob))
 
             if is_alb_lcu:
                 # Real catalog description requires "Inbound" — confirmed via
@@ -4257,9 +4328,9 @@ def map_data_transfer(rows):
                 lcu_sku_desc = r"Regional External Application Load Balancer Inbound Data Processing"
                 lcu_lb_label = "ALB"
             elif is_nlb_lcu:
-                # Same missing-direction-word bug as ALB above — real catalog
-                # SKU is "...Network Load Balancer Inbound Data Processing".
-                lcu_sku_desc = r"Global External Passthrough Network Load Balancer Inbound Data Processing"
+                # Matches both Regional and Global External Passthrough NLB Inbound Data Processing
+                # (e.g. Regional in us-central1/Iowa, Global in us-east4/London).
+                lcu_sku_desc = r"External Passthrough Network Load Balancer Inbound Data Processing"
                 lcu_lb_label = "NLB"
             else:
                 lcu_sku_desc = None
@@ -4271,21 +4342,30 @@ def map_data_transfer(rows):
                 _lcu_strategy = "map" if _lcu_sku_id else "passthrough"
                 # unit_multiplier = 1/1.074: treat 1 LCU-hr as 1 GB (bytes-dominant
                 # approximation), then convert GB → GiB for GCP's $/GiBy rate.
+                if is_nlb_lcu:
+                    note = (
+                        f"NLB LCU-Hrs (NLCU) → {_lcu_sku_name} "
+                        f"[estimate: 1 NLCU-hr ≈ 1 GB processed; AWS NLCU $0.006/hr < GCP $0.008/GiB, "
+                        f"so this data-processing leg slightly over-projects NLB; "
+                        f"÷1.074 converts GB→GiB for GCP $/GiBy rate; cloud.google.com/vpc/network-pricing]"
+                    )
+                else:
+                    note = (
+                        f"{lcu_lb_label} LCU-Hrs → {_lcu_sku_name} "
+                        f"[estimate: 1 LCU-hr ≈ 1 GB when bandwidth dominates (typical HTTP); "
+                        f"÷1.074 converts GB→GiB for GCP $/GiBy rate; AWS $0.008/LCU-hr ≈ GCP "
+                        f"$0.008/GiBy — near cost parity, GCP ~7% cheaper; "
+                        f"over-estimates GCP cost if workload is connection-heavy (WebSockets, long-lived TCP)]"
+                    )
                 entry = {
                     "aws_li_key":       r["aws_li_key"],
                     "gcp_service":      "Networking",
                     "gcp_sku_name":     _lcu_sku_name,
                     "component":        "transfer",
                     "strategy":         _lcu_strategy,
-                    "unit_multiplier":  1.0 / 1.074,
+                    "unit_multiplier":  (1.0 / 1.074) if _lcu_sku_id else 1.0,
                     "gcp_region":       r.get("gcp_region"),
-                    "projection_note":  (
-                        f"{lcu_lb_label} LCU-Hrs → {_lcu_sku_name} "
-                        f"[estimate: 1 LCU-hr ≈ 1 GB when bandwidth dominates (typical HTTP); "
-                        f"÷1.074 converts GB→GiB for GCP $/GiBy rate; AWS $0.008/LCU-hr ≈ GCP "
-                        f"$0.008/GiBy — near cost parity, GCP ~7% cheaper; "
-                        f"over-estimates GCP cost if workload is connection-heavy (WebSockets, long-lived TCP)]"
-                    ),
+                    "projection_note":  note + _no_rate_suffix(_lcu_sku_id, r.get("gcp_region")),
                     "mapping_confidence": 0.65,
                 }
                 if _lcu_sku_id:

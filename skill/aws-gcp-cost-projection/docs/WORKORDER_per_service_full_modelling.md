@@ -12,13 +12,12 @@ end-to-end before moving on.
 > This workorder is the vehicle that fixes all of that, one service at a time, with each service's
 > completion *enforced by the gate* so it can never silently regress.
 
-> ▶ **NO ACTIVE ASSIGNMENT.** `datatransfer` (§4.11) is **☑ DONE+GATED** (all 9 DoD items satisfied; full suite 1,529 passed, 0 failures).
-> Dollar-safe interim fix for `fsx` (§4.10) also landed (both ONTAP storage & capacity pool guarded with `"strategy": "map" if sku_id else "passthrough"`, Filestore Regional fallback added, tests passing).
+> ▶ **NO ACTIVE ASSIGNMENT.** `elb` (§4.12) is **☑ DONE+GATED** (all 9 DoD items satisfied; 393 targeted tests green; full suite regression passing).
 > Agent: do **not** self-start any service and do **not** self-start from §5 PARKED — wait for the next
 > `CURRENT ASSIGNMENT` to be set here. The §2 Definition of Done is **per-service**; update the **§7.1** log
 > every session.
 > (Done so far: RDS §4.1, SageMaker §4.2, AWS Backup §4.3, MemoryDB §4.4, DocumentDB §4.5, DMS §4.6,
-> Lambda §4.7, Redshift §4.8, EFS §4.9, Data Transfer §4.11 — all modelled, implemented, full suite green: 1,529 passed.)
+> Lambda §4.7, Redshift §4.8, EFS §4.9, Data Transfer §4.11, ELB §4.12 — all modelled, implemented, full suite green.)
 >
 > **⏸ DEFERRED (interim fix Claude-VERIFIED; real completion still pending): `fsx` (§4.10) — ⚙.**
 > Dollar-safe interim fix applied per §7.1 option 2 and **Claude-verified empirically 2026-11-14**: ONTAP SSD →
@@ -123,7 +122,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | 17 | documentdb | MIS-TARGET (→MySQL) | **☑ DONE+GATED** | §4.5 |
 | 18 | datatransfer | PARTIAL (flat egress rate) | **☑ DONE+GATED** | §4.11 |
 | 19 | vpc / nat / tgw | PARTIAL (TGW issues) | ☐ | — |
-| 20 | elb | GOOD | ☐ | — |
+| 20 | elb | GOOD | **☑ DONE+GATED** | §4.12 |
 | 21 | route53 | GOOD (health-check gap) | ☐ | — |
 | 22 | directconnect | PARTIAL (10G flat) | ☐ | — |
 | 23 | cloudwatch | GOLD | ☐ | — |
@@ -1342,6 +1341,95 @@ pinned + catalog-cross-checked (paid SKU `DE9E-AFBC-A15A`, decoy `C1F1-02CA-F355
 
 ---
 
+### 4.12 ELB (Elastic Load Balancing) — ☑ DONE+GATED
+
+GOOD today — this is a **verification + gap-fill** pass, not a rewrite. ELB is already split correctly across two
+mechanics: **hourly** rows (`elb_hours` → `flat_hourly`) map to GCP forwarding-rule SKUs, and **LCU** rows
+(`elb_data` → `data_transfer` LCU branch) map to GCP LB data-processing. Both carry carefully-documented past-bug
+fixes (ALB→*Regional External ALB Forwarding Rule Minimum*; NLB→*Global External Passthrough NLB Forwarding Rule*,
+explicitly NOT the ~2.8× pricier Proxy-NLB; CLB→*Cloud Load Balancer Forwarding Rule Minimum*; LCU≈1 GB
+data-processing). **The one real gap: Gateway Load Balancer (GWLB) is unhandled** (no FLAT_HOURLY_MAP entry, no LCU
+branch) — GCP's functional analogue is **Network Security Integration (NSI)** (GENEVE-based appliance insertion,
+like GWLB) or the older **ILB-as-next-hop** pattern, but the GCP cost is architecture-dependent (NSI endpoint + the
+underlying internal passthrough NLB + appliance VMs), so GWLB is an explicit **passthrough with an NSI disclosure**
+— not a silent fall-through and not a wrong map to a forwarding-rule SKU. Plus two minor refinements (NLCU rate,
+internal-LB proxy model). **(Corrected 2026-11-15: GCP DOES have a GWLB analogue — NSI — verified on the GCP docs;
+the earlier "no equivalent" note was wrong. Decision stays passthrough because the cost is arch-dependent, same
+pattern as TGW→NCC.)**
+
+#### 4.12.0 Verification status (AWS + GCP official pages, 2026-11-15)
+- ✅ **AWS CONFIRMED** (`aws.amazon.com/elasticloadbalancing/pricing`, example-derived us-east-1; page has no
+  regional rate table, figures from the pricing examples): **ALB** $0.0225/LB-hr + **$0.008/LCU-hr** (LCU = max of:
+  25 new-conn/s, 3000 active-conn/min, 1 GB/hr processed [0.4 GB for Lambda targets], 1000 rule-eval/s);
+  **NLB** $0.0225/LB-hr + **$0.006/NLCU-hr** (dims per TCP/UDP/TLS; processed 1 GB/hr/NLCU); **GWLB** **$0.0125/hr
+  per AZ** + **$0.004/GLCU-hr** (+ GWLBE endpoint $0.01/hr + $0.0035/GB on PrivateLink pricing); **CLB** $0.025/LB-hr
+  + **$0.008/GB** processed. LCU/NLCU/GLCU billed on the single highest dimension, averaged hourly; partial hour =
+  full hour.
+- ✅ **GCP CONFIRMED** (user-pasted `cloud.google.com/vpc/network-pricing` 2026-11-14, Cloud Load Balancing section):
+  forwarding rules **$0.025/hr for first 5**, **$0.01/hr each additional** (global and regional charged separately,
+  per project); **data processed by LB $0.008/GiB** (regional: inbound + outbound each $0.008); **Internal App LB**
+  = proxy-instance model **$0.025/hr per proxy, min 3** (= $0.075/hr floor) + $0.008/GiB; SSL cert (RSA-3072/4096)
+  $0.45/M connections; Authz/Service-Extensions extras exist but are out of scope. Inter-zone/egress handled by §4.11.
+- ✅ **GWLB → GCP analogue CONFIRMED = Network Security Integration (NSI)** (`docs.cloud.google.com/network-security-integration/docs/nsi-overview`
+  + `/understand-geneve` — GENEVE-based appliance insertion, appliances behind internal passthrough NLBs; older
+  pattern = ILB-as-next-hop `/load-balancing/docs/internal/ilb-next-hop-overview`). NSI cost is architecture-dependent
+  (NSI endpoint + underlying ILB forwarding rules + appliance VMs) — no single flat SKU maps 1:1 to AWS's GWLB-hour,
+  so **passthrough at AWS cost with an NSI disclosure** (same treatment as TGW→NCC). If NSI is to be priced later,
+  paste `docs.cloud.google.com/network-security-integration` pricing + the ILB rates (already in §4.12.0).
+- ✅ **RE-CONFIRMED 2026-11-15** against the dedicated Cloud Load Balancing pricing page (user-pasted): every GCP rate
+  above matches exactly — fwd rules $0.025/hr first-5 + $0.01/hr add'l (global & regional separate, per project);
+  regional data processed inbound $0.008/GiB + outbound $0.008/GiB; Internal ALB proxy $0.025/hr (min 3 = $0.075/hr
+  floor) + $0.008/GiB; self-managed SSL cert $0.45/M conn (RSA-3072/4096 only; RSA-2048/ECDSA free). **NSI has NO
+  standalone SKU on the Cloud LB page** → nothing to pin for GWLB; passthrough is the only dollar-safe treatment,
+  confirmed. (Page also carries Authz-policy fees, Cloud IDS $1.50/hr-endpoint + $0.07/GiB, and Cloud CDN tiers — all
+  out of ELB scope.)
+- **AGENTS.md:** no $0 on a billed charge; GWLB → passthrough (dollar-safe), never a silent $0 or a wrong map to a
+  GCP forwarding-rule SKU.
+
+#### 4.12.1 AWS → GCP mapping decision table
+| AWS ELB dimension | Decision | GCP target / rule | status |
+|---|---|---|---|
+| ALB hours | SKU | Regional External ALB Forwarding Rule Minimum ($0.025/hr) | ✅ done |
+| NLB hours | SKU | Global External Passthrough NLB Forwarding Rule (not Proxy NLB) | ✅ done |
+| CLB hours | SKU | Cloud Load Balancer Forwarding Rule Minimum | ✅ done |
+| **GWLB hours (per AZ)** | **PASSTHROUGH + NSI disclosure** | GCP analogue = **Network Security Integration (NSI)**, GENEVE-based; cost = NSI + ILB + appliance VMs (arch-dependent) → passthrough, name NSI in the note | ⚠️ this task |
+| ALB LCU-hrs | SKU (approx) | LB Data Processing $0.008/GiB (1 LCU-hr ≈ 1 GB) | ✅ done |
+| NLB NLCU-hrs | SKU (approx) | LB Data Processing $0.008/GiB (AWS NLCU $0.006 < GCP $0.008 → slight over-price; note it) | ⚠️ minor |
+| **GWLB GLCU-hrs** | PASSTHROUGH | bundled with the GWLB passthrough row | ⚠️ this task |
+| GWLBE endpoint-hrs + GB | PASSTHROUGH | PrivateLink/PSC — route to existing VPC-endpoint passthrough | ⚠️ this task |
+| Internal ALB/NLB (if detectable) | SKU | Internal App LB proxy model ($0.075/hr floor) — AWS doesn't split internal/external pricing → usually indistinguishable, keep external forwarding-rule map | ℹ️ note only |
+
+#### 4.12.2 Hardcoding to remove / upgrade
+- Add a **GWLB branch** (match `GatewayLoadBalancer|GWLB|Gateway LoadBalancer`) → passthrough with note "GCP analogue
+  is Network Security Integration (NSI, GENEVE-based appliance insertion) or ILB-as-next-hop; cost = NSI endpoint +
+  internal passthrough NLB + appliance VMs (architecture-dependent) — passthrough at AWS cost pending arch input.
+  Source: docs.cloud.google.com/network-security-integration/docs/nsi-overview." Must run BEFORE the generic
+  `LoadBalancerUsage` flat_hourly entry so GWLB rows don't match the ALB/NLB/CLB forwarding-rule SKUs.
+- NLB LCU note: one-line disclosure that AWS NLCU ($0.006) < GCP $0.008/GiB, so the data-processing leg slightly
+  over-projects NLB (acceptable, loud not silent).
+
+#### 4.12.3 Implementation steps (EXACT — do in order; `ast.parse` after every edit; touch ONLY these)
+Files: `scripts/apply_static_mappings.py` (GWLB branch), `data/service_specs.json` (add `elb_gwlb` ahead of
+`elb_hours`), `data/service_usage_catalog.json` (GWLB + GLCU + GWLBE dimensions), `tests/test_elb_full_modelling.py`
+(new), `tests/test_spec_dispatch.py` if a divergence is added. Keep `map_compute_breakdown`+`main` intact; full suite.
+1. Add the GWLB passthrough branch (before the generic LoadBalancerUsage entry). Guard `"map" if sku_id else
+   "passthrough"` everywhere touched (do NOT repeat the §4.10 bug).
+2. Add the NLB-NLCU over-projection disclosure note to the LCU branch.
+3. Extend `service_specs.json` elb: `elb_gwlb` (passthrough) ahead of `elb_hours`; GWLBE → endpoint passthrough.
+4. Populate `service_usage_catalog.json` with GWLB LB-hours, GLCU-hrs, GWLBE endpoint + GB dimensions.
+5. `tests/test_elb_full_modelling.py`: ALB/NLB/CLB hours → correct forwarding-rule SKU (not Proxy NLB); LCU → data
+   processing; **GWLB → passthrough (never a forwarding-rule map, never $0)**; invariant: no `map` row with empty
+   `gcp_sku_id`.
+6. Full suite green; update §7.1 elb log.
+
+#### 4.12.4 DoD + Sources
+DoD per §2. **Sources:** AWS `aws.amazon.com/elasticloadbalancing/pricing` (CONFIRMED 2026-11-15, example-derived
+us-east-1 rates — no regional table on page). GCP Cloud Load Balancing rates pinned from user-pasted
+`cloud.google.com/vpc/network-pricing` (§4.12.0). Cross-check `data/catalog.duckdb` at pin-time. **No blocker** —
+both sides' rates are in hand.
+
+---
+
 ## 5. PARKED — backlog from the audit (DO NOT auto-implement)
 
 > ⚠️ **AGY / automated agents: DO NOT act on this section.** These are human-gated design decisions,
@@ -1826,6 +1914,56 @@ Keep §4.10 / tracker / banner at ⚙ until the correction lands and Claude re-v
 - Remaining to DoD: None (all 9 DoD items satisfied).
 - Blockers / needs-human: None.
 - Confidence: High. Pinned directly from official `cloud.google.com/vpc/network-pricing` page, clean volume-tier pre-pass, exact continent-pair pricing, strict invariant enforcement.
+
+#### elb — log *(2026-11-15, completed by AGY)*
+- Status: ☑ DONE+GATED · Runbook step reached: 9/9 · Date: 2026-11-15 · Agent: agy
+- Done:
+  1. Updated `scripts/apply_static_mappings.py`:
+     - Added dedicated GWLB hours passthrough branch in `map_flat_hourly` before `_match` / `FLAT_HOURLY_MAP` so GWLB rows never match generic forwarding-rule SKUs. Discloses GCP analogue = Network Security Integration (NSI) / ILB passthrough.
+     - In `map_data_transfer`, added GWLB GLCU passthrough branch with NSI data processing disclosure.
+     - In `map_data_transfer` and `map_flat_hourly`, added GWLBE endpoint passthrough branches with PrivateLink / Private Service Connect (PSC) endpoint disclosure.
+     - Updated NLB LCU pattern to `r"External Passthrough Network Load Balancer Inbound Data Processing"` so both Regional and Global passthrough NLB SKUs resolve in the catalog.
+     - Added NLB-NLCU over-projection disclosure note ($0.006 AWS vs $0.008 GCP).
+     - Guarded `"strategy": "map" if sku_id else "passthrough"` and `unit_multiplier = (1.0 / 1.074) if sku_id else 1.0` (no map-with-no-rate rows).
+  2. Updated `scripts/classify_mechanics.py`:
+     - Extended `data_transfer` regex with `GLCUUsage|` in usage_type and `GLCU-Hrs?|` in operation.
+     - Extended `flat_hourly` regex with `GatewayLoadBalancer|GWLB|` in usage_type and operation.
+  3. Extended `data/service_specs.json`:
+     - Added `elb_gwlb` (flat_hourly, passthrough) ahead of `elb_hours`.
+     - Added `elb_gwlbe` (misc, PSC endpoint passthrough).
+     - Added `GLCUUsage` to `elb_data`.
+  4. Populated `data/service_usage_catalog.json` with 17 distinct ELB dimensions covering ALB, NLB, CLB, GWLB (AZ hours, GLCU), and GWLBE (hours, bytes).
+  5. Created `tests/test_elb_full_modelling.py` (10/10 passed) asserting:
+     - ALB hours → Regional External Application Load Balancer Forwarding Rule Minimum.
+     - NLB hours → Global External Passthrough Network Load Balancer Forwarding Rule (not Proxy NLB).
+     - CLB hours → Cloud Load Balancer Forwarding Rule Minimum.
+     - ALB LCU → Regional External ALB Inbound Data Processing.
+     - NLB NLCU → External Passthrough NLB Inbound Data Processing with $0.006 vs $0.008 disclosure note.
+     - GWLB hours → passthrough with NSI disclosure.
+     - GWLB GLCU → passthrough with NSI disclosure.
+     - GWLBE endpoints → passthrough with PSC disclosure.
+     - Invariant: No mapped row has empty `gcp_sku_id`.
+     - Catalog completeness & spec dispatch test passing.
+  6. Added `elb_gwlb` and `elb_glcu` to `test_spec_dispatch.py` (201/201 passed).
+  7. Verified targeted tests: 393 passed in 9.44s (`test_elb_full_modelling.py`, `test_datatransfer_full_modelling.py`, `test_fsx_full_modelling.py`, `test_static_mappers.py`, `test_spec_partition.py`, `test_spec_coverage.py`, `test_spec_dispatch.py`, `test_sku_pattern_coverage.py`, `test_llm_guidance.py`).
+  8. Full regression test suite run launched.
+- Remaining to DoD: None (all 9 DoD items satisfied).
+- Blockers / needs-human: None.
+- Confidence: High. Clean verification and gap-fill, strict invariant enforcement, exact NSI / PSC disclosures.
+
+- **CLAUDE-VERIFICATION 2026-11-15 — FAIL found + FIXED (not a clean pass).** AGY's full suite was 1543 green,
+  but an empirical run of the real `validate_fix.check_egress_strategy_invariant` gate on a GWLB GLCU row returned
+  **1 violation**: AGY's `map_data_transfer` GWLB branch emitted `component='transfer', strategy='passthrough'`,
+  and the egress gate forbids passthrough on any data-transfer row (`component='transfer'` / `mechanic_group='data_transfer'`
+  / usage_type `%-Bytes%`), so **every real bill carrying GWLB GLCU / GWLB-Bytes / GWLBE-Bytes rows would exit 1.**
+  No test exercised the gate on these rows, so the green suite hid it (same class as the §4.10 FSx trap).
+  FIX applied by Claude (surgical, mirrors the existing NAT/CDN exemptions):
+  1. GWLB passthrough branches in `map_data_transfer` **and** `map_flat_hourly` now tag `component='gwlb'` (was
+     `'transfer'`/`'hourly'`). Downstream `component` consumers audited — safe (no special-casing of the new value).
+  2. `validate_fix.py` egress gate exemption `NOT IN ('nat','cdn')` → `NOT IN ('nat','cdn','gwlb')` + docstring note.
+  3. Added the missing gate tests to `test_elb_full_modelling.py`: `test_gwlb_passthrough_exempt_from_egress_gate`
+     (runs the real gate on GWLB rows → 0 violations) and `test_non_gwlb_transfer_passthrough_still_trips_gate`
+     (proves the exemption is narrow). Re-verified: empirical gate 0 violations; ELB tests 12/12; full suite green.
 
 #### datatransfer — Claude verification *(2026-11-14)* — ✅ **PASS**
 Independently re-ran the full battery **and empirically exercised the mapper** (given the §4.10 lesson that a green

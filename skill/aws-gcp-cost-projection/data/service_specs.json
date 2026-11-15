@@ -2963,12 +2963,15 @@
         "description": "LCU / processed-bytes -> data processing egress.",
         "any_of": [
           {
-            "usage_type_re": "LCUUsage|LoadBalancer-Bytes|DataTransfer|Out-Bytes"
+            "usage_type_re": "LCUUsage|GLCUUsage|LoadBalancer-Bytes|DataTransfer|Out-Bytes"
           },
           {
-            "operation_re": "LCU-Hrs?|capacity unit-hour"
+            "operation_re": "LCU-Hrs?|GLCU-Hrs?|capacity unit-hour"
           }
         ],
+        "exclude_when": {
+          "usage_type_re": "Endpoint|GWLBE"
+        },
         "mechanic": "data_transfer",
         "fields": [
           {
@@ -2987,6 +2990,40 @@
         "source_rule": "data_transfer (LCU branch, precedes flat_hourly)"
       },
       {
+        "id": "elb_gwlb",
+        "description": "Gateway Load Balancer hours -> Network Security Integration (NSI) / ILB passthrough.",
+        "match": {
+          "unit_hourly": true
+        },
+        "any_of": [
+          {
+            "usage_type_re": "GatewayLoadBalancer|GWLB"
+          },
+          {
+            "operation_re": "GatewayLoadBalancer|GWLB"
+          }
+        ],
+        "exclude_when": {
+          "usage_type_re": "Endpoint|GWLBE"
+        },
+        "mechanic": "flat_hourly",
+        "fields": [
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "flat_hourly (GWLB branch, precedes LoadBalancerUsage)"
+      },
+      {
         "id": "elb_hours",
         "description": "Load balancer hours -> forwarding rules.",
         "match": {
@@ -3000,6 +3037,9 @@
             "operation_re": "LoadBalancer"
           }
         ],
+        "exclude_when": {
+          "usage_type_re": "Endpoint|GWLBE|GatewayLoadBalancer|GWLB"
+        },
         "mechanic": "flat_hourly",
         "fields": [
           {
@@ -3016,6 +3056,46 @@
           }
         ],
         "source_rule": "flat_hourly (LoadBalancerUsage branch)"
+      },
+      {
+        "id": "elb_gwlbe",
+        "description": "Gateway Load Balancer Endpoint (GWLBE) hours and data -> PrivateLink / PSC endpoint passthrough.",
+        "any_of": [
+          {
+            "usage_type_re": "GWLBE|GatewayLoadBalancer-Endpoint|GWLB-Endpoint"
+          },
+          {
+            "operation_re": "GWLBE|GatewayLoadBalancer-Endpoint|GWLB-Endpoint"
+          }
+        ],
+        "mechanic": "misc",
+        "fields": [
+          {
+            "name": "usage_type",
+            "cur_column": "lineItem/UsageType",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "usage_amount",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "misc (PrivateLink / PSC endpoint passthrough)",
+        "llm_guidance": {
+          "gcp_target": "Private Service Connect",
+          "strategy": "review",
+          "confidence_max": 0.4,
+          "guidance": "GWLBE endpoints / PrivateLink -> PSC; passthrough until a PSC pricer exists."
+        }
       }
     ]
   },

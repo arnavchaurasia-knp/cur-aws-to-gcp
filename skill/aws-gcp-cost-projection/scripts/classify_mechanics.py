@@ -666,7 +666,7 @@ RULES = [
             # Only route here when the operation describes a real data-transfer charge.
             or (r.get("product", "").strip() == "Bandwidth"
                 and _re(r.get("operation", ""), r"data transfer (out|in)|per gb.{0,30}transfer|transfer.{0,30}per gb"))
-            or _re(r["usage_type"], r"DataTransfer|Data Transfer|NatGateway-Bytes|TransitGateway-Bytes|LCUUsage|LoadBalancer-Bytes")
+            or _re(r["usage_type"], r"DataTransfer|Data Transfer|NatGateway-Bytes|TransitGateway-Bytes|LCUUsage|GLCUUsage|LoadBalancer-Bytes")
             or _re(r["operation"], r"TransitGateway-Bytes")
             # LCU (Load Balancer Capacity Unit) data-processing charge. CUR format
             # uses usage_type "LCUUsage" (caught above); PDF format instead phrases
@@ -675,7 +675,7 @@ RULES = [
             # doesn't match. Without this, PDF-format LCU rows fall through to misc
             # -> LLM, which (observed) re-uses the base per-hour forwarding-rule SKU
             # instead of the data-processing SKU, inflating cost 3-5x.
-            or _re(r["operation"], r"LCU-Hrs?|capacity unit-hour")
+            or _re(r["operation"], r"LCU-Hrs?|GLCU-Hrs?|capacity unit-hour")
             # Spreadsheet-export meters: "Out-Bytes" and "In-Bytes" suffixes signal
             # inter-region / internet egress/ingress — map to data_transfer.
             # PDF-ingested rows (e.g. VPC Peering) carry this suffix in `product`
@@ -721,10 +721,10 @@ RULES = [
         "flat_hourly",
         lambda r: (
             (
-                _re(r["usage_type"], r"LoadBalancerUsage|NatGateway-Hours|ElasticIP|IPAddress"
+                _re(r["usage_type"], r"LoadBalancerUsage|GatewayLoadBalancer|GWLB|NatGateway-Hours|ElasticIP|IPAddress"
                                      r"|TransitGateway-Hours|DirectConnect|HostedConnection"
                                      r"|GlobalAccelerator|PublicIPv4|VPN-Connections|VPNConnection")
-                or _re(r["operation"], r"LoadBalancer|public IPv4 address|TransitGateway-Hours"
+                or _re(r["operation"], r"LoadBalancer|GatewayLoadBalancer|GWLB|public IPv4 address|TransitGateway-Hours"
                                        r"|Transit Gateway|DirectConnect|Global Accelerator"
                                        r"|CreateVpnConnection|VPN")
                 or _ilike(r["product"], "Direct Connect")

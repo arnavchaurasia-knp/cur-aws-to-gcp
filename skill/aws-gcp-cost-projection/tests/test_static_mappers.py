@@ -721,16 +721,16 @@ def test_cloudwatch_api_requests_dated_caveat():
     assert out[0]["mapping_confidence"] == 0.55
 
 
-def test_transit_gateway_data_processing_assumes_peering():
+def test_transit_gateway_data_processing_maps_to_ncc_adn():
     rows = [row(product="Amazon Virtual Private Cloud",
                 usage_type="USE2-TransitGateway-Bytes",
                 operation="", unit="GB")]
     out = _with_sku(map_data_transfer, rows)
     assert len(out) == 1
-    assert out[0]["strategy"] == "ignore"
-    assert "VPC Peering" in out[0]["projection_note"]
-    assert "NCC" in out[0]["projection_note"]
-    assert out[0]["mapping_confidence"] == 0.60
+    assert out[0]["strategy"] == "map"
+    assert out[0]["gcp_sku_id"] is not None
+    assert "Advanced Data Networking" in out[0]["projection_note"]
+    assert out[0]["mapping_confidence"] == 0.85
 
 
 

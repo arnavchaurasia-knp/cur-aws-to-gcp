@@ -4895,7 +4895,8 @@
   "vpc": {
     "display": "Amazon Virtual Private Cloud",
     "product_codes": [
-      "AmazonVPC"
+      "AmazonVPC",
+      "AWSTransitGateway"
     ],
     "charge_types": [
       {

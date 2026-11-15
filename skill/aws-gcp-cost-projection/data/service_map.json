@@ -447,8 +447,8 @@
       "category": "Networking",
       "gcp_service": "Network Connectivity Center",
       "mode": "keep",
-      "confidence": 72,
-      "reason": "Transit Gateway -> NCC hub (per attachment + data)."
+      "confidence": 75,
+      "reason": "Transit Gateway -> Network Connectivity Center (NCC) VPC Spoke ($0.10/hr) + Advanced Data Networking ($0.02/GiB)."
     },
     {
       "match": "vpnconnection",

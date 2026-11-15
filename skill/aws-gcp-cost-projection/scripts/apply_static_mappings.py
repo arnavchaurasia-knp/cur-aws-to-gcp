@@ -428,11 +428,11 @@ FLAT_HOURLY_MAP = [
      "Cloud Load Balancing", r"Cloud Load Balancer Forwarding Rule Minimum", 1.0),
     # P-15: Cloud NAT gateway hours are handled in map_flat_hourly directly with Public/Private
     # splitting, per-VM-hour modeling, and assumption metadata.
-    # Transit Gateway → Cloud VPN Tunnel ($0.05/hr vs NCC Spoke $0.10/hr).
-    # Cloud VPN is the functional equivalent for inter-VPC/on-prem connectivity
-    # and costs 2x less than NCC Spoke Hours (the previous mapping).
+    # Transit Gateway → Network Connectivity Center (NCC) VPC Network Spoke ($0.10/hr).
+    # AWS Transit Gateway is a hub-and-spoke cloud router; the faithful GCP rebuild is
+    # NCC (hub is free + one spoke per VPC attachment), matching Google's architecture guide.
     (r"TransitGateway-Hours|TransitGateway|TGW",
-     "Cloud VPN", r"Cloud VPN Tunnel", 1.0),
+     "Networking", r"Network Connectivity Center Spoke Hours VPC Network Spoke", 1.0),
     # EKS cluster management fee $0.10/hr → GKE cluster management fee $0.10/hr (parity).
     # Route to "Zonal Kubernetes Clusters" SKU; Regional EKS clusters are rare in CUR.
     (r"AmazonEKS|EKS.*Hours|EKSCluster|Elastic Container Service for Kubernetes",
@@ -2716,6 +2716,8 @@ def map_flat_hourly(rows):
                 if sku_id:
                     entry["gcp_sku_id"] = sku_id
                     entry["gcp_sku_unit"] = sku_id.unit
+                else:
+                    entry["passthrough_reason"] = "no_rate_in_region"
                 out.append(entry)
                 continue
             else:
@@ -2749,6 +2751,8 @@ def map_flat_hourly(rows):
                 if sku_id:
                     entry["gcp_sku_id"] = sku_id
                     entry["gcp_sku_unit"] = sku_id.unit
+                else:
+                    entry["passthrough_reason"] = "no_rate_in_region"
                 out.append(entry)
                 continue
 
@@ -2863,12 +2867,11 @@ def map_flat_hourly(rows):
                             "over-projected ~10x, a 100Gbps port under-projected ~10x — verify the "
                             "real port speed with customer before finalizing]")
         elif re.search(r"TransitGateway|TGW", combined, re.IGNORECASE):
-            confidence = 0.60
-            review_note = (" [architecture review recommended: Cloud VPN Tunnel is assumed without "
-                            "checking whether Dedicated Interconnect or plain VPC Peering would be "
-                            "the cheaper same-or-better fit for this traffic's actual topology — CUR "
-                            "alone doesn't indicate on-prem vs intra-region vs cross-region traffic "
-                            "patterns; verify with customer before finalizing]")
+            confidence = 0.75
+            review_note = (" [architecture review recommended: Network Connectivity Center (NCC) VPC Spoke "
+                            "is assumed ($0.10/hr per VPC spoke vs AWS $0.05/attachment-hr) — VPN-attachment or "
+                            "on-prem-heavy topologies may instead fit Cloud VPN or Interconnect; CUR alone doesn't "
+                            "indicate on-prem vs intra-region vs cross-region traffic patterns; verify with customer]")
 
         entry = {
             "aws_li_key":       r["aws_li_key"],
@@ -2885,6 +2888,8 @@ def map_flat_hourly(rows):
         if sku_id:
             entry["gcp_sku_id"] = sku_id
             entry["gcp_sku_unit"] = sku_id.unit
+        else:
+            entry["passthrough_reason"] = "no_rate_in_region"
         out.append(entry)
     return out
 
@@ -4273,6 +4278,8 @@ def map_block_storage(rows):
         if sku_id:
             entry["gcp_sku_id"] = sku_id
             entry["gcp_sku_unit"] = sku_id.unit
+        else:
+            entry["passthrough_reason"] = "no_rate_in_region"
         out.append(entry)
     return out
 
@@ -4368,6 +4375,8 @@ def map_data_transfer(rows):
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
                 entry["gcp_sku_unit"] = sku_id.unit
+            else:
+                entry["passthrough_reason"] = "no_rate_in_region"
             out.append(entry)
             continue
 
@@ -4390,34 +4399,38 @@ def map_data_transfer(rows):
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
                 entry["gcp_sku_unit"] = sku_id.unit
+            else:
+                entry["passthrough_reason"] = "no_rate_in_region"
             out.append(entry)
             continue
             
         if "transitgateway-bytes" in ut or "tgw-bytes" in ut:
-            # Verified 2026-11-11 against cloud.google.com/network-connectivity/pricing:
-            # $0 here ASSUMES the GCP target uses plain VPC Peering (free — no data-
-            # processing fee). It is NOT universally free: the TGW analog, Network
-            # Connectivity Center (NCC), charges VPC spoke-hours ($0.10/hr per VPC
-            # spoke ≈ $73/mo) AND an Advanced Data Networking per-GB data-processing
-            # fee on VPC-spoke traffic. Modelling the NCC path needs an architecture
-            # input (peering vs NCC) + spoke count — deferred (see work order).
-            out.append({
+            # Transit Gateway data processed → Network Connectivity Center (NCC) Advanced Data Networking
+            # ($0.02/GiB, exact parity with AWS TGW $0.02/GB; cloud.google.com/network-connectivity/pricing).
+            # SKU: 418E-2917-ADB1 ("Networking Data Transfer for advanced data networking").
+            service = "Networking"
+            desc_pattern = "Data Transfer for advanced data networking"
+            sku_id = resolve_sku(service, desc_pattern, r.get("gcp_region"))
+            entry = {
                 "aws_li_key":       r["aws_li_key"],
-                "gcp_service":      "VPC Network",
-                "gcp_sku_name":     None,
+                "gcp_service":      "Networking",
+                "gcp_sku_name":     desc_pattern,
                 "component":        "transfer",
-                "strategy":         "ignore",
+                "strategy":         "map" if sku_id else "passthrough",
                 "unit_multiplier":  1.0,
                 "gcp_region":       r.get("gcp_region"),
                 "projection_note":  (
-                    "Transit Gateway data processing → $0 on GCP, ASSUMING VPC Peering "
-                    "(free, no data-processing fee). NOT free if the GCP design uses NCC: "
-                    "NCC charges VPC spoke-hours ($0.10/hr per spoke) + Advanced Data "
-                    "Networking per-GB data processing (source: cloud.google.com/network-"
-                    "connectivity/pricing) — re-model if the target architecture uses NCC"
+                    "Transit Gateway data processing → NCC Advanced Data Networking ($0.02/GiB, AWS parity; "
+                    "cloud.google.com/network-connectivity/pricing)" + _no_rate_suffix(sku_id, r.get("gcp_region"))
                 ),
-                "mapping_confidence": 0.60,
-            })
+                "mapping_confidence": 0.85 if sku_id else 0.70,
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
+            else:
+                entry["passthrough_reason"] = "no_rate_in_region"
+            out.append(entry)
             continue
 
         # "lcu"/"loadbalancer-bytes" catches CUR-format usage_type tokens; PDF bills
@@ -6251,6 +6264,8 @@ def map_redshift(rows):
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
                 entry["gcp_sku_unit"] = sku_id.unit
+            else:
+                entry["passthrough_reason"] = "no_rate_in_region"
             out.append(entry)
             continue
 
@@ -6940,6 +6955,8 @@ def map_athena(rows):
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
                 entry["gcp_sku_unit"] = sku_id.unit
+            else:
+                entry["passthrough_reason"] = "no_rate_in_region"
             out.append(entry)
         else:
             # Other Athena charges (DDL, cancelled queries, DML metadata) → passthrough
@@ -7152,6 +7169,8 @@ def map_efs(rows):
         if sku_id:
             entry["gcp_sku_id"] = sku_id
             entry["gcp_sku_unit"] = sku_id.unit
+        else:
+            entry["passthrough_reason"] = "no_rate_in_region"
         out.append(entry)
     return out
 
@@ -7399,6 +7418,8 @@ def map_fsx(rows):
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
                 entry["gcp_sku_unit"] = sku_id.unit
+            else:
+                entry["passthrough_reason"] = "no_rate_in_region"
             out.append(entry)
 
         elif "windows" in blob:
@@ -7458,6 +7479,8 @@ def map_fsx(rows):
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
                 entry["gcp_sku_unit"] = sku_id.unit
+            else:
+                entry["passthrough_reason"] = "no_rate_in_region"
             out.append(entry)
 
         else:
@@ -7478,6 +7501,8 @@ def map_fsx(rows):
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
                 entry["gcp_sku_unit"] = sku_id.unit
+            else:
+                entry["passthrough_reason"] = "no_rate_in_region"
             out.append(entry)
 
     return out
@@ -7516,6 +7541,8 @@ def map_xray(rows):
         if sku_id:
             entry["gcp_sku_id"] = sku_id
             entry["gcp_sku_unit"] = sku_id.unit
+        else:
+            entry["passthrough_reason"] = "no_rate_in_region"
         out.append(entry)
     return out
 
@@ -7847,6 +7874,8 @@ def map_emr(rows):
             if sku_id:
                 entry["gcp_sku_id"] = sku_id
                 entry["gcp_sku_unit"] = sku_id.unit
+            else:
+                entry["passthrough_reason"] = "no_rate_in_region"
         else:
             entry = {
                 "aws_li_key":         r["aws_li_key"],

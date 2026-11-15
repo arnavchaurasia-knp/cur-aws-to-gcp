@@ -1582,5 +1582,135 @@
       "expected_mechanic": "per_request",
       "description": "Route 53 records >10,000 per zone fee -> ignore ()"
     }
+  ],
+  "vpc": [
+    {
+      "usage_type": "NatGateway-Hours",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_nat_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "NAT Gateway hours public -> Cloud NAT Gateway Uptime (32-VM cap)"
+    },
+    {
+      "usage_type": "USE1-NatGateway-Hours",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_nat_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "NAT Gateway hours US East -> Cloud NAT Gateway Uptime"
+    },
+    {
+      "usage_type": "USE1-PrivateNatGateway-Hours",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_nat_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "Private NAT Gateway hours -> Private Nat Gateway Uptime"
+    },
+    {
+      "usage_type": "TransitGateway-Hours",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_tgw_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "Transit Gateway attachment-hours -> NCC VPC Network Spoke"
+    },
+    {
+      "usage_type": "USE1-TransitGateway-Hours",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_tgw_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "Transit Gateway attachment-hours US East -> NCC VPC Network Spoke"
+    },
+    {
+      "usage_type": "TransitGateway-Bytes",
+      "operation": "",
+      "unit": "GB",
+      "expected_charge_type": "vpc_tgw_data",
+      "expected_mechanic": "data_transfer",
+      "description": "Transit Gateway data processed -> NCC Advanced Data Networking"
+    },
+    {
+      "usage_type": "USE1-TransitGateway-Bytes",
+      "operation": "",
+      "unit": "GB",
+      "expected_charge_type": "vpc_tgw_data",
+      "expected_mechanic": "data_transfer",
+      "description": "Transit Gateway data processed US East -> NCC Advanced Data Networking"
+    },
+    {
+      "usage_type": "PublicIPv4:InUseAddress",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_public_ipv4",
+      "expected_mechanic": "flat_hourly",
+      "description": "Public IPv4 in-use address hours -> External IP on Standard VM"
+    },
+    {
+      "usage_type": "USE1-PublicIPv4:InUseAddress",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_public_ipv4",
+      "expected_mechanic": "flat_hourly",
+      "description": "Public IPv4 in-use US East -> External IP on Standard VM"
+    },
+    {
+      "usage_type": "PublicIPv4:IdleAddress",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_public_ipv4",
+      "expected_mechanic": "flat_hourly",
+      "description": "Public IPv4 idle address hours -> Static IP Charge"
+    },
+    {
+      "usage_type": "USE1-PublicIPv4:IdleAddress",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_public_ipv4",
+      "expected_mechanic": "flat_hourly",
+      "description": "Public IPv4 idle US East -> Static IP Charge"
+    },
+    {
+      "usage_type": "VPN-Connections",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_vpn_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "Site-to-Site VPN connection-hours -> Cloud VPN Tunnel"
+    },
+    {
+      "usage_type": "USE1-VPN-Connections",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_vpn_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "Site-to-Site VPN US East -> Cloud VPN Tunnel"
+    },
+    {
+      "usage_type": "VpcEndpoint-Hours",
+      "operation": "VpcEndpoint",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_other",
+      "expected_mechanic": "misc",
+      "description": "VPC Endpoint connection hours -> Private Service Connect (review)"
+    },
+    {
+      "usage_type": "USE1-VpcEndpoint-Hours",
+      "operation": "VpcEndpoint",
+      "unit": "Hrs",
+      "expected_charge_type": "vpc_other",
+      "expected_mechanic": "misc",
+      "description": "VPC Endpoint connection hours US East -> Private Service Connect"
+    },
+    {
+      "usage_type": "USE1-VpcEndpoint-Bytes",
+      "operation": "VpcEndpoint",
+      "unit": "GB",
+      "expected_charge_type": "vpc_other",
+      "expected_mechanic": "misc",
+      "description": "VPC Endpoint data processed -> Private Service Connect data"
+    }
   ]
 }

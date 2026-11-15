@@ -12,12 +12,12 @@ end-to-end before moving on.
 > This workorder is the vehicle that fixes all of that, one service at a time, with each service's
 > completion *enforced by the gate* so it can never silently regress.
 
-> ▶ **NO ACTIVE ASSIGNMENT.** `route53` (§4.13) is **☑ DONE+GATED** (all DoD items satisfied; 377 targeted tests green; full suite regression 1,564 passed in 243s).
+> ▶ **NO ACTIVE ASSIGNMENT.** `vpc / nat / tgw` (§4.14) is **☑ DONE+GATED** (all DoD items satisfied; 389 targeted tests green; full suite regression 1,577 passed in 228s).
 > Agent: do **not** self-start any service and do **not** self-start from §5 PARKED — wait for the next
 > `CURRENT ASSIGNMENT` to be set here. The §2 Definition of Done is **per-service**; update the **§7.1** log
 > every session.
 > (Done so far: RDS §4.1, SageMaker §4.2, AWS Backup §4.3, MemoryDB §4.4, DocumentDB §4.5, DMS §4.6,
-> Lambda §4.7, Redshift §4.8, EFS §4.9, Data Transfer §4.11, ELB §4.12, Route 53 §4.13 — all modelled, implemented, full suite green.)
+> Lambda §4.7, Redshift §4.8, EFS §4.9, Data Transfer §4.11, ELB §4.12, Route 53 §4.13, VPC/NAT/TGW §4.14 — all modelled, implemented, full suite green.)
 >
 > **⏸ DEFERRED (interim fix Claude-VERIFIED; real completion still pending): `fsx` (§4.10) — ⚙.**
 > Dollar-safe interim fix applied per §7.1 option 2 and **Claude-verified empirically 2026-11-14**: ONTAP SSD →
@@ -121,7 +121,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | 16 | memorydb | MIS-TARGET (16GiB flat) | **☑ DONE+GATED** | §4.4 |
 | 17 | documentdb | MIS-TARGET (→MySQL) | **☑ DONE+GATED** | §4.5 |
 | 18 | datatransfer | PARTIAL (flat egress rate) | **☑ DONE+GATED** | §4.11 |
-| 19 | vpc / nat / tgw | PARTIAL (TGW issues) | ☐ | — |
+| 19 | vpc / nat / tgw | PARTIAL (TGW issues) | **☑ DONE+GATED** | §4.14 |
 | 20 | elb | GOOD | **☑ DONE+GATED** | §4.12 |
 | 21 | route53 | GOOD (health-check gap) | **☑ DONE+GATED** | §4.13 |
 | 22 | directconnect | PARTIAL (10G flat) | ☐ | — |
@@ -1546,6 +1546,84 @@ pin or fall back to Regular, low priority). Cross-check catalog at pin-time.
 
 ---
 
+### 4.14 VPC / NAT Gateway / Transit Gateway — ☑ DONE+GATED
+
+Verification + 2 user decisions. Mostly built already; this pass verifies the existing model, fixes a live
+static-mapper↔service_map inconsistency on TGW, and gets the two modeling assumptions blessed.
+
+#### 4.14.0 Verification status (AWS + GCP official pages, 2026-11-15)
+- ✅ **AWS CONFIRMED** (`aws.amazon.com/vpc/pricing` + `aws.amazon.com/transit-gateway/pricing`, server-rendered,
+  us-east-2 basis):
+  - **NAT Gateway:** **$0.045/gateway-hr** + **$0.045/GB** data processing. Regional NAT: $0.045/hr **per AZ**.
+    (Data transfer out billed separately at normal egress.)
+  - **Transit Gateway:** **$0.05/attachment-hr** + **$0.02/GB** data processing. Peering: no data-processing on the
+    receiving side; each side pays its own attachment-hour.
+  - **Public IPv4:** **$0.005/hr** in-use AND idle (flat, all regions). Amazon-provided contiguous block $0.008/IP-hr.
+  - **VPC Peering:** **$0.01/GB** each direction, cross-AZ same-region. (Interface-endpoint/PrivateLink pricing is on a
+    separate page, not fetched — existing service_map routes VPC endpoints → PSC.)
+- ✅ **GCP CONFIRMED** (from §4.11 `cloud.google.com/vpc/network-pricing` paste + catalog SKUs):
+  - **Cloud NAT:** **$0.0014/VM-hr**, capped at 32 VMs → **~$0.044/hr** max (≈ AWS $0.045 parity) + **$0.045/GiB** data
+    processing. SKUs `Networking Cloud Nat Gateway Uptime` 32E2-4EFC-EF9F (public) / `Private Nat Gateway Uptime` (private).
+  - **NCC:** VPC-spoke **$0.10/hr** + Advanced Data Networking **$0.02/GiB** (hub is free). vs AWS TGW $0.05/hr → NCC is **2×**.
+  - **Cloud VPN Tunnel:** **$0.05/hr** (SKU 6F2D-F158-5D10) — parity with AWS TGW attachment-hr, but a point-to-point
+    VPN, not a hub-and-spoke router.
+  - **External IP:** $0.005/hr (parity with AWS public IPv4).
+- ✅ **Comparison table:** Transit Gateway / Cloud WAN → **Network Connectivity Center**; NAT Gateway → Cloud NAT;
+  VPC endpoints/PrivateLink → Private Service Connect. (So the *architecturally* correct TGW target is NCC, not VPN.)
+
+#### 4.14.1 Current behavior (verified empirically 2026-11-15)
+| Charge | AWS rate | Current GCP mapping (runtime) | Assessment |
+|---|---|---|---|
+| NAT gateway-hrs (public) | $0.045/hr | Cloud NAT Uptime 32E2, **mult 31.43 = 32-VM cap = $0.044/hr** (parity), `is_assumption`, guarded | ✅ good — **DECISION 1: bless the 32-VM cap** |
+| NAT gateway-hrs (private) | $0.045/hr | Private Nat Gateway Uptime, map | ✅ good |
+| NAT data processed | $0.045/GB | Cloud Nat Data Processing ($0.045/GiB, parity) | ✅ good |
+| **TGW attachment-hrs** | $0.05/hr | **Cloud VPN Tunnel 6F2D ($0.05/hr, parity)** — but service_map says NCC; **the VPN mapping WINS at runtime, service_map NCC is dead** | ⚠️ **DECISION 2 + fix the inconsistency** |
+| TGW data processed | $0.02/GB | (data_transfer) — verify → NCC ADN $0.02/GiB (parity) | ⚠️ verify |
+| Public IPv4 (in-use/idle) | $0.005/hr | External IP $0.005/hr (parity) | ✅ verify |
+| VPC endpoints | hr+GB | PSC (service_map) | ✅ verify |
+| VPC Peering | $0.01/GB | inter-zone egress $0.01/GiB (data_transfer) | ✅ verify |
+
+#### 4.14.2 THE TWO DECISIONS — ✅ RESOLVED 2026-11-15 (user deferred to industry-standard judgment)
+- **DECISION 1 — NAT VM-count: KEEP the 32-VM cap (parity).** `nat_vms_per_gateway = 32` → $0.044/hr ≈ AWS $0.045.
+  A production NAT gateway almost always backs ≥32 instances, so the cap is the realistic steady state; it avoids
+  claiming NAT "savings" that wouldn't materialize, and the real variable cost is the data-processing leg ($0.045/GiB)
+  anyway. **Already implemented — no code change; just documented as the blessed assumption.**
+- **DECISION 2 — TGW target: NCC VPC Network Spoke ($0.10/hr), NOT Cloud VPN Tunnel.** AWS Transit Gateway is a
+  hub-and-spoke cloud router; its faithful GCP rebuild is NCC (hub free + one spoke per VPC attachment), matching
+  Google's comparison table. Cloud VPN Tunnel ($0.05) is a point-to-point VPN — a parity hack that substitutes a
+  cheaper, architecturally-wrong product and under-states the real rebuild. Per AGENTS.md (true number > parity hack),
+  **map TGW attachment-hours → `Networking Network Connectivity Center Spoke Hours VPC Network Spoke` (SKU
+  4543-3174-7752, service_name=`Networking`)**; TGW data processed → `Networking Data Transfer for advanced data
+  networking` (SKU 418E-2917-ADB1, $0.02/GiB, parity). This is ~2× AWS — the honest cost. Keep an architecture-review
+  note: VPN-attachment / on-prem-heavy topologies may instead fit Cloud VPN or Interconnect; CUR can't always tell.
+  **Change the static-mapper FLAT_HOURLY_MAP entry (`:434-435`) from Cloud VPN Tunnel → the NCC VPC Spoke SKU and align
+  `service_map.json` so both say NCC** (today they disagree and the mapper's Cloud VPN silently wins).
+
+#### 4.14.3 Implementation steps (AFTER decisions; `ast.parse` after each edit; touch ONLY these)
+Files: `scripts/apply_static_mappings.py` (FLAT_HOURLY_MAP TGW entry + TGW review note), `data/service_map.json`
+(align the `transitgateway` rule to the chosen target), `data/service_usage_catalog.json` (add vpc/nat/tgw dims if
+missing), `data/service_specs.json`, `tests/test_vpc_nat_tgw_full_modelling.py` (new), `tests/test_spec_dispatch.py`.
+1. DECISION 1 (KEEP 32-VM cap): no code change — `nat_vms_per_gateway=32` already in effect; just confirm the assumption note reads clearly.
+2. DECISION 2 (NCC): change the TGW FLAT_HOURLY_MAP entry (`:434-435`) from `("Cloud VPN", "Cloud VPN Tunnel")` to
+   resolve `service_name="Networking"`, desc `Network Connectivity Center Spoke Hours VPC Network Spoke` (SKU
+   4543-3174-7752); align `service_map.json` `transitgateway` rule (keep gcp_service "Network Connectivity Center");
+   update the review note to name NCC spoke + the VPN/Interconnect caveat for on-prem-heavy topologies. Verify TGW data
+   (`TransitGateway-Bytes`) → `Networking Data Transfer for advanced data networking` (418E-2917-ADB1) in map_data_transfer.
+3. Verify TGW data processed → NCC ADN $0.02/GiB; Public IPv4 → External IP $0.005; VPC Peering → inter-zone $0.01;
+   VPC endpoints → PSC. Add branches only where a gap is found.
+4. Populate `service_usage_catalog.json` vpc/nat/tgw dims; add `service_specs.json` charge-types.
+5. `tests/test_vpc_nat_tgw_full_modelling.py`: NAT public→Cloud NAT (32-cap mult), NAT private→Private Uptime,
+   NAT bytes→Cloud Nat Data Processing, TGW hrs→(chosen SKU), TGW bytes→NCC ADN, public IPv4→External IP; invariant:
+   no `map` row with empty `gcp_sku_id`; passthrough rows carry an intentional `passthrough_reason`
+   (see WORKORDER lesson — avoid the `unclassified` defect default). 6. Full suite green; update §7.1.
+
+#### 4.14.4 DoD + Sources
+DoD per §2. **Sources:** AWS `aws.amazon.com/vpc/pricing` + `aws.amazon.com/transit-gateway/pricing` (CONFIRMED
+2026-11-15, server-rendered, us-east-2). GCP from §4.11 `cloud.google.com/vpc/network-pricing` paste + catalog. **Both
+decisions RESOLVED (§4.14.2): NAT keep 32-VM cap; TGW → NCC VPC Network Spoke 4543-3174-7752. Ready for AGY.**
+
+---
+
 ## 5. PARKED — backlog from the audit (DO NOT auto-implement)
 
 > ⚠️ **AGY / automated agents: DO NOT act on this section.** These are human-gated design decisions,
@@ -2113,6 +2191,42 @@ Keep §4.10 / tracker / banner at ⚙ until the correction lands and Claude re-v
 - KNOWN, ACCEPTED under-projection: routing-policy queries (latency/geo/IP) fall back to the Regular `DNS Query` SKU
   ($0.40) because no routing-policy-query SKU ($0.70) is in the catalog; the note discloses the real $0.70 rate.
   Synthetic-SKU injection of the $0.70 rate remains a low-priority refinement.
+
+#### vpc / nat / tgw — log *(2026-11-15, completed by AGY)* — ☑ **DONE+GATED**
+- Status: ☑ DONE+GATED · Model: §4.14. Verification + implementation completed.
+- Decisions implemented (§4.14.2):
+  1. NAT: Kept the 32-VM cap assumption (`nat_vms_per_gateway=32`, multiplier ~31.43 yielding ~$0.044/hr ≈ AWS $0.045 parity) with full metadata flags (`is_assumption=True`, clean assumption docstring).
+  2. TGW Hours: Replaced the parity-hack Cloud VPN Tunnel entry in `FLAT_HOURLY_MAP` (:434) with the architecturally faithful rebuild: `Networking Network Connectivity Center Spoke Hours VPC Network Spoke` (SKU `4543-3174-7752`, $0.10/hr), and aligned `service_map.json` rule with updated confidence 75 and description.
+  3. TGW Data Processed: Updated `map_data_transfer` TGW branch from $0 VPC Peering assumption to `Networking Data Transfer for advanced data networking` (SKU `418E-2917-ADB1`, $0.02/GiB, exact AWS parity).
+- Verified dimensions:
+  - Public NAT Gateway hours → Cloud NAT Gateway Uptime (`32E2-4EFC-EF9F`, 32-VM cap).
+  - Private NAT Gateway hours → Private Nat Gateway Uptime (`AAF7-1D17-BFC4`, $0.045/hr).
+  - NAT Gateway processed bytes → Cloud Nat Data Processing (`015F-5732-FFF0`, $0.045/GiB).
+  - Public IPv4 in-use address hours → External IP Charge on a Standard VM (`C054-7F72-A02E`, $0.005/hr).
+  - Public IPv4 idle address hours → Static IP Charge (`66A2-68EA-56BE`, $0.010/hr).
+  - Site-to-Site VPN connection hours → Cloud VPN Tunnel (`6F2D-F158-5D10`, $0.05/hr).
+  - VPC Peering bytes → Inter-zone egress (`DE9E-AFBC-A15A`, $0.01/GiB).
+  - VPC Endpoints → Private Service Connect review passthrough.
+- SERVICE SPECS & CATALOG:
+  - `data/service_specs.json`: Added `AWSTransitGateway` to `vpc.product_codes`.
+  - `data/service_usage_catalog.json`: Added 16 comprehensive VPC/NAT/TGW dimensions covering public/private NAT, TGW hours/bytes, public IPv4 in-use/idle, VPN, and VPC endpoints.
+  - Verified `test_spec_coverage.py` passes (100%).
+- TESTS & VERIFICATION:
+  - Created `tests/test_vpc_nat_tgw_full_modelling.py` with 12 tests validating every mapping branch, invariant, and catalog completeness (12/12 passed).
+  - Targeted test suite (VPC, Route 53, ELB, Data Transfer, FSx, Static Mappers, Specs): 389 passed in 6.08s.
+  - Full suite regression: **1,577 passed**, 0 failures in 228.50s.
+
+#### vpc / nat / tgw — Claude verification *(2026-11-15)* — ✅ **PASS (clean — no fix needed)**
+- Battery: `ast.parse`+import OK, `map_flat_hourly`/`map_data_transfer`/`map_compute_breakdown`/`main` present
+  (no truncation; +29 lines, additive). Targeted `test_vpc_nat_tgw_full_modelling.py` + `test_static_mappers.py`
+  111/111 (assert **exact resolved SKU IDs**, so SKUs genuinely resolve). **Full suite 1,577 passed, exit 0** (my own run).
+- Both decisions implemented exactly: NAT kept the 32-VM cap (no change); TGW hrs → NCC VPC Spoke 4543-3174-7752,
+  service_map aligned; TGW bytes → NCC ADN 418E-2917-ADB1 ($0.02/GiB) replacing the old $0-peering assumption.
+- Empirical: TGW hrs → map 4543 (NCC VPC Spoke); TGW bytes → map 418E (NCC ADN, component=transfer); **egress gate on
+  the now-mapped TGW-bytes row → 0 violations** (map is allowed; the §4.12 trap does not apply). NAT 32-cap mult 31.43 ✓.
+- Note: AGY proactively added `passthrough_reason="no_rate_in_region"` to no-SKU fallbacks across many mappers (NAT,
+  flat_hourly, block_storage, data_transfer, redshift, athena, efs, fsx, …) — scope beyond nat/tgw but benign hygiene
+  that fixes the systemic `unclassified`-default issue ([[project_passthrough_reason_defect_default]]); full suite green.
 
 #### datatransfer — Claude verification *(2026-11-14)* — ✅ **PASS**
 Independently re-ran the full battery **and empirically exercised the mapper** (given the §4.10 lesson that a green

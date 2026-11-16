@@ -143,8 +143,8 @@ def test_memorydb_snapshot_spec_dispatch():
     assert res["mechanic"] == "backup"
 
 
-def test_elasticache_memcached_deprecated_retargets_to_redis_basic():
-    """ElastiCache Memcached must retarget away from deprecated GCP product (WORKORDER_followup_fixes A1)."""
+def test_elasticache_memcached_maps_to_memorystore_memcached_with_deprecation():
+    """ElastiCache Memcached maps to Memorystore for Memcached with deprecation disclosure (§4.15)."""
     row = {
         "aws_li_key": "memcached_test",
         "product": "Amazon ElastiCache",
@@ -157,12 +157,15 @@ def test_elasticache_memcached_deprecated_retargets_to_redis_basic():
         "total_usage": 100.0,
     }
     out = asm.map_elasticache([row])
-    assert len(out) == 1
-    m = out[0]
-    assert m["gcp_service"] == "Cloud Memorystore for Redis"
-    assert "Cloud Memorystore for Memcached" != m["gcp_service"]
-    assert "DEPRECATED" in m["projection_note"]
-    assert "Redis/Valkey" in m["projection_note"]
+    # Memcached bills per-vCPU AND per-GiB → two legs (Custom RAM + Custom Core).
+    assert len(out) == 2
+    for m in out:
+        assert m["gcp_service"] == "Cloud Memorystore for Memcached"
+        assert m["strategy"] == "map"
+        assert m["gcp_sku_id"] is not None
+        assert "2029-01-31" in m["projection_note"]
+        assert "Valkey" in m["projection_note"]
+    assert {m["component"] for m in out} == {"ram", "core"}
 
 
 def test_memorystore_cud_multipliers_20_40():

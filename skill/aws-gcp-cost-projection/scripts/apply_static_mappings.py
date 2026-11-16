@@ -5876,54 +5876,136 @@ def map_elasticache(rows: list) -> list:
     for r in rows:
         region = r.get("gcp_region")
 
-        # Memcached deprecation (WORKORDER_followup_fixes A1):
-        # Cloud Memorystore for Memcached is DEPRECATED on GCP (docs.cloud.google.com/memorystore).
-        # Rather than mapping new projections onto a deprecated product, retarget ElastiCache
-        # Memcached nodes to Memorystore for Redis Basic with a disclosed architecture note.
-        engine_blob = f"{r.get('product') or ''} {r.get('operation') or ''}".lower()
-        if "memcached" in engine_blob:
-            ram = _elasticache_ram(r)
-            if ram is None:
+        ut_raw = (r.get("usage_type") or "").strip()
+        op_raw = (r.get("operation") or "").strip()
+        combined_blob = f"{r.get('product') or ''} {ut_raw} {op_raw}".lower()
+
+        # 1. Serverless ElastiCache (data-stored & ECPU)
+        if "serverless" in combined_blob:
+            is_ecpu = "ecpu" in combined_blob or "request" in combined_blob
+            if is_ecpu:
                 out.append({
                     "aws_li_key":         r["aws_li_key"],
                     "gcp_service":        GCP_MEMORYSTORE,
                     "gcp_sku_id":         None,
-                    "gcp_sku_name":       "Redis Capacity Basic M1",
+                    "gcp_sku_name":       None,
                     "component":          "cache",
                     "strategy":           "passthrough",
                     "unit_multiplier":    1.0,
                     "gcp_region":         region,
-                    "projection_note":    ("ElastiCache for Memcached → Memorystore for Redis; "
-                                           "Memorystore for Memcached is DEPRECATED on GCP (https://cloud.google.com/memorystore); "
-                                           "node RAM unknown (instance_type missing from CUR) — passthrough at cost parity"),
-                    "mapping_confidence": 0.50,
+                    "projection_note":    ("ElastiCache Serverless ECPU (ElastiCache Processing Units) — "
+                                           "no direct per-operation equivalent on Cloud Memorystore; "
+                                           "passthrough at AWS cost with architecture review recommended"),
+                    "passthrough_reason": "no_gcp_equivalent",
+                    "mapping_confidence": 0.70,
                 })
                 continue
-            sku_name, size_tier = _cheapest_memorystore_tier("Basic", ram, region)
-            if sku_name is None:
-                tiers = _discover_memorystore_tiers()
-                largest = max((t for t in tiers if t[0] == "Basic"), key=lambda t: t[2], default=None)
-                size_tier = largest[1] if largest else "M1"
-                sku_name = f"Redis Capacity Basic {size_tier}"
-            sku_id = resolve_sku(GCP_MEMORYSTORE, sku_name, region)
+            else:
+                # Data-stored: charges per GB-hr ($0.125 Redis/Memcached, $0.084 Valkey).
+                # Map 1:1 to Cloud Memorystore for Redis Capacity Basic M1 (GiBy.h).
+                sku_id = resolve_sku(GCP_MEMORYSTORE, "Redis Capacity Basic M1", region)
+                out.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        GCP_MEMORYSTORE,
+                    "gcp_sku_id":         sku_id if sku_id else None,
+                    "gcp_sku_name":       "Redis Capacity Basic M1",
+                    "component":          "cache",
+                    "strategy":           "map" if sku_id else "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         region,
+                    "projection_note":    ("ElastiCache Serverless data stored → Cloud Memorystore for Redis Capacity Basic (GiBy.h)"
+                                           + _no_rate_suffix(sku_id, region)),
+                    "mapping_confidence": 0.80 if sku_id else 0.65,
+                })
+                continue
+
+        # 2. Backup / Snapshot storage ($0.085/GB-mo on AWS)
+        if re.search(r"backup|snapshot", combined_blob):
+            sku_id = resolve_sku(GCP_MEMORYSTORE, "Backups", region)
+            # AWS CUR reports backups in GB-Mo or GB-Hours. Unit multiplier converts to GBy.h (1 GB-mo = 730 GB-h).
+            unit_lower = (r.get("unit") or "").lower()
+            mult = 730.0 if ("mo" in unit_lower or "month" in unit_lower) else 1.0
             out.append({
                 "aws_li_key":         r["aws_li_key"],
                 "gcp_service":        GCP_MEMORYSTORE,
-                "gcp_sku_id":         sku_id,
-                "gcp_sku_name":       sku_name,
-                "component":          "cache",
+                "gcp_sku_id":         sku_id if sku_id else None,
+                "gcp_sku_name":       "Memorystore for Redis Cluster: Backups",
+                "component":          "backup",
                 "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    mult,
+                "gcp_region":         region,
+                "projection_note":    (f"ElastiCache backup/snapshot storage → Cloud Memorystore for Redis Backups ($0.00011111/GB-h; "
+                                       f"cloud.google.com/memorystore)" + _no_rate_suffix(sku_id, region)),
+                "mapping_confidence": 0.85 if sku_id else 0.70,
+            })
+            continue
+
+        # 3. Memcached nodes: map → Memorystore for Memcached (Custom RAM M1/M2) + deprecation disclosure
+        # Cloud Memorystore for Memcached is live/billable on GCP (shutting down 2029-01-31; migrate to Valkey).
+        if "memcached" in combined_blob:
+            ram = _elasticache_ram(r)
+            if ram is None:
+                out.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        GCP_MEMORYSTORE_MEMCACHED,
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       "Custom RAM M1",
+                    "component":          "cache",
+                    "strategy":           "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         region,
+                    "projection_note":    ("ElastiCache for Memcached → Cloud Memorystore for Memcached; "
+                                           "node RAM unknown (instance_type missing from CUR) — passthrough at cost parity; "
+                                           "GCP deprecation: Memcached shuts down 2029-01-31; recommended migration to Valkey"),
+                    "passthrough_reason": "unresolved_sku",
+                    "mapping_confidence": 0.50,
+                })
+                continue
+
+            # Memorystore for Memcached bills BOTH per-vCPU (Custom Core $0.05/vCPU-h) AND per-GiB
+            # (Custom RAM $0.0044 ≤4 GiB / $0.0089 larger). Emit BOTH legs — a RAM-only mapping
+            # under-projects a Memcached node by ~45-50% (the Core leg is often the larger half).
+            # Tier M1 if <= 4 GiB else M2 (applies to both Core and RAM SKUs).
+            tier = "M1" if ram <= 4.0 else "M2"
+            # Derive vCPU from the node type (strip the "cache." prefix → EC2 spec table).
+            _t_blob = f"{r.get('instance_type') or ''} {r.get('usage_type') or ''} {r.get('operation') or ''}".lower()
+            _tm = re.search(r"cache\.([a-z0-9]+\.[a-z0-9]+)", _t_blob)
+            _vcpu = (_EC2_TYPES_FOR_VCPU.get(_tm.group(1)) or {}).get("vcpus") if _tm else None
+            depr = "GCP deprecation: Memcached shuts down 2029-01-31; recommended migration to Valkey"
+
+            ram_pat = f"Custom RAM {tier}"
+            ram_sku = resolve_sku(GCP_MEMORYSTORE_MEMCACHED, ram_pat, region)
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        GCP_MEMORYSTORE_MEMCACHED,
+                "gcp_sku_id":         ram_sku if ram_sku else None,
+                "gcp_sku_name":       ram_pat,
+                "component":          "ram",
+                "strategy":           "map" if ram_sku else "passthrough",
                 "unit_multiplier":    ram,
                 "gcp_region":         region,
-                "projection_note":    (f"ElastiCache for Memcached → Memorystore for Redis Basic ({sku_name}); "
-                                       f"Memorystore for Memcached is DEPRECATED on GCP (https://cloud.google.com/memorystore) — "
-                                       f"retargeted to Memorystore for Redis; "
-                                       f"node RAM={ram:.2f} GiB → unit_multiplier={ram:.2f} (GiBy.h); "
-                                       f"architecture migration to Redis/Valkey required"),
-                "mapping_confidence": 0.70,
-                "is_assumption":      False,
-                "assumption":         None,
+                "projection_note":    (f"ElastiCache for Memcached node (RAM leg) → Cloud Memorystore for Memcached ({ram_pat}); "
+                                       f"node RAM={ram:.2f} GiB → ×{ram:.2f} (GiBy.h); {depr}"
+                                       + _no_rate_suffix(ram_sku, region)),
+                "mapping_confidence": 0.85 if ram_sku else 0.70,
             })
+            if _vcpu:
+                core_pat = f"Custom Core {tier}"
+                core_sku = resolve_sku(GCP_MEMORYSTORE_MEMCACHED, core_pat, region)
+                out.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        GCP_MEMORYSTORE_MEMCACHED,
+                    "gcp_sku_id":         core_sku if core_sku else None,
+                    "gcp_sku_name":       core_pat,
+                    "component":          "core",
+                    "strategy":           "map" if core_sku else "passthrough",
+                    "unit_multiplier":    float(_vcpu),
+                    "gcp_region":         region,
+                    "projection_note":    (f"ElastiCache for Memcached node (vCPU leg) → Cloud Memorystore for Memcached ({core_pat}); "
+                                           f"{_vcpu} vCPU → ×{_vcpu} ($0.05/vCPU-h); {depr}"
+                                           + _no_rate_suffix(core_sku, region)),
+                    "mapping_confidence": 0.85 if core_sku else 0.70,
+                })
             continue
 
         prod_low = (r.get("product") or "").lower()
@@ -5958,6 +6040,7 @@ def map_elasticache(rows: list) -> list:
                 "gcp_region":         region,
                 "projection_note":    ("ElastiCache → Memorystore for Redis; node RAM unknown "
                                        "(instance_type missing from CUR) — passthrough at cost parity"),
+                "passthrough_reason": "unresolved_sku",
                 "mapping_confidence": 0.50,
             })
             continue
@@ -6052,23 +6135,26 @@ def map_elasticache(rows: list) -> list:
                 "assumption":         None,
             })
             continue
-        out.append({
+        res_row = {
             "aws_li_key":         r["aws_li_key"],
             "gcp_service":        GCP_MEMORYSTORE,
-            "gcp_sku_id":         sku_id,
+            "gcp_sku_id":         sku_id if sku_id else None,
             "gcp_sku_name":       sku_name,
             "component":          "cache",
             "strategy":           strategy,
             "unit_multiplier":    ram,
             "gcp_region":         region,
-            "projection_note":    note,
+            "projection_note":    note + (_no_rate_suffix(sku_id, region) if not sku_id else ""),
             # Real deployment_option signal (HA or not) → 0.85, evidence-based.
             # No signal at all → same 70% ceiling CLAUDE.md §6 uses for
             # OpenSearch's identical "no application context in CUR" case.
             "mapping_confidence": 0.85 if has_deployment_signal else 0.70,
             "is_assumption":      is_assump,
             "assumption":         assump_text,
-        })
+        }
+        if strategy == "passthrough":
+            res_row["passthrough_reason"] = "unsupported_instance_family"
+        out.append(res_row)
     return out
 
 

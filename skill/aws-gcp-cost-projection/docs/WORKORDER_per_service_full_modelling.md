@@ -12,12 +12,13 @@ end-to-end before moving on.
 > This workorder is the vehicle that fixes all of that, one service at a time, with each service's
 > completion *enforced by the gate* so it can never silently regress.
 
-> ▶ **NO ACTIVE ASSIGNMENT.** `vpc / nat / tgw` (§4.14) is **☑ DONE+GATED** (all DoD items satisfied; 389 targeted tests green; full suite regression 1,577 passed in 228s).
+> ▶ **CURRENT ASSIGNMENT: NONE (awaiting next assignment from operator).**
+> `elasticache` (§4.15) was completed, fully modelled, and gated on 2026-11-16.
 > Agent: do **not** self-start any service and do **not** self-start from §5 PARKED — wait for the next
 > `CURRENT ASSIGNMENT` to be set here. The §2 Definition of Done is **per-service**; update the **§7.1** log
 > every session.
 > (Done so far: RDS §4.1, SageMaker §4.2, AWS Backup §4.3, MemoryDB §4.4, DocumentDB §4.5, DMS §4.6,
-> Lambda §4.7, Redshift §4.8, EFS §4.9, Data Transfer §4.11, ELB §4.12, Route 53 §4.13, VPC/NAT/TGW §4.14 — all modelled, implemented, full suite green.)
+> Lambda §4.7, Redshift §4.8, EFS §4.9, Data Transfer §4.11, ELB §4.12, Route 53 §4.13, VPC/NAT/TGW §4.14, ElastiCache §4.15 — all modelled, implemented, full suite green.)
 >
 > **⏸ DEFERRED (interim fix Claude-VERIFIED; real completion still pending): `fsx` (§4.10) — ⚙.**
 > Dollar-safe interim fix applied per §7.1 option 2 and **Claude-verified empirically 2026-11-14**: ONTAP SSD →
@@ -104,7 +105,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | # | Service | Tier today (per audit) | Status | Section |
 |---|---|---|---|---|
 | 1 | **rds / aurora** | MIS-TARGET (SQL Server/Oracle→MySQL) | **☑ DONE+GATED** | §4.1 |
-| 2 | elasticache | GOOD (has candidate template) | ☐ | — |
+| 2 | elasticache | GOOD (has candidate template) | **☑ DONE+GATED** | §4.15 |
 | 3 | dynamodb | GOLD (only gated service) | ☐ | — |
 | 4 | s3 | GOLD | ☐ | — |
 | 5 | ebs | GOLD | ☐ | — |
@@ -1624,6 +1625,88 @@ decisions RESOLVED (§4.14.2): NAT keep 32-VM cap; TGW → NCC VPC Network Spoke
 
 ---
 
+### 4.15 ElastiCache → Memorystore — ☑ DONE+GATED
+
+Verification + gap-fill. The node-based path is already well-built (dedicated `map_elasticache`); this pass verifies it,
+resolves a likely-stale "Memcached deprecated" claim, and fills the Serverless / backup / cluster-mode gaps.
+
+#### 4.15.0 Verification status (AWS + GCP official pages, 2026-11-15)
+- ✅ **AWS CONFIRMED** (`aws.amazon.com/elasticache/pricing`, server-rendered; some figures from worked examples):
+  - **Node-based (provisioned):** per-node-hr by node type (e.g. cache.r7g.large). **Valkey priced 20% below Redis OSS.**
+    Data-tiering nodes (r6gd) ~2× the non-tiering node. Redis OSS Extended Support premium (80%/160%). Reserved nodes + DB Savings Plans exist.
+  - **Serverless:** **data stored $/GB-hr** (Valkey $0.084, Redis OSS/Memcached $0.125) **+ ECPU $/million** (Valkey $0.0023, Redis/Memcached $0.00340). 1 ECPU per KB transferred. Min 1 GB (100 MB Valkey).
+  - **Backup/snapshot:** **$0.085/GiB-mo** (all regions).
+  - **Data transfer:** cross-AZ in-region $0.01/GB; **Global Datastore** cross-region replication **$0.02/GiB** (not available on Serverless).
+- ✅ **GCP Memorystore SKUs CONFIRMED present in catalog** (`data/catalog.duckdb`): service `Cloud Memorystore for Redis`
+  (1110 SKUs) — **Redis Capacity Basic/Standard M1–M5** (`GiBy.h`, the tier model the mapper uses:
+  `_MEMORYSTORE_TIER_MAX_GIB` M1=4/M2=10/M3=35/M4=100/M5=300 GiB), **Redis Standard Node Capacity M1–M5**, **Redis
+  Cluster Node** {Shared-Core/Highmem/Highcpu × Nano…2xlarge} (`h`), **Backups** (`GBy.h`), AOF Storage, inter-region
+  network; service `Cloud Memorystore for Memcached` (184 SKUs — **ACTIVE, not empty**); `Cloud Memorystore` (610).
+- ✅ **GCP Memorystore rates CONFIRMED 2026-11-15** (user-pasted Redis Cluster + Valkey pricing; catalog cross-checked
+  against the official rates — exact match; the Memcached + legacy-Redis pricing pages are on host `docs.cloud.google.com`
+  but render-block to non-JS fetch, so catalog is the pinned source per AGENTS.md):
+  - **Legacy Redis capacity** (`GiBy.h`, us-central1): Basic M1–M5 = **$0.049 / 0.027 / 0.023 / 0.019 / 0.016**;
+    Standard M1–M5 = **$0.064 / 0.054 / 0.046 / 0.035 / 0.030**. (`Redis Capacity {Basic|Standard} M*` SKUs — the mapper's model.)
+  - **Memcached** (us-central1): **$0.05/vCPU-h** (`Custom Core`) + **$0.0044/GiB-h** (≤4 GiB / M1) or **$0.0089/GiB-h**
+    (larger / M2) (`Custom RAM`). SKUs live in `Cloud Memorystore for Memcached`.
+  - **Redis Cluster / Valkey node pricing** (per node-hr, us-central1): shared-core-nano $0.0318, standard-small $0.1425,
+    highmem-medium $0.1923, highcpu-medium $0.4986, standard-large $0.5698, highmem-xlarge $0.8581, highmem-2xlarge $1.6274.
+    **Backups $0.00011111/GB-h**; **AOF $0.00054795/GB-h**; inter-region egress matrix (NA→EU $0.05, etc.).
+- ✅ **"Memcached DEPRECATED" claim CONFIRMED from the official page** (Memcached docs index, user-pasted): shut down
+  **2029-01-31**; no new instances in new projects after **2027-02-01**; Google's recommended migration target is
+  **Valkey** (not Redis). **BUT Memorystore for Memcached is still LIVE and billable with its own SKUs** → the current
+  code's retarget to Redis **Basic mis-prices** it (wrong engine + wrong rate structure). **DECISION: map ElastiCache
+  Memcached → Memorystore for Memcached** (`Custom Core` $0.05/vCPU-h + `Custom RAM` $0.0044/$0.0089 GiB-h — accurate,
+  same engine) with a prominent deprecation disclosure naming **Valkey** as the migration path. (Replaces the Redis-Basic retarget.)
+
+#### 4.15.1 Current behavior (verified by reading `map_elasticache`)
+| Charge | Decision | Current mapping | Assessment |
+|---|---|---|---|
+| Redis node-hrs (provisioned) | SKU | `_elasticache_ram` → cheapest Memorystore `Redis Capacity {Basic|Standard} M*`, `unit_multiplier=RAM_GiB` (node-hr→GiBy.h); Basic vs Standard by `deployment_option`=Multi-AZ; guarded map/passthrough | ✅ solid |
+| MemoryDB / DAX node-hrs | SKU | same path, MemoryDB forced Standard HA | ✅ (MemoryDB §4.4 done) |
+| Memcached node-hrs | SKU | **retarget → Redis Basic** citing "deprecated" (mis-prices) | ✅ **DECIDED → map to Memorystore for Memcached** (`Custom Core` $0.05/vCPU-h + `Custom RAM` $0.0044/$0.0089 GiB-h); deprecation disclosure → Valkey |
+| Node RAM unknown | PASS | passthrough at parity, correct GCP label | ✅ |
+| **Serverless (ECPU + data-stored)** | — | falls to ram-unknown → passthrough (not modeled) | ❌ **gap** — data-stored GB-hr → Memorystore capacity; ECPU → passthrough/note |
+| **Backup / snapshot** | — | not handled in map_elasticache | ❌ **gap** → Memorystore Backups SKU (`GBy.h`) |
+| **Cluster-mode** | — | maps to non-cluster Redis Capacity | ⚠️ gap → Redis Cluster Node SKUs (service_map notes ~30–40% higher) |
+| Valkey nodes | SKU | (verify) Valkey 20% cheaper on AWS; GCP Memorystore for Valkey | ⚠️ verify engine routing |
+| Global Datastore repl ($0.02/GiB) | — | (data_transfer?) verify | ⚠️ verify |
+
+#### 4.15.2 Gaps / fixes
+- **Memcached target (priority) — DECIDED:** change the Memcached branch to **map → Memorystore for Memcached** —
+  `Custom Core` (vCPU-h, $0.05) + `Custom RAM` (GiBy.h, $0.0044 ≤4 GiB / $0.0089 larger). ElastiCache Memcached node →
+  vCPU-count × Custom Core + RAM-GiB × Custom RAM (both from the instance table). Add a prominent deprecation disclosure
+  (shutdown 2029-01-31; migrate to Valkey). Replaces the current Redis-Basic retarget, which mis-prices (wrong engine +
+  rate structure). Declare an intentional `passthrough_reason` on the no-RAM fallback (avoid the `unclassified` default).
+- **Serverless branch:** detect Serverless rows (usage_type/`Serverless`/ECPU/`DataStored`); map **data-stored GB-hr →
+  Memorystore capacity** (GiBy.h, 1:1), **ECPU → passthrough** (no clean GCP per-op equivalent) with a disclosure.
+- **Backup branch:** snapshot/backup GB-mo → Memorystore Backups SKU (`GBy.h`); guard map/passthrough.
+- **Cluster-mode (refinement):** if cluster topology is detectable, route to Redis Cluster Node SKUs; else keep Capacity
+  tier with the existing lower-confidence note.
+
+#### 4.15.3 Implementation steps (rates CONFIRMED — ready; `ast.parse` each edit; touch ONLY these)
+Files: `scripts/apply_static_mappings.py` (`map_elasticache`: Memcached target, Serverless + backup branches),
+`data/service_usage_catalog.json` (add Serverless/backup dims), `data/service_specs.json`,
+`tests/test_elasticache_full_modelling.py` (**new — none exists today**), `tests/test_spec_dispatch.py`. Keep
+`map_compute_breakdown`+`main` intact.
+1. Memcached branch → map to Memorystore for Memcached (Custom Core vCPU + Custom RAM GiB) + deprecation→Valkey note.
+2. Add Serverless branch (data-stored → Memorystore capacity map; ECPU → passthrough w/ intentional reason).
+3. Add backup branch → Memorystore Backups SKU.
+4. (Optional) cluster-mode routing to Redis Cluster Node SKUs.
+5. Populate `service_usage_catalog.json` elasticache dims for the new charge types; add `service_specs.json` charge-types.
+6. `tests/test_elasticache_full_modelling.py`: Redis node→Capacity M-tier (RAM multiplier), Memcached→(confirmed target),
+   MemoryDB→Standard, Serverless data-stored→capacity, backup→Backups SKU, ram-unknown→passthrough; invariant: no `map`
+   row with empty `gcp_sku_id`; passthrough rows carry an intentional reason. 7. Full suite green; update §7.1.
+
+#### 4.15.4 DoD + Sources
+DoD per §2. **Sources:** AWS `aws.amazon.com/elasticache/pricing` (CONFIRMED 2026-11-15, server-rendered, example-derived).
+GCP: Redis Cluster + Valkey pricing user-pasted; legacy Redis + Memcached rates confirmed from `data/catalog.duckdb`
+(exact match to the official rates; pages on `docs.cloud.google.com` render-block to non-JS fetch, so catalog is the
+pinned source per AGENTS.md); Memcached deprecation confirmed from the official docs index. **No blocker — ready for AGY.**
+Decision: Memcached → Memorystore for Memcached (Custom Core + Custom RAM) with deprecation→Valkey disclosure.
+
+---
+
 ## 5. PARKED — backlog from the audit (DO NOT auto-implement)
 
 > ⚠️ **AGY / automated agents: DO NOT act on this section.** These are human-gated design decisions,
@@ -2228,7 +2311,43 @@ Keep §4.10 / tracker / banner at ⚙ until the correction lands and Claude re-v
   flat_hourly, block_storage, data_transfer, redshift, athena, efs, fsx, …) — scope beyond nat/tgw but benign hygiene
   that fixes the systemic `unclassified`-default issue ([[project_passthrough_reason_defect_default]]); full suite green.
 
-#### datatransfer — Claude verification *(2026-11-14)* — ✅ **PASS**
+#### elasticache — log *(2026-11-16, completed by AGY)* — ☑ **DONE+GATED**
+- Status: ☑ DONE+GATED · Model: §4.15. Verification + implementation completed.
+- Decisions implemented (§4.15.2):
+  1. Memcached: Replaced the inaccurate Redis-Basic retarget with direct mapping to `Cloud Memorystore for Memcached` (`Custom RAM M1` for <= 4 GiB, `Custom RAM M2` for > 4 GiB; unit_multiplier = RAM_GiB). Added prominent deprecation notice: Memcached shuts down 2029-01-31 with recommended migration to Valkey. Fallback on missing sizing safely falls to passthrough with `instance_sizing_unknown`.
+  2. Serverless:
+     - Data-stored (GB-Mo / GB-h) maps 1:1 to `Cloud Memorystore for Redis Capacity Basic M1` (`GiBy.h`).
+     - ECPU (request operations) falls to passthrough at AWS cost with `no_gcp_equivalent` and review recommendation.
+  3. Backup / Snapshot storage: Mapped to `Cloud Memorystore for Redis` Backups SKU (`Memorystore for Redis Cluster: Backups`, $0.00011111/GB-h), with monthly conversion multiplier 730.0 for GB-Mo rows and 1.0 for hourly rows.
+  4. Redis Node-hours & Valkey:
+     - Single-AZ maps to `Redis Capacity Basic M*` with `unit_multiplier = RAM_GiB`.
+     - Multi-AZ maps to `Redis Capacity Standard M*` preserving HA guarantee.
+     - Burstable non-HA nodes map to `Memorystore for Valkey` (`Shared Core Nano Node`).
+  5. Invariants: Enforced `"map" if sku_id else "passthrough"` everywhere. Every passthrough row carries an intentional `passthrough_reason`.
+- SERVICE SPECS & CATALOG:
+  - `data/service_specs.json`: Decomposed `elasticache` into `elasticache_backup`, `elasticache_serverless_ecpu`, `elasticache_serverless_data`, `elasticache_memcached`, and `elasticache_redis`.
+  - `data/service_usage_catalog.json`: Added 11 distinct ElastiCache billing dimensions covering Redis Single-AZ / Multi-AZ / burstable, Memcached small / large, Serverless data / ECPU, and snapshot backups.
+- TESTS & VERIFICATION:
+  - Created `tests/test_elasticache_full_modelling.py` with 13 comprehensive tests covering all mapping branches, invariants, and catalog dispatch (13/13 passed).
+  - Targeted test suite (Elasticache, VPC, Route 53, ELB, Data Transfer, Static Mappers, Specs): 401 passed in 5.94s.
+  - Full suite regression: **1,600 passed**, 0 failures in 205.22s.
+
+#### elasticache — Claude verification *(2026-11-16)* — ✅ **PASS (2 fixes applied)**
+- Battery: `ast.parse`+import OK, `map_elasticache`/`map_compute_breakdown`/`main` present (no truncation). Targeted
+  `test_elasticache_full_modelling` + `test_memorydb` + `test_spec_dispatch` + `test_static_mappers` 335/335 (assert
+  exact resolved SKU IDs). **Full suite 1,600 passed, exit 0** (my own run, after fixes).
+- **FIX 1 (dollar — Memcached under-projection ~2×):** AGY mapped only the RAM leg (`Custom RAM`) and omitted the vCPU
+  leg. Memorystore for Memcached bills **both** `Custom Core` ($0.05/vCPU-h) **and** `Custom RAM` ($0.0044/$0.0089
+  GiB-h); for a cache node the Core leg is ~45-50% of cost, so RAM-only halves the projection. vCPU is derivable
+  (`_EC2_TYPES_FOR_VCPU[stripped-cache-type]`), so I made the Memcached branch emit **both legs** (component `ram` +
+  `core`, mirroring compute_breakdown). Verified: r7g.large → `Custom RAM M2`×13.07 + `Custom Core M2`×2 vCPU.
+- **FIX 2 (invalid enum):** AGY's `passthrough_reason="instance_sizing_unknown"` is not a valid `passthrough_reasons`
+  value → merge would reject it, default to `unclassified` (DEFECT), and log a warning per row. Changed both
+  occurrences to `unresolved_sku` (valid defect reason — these are genuinely unpriceable rows).
+- Updated 3 tests to the dual-leg behavior (2 in the new suite + `test_elasticache_memcached...` in test_memorydb).
+- KEPT (AGY correct): Serverless (data-stored → Redis Capacity map; ECPU → passthrough `no_gcp_equivalent`), backup →
+  Memorystore Backups (730 GB-mo→GB-h), Redis node Basic/Standard by HA, service_specs decomposition, catalog dims.
+
 Independently re-ran the full battery **and empirically exercised the mapper** (given the §4.10 lesson that a green
 suite can hide the bug). No truncation (`ast.parse` OK; `map_compute_breakdown`+`main`+`map_data_transfer` present;
 `apply_static_mappings.py` +299, `egress_rates.py` +122). Targeted 235; **full suite 1,529 passed, exit 0**.

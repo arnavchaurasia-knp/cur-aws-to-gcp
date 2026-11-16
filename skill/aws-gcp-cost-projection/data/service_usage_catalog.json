@@ -1712,5 +1712,95 @@
       "expected_mechanic": "misc",
       "description": "VPC Endpoint data processed -> Private Service Connect data"
     }
+  ],
+  "elasticache": [
+    {
+      "usage_type": "NodeUsage:cache.m5.large",
+      "operation": "CreateCacheCluster:0002",
+      "unit": "Hrs",
+      "expected_charge_type": "elasticache_redis",
+      "expected_mechanic": "elasticache",
+      "description": "ElastiCache Redis node hours Single-AZ -> Memorystore for Redis Basic"
+    },
+    {
+      "usage_type": "USE1-NodeUsage:cache.r6g.xlarge",
+      "operation": "CreateCacheCluster:0002",
+      "unit": "Hrs",
+      "expected_charge_type": "elasticache_redis",
+      "expected_mechanic": "elasticache",
+      "description": "ElastiCache Redis node hours Multi-AZ US East -> Memorystore for Redis Standard"
+    },
+    {
+      "usage_type": "NodeUsage:cache.t4g.medium",
+      "operation": "CreateCacheCluster:0002",
+      "unit": "Hrs",
+      "expected_charge_type": "elasticache_redis",
+      "expected_mechanic": "elasticache",
+      "description": "ElastiCache Redis burstable node hours -> Memorystore for Redis Basic"
+    },
+    {
+      "usage_type": "NodeUsage:cache.m5.large",
+      "operation": "CreateCacheCluster:memcached",
+      "unit": "Hrs",
+      "expected_charge_type": "elasticache_memcached",
+      "expected_mechanic": "elasticache",
+      "description": "ElastiCache Memcached node hours -> Memorystore for Memcached (Custom RAM M2)"
+    },
+    {
+      "usage_type": "USE1-NodeUsage:cache.t4g.micro",
+      "operation": "CreateCacheCluster:memcached",
+      "unit": "Hrs",
+      "expected_charge_type": "elasticache_memcached",
+      "expected_mechanic": "elasticache",
+      "description": "ElastiCache Memcached small node hours US East -> Memorystore for Memcached (Custom RAM M1)"
+    },
+    {
+      "usage_type": "ElastiCache:ServerlessUsage",
+      "operation": "ServerlessUsage:DataStored",
+      "unit": "GB-Mo",
+      "expected_charge_type": "elasticache_serverless_data",
+      "expected_mechanic": "elasticache",
+      "description": "ElastiCache Serverless data stored -> Memorystore for Redis Capacity Basic"
+    },
+    {
+      "usage_type": "USE1-ElastiCache:ServerlessUsage",
+      "operation": "ServerlessUsage:DataStored",
+      "unit": "GB-Mo",
+      "expected_charge_type": "elasticache_serverless_data",
+      "expected_mechanic": "elasticache",
+      "description": "ElastiCache Serverless data stored US East -> Memorystore for Redis Capacity Basic"
+    },
+    {
+      "usage_type": "ElastiCache:ServerlessUsage",
+      "operation": "ServerlessUsage:ECPU",
+      "unit": "Count",
+      "expected_charge_type": "elasticache_serverless_ecpu",
+      "expected_mechanic": "elasticache",
+      "description": "ElastiCache Serverless ECPU -> passthrough (no direct GCP equivalent)"
+    },
+    {
+      "usage_type": "USE1-ElastiCache:ServerlessUsage",
+      "operation": "ServerlessUsage:ECPU",
+      "unit": "Count",
+      "expected_charge_type": "elasticache_serverless_ecpu",
+      "expected_mechanic": "elasticache",
+      "description": "ElastiCache Serverless ECPU US East -> passthrough"
+    },
+    {
+      "usage_type": "StorageUsage:BackupUsage",
+      "operation": "CreateSnapshot",
+      "unit": "GB-Mo",
+      "expected_charge_type": "elasticache_backup",
+      "expected_mechanic": "elasticache",
+      "description": "ElastiCache backup snapshot storage -> Memorystore for Redis Backups"
+    },
+    {
+      "usage_type": "USE1-StorageUsage:BackupUsage",
+      "operation": "CreateSnapshot",
+      "unit": "GB-Mo",
+      "expected_charge_type": "elasticache_backup",
+      "expected_mechanic": "elasticache",
+      "description": "ElastiCache backup snapshot storage US East -> Memorystore for Redis Backups"
+    }
   ]
 }

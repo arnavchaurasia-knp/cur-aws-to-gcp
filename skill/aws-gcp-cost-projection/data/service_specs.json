@@ -1382,73 +1382,72 @@
     ],
     "charge_types": [
       {
-        "id": "elasticache_all",
-        "description": "Node-hours -> Memorystore GiB-h (node RAM from instance table; Memorystore for Memcached is deprecated on GCP, workloads retarget to Memorystore for Redis/Valkey).",
+        "id": "elasticache_backup",
+        "description": "ElastiCache backup/snapshot storage -> Memorystore Backups SKU.",
+        "any_of": [
+          {
+            "usage_type_re": "BackupUsage|StorageUsage|Snapshot"
+          },
+          {
+            "operation_re": "Backup|Snapshot|CreateSnapshot"
+          }
+        ],
+        "mechanic": "elasticache",
+        "fields": [],
+        "source_rule": "elasticache (backup branch)"
+      },
+      {
+        "id": "elasticache_serverless_ecpu",
+        "description": "ElastiCache Serverless ECPU -> passthrough (no direct GCP per-op equivalent).",
+        "any_of": [
+          {
+            "usage_type_re": "ECPU"
+          },
+          {
+            "operation_re": "ECPU"
+          }
+        ],
+        "mechanic": "elasticache",
+        "fields": [],
+        "source_rule": "elasticache (serverless ECPU branch)"
+      },
+      {
+        "id": "elasticache_serverless_data",
+        "description": "ElastiCache Serverless data stored -> Memorystore Redis capacity (GiBy.h).",
+        "any_of": [
+          {
+            "usage_type_re": "ServerlessUsage|DataStored"
+          },
+          {
+            "operation_re": "DataStored|ServerlessUsage"
+          }
+        ],
+        "mechanic": "elasticache",
+        "fields": [],
+        "source_rule": "elasticache (serverless data branch)"
+      },
+      {
+        "id": "elasticache_memcached",
+        "description": "ElastiCache Memcached node-hours -> Memorystore for Memcached (Custom Core + Custom RAM).",
+        "any_of": [
+          {
+            "usage_type_re": "memcached"
+          },
+          {
+            "operation_re": "memcached"
+          }
+        ],
+        "mechanic": "elasticache",
+        "fields": [],
+        "source_rule": "elasticache (memcached branch)"
+      },
+      {
+        "id": "elasticache_redis",
+        "description": "ElastiCache Redis node-hours -> Memorystore for Redis Capacity M-tier.",
         "match": {},
         "mechanic": "elasticache",
-        "gcp_target": "Cloud Memorystore for Redis",
-        "gcp_candidates": [
-          {
-            "service": "Cloud Memorystore for Redis",
-            "role": "default",
-            "fit_class": "managed_like_for_like",
-            "safety": "safe",
-            "cud_eligible": true,
-            "cud_exclude_sku_re": "Redis Capacity (Basic|Standard) M1\\b",
-            "availability_key": "redis.googleapis.com",
-            "note": "per-GiB-hour dedicated capacity; no burstable tier"
-          },
-          {
-            "service": "Memorystore for Valkey",
-            "role": "alternative",
-            "fit_class": "managed_like_for_like",
-            "safety": "safe",
-            "cud_eligible": true,
-            "availability_key": "memorystore.googleapis.com",
-            "note": "shared-core node \u2248 burstable; ~\u00bd per-GiB cost"
-          },
-          {
-            "service": "Compute Engine (self-hosted)",
-            "role": "fallback",
-            "fit_class": "self_host",
-            "safety": "flag_downgrade",
-            "cud_eligible": true,
-            "note": "loses managed HA/patching; only when flagged or user opts in"
-          }
-        ],
-        "fields": [
-          {
-            "name": "node_type",
-            "cur_column": "product/instanceType",
-            "source": "cur",
-            "required": true
-          },
-          {
-            "name": "node_ram_gb",
-            "cur_column": "product/memory",
-            "source": "table",
-            "required": false
-          },
-          {
-            "name": "engine",
-            "cur_column": "product/cacheEngine",
-            "source": "cur",
-            "required": false
-          },
-          {
-            "name": "node_hours",
-            "cur_column": "lineItem/UsageAmount",
-            "source": "cur",
-            "required": false
-          },
-          {
-            "name": "region",
-            "cur_column": "product/region",
-            "source": "cur",
-            "required": true
-          }
-        ],
-        "source_rule": "elasticache"
+        "fields": [],
+        "source_rule": "elasticache (redis branch)"
       }
     ]
   },

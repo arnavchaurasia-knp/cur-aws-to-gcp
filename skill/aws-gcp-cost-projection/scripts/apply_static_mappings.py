@@ -452,16 +452,9 @@ FLAT_HOURLY_MAP = [
      GCP_COMPUTE_ENGINE, r"External IP Charge on a Standard VM", 1.0),
     (r"VPN",
      "Cloud VPN", r"Cloud VPN Tunnel", 1.0),
-    # Real catalog description is "Cloud Interconnect - <bandwidth> Dedicated
-    # circuit", billed under Compute Engine (not a separate "Cloud
-    # Interconnect" billing service, despite the user-facing product name) —
-    # AWS DirectConnect line items don't reliably state a bandwidth tier in
-    # usage_type, so this assumes the 10Gbps baseline tier (the smallest/most
-    # common Dedicated Interconnect port). The previous pattern ("Dedicated
-    # Interconnect" under service "Cloud Interconnect") never matched any real
-    # SKU at all — wrong description AND wrong service.
-    (r"DirectConnect|DX|HostedConnection",
-     GCP_COMPUTE_ENGINE, r"Cloud Interconnect - 10Gbps Dedicated circuit", 1.0),
+    # DirectConnect port hours (§4.16) are now handled by a dedicated speed-aware
+    # branch in map_flat_hourly (parsing 1G/10G/100G/400G and hosted tiers), replacing
+    # the flat 10G Dedicated circuit entry here.
     # Global Accelerator's per-hour FIXED FEE (accelerator provisioned,
     # independent of traffic volume) is a genuinely different charge from GA's
     # data-transfer/egress rows below it — the blanket "no SKU" rule used to
@@ -2792,6 +2785,104 @@ def map_flat_hourly(rows):
             })
             continue
 
+        # Direct Connect (DX) port hours (§4.16) — parse port speed and connection type:
+        # Dedicated 10G/100G/400G → Cloud Interconnect Dedicated circuit
+        # Dedicated 1G → Cloud Interconnect 1Gbps Partner VLAN attachment ($0.2778/hr; no 1G dedicated circuit exists on GCP)
+        # Hosted (50M…10G) → Cloud Interconnect <tier> VLAN attachment via Google partner
+        # Speed unparsed → Cloud Interconnect 10Gbps Dedicated circuit ($2.328/hr; explicit assumption, conf 0.55, architecture review)
+        dx_blob = f"{r.get('product') or ''} {r.get('usage_type') or ''} {r.get('operation') or ''}"
+        is_dx_hourly = (
+            (r.get("product_code") or "").lower() == "awsdirectconnect"
+            or "directconnect" in (r.get("product") or "").lower()
+            or "direct connect" in (r.get("product") or "").lower()
+            or bool(re.search(r"DirectConnect|Direct Connect|HostedConnection", dx_blob, re.IGNORECASE))
+            or bool(re.search(r"\bDX\b", r.get("usage_type") or "", re.IGNORECASE))
+        )
+        if is_dx_hourly:
+            is_hosted = bool(re.search(r"HostedConnection|Hosted", dx_blob, re.IGNORECASE))
+            m_mbps = re.search(r"\b(500|400|300|200|100|50)\s*(?:M|Mbps)\b", dx_blob, re.IGNORECASE)
+            m_gbps = re.search(r"\b(400|100|50|25|20|10|5|2|1)\s*(?:G|Gbps)\b", dx_blob, re.IGNORECASE)
+
+            gcp_region = r.get("gcp_region") or "us-central1"
+            is_assump = False
+            assump_text = None
+            conf = 0.90
+
+            if m_mbps:
+                speed_str = m_mbps.group(1) + "Mbps"
+                sku_desc = f"Cloud Interconnect - {speed_str} VLAN attachment via Google partner"
+                note = f"Direct Connect Hosted {speed_str} connection → {sku_desc}"
+            elif m_gbps:
+                speed_num = int(m_gbps.group(1))
+                if speed_num == 400:
+                    sku_desc = "Cloud Interconnect - 400Gbps Dedicated circuit"
+                    note = f"Direct Connect Dedicated 400Gbps port → {sku_desc}"
+                elif speed_num == 100:
+                    sku_desc = "Cloud Interconnect - 100Gbps Dedicated circuit"
+                    note = f"Direct Connect Dedicated 100Gbps port → {sku_desc}"
+                elif speed_num == 10:
+                    if is_hosted:
+                        sku_desc = "Cloud Interconnect - 10Gbps VLAN attachment via Google partner"
+                        note = f"Direct Connect Hosted 10Gbps connection → {sku_desc}"
+                    else:
+                        sku_desc = "Cloud Interconnect - 10Gbps Dedicated circuit"
+                        note = f"Direct Connect Dedicated 10Gbps port → {sku_desc}"
+                elif speed_num == 1:
+                    sku_desc = "Cloud Interconnect - 1Gbps VLAN attachment via Google partner"
+                    conf = 0.85
+                    if is_hosted:
+                        note = f"Direct Connect Hosted 1Gbps connection → {sku_desc} ($0.2778/hr)"
+                    else:
+                        note = (f"Direct Connect Dedicated 1Gbps port → {sku_desc} ($0.2778/hr; "
+                                f"GCP has no 1Gbps Dedicated circuit, Partner Interconnect is the closest parity analogue)")
+                elif speed_num in (2, 5, 20, 50):
+                    sku_desc = f"Cloud Interconnect - {speed_num}Gbps VLAN attachment via Google partner"
+                    note = f"Direct Connect Hosted {speed_num}Gbps connection → {sku_desc}"
+                elif speed_num == 25:
+                    sku_desc = "Cloud Interconnect - 20Gbps VLAN attachment via Google partner"
+                    note = (f"Direct Connect Hosted 25Gbps connection → {sku_desc} "
+                            f"(GCP partner tier nearest 25G is 20Gbps $3.61/hr or 50Gbps $9.02/hr; mapped to 20G tier)")
+                    conf = 0.80
+                else:
+                    sku_desc = "Cloud Interconnect - 10Gbps Dedicated circuit"
+                    note = f"Direct Connect port → {sku_desc}"
+            else:
+                sku_desc = "Cloud Interconnect - 10Gbps Dedicated circuit"
+                conf = 0.55
+                is_assump = True
+                assump_text = (
+                    "DirectConnect port speed unknown — 10Gbps Dedicated circuit assumed ($2.328/hr); "
+                    "architecture review recommended (1G would be ~7.7x over, 100G ~10x under)"
+                )
+                note = (
+                    f"Direct Connect port hours → {sku_desc} [architecture review recommended: "
+                    f"AWS DirectConnect line items don't reliably state the actual port bandwidth (1/10/50/100Gbps) in CUR — "
+                    f"this assumes the 10Gbps baseline tier; a 1Gbps port would be over-projected ~7.7x, "
+                    f"a 100Gbps port under-projected ~10x — verify the real port speed with customer before finalizing]"
+                )
+
+            sku_id = resolve_sku(GCP_COMPUTE_ENGINE, sku_desc, gcp_region)
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        GCP_COMPUTE_ENGINE,
+                "gcp_sku_id":         sku_id if sku_id else None,
+                "gcp_sku_name":       sku_desc,
+                "component":          "hourly",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    note + _no_rate_suffix(sku_id, gcp_region),
+                "mapping_confidence": conf if sku_id else 0.50,
+                "is_assumption":      is_assump,
+                "assumption":         assump_text,
+            }
+            if sku_id:
+                entry["gcp_sku_unit"] = sku_id.unit
+            else:
+                entry["passthrough_reason"] = "no_rate_in_region"
+            out.append(entry)
+            continue
+
         match = _match(r.get("usage_type"), r.get("product"), FLAT_HOURLY_MAP, r.get("operation"))
         if not match:
             out.append({
@@ -2859,14 +2950,7 @@ def map_flat_hourly(rows):
         combined = f"{r.get('usage_type') or ''} {r.get('product') or ''} {r.get('operation') or ''}"
         confidence = 0.90
         review_note = ""
-        if re.search(r"DirectConnect|HostedConnection", combined, re.IGNORECASE):
-            confidence = 0.55
-            review_note = (" [architecture review recommended: AWS DirectConnect line items don't "
-                            "reliably state the actual port bandwidth (1/10/50/100Gbps) in CUR — "
-                            "this assumes the 10Gbps baseline tier; a 1Gbps port would be "
-                            "over-projected ~10x, a 100Gbps port under-projected ~10x — verify the "
-                            "real port speed with customer before finalizing]")
-        elif re.search(r"TransitGateway|TGW", combined, re.IGNORECASE):
+        if re.search(r"TransitGateway|TGW", combined, re.IGNORECASE):
             confidence = 0.75
             review_note = (" [architecture review recommended: Network Connectivity Center (NCC) VPC Spoke "
                             "is assumed ($0.10/hr per VPC spoke vs AWS $0.05/attachment-hr) — VPN-attachment or "
@@ -4294,6 +4378,32 @@ _CF_DEST_TO_BUCKET = {
 }
 
 
+def _dx_local_dt_sku_name(gcp_region: str | None) -> str:
+    """Return the Cloud Interconnect Local Data Transfer SKU description for region (§4.16)."""
+    reg = (gcp_region or "us-central1").lower()
+    if reg.startswith("europe-") or reg.startswith("eu-"):
+        geo = "Europe"
+    elif reg.startswith("northamerica-northeast") or "canada" in reg:
+        geo = "Canada"
+    elif reg.startswith("asia-south") or "india" in reg:
+        geo = "India"
+    elif "indonesia" in reg or reg == "asia-southeast2":
+        geo = "Indonesia"
+    elif reg.startswith("australia-"):
+        geo = "Australia"
+    elif reg.startswith("southamerica-"):
+        geo = "SouthAmerica"
+    elif reg.startswith("me-"):
+        geo = "MiddleEast"
+    elif reg.startswith("africa-"):
+        geo = "Africa"
+    elif reg.startswith("asia-"):
+        geo = "Asia"
+    else:
+        geo = "UnitedStates"
+    return f"Cloud Interconnect - Local Data Transfer in {geo}"
+
+
 def map_data_transfer(rows):
     """Classify transfer direction deterministically and pin the canonical egress
     SKU + rate (no fuzzy catalog matching — see egress_rates.py). Ingress → ignore."""
@@ -4432,6 +4542,58 @@ def map_data_transfer(rows):
                 entry["passthrough_reason"] = "no_rate_in_region"
             out.append(entry)
             continue
+
+        # Direct Connect Data Transfer (§4.16):
+        # Ingress is free ($0.00) on both AWS and GCP.
+        # Egress (Data Transfer Out) maps to Cloud Interconnect Local Data Transfer in <Geo>
+        # ($0.02/GiB in US/EU; cloud.google.com/interconnect).
+        is_dx_transfer = (
+            "directconnect" in product_lower
+            or "direct connect" in product_lower
+            or (r.get("product_code") or "").lower() == "awsdirectconnect"
+            or bool(re.search(r"DirectConnect|Direct-Connect", ut, re.IGNORECASE))
+        )
+        if is_dx_transfer:
+            is_in = bool(re.search(r"in-bytes|dataxfer-in|datatransfer-in|\bin\b", ut, re.IGNORECASE))
+            if is_in:
+                out.append({
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        GCP_COMPUTE_ENGINE,
+                    "gcp_sku_id":         None,
+                    "gcp_sku_name":       None,
+                    "component":          "transfer",
+                    "strategy":           "ignore",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         r.get("gcp_region"),
+                    "projection_note":    "Direct Connect Data Transfer In is free on GCP ($0.00; cloud.google.com/interconnect)",
+                    "mapping_confidence": 0.95,
+                })
+                continue
+            else:
+                gcp_region = r.get("gcp_region") or "us-central1"
+                desc = _dx_local_dt_sku_name(gcp_region)
+                sku_id = resolve_sku(GCP_COMPUTE_ENGINE, desc, gcp_region)
+                entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        GCP_COMPUTE_ENGINE,
+                    "gcp_sku_id":         sku_id if sku_id else None,
+                    "gcp_sku_name":       desc,
+                    "component":          "transfer",
+                    "strategy":           "map" if sku_id else "passthrough",
+                    "unit_multiplier":    1.0,
+                    "gcp_region":         gcp_region,
+                    "projection_note":    (
+                        f"Direct Connect Data Transfer Out → {desc} ($0.02/GiB in US; cloud.google.com/interconnect)"
+                        + _no_rate_suffix(sku_id, gcp_region)
+                    ),
+                    "mapping_confidence": 0.90 if sku_id else 0.70,
+                }
+                if sku_id:
+                    entry["gcp_sku_unit"] = sku_id.unit
+                else:
+                    entry["passthrough_reason"] = "no_rate_in_region"
+                out.append(entry)
+                continue
 
         # "lcu"/"loadbalancer-bytes" catches CUR-format usage_type tokens; PDF bills
         # spell this out in `operation` as "...capacity unit-hour (or partial hour)"

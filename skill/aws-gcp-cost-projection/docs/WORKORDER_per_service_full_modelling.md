@@ -13,12 +13,13 @@ end-to-end before moving on.
 > completion *enforced by the gate* so it can never silently regress.
 
 > ▶ **CURRENT ASSIGNMENT: NONE (awaiting next assignment from operator).**
-> `elasticache` (§4.15) was completed, fully modelled, and gated on 2026-11-16.
+> `directconnect` (§4.16) was completed, fully modelled, and gated on 2026-11-17.
 > Agent: do **not** self-start any service and do **not** self-start from §5 PARKED — wait for the next
 > `CURRENT ASSIGNMENT` to be set here. The §2 Definition of Done is **per-service**; update the **§7.1** log
 > every session.
 > (Done so far: RDS §4.1, SageMaker §4.2, AWS Backup §4.3, MemoryDB §4.4, DocumentDB §4.5, DMS §4.6,
-> Lambda §4.7, Redshift §4.8, EFS §4.9, Data Transfer §4.11, ELB §4.12, Route 53 §4.13, VPC/NAT/TGW §4.14, ElastiCache §4.15 — all modelled, implemented, full suite green.)
+> Lambda §4.7, Redshift §4.8, EFS §4.9, Data Transfer §4.11, ELB §4.12, Route 53 §4.13, VPC/NAT/TGW §4.14,
+> ElastiCache §4.15, Direct Connect §4.16 — all modelled, implemented, full suite green.)
 >
 > **⏸ DEFERRED (interim fix Claude-VERIFIED; real completion still pending): `fsx` (§4.10) — ⚙.**
 > Dollar-safe interim fix applied per §7.1 option 2 and **Claude-verified empirically 2026-11-14**: ONTAP SSD →
@@ -125,7 +126,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | 19 | vpc / nat / tgw | PARTIAL (TGW issues) | **☑ DONE+GATED** | §4.14 |
 | 20 | elb | GOOD | **☑ DONE+GATED** | §4.12 |
 | 21 | route53 | GOOD (health-check gap) | **☑ DONE+GATED** | §4.13 |
-| 22 | directconnect | PARTIAL (10G flat) | ☐ | — |
+| 22 | directconnect | PARTIAL (10G flat) | **☑ DONE+GATED** | §4.16 |
 | 23 | cloudwatch | GOLD | ☐ | — |
 | 24 | cloudtrail | GOOD | ☐ | — |
 | 25 | dms | MIS-TARGET (free-tier over-proj) | **☑ DONE+GATED** | §4.6 |
@@ -1707,6 +1708,81 @@ Decision: Memcached → Memorystore for Memcached (Custom Core + Custom RAM) wit
 
 ---
 
+### 4.16 Direct Connect → Cloud Interconnect — ☑ DONE+GATED
+
+Verification + fix the "flat-10G" over/under-projection. Current code maps **every** DX row → a single
+"10Gbps Dedicated circuit" SKU regardless of actual port speed → a 1G port over-projects ~7.7×, a 100G port
+under-projects ~10×. The fix is to parse the port speed and map per-tier, plus add the DX data-transfer-out leg.
+
+#### 4.16.0 Verification status (AWS + GCP official pages, 2026-11-17)
+- ✅ **AWS CONFIRMED** (`aws.amazon.com/directconnect/pricing`, server-rendered; port-hour global, Japan ~5% less):
+  - **Dedicated Connection port-hr:** 1 Gbps **$0.30**, 10 Gbps **$2.25**, 100 Gbps **$22.50**, 400 Gbps **$85.00**.
+  - **Hosted Connection port-hr:** 50M **$0.03**, 100M **$0.06**, 200M **$0.08**, 300M **$0.12**, 400M **$0.16**,
+    500M **$0.20**, 1G **$0.33**, 2G **$0.66**, 5G **$1.65**, 10G **$2.48**, 25G **$6.20** (hosted ≈ 10% > dedicated).
+  - **Data Transfer OUT:** per-GB **directional matrix** (source AWS region × DX-location region); from contiguous US to
+    US/CA/EU = **$0.02/GB**; higher cross-continent (JP $0.049, AP1 $0.049, IN $0.06, AU $0.06, SA $0.11, ME/AF $0.11).
+    **Data transfer IN = $0.00.**
+- ✅ **GCP Cloud Interconnect CONFIRMED from `data/catalog.duckdb`** (page JS-blocked — 82-char stub; catalog is the
+  pinned source per AGENTS.md; rates line up with AWS by speed):
+  - **Dedicated circuit (= AWS Dedicated port):** 10 Gbps **$2.328/h** (≈AWS $2.25), 100 Gbps **$23.28/h** (≈$22.50),
+    400 Gbps **$85.0/h** (=$85). **NO 1 Gbps Dedicated circuit exists** (GCP Dedicated Interconnect min = 10G).
+  - **Partner VLAN attachment (via Google partner; = AWS Hosted Connection, capacity-tier billed):** 50M $0.05417,
+    100M $0.0625, 200M $0.08333, 300M $0.1111, 400M $0.1389, 500M $0.1736, **1G $0.2778**, 2G $0.5694, 5G $1.25,
+    10G $2.36, 20G $3.61, 50G $9.02. (So **AWS 1G Dedicated → GCP Partner 1G VLAN $0.2778** ≈ AWS $0.30 — there is no
+    1G dedicated circuit to map to.)
+  - **VLAN attachment via Dedicated Interconnect** (the logical attachment on a dedicated circuit): 10G $0.1, 100G $1.0,
+    20G $0.2, 50G $0.5, 400G $4.0 — a small add-on; the dominant cost is the circuit-hour above.
+  - **Interconnect egress (DX DTO analogue):** `Cloud Interconnect - Local Data Transfer in <region>` (US $0.02, EU
+    $0.02, Asia $0.042, India $0.045, Australia $0.042, ME $0.09, SA/Mexico/Africa $0.11 per GiB) + a `Remote Data
+    Transfer` cross-region matrix. US $0.02/GiB = AWS $0.02/GB (parity).
+- ✅ **Comparison table:** Direct Connect → Cloud Interconnect (Dedicated/Partner).
+
+#### 4.16.1 Current behavior (verified by reading the code)
+| DX charge | AWS rate | Current GCP mapping | Assessment |
+|---|---|---|---|
+| Port-hrs (ALL speeds) | 1G $0.30 / 10G $2.25 / 100G $22.50 / 400G $85 | **FLAT → "Cloud Interconnect - 10Gbps Dedicated circuit" $2.328** (`FLAT_HOURLY_MAP :463`), mult 1.0 | ⚠️ **flat-10G: 1G over ~7.7×, 100G under ~10×, 400G under ~37×** |
+| Hosted Connection | 50M–25G | same flat-10G SKU | ⚠️ wrong (should be Partner VLAN tier) |
+| DX Data Transfer Out | $0.02–0.19/GB matrix | (falls to generic data_transfer) — verify | ⚠️ should → Cloud Interconnect Local/Remote Data Transfer |
+| Data Transfer In | $0.00 | — | ✅ ingress free both sides |
+
+#### 4.16.2 Fix — parse the port speed and map per-tier
+The whole fix hinges on recovering the speed. AWS CUR DX rows carry the speed inconsistently; parse it from
+`usage_type` + `operation` (tokens like `1G`/`10G`/`100G`/`400G`, or `50M`…`25G` for hosted). Decision tree:
+- **Dedicated port, speed parsed:** 10G→`Cloud Interconnect - 10Gbps Dedicated circuit`; 100G→`100Gbps Dedicated
+  circuit`; 400G→`400Gbps Dedicated circuit`; **1G→`Cloud Interconnect - 1Gbps VLAN attachment via Google partner`
+  $0.2778** (no 1G dedicated circuit exists; Partner 1G is the parity match) + a note that GCP has no 1G dedicated port.
+- **Hosted Connection, speed parsed:** → `Cloud Interconnect - <tier> VLAN attachment via Google partner`
+  (50M…50G, nearest capacity tier).
+- **Speed NOT parseable:** keep the **10G Dedicated circuit default** ($2.328) BUT mark it an explicit assumption,
+  lower confidence (~0.55), and keep the "architecture review — port speed unknown; 1G would be ~7.7× over, 100G ~10×
+  under" disclosure (already present at `:2862`). (Recommended default — 10G is the most common dedicated port; passthrough
+  would lose the GCP estimate entirely. Flagged for the user in case they prefer passthrough-when-unknown.)
+- **DX Data Transfer Out:** route the DTO bytes → `Cloud Interconnect - Local Data Transfer in <region>` (by GCP region;
+  US/EU $0.02, etc.), Remote matrix for cross-region. Map (not the generic egress path) so it uses the Interconnect rate.
+
+#### 4.16.3 Implementation steps (`ast.parse` each edit; touch ONLY these)
+Files: `scripts/apply_static_mappings.py` (replace the single FLAT_HOURLY_MAP DX entry with a dedicated DX branch in
+`map_flat_hourly` that parses speed + dedicated/hosted → the right circuit/VLAN SKU; add DX-DTO handling in
+`map_data_transfer`), `data/service_specs.json` (directconnect charge-types), `data/service_usage_catalog.json`
+(DX dims: dedicated 1/10/100/400G, hosted tiers, DTO), `tests/test_directconnect_full_modelling.py` (**new — none exists**),
+`tests/test_spec_dispatch.py`. Keep `map_compute_breakdown`+`main` intact.
+1. DX branch in `map_flat_hourly` (BEFORE the generic FLAT_HOURLY_MAP dispatch): parse speed; dedicated 10G/100G/400G →
+   Dedicated circuit; 1G → Partner 1G VLAN; hosted → Partner VLAN tier; unknown → 10G Dedicated default (assumption,
+   conf 0.55, disclosure). Guard `"map" if sku_id else "passthrough"`; passthrough rows carry an intentional reason.
+2. Remove/replace the flat `(r"DirectConnect|DX|HostedConnection", …"10Gbps Dedicated circuit")` entry (`:463-464`).
+3. DX DTO branch in `map_data_transfer` → `Cloud Interconnect - Local/Remote Data Transfer in <region>`.
+4. Populate `service_usage_catalog.json` DX dims; add `service_specs.json` charge-types.
+5. `tests/test_directconnect_full_modelling.py`: 1G→Partner 1G VLAN, 10G→10G Dedicated, 100G→100G Dedicated,
+   400G→400G Dedicated, hosted-tier→Partner VLAN, unknown-speed→10G default (assumption), DTO→Interconnect Local DT;
+   invariant: no `map` row with empty `gcp_sku_id`. 6. Full suite green; update §7.1.
+
+#### 4.16.4 DoD + Sources
+DoD per §2. **Sources:** AWS `aws.amazon.com/directconnect/pricing` (CONFIRMED 2026-11-17, server-rendered). GCP Cloud
+Interconnect rates confirmed from `data/catalog.duckdb` (page JS-blocked; catalog pinned per AGENTS.md). **No blocker** —
+rates in hand; the one open call is the unknown-speed fallback (recommend: 10G-Dedicated default + disclosure).
+
+---
+
 ## 5. PARKED — backlog from the audit (DO NOT auto-implement)
 
 > ⚠️ **AGY / automated agents: DO NOT act on this section.** These are human-gated design decisions,
@@ -2347,6 +2423,33 @@ Keep §4.10 / tracker / banner at ⚙ until the correction lands and Claude re-v
 - Updated 3 tests to the dual-leg behavior (2 in the new suite + `test_elasticache_memcached...` in test_memorydb).
 - KEPT (AGY correct): Serverless (data-stored → Redis Capacity map; ECPU → passthrough `no_gcp_equivalent`), backup →
   Memorystore Backups (730 GB-mo→GB-h), Redis node Basic/Standard by HA, service_specs decomposition, catalog dims.
+
+#### directconnect — log *(2026-11-17, modelled by Claude; AGY implemented & gated)*
+- Status: ☑ DONE+GATED · Model: §4.16. Flat-10G over/under-projection fixed.
+- Implemented speed-aware Direct Connect port mapping in `map_flat_hourly`: 400G/100G/10G Dedicated circuits, 1G Dedicated → Partner 1G VLAN with disclosure, hosted tiers → Partner VLAN tiers, unparsed speed → 10G Dedicated fallback with assumption + 0.55 confidence.
+- Implemented DX Data Transfer Out in `map_data_transfer` routed to Cloud Interconnect Local Data Transfer by geographic region; Ingress → ignore ($0.00).
+- Decomposed `service_specs.json` into 7 DX charge types, populated 14 dimensions in `service_usage_catalog.json`.
+- Added 15 comprehensive unit & invariant tests in `tests/test_directconnect_full_modelling.py`. Targeted battery (439 tests) and full regression suite green.
+- AWS CONFIRMED 2026-11-17 (directconnect/pricing): Dedicated 1G $0.30 / 10G $2.25 / 100G $22.50 / 400G $85; Hosted
+  50M–25G; DTO directional matrix (US→US/CA/EU $0.02/GB); ingress free.
+- GCP CONFIRMED from catalog (page JS-blocked): Dedicated circuit 10G $2.328 / 100G $23.28 / 400G $85 (NO 1G dedicated);
+  Partner VLAN tiers 50M $0.054 … 1G $0.2778 … 10G $2.36 … 50G $9.02; Interconnect Local/Remote Data Transfer (US $0.02/GiB).
+- FIX: parse port speed → dedicated 10G/100G/400G → Dedicated circuit; **1G → Partner 1G VLAN $0.2778** (no 1G dedicated);
+  hosted → Partner VLAN tier; unknown → 10G-Dedicated default (assumption, conf 0.55, disclosure); DX DTO → Interconnect
+  Local/Remote Data Transfer. New `test_directconnect_full_modelling.py`. **No blocker — rates in hand.**
+
+#### directconnect — Claude verification *(2026-11-17)* — ✅ **PASS (clean — no fix needed)**
+- Battery: `ast.parse`+import OK, `map_flat_hourly`/`map_data_transfer`/`map_compute_breakdown`/`main` present (no
+  truncation; +162 lines). Targeted `test_directconnect_full_modelling` + `test_spec_dispatch` + `test_static_mappers`
+  339/339 (assert exact resolved SKU IDs). **Full suite 1,624 passed, exit 0** (my own run).
+- **Flat-10G bug fixed — verified empirically:** 1G→`1Gbps VLAN via Google partner` (89E1, conf 0.85, "no 1G dedicated"
+  note), 10G→`10Gbps Dedicated circuit` (B8C8), 100G→`100Gbps Dedicated circuit` (1927), 400G→`400Gbps Dedicated circuit`
+  (87F7), hosted 100M→`100Mbps Partner VLAN` (AD98), unknown→10G-Dedicated default (is_assumption, conf 0.55). Every SKU
+  resolves to a real catalog id.
+- **DX DTO verified:** out → `Cloud Interconnect - Local Data Transfer in UnitedStates` (4901, map); in → ignore ($0).
+  **Egress gate on the now-mapped DTO-out row → 0 violations** (map is allowed; the §4.12 trap does not apply).
+- No fix required. The speed-parse regex orders longer numbers first (400/100 before 10; 50/25/20 before 2) so tiers
+  don't collide; Mbps checked before Gbps so 100M isn't read as 100G.
 
 Independently re-ran the full battery **and empirically exercised the mapper** (given the §4.10 lesson that a green
 suite can hide the bug). No truncation (`ast.parse` OK; `map_compute_breakdown`+`main`+`map_data_transfer` present;

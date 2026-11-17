@@ -1802,5 +1802,119 @@
       "expected_mechanic": "elasticache",
       "description": "ElastiCache backup snapshot storage US East -> Memorystore for Redis Backups"
     }
+  ],
+  "directconnect": [
+    {
+      "usage_type": "USE1-Port-Usage:400G",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "dc_port_dedicated_400g",
+      "expected_mechanic": "flat_hourly",
+      "description": "Direct Connect 400G Dedicated connection hours -> Cloud Interconnect 400Gbps Dedicated circuit"
+    },
+    {
+      "usage_type": "USE1-Port-Usage:100G",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "dc_port_dedicated_100g",
+      "expected_mechanic": "flat_hourly",
+      "description": "Direct Connect 100G Dedicated connection hours -> Cloud Interconnect 100Gbps Dedicated circuit"
+    },
+    {
+      "usage_type": "USE1-Port-Usage:10G",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "dc_port_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "Direct Connect 10G Dedicated connection hours -> Cloud Interconnect 10Gbps Dedicated circuit"
+    },
+    {
+      "usage_type": "USE1-Port-Usage:1G",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "dc_port_dedicated_1g",
+      "expected_mechanic": "flat_hourly",
+      "description": "Direct Connect 1G Dedicated connection hours -> Cloud Interconnect 1Gbps Partner VLAN attachment"
+    },
+    {
+      "usage_type": "APS3-DirectConnect:Port",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "dc_port_hours",
+      "expected_mechanic": "flat_hourly",
+      "description": "Direct Connect port hours with unparsed speed -> Cloud Interconnect 10Gbps Dedicated circuit assumption"
+    },
+    {
+      "usage_type": "USE1-HostedConnection-50M",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "dc_port_hosted",
+      "expected_mechanic": "flat_hourly",
+      "description": "Direct Connect Hosted 50Mbps connection -> Cloud Interconnect 50Mbps Partner VLAN"
+    },
+    {
+      "usage_type": "USE1-HostedConnection-100M",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "dc_port_hosted",
+      "expected_mechanic": "flat_hourly",
+      "description": "Direct Connect Hosted 100Mbps connection -> Cloud Interconnect 100Mbps Partner VLAN"
+    },
+    {
+      "usage_type": "USE1-HostedConnection-500M",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "dc_port_hosted",
+      "expected_mechanic": "flat_hourly",
+      "description": "Direct Connect Hosted 500Mbps connection -> Cloud Interconnect 500Mbps Partner VLAN"
+    },
+    {
+      "usage_type": "USE1-HostedConnection-1G",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "dc_port_hosted",
+      "expected_mechanic": "flat_hourly",
+      "description": "Direct Connect Hosted 1Gbps connection -> Cloud Interconnect 1Gbps Partner VLAN"
+    },
+    {
+      "usage_type": "USE1-HostedConnection-10G",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "dc_port_hosted",
+      "expected_mechanic": "flat_hourly",
+      "description": "Direct Connect Hosted 10Gbps connection -> Cloud Interconnect 10Gbps Partner VLAN"
+    },
+    {
+      "usage_type": "USE1-DataXfer-Out",
+      "operation": "",
+      "unit": "GB",
+      "expected_charge_type": "dc_data",
+      "expected_mechanic": "data_transfer",
+      "description": "Direct Connect Data Transfer Out US East -> Cloud Interconnect Local Data Transfer UnitedStates"
+    },
+    {
+      "usage_type": "EU-DataXfer-Out",
+      "operation": "",
+      "unit": "GB",
+      "expected_charge_type": "dc_data",
+      "expected_mechanic": "data_transfer",
+      "description": "Direct Connect Data Transfer Out Europe -> Cloud Interconnect Local Data Transfer Europe"
+    },
+    {
+      "usage_type": "APS3-DataTransfer-Out-Bytes",
+      "operation": "",
+      "unit": "GB",
+      "expected_charge_type": "dc_data",
+      "expected_mechanic": "data_transfer",
+      "description": "Direct Connect Data Transfer Out Bytes -> Cloud Interconnect Local Data Transfer"
+    },
+    {
+      "usage_type": "USE1-DataXfer-In",
+      "operation": "",
+      "unit": "GB",
+      "expected_charge_type": "dc_data_in",
+      "expected_mechanic": "data_transfer",
+      "description": "Direct Connect Data Transfer In -> Cloud Interconnect free ingress ($0.00)"
+    }
   ]
 }

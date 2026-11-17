@@ -3313,13 +3313,24 @@
   },
   "directconnect": {
     "display": "AWS Direct Connect",
-    "product_codes": [],
+    "product_codes": [
+      "AWSDirectConnect"
+    ],
     "charge_types": [
       {
-        "id": "dc_data",
-        "description": "Direct Connect data transfer.",
+        "id": "dc_data_in",
+        "description": "Direct Connect data transfer in ($0.00 / free on GCP).",
         "match": {
-          "usage_type_re": "DataTransfer|Out-Bytes|In-Bytes"
+          "usage_type_re": "DataTransfer-In|DataXfer-In|In-Bytes"
+        },
+        "mechanic": "data_transfer",
+        "source_rule": "data_transfer (Direct Connect branch)"
+      },
+      {
+        "id": "dc_data",
+        "description": "Direct Connect data transfer out -> Cloud Interconnect Local/Remote Data Transfer.",
+        "match": {
+          "usage_type_re": "DataTransfer|DataXfer|Out-Bytes"
         },
         "mechanic": "data_transfer",
         "fields": [
@@ -3330,14 +3341,47 @@
             "required": true
           }
         ],
-        "source_rule": "data_transfer (precedes flat_hourly)"
+        "source_rule": "data_transfer (Direct Connect branch)"
+      },
+      {
+        "id": "dc_port_dedicated_400g",
+        "description": "Port hours for 400G dedicated connection -> Cloud Interconnect 400Gbps Dedicated circuit.",
+        "match": {
+          "usage_type_re": "400G|400Gbps"
+        },
+        "mechanic": "flat_hourly",
+        "source_rule": "flat_hourly (Direct Connect branch)"
+      },
+      {
+        "id": "dc_port_dedicated_100g",
+        "description": "Port hours for 100G dedicated connection -> Cloud Interconnect 100Gbps Dedicated circuit.",
+        "match": {
+          "usage_type_re": "100G|100Gbps"
+        },
+        "mechanic": "flat_hourly",
+        "source_rule": "flat_hourly (Direct Connect branch)"
+      },
+      {
+        "id": "dc_port_dedicated_1g",
+        "description": "Port hours for 1G dedicated connection -> Cloud Interconnect 1Gbps Partner VLAN attachment ($0.2778).",
+        "match": {
+          "usage_type_re": "(?:Port.*1G\\b|1Gbps.*Port|Dedicated.*1G\\b|1G.*Dedicated)"
+        },
+        "mechanic": "flat_hourly",
+        "source_rule": "flat_hourly (Direct Connect branch)"
+      },
+      {
+        "id": "dc_port_hosted",
+        "description": "Hosted connection port hours -> Cloud Interconnect Partner VLAN attachment.",
+        "match": {
+          "usage_type_re": "Hosted|HostedConnection|50M|100M|200M|300M|400M|500M|2G|5G|20G|25G|50G"
+        },
+        "mechanic": "flat_hourly",
+        "source_rule": "flat_hourly (Direct Connect branch)"
       },
       {
         "id": "dc_port_hours",
-        "description": "Port / hosted-connection hours -> Dedicated Interconnect.",
-        "match": {
-          "unit_hourly": true
-        },
+        "description": "Port hours (unparsed speed default to 10G or 10G dedicated) -> Cloud Interconnect 10Gbps Dedicated circuit.",
         "mechanic": "flat_hourly",
         "fields": [
           {

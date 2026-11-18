@@ -1553,12 +1553,87 @@
   },
   "emr": {
     "display": "Amazon EMR",
-    "product_codes": [],
+    "product_codes": [
+      "AmazonEMR",
+      "AmazonEMRServerless",
+      "ElasticMapReduce"
+    ],
     "charge_types": [
       {
-        "id": "emr_all",
-        "description": "EMR per-instance surcharge / management rows -> Dataproc formula. (Worker EC2 cost comes via EC2 compute_breakdown separately.)",
-        "match": {},
+        "id": "emr_serverless_vcpu",
+        "description": "EMR Serverless compute vCPU-Hours -> Dataproc Serverless DCU (mult 600.0).",
+        "match": {
+          "usage_type_re": "VCPU-Hours?|vCPU-Hours?"
+        },
+        "mechanic": "emr",
+        "fields": [
+          {
+            "name": "units",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "emr (EMR Serverless vCPU-Hours -> Dataproc Serverless DCU x 600)"
+      },
+      {
+        "id": "emr_serverless_storage",
+        "description": "EMR Serverless ephemeral storage (>20 GB free tier) -> passthrough (unit model mismatch vs shuffle storage).",
+        "match": {
+          "usage_type_re": "Storage-GB-Hours?|Storage-ByteHrs?"
+        },
+        "mechanic": "emr",
+        "fields": [
+          {
+            "name": "units",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "emr (EMR Serverless storage -> passthrough unit_model_mismatch)"
+      },
+      {
+        "id": "emr_serverless_memory",
+        "description": "EMR Serverless memory GB-Hours -> Dataproc Serverless DCU (mult 100.0).",
+        "match": {
+          "usage_type_re": "Memory-GB-Hours?|GB-Hours?"
+        },
+        "mechanic": "emr",
+        "fields": [
+          {
+            "name": "units",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "emr (EMR Serverless Memory-GB-Hours -> Dataproc Serverless DCU x 100)"
+      },
+      {
+        "id": "emr_cluster_mgmt",
+        "description": "EMR cluster-mode per-instance surcharge / node management rows -> Dataproc Premium formula ($0.01/vCPU-hr).",
+        "match": {
+          "usage_type_re": "BoxUsage|NodeUsage|EMR-CORE|EMR-MASTER|Compute"
+        },
         "mechanic": "emr",
         "fields": [
           {
@@ -1580,7 +1655,28 @@
             "required": true
           }
         ],
-        "source_rule": "emr (product excluded from compute_breakdown so these reach emr)"
+        "source_rule": "emr (cluster node management surcharge -> Dataproc Premium CPU cost)"
+      },
+      {
+        "id": "emr_other",
+        "description": "Other EMR charges (Studio, WAL, custom) -> passthrough.",
+        "match": {},
+        "mechanic": "emr",
+        "fields": [
+          {
+            "name": "units",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "emr (catch-all)"
       }
     ]
   },

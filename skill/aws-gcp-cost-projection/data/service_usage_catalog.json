@@ -2014,5 +2014,119 @@
       "expected_mechanic": "cloudwatch",
       "description": "CloudWatch Contributor Insights -> passthrough (no clean GCP equivalent)"
     }
+  ],
+  "emr": [
+    {
+      "usage_type": "USE1-VCPU-Hours",
+      "operation": "StartJobRun",
+      "unit": "Hrs",
+      "expected_charge_type": "emr_serverless_vcpu",
+      "expected_mechanic": "emr",
+      "description": "EMR Serverless standard vCPU-Hours -> Dataproc Serverless DCU (mult 600.0)"
+    },
+    {
+      "usage_type": "USE1-Memory-GB-Hours",
+      "operation": "StartJobRun",
+      "unit": "GB-Hours",
+      "expected_charge_type": "emr_serverless_memory",
+      "expected_mechanic": "emr",
+      "description": "EMR Serverless standard memory GB-Hours -> Dataproc Serverless DCU (mult 100.0)"
+    },
+    {
+      "usage_type": "USE1-GB-Hours",
+      "operation": "StartJobRun",
+      "unit": "GB-Hours",
+      "expected_charge_type": "emr_serverless_memory",
+      "expected_mechanic": "emr",
+      "description": "EMR Serverless memory GB-Hours (short signature) -> Dataproc Serverless DCU (mult 100.0)"
+    },
+    {
+      "usage_type": "USE1-Storage-GB-Hours",
+      "operation": "StartJobRun",
+      "unit": "GB-Hours",
+      "expected_charge_type": "emr_serverless_storage",
+      "expected_mechanic": "emr",
+      "description": "EMR Serverless ephemeral storage -> passthrough (unit model mismatch vs shuffle storage)"
+    },
+    {
+      "usage_type": "USE1-Graviton-VCPU-Hours",
+      "operation": "StartJobRun",
+      "unit": "Hrs",
+      "expected_charge_type": "emr_serverless_vcpu",
+      "expected_mechanic": "emr",
+      "description": "EMR Serverless Graviton ARM vCPU-Hours -> Dataproc Serverless DCU (mult 600.0)"
+    },
+    {
+      "usage_type": "USE1-Graviton-Memory-GB-Hours",
+      "operation": "StartJobRun",
+      "unit": "GB-Hours",
+      "expected_charge_type": "emr_serverless_memory",
+      "expected_mechanic": "emr",
+      "description": "EMR Serverless Graviton ARM memory GB-Hours -> Dataproc Serverless DCU (mult 100.0)"
+    },
+    {
+      "usage_type": "USE1-Flex-VCPU-Hours",
+      "operation": "StartJobRun",
+      "unit": "Hrs",
+      "expected_charge_type": "emr_serverless_vcpu",
+      "expected_mechanic": "emr",
+      "description": "EMR Serverless Flex vCPU-Hours -> Dataproc Serverless DCU (mult 600.0)"
+    },
+    {
+      "usage_type": "USE1-Flex-Memory-GB-Hours",
+      "operation": "StartJobRun",
+      "unit": "GB-Hours",
+      "expected_charge_type": "emr_serverless_memory",
+      "expected_mechanic": "emr",
+      "description": "EMR Serverless Flex memory GB-Hours -> Dataproc Serverless DCU (mult 100.0)"
+    },
+    {
+      "usage_type": "USE1-BoxUsage:m5.xlarge",
+      "operation": "RunInstances",
+      "unit": "Hrs",
+      "expected_charge_type": "emr_cluster_mgmt",
+      "expected_mechanic": "emr",
+      "description": "EMR cluster per-node surcharge (m5.xlarge) -> Dataproc Premium (4 vCPU x $0.01/hr)"
+    },
+    {
+      "usage_type": "USE1-BoxUsage:c5.2xlarge",
+      "operation": "RunInstances",
+      "unit": "Hrs",
+      "expected_charge_type": "emr_cluster_mgmt",
+      "expected_mechanic": "emr",
+      "description": "EMR cluster per-node surcharge (c5.2xlarge) -> Dataproc Premium (8 vCPU x $0.01/hr)"
+    },
+    {
+      "usage_type": "USE1-m5.xlarge-EMR-CORE",
+      "operation": "RunInstances",
+      "unit": "Hrs",
+      "expected_charge_type": "emr_cluster_mgmt",
+      "expected_mechanic": "emr",
+      "description": "EMR cluster core node surcharge -> Dataproc Premium"
+    },
+    {
+      "usage_type": "USE1-m5.xlarge-EMR-MASTER",
+      "operation": "RunInstances",
+      "unit": "Hrs",
+      "expected_charge_type": "emr_cluster_mgmt",
+      "expected_mechanic": "emr",
+      "description": "EMR cluster master node surcharge -> Dataproc Premium"
+    },
+    {
+      "usage_type": "USE1-SpotUsage:m5.xlarge",
+      "operation": "RunInstances",
+      "unit": "Hrs",
+      "expected_charge_type": "emr_other",
+      "expected_mechanic": "emr",
+      "description": "EMR cluster spot surcharge -> passthrough"
+    },
+    {
+      "usage_type": "USE1-Studio-Notebook-Hours",
+      "operation": "CreateStudio",
+      "unit": "Hrs",
+      "expected_charge_type": "emr_other",
+      "expected_mechanic": "emr",
+      "description": "EMR Studio notebook hours -> passthrough"
+    }
   ]
 }

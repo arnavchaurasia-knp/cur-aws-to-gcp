@@ -8261,11 +8261,95 @@ def map_emr(rows):
     # the vCPU-scaled Dataproc rate this function claims to apply.
     _DATAPROC_PREMIUM_SERVICE = GCP_COMPUTE_ENGINE
     _DATAPROC_PREMIUM_SKU = r"Licensing Fee for Google Cloud Dataproc \(CPU cost\)"
+    _DATAPROC_SERVERLESS_DCU_SKU = r"^(?!.*Premium)(?!.*ccelerator).*Data Compute Unit.*Hours - Dataproc Serverless Batch"
     out = []
     for r in rows:
         ut = r.get("usage_type") or ""
         gcp_region = r.get("gcp_region")
         blob = f"{ut} {r.get('operation') or ''} {r.get('product') or ''}".lower()
+
+        # EMR Serverless compute & memory branch (M12 fix):
+        # Maps deterministically to Dataproc Serverless DCU (Standard batch).
+        # vCPU-Hours: 0.6 DCU/vCPU-h × 1,000 milli-DCU/h = 600.0 multiplier.
+        # Memory-GB-Hours: 0.1 DCU/GiB-h × 1,000 milli-DCU/h = 100.0 multiplier (assumption: ≤8 GiB/vCPU).
+        # Ephemeral Storage: passthrough at cost parity with unit_model_mismatch reason (shuffle storage is GiB-mo vs AWS GiB-h).
+        is_serverless_storage = bool(
+            re.search(r"storage[- ](?:gb[- ]?)?hours?|storage-bytehrs?", blob)
+            or (re.search(r"storage", blob) and ("serverless" in blob or "startjobrun" in blob or "hour" in blob))
+        )
+        is_serverless_vcpu = bool(
+            re.search(r"vcpu[- ]?hours?|vcpu", blob)
+            and not is_serverless_storage
+            and not re.search(r"boxusage", blob)
+            and not _emr_vcpus(ut, r.get("instance_vcpus"))
+        )
+        is_serverless_mem = bool(
+            re.search(r"(?:memory|gb)[- ]?hours?|mem", blob)
+            and not is_serverless_storage
+            and not is_serverless_vcpu
+            and not re.search(r"storage|boxusage", blob)
+            and not _emr_vcpus(ut, r.get("instance_vcpus"))
+        )
+
+        if is_serverless_vcpu:
+            sku_id = resolve_sku(GCP_DATAPROC, _DATAPROC_SERVERLESS_DCU_SKU, gcp_region)
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        GCP_DATAPROC,
+                "gcp_sku_name":       "Data Compute Unit (standard) — Dataproc Serverless",
+                "component":          "compute",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    600.0 if sku_id else 1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "EMR Serverless compute → Dataproc Serverless DCU (0.6 DCU/vCPU × 1,000 milli-DCU/h standard batch)" + _no_rate_suffix(sku_id, gcp_region),
+                "mapping_confidence": 0.75,
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
+            else:
+                entry["passthrough_reason"] = "no_rate_in_region"
+            out.append(entry)
+            continue
+
+        if is_serverless_mem:
+            sku_id = resolve_sku(GCP_DATAPROC, _DATAPROC_SERVERLESS_DCU_SKU, gcp_region)
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        GCP_DATAPROC,
+                "gcp_sku_name":       "Data Compute Unit (standard) — Dataproc Serverless",
+                "component":          "compute",
+                "strategy":           "map" if sku_id else "passthrough",
+                "unit_multiplier":    100.0 if sku_id else 1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    "EMR Serverless memory → Dataproc Serverless DCU (0.1 DCU/GiB × 1,000 milli-DCU/h standard batch; assumes worker config ≤8 GiB/vCPU)" + _no_rate_suffix(sku_id, gcp_region),
+                "mapping_confidence": 0.75,
+                "is_assumption":      True,
+                "assumption":         "dataproc_serverless_mem_dcu_ratio=0.1",
+            }
+            if sku_id:
+                entry["gcp_sku_id"] = sku_id
+                entry["gcp_sku_unit"] = sku_id.unit
+            else:
+                entry["passthrough_reason"] = "no_rate_in_region"
+            out.append(entry)
+            continue
+
+        if is_serverless_storage:
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        GCP_DATAPROC,
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "storage",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    f"EMR Serverless ephemeral storage (>20 GB free tier) — passthrough at cost parity (GCP shuffle storage is billed GiB-month vs AWS GiB-hour; usage_type={ut!r})",
+                "mapping_confidence": 0.60,
+                "passthrough_reason": "unit_model_mismatch",
+            })
+            continue
 
         # Spot/preemptible rows and storage-only rows → passthrough
         if re.search(r"spot|storage|backup", blob):
@@ -8280,6 +8364,7 @@ def map_emr(rows):
                 "gcp_region":         gcp_region,
                 "projection_note":    f"EMR spot/storage row — passthrough at cost parity (usage_type={ut!r})",
                 "mapping_confidence": 0.55,
+                "passthrough_reason": "no_gcp_equivalent",
             })
             continue
 
@@ -8314,6 +8399,7 @@ def map_emr(rows):
                 "gcp_region":         gcp_region,
                 "projection_note":    f"EMR management fee — vCPU count unknown for usage_type={ut!r}; passthrough at cost parity",
                 "mapping_confidence": 0.45,
+                "passthrough_reason": "unresolved_sku",
             }
         out.append(entry)
     return out

@@ -12,7 +12,18 @@ end-to-end before moving on.
 > This workorder is the vehicle that fixes all of that, one service at a time, with each service's
 > completion *enforced by the gate* so it can never silently regress.
 
-> ▶ **CURRENT ASSIGNMENT: NONE (awaiting next assignment from operator).**
+> ▶ **CURRENT ASSIGNMENT: NONE (awaiting next assignment from operator) — `emr` (§4.19) completed & gated.**
+> EMR Serverless compute (vCPU-Hours + Memory-GB-Hours) was completed, fully modelled, and gated on 2026-11-18:
+> - M12 variant defect resolved: Serverless compute deterministically mapped to Dataproc Serverless Standard DCUs.
+> - **vCPU-Hours → DCU × 600.0** (0.6 DCU/vCPU-h × 1,000 milli-DCU).
+> - **Memory-GB-Hours → DCU × 100.0** (0.1 DCU/GiB-h × 1,000 milli-DCU; assumption flag `dataproc_serverless_mem_dcu_ratio=0.1`).
+> - Graviton & Flex execution variants mapped to same Standard DCU.
+> - Storage-GB-Hours (>20 GB free tier) routed to `passthrough` (`passthrough_reason="unit_model_mismatch"`).
+> - Cluster-mode node management surcharge (`BoxUsage`, etc.) continues mapping to Compute Engine Dataproc licensing fee ($0.01/vCPU-hr).
+> - `service_specs.json` decomposed into 5 explicit charge types: `emr_serverless_vcpu`, `emr_serverless_storage`, `emr_serverless_memory`, `emr_cluster_mgmt`, `emr_other`.
+> - Populated `service_usage_catalog.json` with 14 EMR billing dimensions.
+> - Dedicated `test_emr_serverless_full_modelling.py` (12 tests) created; full test suite (1,692 tests) green.
+>
 > `dynamodb` throughput (§4.18) was completed, fully modelled, and gated on 2026-11-18:
 > - M14 throughput defect resolved: spec `dynamodb_throughput` mechanic changed from `misc` to `dynamodb_capacity`.
 > - Deterministic Firestore mapping for RCU/WCU (provisioned, ×3600 conversion) and RRU/WRU (on-demand, 1:1 conversion).
@@ -124,7 +135,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | 9 | lambda | GOOD (2 dim gaps) | **☑ DONE+GATED** | §4.7 |
 | 10 | fargate | GOLD | ☐ | — |
 | 11 | eks / ecs | GOOD | ☐ | — |
-| 12 | emr | GOOD (serverless gap) | ☐ | — |
+| 12 | emr | Serverless gap (M12) | **☑ DONE+GATED** | §4.19 |
 | 13 | sagemaker | COLLAPSE (1 Vertex label) | **☑ DONE+GATED** | §4.2 |
 | 14 | mwaa | PARTIAL (unpriced) | ☐ | — |
 | 15 | redshift | PARTIAL (mostly passthrough) | **☑ DONE+GATED** | §4.8 |
@@ -1932,6 +1943,101 @@ deterministic Firestore. Ready for AGY.**
 
 ---
 
+### 4.19 EMR Serverless → Dataproc Serverless (DCU) — ☑ DONE+GATED
+
+The M12 variant defect: **EMR Serverless** compute (vCPU-Hours + Memory-GB-Hours) and storage all fall through
+`map_emr` (`:8241`) to the **unpriced passthrough** (`strategy="passthrough"`, `gcp_sku_id=None`,
+`unit_multiplier=1.0`). `map_emr` today prices only **cluster-mode** EMR (per-node-hour management fee →
+`"Licensing Fee for Google Cloud Dataproc (CPU cost)"` $0.01/vCPU-hr on Compute Engine). EMR Serverless has **no
+backing EC2 instance** (`_emr_vcpus` returns None → hits the final passthrough) and the `storage` keyword branch
+(`:8271`) catches serverless storage rows into passthrough too. Net: EMR Serverless is projected at AWS-cost parity,
+not GCP rates = the M12 bug.
+
+#### 4.19.0 Verification status (2026-11-18 — BOTH official pages verified)
+- ✅ **AWS CONFIRMED** (`aws.amazon.com/emr/pricing`, EMR Serverless tab, user-flow + page examples): x86 Standard
+  **vCPU-Hours $0.052624**, **Memory-GB-Hours $0.0057785**; ephemeral storage **first 20 GB free** then per-GB-hour;
+  Graviton (ARM) priced slightly lower; **Flex** (spot-like) execution cheaper. CUR dims: `…-VCPU-Hours`,
+  `…-Memory-GB-Hours` (a.k.a. `…-GB-Hours`), `…-Storage-GB-Hours` under product "Amazon EMR Serverless" / operation
+  `StartJobRun`.
+- ✅ **GCP Dataproc Serverless CONFIRMED — official page (user-pasted, "Managed Service for Apache Spark") + catalog
+  cross-check.** Billing is by **Data Compute Unit (DCU)**, shuffle storage, and accelerators (scale-to-zero, per-second,
+  1-min minimum). **DCU conversion is ADDITIVE (not max):**
+  - **vCPU → 0.6 DCU per vCPU-hour**
+  - **RAM → 0.1 DCU per GiB-hour** (up to 8 GiB per vCPU); **0.2 DCU per GiB** above 8 GiB/vCPU.
+  - *Proof:* default minimum (1 driver + 2 executors = 12 vCPU, 48 GiB) = `12×0.6 + 48×0.1 = 7.2 + 4.8 = 12 DCU`,
+    exactly the page's stated "minimum of 12 DCUs". ✅
+  - **us-central1 (Iowa) rates (official):** DCU **standard $0.06/DCU-h**, premium $0.089; Shuffle Storage standard
+    **$0.04/GiB-mo**, premium $0.1/GiB-mo.
+- ✅ **Catalog cross-check (`data/catalog.duckdb`):** SKU **"Data Compute Unit  Hours - Dataproc Serverless Batch"**
+  (note the double space; `usage_unit='h'`, priced **per milli-DCU-h** = $6.0e-05 us-central1 → **×1000 = $0.06/DCU-h**,
+  matching the page) and **"Data Compute Unit Premium  Hours …"** ($8.9e-05 → **$0.089/DCU-h**, exact page match →
+  **confirms the SKU is priced per-milli-DCU, so the ×1000 must be baked into `unit_multiplier`**). Shuffle:
+  **"Dataproc Serverless Shuffle Storage GB-Months"** ($0.04 std / $0.1 premium, `GiBy.mo`). **All single-region
+  (region-suffixed) — NO multi-region nam5 trap here** (unlike Firestore §4.18).
+
+#### 4.19.1 The defect
+- EMR Serverless `…-VCPU-Hours` and `…-Memory-GB-Hours` rows reach `map_emr`, `_emr_vcpus()` returns None (no instance
+  type) → final `else` branch → `strategy="passthrough"`, `gcp_sku_id=None`, `unit_multiplier=1.0` (unpriced).
+- `…-Storage-GB-Hours` rows match the `re.search(r"spot|storage|backup", blob)` branch (`:8271`) → passthrough.
+
+#### 4.19.2 THE DECISION — DETERMINISTIC DCU FORMULA (clean 1:1, no LLM, no ambiguity)
+Because the GCP DCU model is **additive and linear**, each AWS CUR line maps **independently** to the **same**
+Standard DCU SKU with a fixed multiplier — no cross-row join, no vCPU:memory ratio guessing needed:
+
+| AWS EMR Serverless line (unit) | → GCP target | `unit_multiplier` | GCP SKU | decision |
+|---|---|---|---|---|
+| **vCPU-Hours** | Dataproc Serverless **DCU** | **600** (0.6 DCU × 1000 milli) | `Data Compute Unit  Hours - Dataproc Serverless Batch` (standard) | FORMULA (map) |
+| **Memory-GB-Hours** | Dataproc Serverless **DCU** | **100** (0.1 DCU × 1000 milli) | same standard DCU SKU | FORMULA (map) |
+| **Storage-GB-Hours** (>20 GB free) | Shuffle Storage | — | — | **PASS** (unit_model_mismatch: catalog shuffle SKU is GiB-**mo**, AWS bills GiB-**hour**; dollar-immaterial — $0.03 vs $17 compute in GCP's own example) |
+
+- **Tier interim (declare as assumption):** apply **flat 0.1 DCU/GiB** (mult 100) for memory. The 0.2 DCU/GiB
+  above-8-GiB/vCPU tier cannot be applied per-row (a Memory row does not carry the job's vCPU count in the CUR), and
+  EMR Serverless worker configs are typically ≤8 GiB/vCPU. This slightly **under**-projects memory-heavy jobs
+  (>8 GiB/vCPU) — flag it as `assumption` in the note. (Exact split would need a per-job vCPU↔memory join — future.)
+- **Always Standard DCU**, never Premium: EMR Serverless has no Lightning-Engine/GPU equivalent signal in the CUR, and
+  Standard is the cost-effective batch-ETL tier that matches EMR Serverless's general use. (Premium/accelerator SKUs
+  exist but are not a CUR-derivable target.)
+- **ARM/Graviton** vCPU-Hours → same **600** multiplier (Dataproc DCU is architecture-agnostic). **Flex** execution →
+  same Standard DCU map (GCP has no spot-DCU; mapping to Standard is the honest "what it costs on GCP"). Keep the
+  cluster-mode management-fee path (`_emr_vcpus` present) unchanged.
+- **Sanity ($/h, default 12 vCPU + 48 GiB):** AWS `12×$0.052624 + 48×$0.0057785 = $0.909`; GCP `12 DCU × $0.06 = $0.72`
+  (~20% cheaper) — plausible, no blow-up.
+
+#### 4.19.3 Implementation steps (`ast.parse` each edit; touch ONLY these; keep `map_compute_breakdown`+`main` intact)
+Files: `scripts/apply_static_mappings.py` (`map_emr` — add a Serverless branch), `data/service_specs.json` +
+`data/service_usage_catalog.json` (EMR Serverless charge-type dims → `emr` mechanic, if not already), `tests/test_emr_serverless_full_modelling.py` (**new**), `tests/test_spec_dispatch.py`.
+1. **Confirm routing first:** verify EMR Serverless rows (`product` "Amazon EMR Serverless", `…VCPU-Hours`/`…Memory-GB-Hours`)
+   dispatch to `mechanic="emr"` → `map_emr`. If they land in `misc`, add the dims to `service_specs.json`/`service_usage_catalog.json`
+   so they route to `emr`. (No job DBs on this host — use AWS canonical dims above.)
+2. In `map_emr`, **before** the `spot|storage|backup` branch, add a **Serverless branch** keyed on the Serverless dims:
+   - `re.search(r"vcpu", blob)` and unit is hours → DCU SKU, `unit_multiplier=600.0`.
+   - `re.search(r"(memory|gb)[- ]?hours?|mem", blob)` (memory, not storage) → DCU SKU, `unit_multiplier=100.0`.
+   - Resolve `sku_id = resolve_sku(<dataproc service>, r"Data Compute Unit\s+Hours - Dataproc Serverless Batch", gcp_region)`.
+     **Confirm the exact catalog `service_name`** for this SKU first (query `SELECT DISTINCT service_name FROM skus WHERE
+     description LIKE 'Data Compute Unit%Dataproc Serverless%'`) and use that constant (likely `GCP_DATAPROC`). Exclude
+     Premium/Accelerator (`NOT LIKE '%Premium%'`, `NOT LIKE '%ccelerator%'`) — the `\s+Hours` (double-space) + `NOT Premium`
+     pattern disambiguates standard from premium.
+   - `strategy = "map" if sku_id else "passthrough"`; set `passthrough_reason = "no_rate_in_region"` only when `sku_id` is None.
+   - `gcp_sku_name = "Data Compute Unit (standard) — Dataproc Serverless"`, `component="compute"`, `mapping_confidence≈0.75`,
+     `projection_note` disclosing the DCU conversion (0.6 DCU/vCPU or 0.1 DCU/GiB) **and** the ≤8 GiB/vCPU assumption for memory.
+   - **Storage** rows: keep passthrough but set `passthrough_reason="unit_model_mismatch"` and a note (shuffle SKU is GiB-mo).
+3. **Milli-unit caution (from the Autopilot precedent, `:3391-3398`):** the ×1000 is baked in **because this SKU is priced
+   per milli-DCU** (proven: premium $8.9e-05 ×1000 = $0.089 = page). Do NOT also let `apply_rates` re-scale — the
+   unit-mismatch guard compares `h`↔`h` (no mismatch). Verify the resolved rate ×600 on a 1-vCPU-h row ≈ $0.036 (= 0.6×$0.06).
+4. `tests/test_emr_serverless_full_modelling.py`: vCPU-Hours → DCU map (mult 600, sku non-null), Memory-GB-Hours → DCU map
+   (mult 100), empirical rate check (1 vCPU-h ≈ $0.036, 1 GB-h ≈ $0.006 at us-central1), storage → passthrough w/ valid
+   reason, cluster-mode mgmt fee still maps to the licensing SKU (no regression); invariants: no `map` row with empty
+   `gcp_sku_id`; passthrough rows carry an intentional reason. 5. Full suite green; update §7.1 emr log.
+
+#### 4.19.4 DoD + Sources
+DoD per §2. **Sources (BOTH official pages verified 2026-11-18):** AWS `aws.amazon.com/emr/pricing` (EMR Serverless,
+page examples: vCPU-h $0.052624 / mem-GB-h $0.0057785) + GCP `docs.cloud.google.com/dataproc-serverless/pricing`
+("Managed Service for Apache Spark", user-pasted — DCU = 0.6/vCPU + 0.1/GiB additive, Iowa DCU std $0.06/premium $0.089,
+shuffle $0.04/GiB-mo) cross-checked against `data/catalog.duckdb` (milli-DCU SKU, ×1000 confirmed via premium exact match).
+**Memory [[reference_gcp_dataproc_serverless_rates]]. Ready for AGY.**
+
+---
+
 ## 5. PARKED — backlog from the audit (DO NOT auto-implement)
 
 > ⚠️ **AGY / automated agents: DO NOT act on this section.** These are human-gated design decisions,
@@ -2670,6 +2776,30 @@ ids the helpers emit (`GCP-EGRESS-INTERNET-*-T*`, `GCP-EGRESS-INTERREGION-<FROM>
 
 #### efs — Claude verification *(2026-11-14)*
 - ✅ **PASS** — independently re-ran the full battery. No truncation (`ast.parse` OK; `map_compute_breakdown` + `main` + `map_efs` present; +39 lines vs HEAD on `apply_static_mappings.py`, additive). Targeted `test_efs_full_modelling` + spec partition/coverage/dispatch: 236 passed. **Full suite 1,513 passed, exit 0** (AGY reported 1,511; the +2 is the two still-uncommitted new test files). Spot-read `map_efs` against §4.9: Standard-Regional→Filestore Regional (`GB_TO_GIB`), One-Zone (`onezone`/`-z-`/`one-zone`)→Filestore Zonal, `_EFS_DEFAULT_STORAGE`→Regional (availability-safe, sub-1 TiB) ✅; **IA/Archive branch runs BEFORE Standard and → `passthrough` `unit_multiplier=1.0`, `gcp_sku_name=None`, mandatory Agent Volumes Cold $0.02 disclosure — never Basic HDD** (10×–20× trap avoided) ✅; Provisioned/Elastic throughput→`ignore` $0 reworded "bundled into capacity, no separate SKU" (AGENTS-compliant) ✅; Backup→`Filestore Backup Usage` ($0.08) `map` if SKU resolves else passthrough ✅. Confirmed `SKUMeta` is a `str` subclass whose `__bool__` is `bool("")`=False on a miss, so `strategy = "map" if sku_id else "passthrough"` correctly falls to passthrough when no SKU resolves — **no latent map-with-no-rate bug**. Sources cited (`cloud.google.com/filestore/pricing`). **Invariant holds: no EFS row is ever priced as live Hyperdisk/PD or Basic HDD.**
+
+#### emr (EMR Serverless §4.19) — log *(2026-11-18, completed & gated by AGY)*
+- Status: ☑ DONE+GATED · Runbook step reached: 9/9 · Date: 2026-11-18 · Agent: agy
+- Done:
+  1. Updated `scripts/apply_static_mappings.py` (`map_emr`):
+     - Added `_DATAPROC_SERVERLESS_DCU_SKU = r"^(?!.*Premium)(?!.*ccelerator).*Data Compute Unit.*Hours - Dataproc Serverless Batch"` targeting Standard Dataproc Serverless Batch DCUs under `Dataproc` service.
+     - Implemented deterministic additive DCU formula (§4.19.2):
+       - `vCPU-Hours` → `unit_multiplier=600.0` (0.6 DCU/vCPU-h × 1,000 milli-DCU), empirical rate at us-central1 ≈ $0.036/vCPU-h.
+       - `Memory-GB-Hours` / `GB-Hours` → `unit_multiplier=100.0` (0.1 DCU/GiB-h × 1,000 milli-DCU), empirical rate at us-central1 ≈ $0.006/GB-h, note disclosing ≤8 GiB/vCPU assumption.
+       - Graviton & Flex execution variants mapped to same Standard DCU.
+       - `Storage-GB-Hours` (>20 GB free tier) → `strategy="passthrough"`, `unit_multiplier=1.0`, `passthrough_reason="unit_model_mismatch"`.
+     - Preserved cluster-mode node management surcharge (`BoxUsage`, etc.) mapping to Compute Engine Dataproc licensing fee ($0.01/vCPU-hr).
+     - Added explicit `passthrough_reason` for cluster spot rows (`"no_gcp_equivalent"`) and unknown vCPU rows (`"unresolved_sku"`).
+     - Guarded `strategy = "map" if sku_id else "passthrough"` and `passthrough_reason = None if strategy == "map" else ...`.
+  2. Updated `data/service_specs.json`:
+     - Added product codes `["AmazonEMR", "AmazonEMRServerless", "ElasticMapReduce"]` to `emr` spec.
+     - Decomposed `emr` into 5 explicit charge types: `emr_serverless_vcpu`, `emr_serverless_storage`, `emr_serverless_memory`, `emr_cluster_mgmt`, `emr_other`.
+  3. Populated `data/service_usage_catalog.json`:
+     - Added 14 comprehensive EMR billing dimensions covering Standard vCPU/Memory/Storage, Graviton vCPU/Memory, Flex vCPU/Memory, BoxUsage m5/c5, Core/Master nodes, Spot, and Studio Notebooks.
+  4. Updated `tests/test_spec_dispatch.py`:
+     - Added 3 EMR Serverless dispatch test cases and updated `emr_fee` to `emr_cluster_mgmt` (253 tests passing).
+  5. Created `tests/test_emr_serverless_full_modelling.py`:
+     - 12 comprehensive unit and invariant tests verifying vCPU/Memory/Storage, Graviton/Flex variants, empirical rates, cluster mgmt regression, invariants (no empty `gcp_sku_id` on map; explicit reasons on passthrough), and catalog completeness.
+  6. Verified full regression test suite: **1,692 passed in 208s** with 0 failures across the entire codebase.
 
 ### 7.2 Stop-and-ask triggers (hand back to the human)
 - A rate or fact available only behind a login or only on a third-party site.

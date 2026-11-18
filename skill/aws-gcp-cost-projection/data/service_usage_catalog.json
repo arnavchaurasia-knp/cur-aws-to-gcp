@@ -12,37 +12,37 @@
     },
     {
       "usage_type": "APS3-ReadCapacityUnit-Hrs",
-      "expected_mechanic": "misc",
+      "expected_mechanic": "dynamodb_capacity",
       "expected_charge_type": "dynamodb_throughput",
       "description": "Provisioned RCU capacity-unit-hours"
     },
     {
       "usage_type": "APS3-WriteCapacityUnit-Hrs",
-      "expected_mechanic": "misc",
+      "expected_mechanic": "dynamodb_capacity",
       "expected_charge_type": "dynamodb_throughput",
       "description": "Provisioned WCU capacity-unit-hours"
     },
     {
       "usage_type": "APS3-ReadRequestUnits",
-      "expected_mechanic": "misc",
+      "expected_mechanic": "dynamodb_capacity",
       "expected_charge_type": "dynamodb_throughput",
       "description": "On-demand read request units"
     },
     {
       "usage_type": "APS3-WriteRequestUnits",
-      "expected_mechanic": "misc",
+      "expected_mechanic": "dynamodb_capacity",
       "expected_charge_type": "dynamodb_throughput",
       "description": "On-demand write request units"
     },
     {
       "usage_type": "APS3-ReplWriteRequestUnits",
-      "expected_mechanic": "misc",
+      "expected_mechanic": "dynamodb_capacity",
       "expected_charge_type": "dynamodb_replication_writes",
       "description": "Global Tables on-demand replication writes"
     },
     {
       "usage_type": "APS3-ReplWriteCapacityUnit-Hrs",
-      "expected_mechanic": "misc",
+      "expected_mechanic": "dynamodb_capacity",
       "expected_charge_type": "dynamodb_replication_writes",
       "description": "Global Tables provisioned replication writes"
     },
@@ -1915,6 +1915,104 @@
       "expected_charge_type": "dc_data_in",
       "expected_mechanic": "data_transfer",
       "description": "Direct Connect Data Transfer In -> Cloud Interconnect free ingress ($0.00)"
+    }
+  ],
+  "cloudwatch": [
+    {
+      "usage_type": "USE1-PutLogEvents-Bytes",
+      "operation": "PutLogEvents",
+      "unit": "GB",
+      "expected_charge_type": "cw_log_ingest",
+      "expected_mechanic": "cloudwatch",
+      "description": "CloudWatch PutLogEvents ingestion -> Cloud Logging Log Storage cost ($0.50/GiB, 50 GiB free)"
+    },
+    {
+      "usage_type": "USE1-DataIngestion-Bytes",
+      "operation": "DataIngestion",
+      "unit": "GB",
+      "expected_charge_type": "cw_log_ingest",
+      "expected_mechanic": "cloudwatch",
+      "description": "CloudWatch Log Data Ingestion bytes -> Cloud Logging Log Storage cost"
+    },
+    {
+      "usage_type": "USE1-TimedStorage-ByteHrs",
+      "operation": "TimedStorage",
+      "unit": "GB-Mo",
+      "expected_charge_type": "cw_log_storage",
+      "expected_mechanic": "cloudwatch",
+      "description": "CloudWatch Logs retention storage -> Cloud Logging Log Retention cost ($0.01/GiBy-mo)"
+    },
+    {
+      "usage_type": "USE1-DataScanned-Bytes",
+      "operation": "StartQuery",
+      "unit": "GB",
+      "expected_charge_type": "cw_log_insights",
+      "expected_mechanic": "cloudwatch",
+      "description": "CloudWatch Logs Insights query data scanned -> Cloud Logging Log Analytics ($0 on bundled tier)"
+    },
+    {
+      "usage_type": "USE1-Delivered to S3",
+      "operation": "Export",
+      "unit": "GB",
+      "expected_charge_type": "cw_log_export",
+      "expected_mechanic": "cloudwatch",
+      "description": "CloudWatch Logs delivery to S3 -> Cloud Logging Log Router free export ($0)"
+    },
+    {
+      "usage_type": "USE1-AlarmMonitorUsage",
+      "operation": "",
+      "unit": "Count",
+      "expected_charge_type": "cw_alarms",
+      "expected_mechanic": "cloudwatch",
+      "description": "CloudWatch Alarms -> Cloud Monitoring alerting ($0 on GCP until 2027-09-01)"
+    },
+    {
+      "usage_type": "USE1-DashboardHour",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "cw_dashboards",
+      "expected_mechanic": "cloudwatch",
+      "description": "CloudWatch Dashboards -> Cloud Monitoring dashboards ($0 on GCP)"
+    },
+    {
+      "usage_type": "USE1-CW:MetricMonitorUsage",
+      "operation": "MetricStorage",
+      "unit": "Count",
+      "expected_charge_type": "cw_custom_metrics",
+      "expected_mechanic": "cloudwatch",
+      "description": "CloudWatch Custom Metrics -> Cloud Monitoring metric volume ($0 within 150 MiB free tier)"
+    },
+    {
+      "usage_type": "USE1-Requests",
+      "operation": "GetMetricData",
+      "unit": "Requests",
+      "expected_charge_type": "cw_api_requests",
+      "expected_mechanic": "cloudwatch",
+      "description": "CloudWatch API requests -> Cloud Monitoring write free / read free tier ($0)"
+    },
+    {
+      "usage_type": "USE1-CW:DatabaseInsights-vCPU-Hours",
+      "operation": "",
+      "unit": "Hrs",
+      "expected_charge_type": "cw_db_insights",
+      "expected_mechanic": "cloudwatch",
+      "description": "CloudWatch Database Insights -> Cloud SQL Query Insights ($0 bundled)"
+    },
+    {
+      "usage_type": "USE1-CW:Canary-Runs",
+      "operation": "CanaryRun",
+      "unit": "Count",
+      "expected_charge_type": "cw_synthetics",
+      "expected_mechanic": "cloudwatch",
+      "description": "CloudWatch Synthetics canary runs -> Cloud Monitoring synthetic checks (passthrough, unit mismatch)"
+    },
+    {
+      "usage_type": "USE1-ContributorInsights-Events",
+      "operation": "",
+      "unit": "Count",
+      "expected_charge_type": "cw_other",
+      "expected_mechanic": "cloudwatch",
+      "description": "CloudWatch Contributor Insights -> passthrough (no clean GCP equivalent)"
     }
   ]
 }

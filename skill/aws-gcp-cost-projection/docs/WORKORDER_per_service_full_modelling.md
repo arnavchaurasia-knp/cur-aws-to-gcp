@@ -13,6 +13,14 @@ end-to-end before moving on.
 > completion *enforced by the gate* so it can never silently regress.
 
 > ▶ **CURRENT ASSIGNMENT: NONE (awaiting next assignment from operator).**
+> `dynamodb` throughput (§4.18) was completed, fully modelled, and gated on 2026-11-18:
+> - M14 throughput defect resolved: spec `dynamodb_throughput` mechanic changed from `misc` to `dynamodb_capacity`.
+> - Deterministic Firestore mapping for RCU/WCU (provisioned, ×3600 conversion) and RRU/WRU (on-demand, 1:1 conversion).
+> - BUG 2 (single-region SKU 2× over-projection) fixed: mapped GCP region to Firestore city (`Iowa` for us-central1) to resolve single-region Firestore Read Ops ($0.30/M) and Entity Writes ($0.90/M), reserving multi-region `North America 5` strictly for Global Tables.
+> - Storage single-region city resolution applied to `map_dynamodb_storage` ($0.15/GiB-mo for Iowa).
+> - Provisioned RCU/WCU fallback bug fixed (`dynamodb_rcu_to_reads_sec: 1.0`).
+> - CloudWatch §4.17 completed and gated (16 tests in `test_cloudwatch_full_modelling.py`, 12 catalog dimensions).
+> - Dedicated `test_dynamodb_full_modelling.py` (12 tests) created; full test suite green.
 > `directconnect` (§4.16) was completed, fully modelled, and gated on 2026-11-17.
 > Agent: do **not** self-start any service and do **not** self-start from §5 PARKED — wait for the next
 > `CURRENT ASSIGNMENT` to be set here. The §2 Definition of Done is **per-service**; update the **§7.1** log
@@ -107,7 +115,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 |---|---|---|---|---|
 | 1 | **rds / aurora** | MIS-TARGET (SQL Server/Oracle→MySQL) | **☑ DONE+GATED** | §4.1 |
 | 2 | elasticache | GOOD (has candidate template) | **☑ DONE+GATED** | §4.15 |
-| 3 | dynamodb | GOLD (only gated service) | ☐ | — |
+| 3 | dynamodb | GOLD (only gated service) | **☑ DONE+GATED** | §4.18 |
 | 4 | s3 | GOLD | ☐ | — |
 | 5 | ebs | GOLD | ☐ | — |
 | 6 | efs | PARTIAL (Basic pinned) | **☑ DONE+GATED** | §4.9 |
@@ -127,7 +135,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | 20 | elb | GOOD | **☑ DONE+GATED** | §4.12 |
 | 21 | route53 | GOOD (health-check gap) | **☑ DONE+GATED** | §4.13 |
 | 22 | directconnect | PARTIAL (10G flat) | **☑ DONE+GATED** | §4.16 |
-| 23 | cloudwatch | GOLD | ☐ | — |
+| 23 | cloudwatch | GOLD | **☑ DONE+GATED** | §4.17 |
 | 24 | cloudtrail | GOOD | ☐ | — |
 | 25 | dms | MIS-TARGET (free-tier over-proj) | **☑ DONE+GATED** | §4.6 |
 | 26 | kinesis | GOOD (unit caveat) | ☐ | — |
@@ -1783,6 +1791,147 @@ rates in hand; the one open call is the unknown-speed fallback (recommend: 10G-D
 
 ---
 
+### 4.17 CloudWatch → Cloud Logging / Cloud Monitoring — ☑ DONE+GATED
+
+Verification + formalization + small gap-fill. `map_cloudwatch` (`:6668`) is already mature and was reviewed in the
+free-tier pass (2026-11-11) — the charge-type decisions are sound. This pass confirms them against fresh AWS rates,
+adds the missing test file (none exists), and fills two small gaps (Synthetics, Logs Insights).
+
+#### 4.17.0 Verification status (AWS + GCP official pages)
+- ✅ **AWS CONFIRMED** (`aws.amazon.com/cloudwatch/pricing`, 2026-11-17; rate tables are JS-tabbed, figures from
+  free-tier text + worked examples):
+  - **Logs:** ingestion Standard **$0.50/GB**, Infrequent-Access **$0.25/GB**; storage/archival **$0.03/GB-mo**
+    (5 GB free); delivery to S3/Firehose **$0.335/GB**; Logs Insights scanned (rate not captured — historically ~$0.005/GB).
+  - **Metrics:** custom metrics **$0.30** (first 10k) / **$0.10** (10k–250k) / **$0.05** (>250k) per metric-mo
+    (10 free); detailed monitoring = custom metrics; PutMetricData $0.01/M; general API $0.01/1k (1M free; GetMetricData
+    always charged).
+  - **Alarms:** standard **$0.10**/alarm-metric-mo, composite **$0.50** (10 free). **Dashboards:** 3 free, then ~$3/mo.
+    **Synthetics:** **$0.0012/canary-run** (100 free).
+- ✅ **GCP CONFIRMED** (free-tier verification 2026-11-11, `cloud.google.com/stackdriver/pricing` + catalog):
+  - **Cloud Logging:** ingestion **$0.50/GiB** (50 GiB free; near-parity with AWS), retention **$0.01/GiB-mo**, Log
+    Router **free**. **Cloud Monitoring:** metric ingestion tiered by MiB (**150 MiB/billing-account/mo free**, per
+    account not per project), 8 bytes/datapoint; **Monitoring READ API $0.50/M time series** (chargeable since 2025-10-02).
+  - **Alerting (alarms):** **free until 2027-09-01**, then **$0.35/metric-ref/mo + $0.50/1M data-points** (dated caveat).
+    **Dashboards: free.** No per-API-call charge for Monitoring writes.
+- ✅ **Comparison table:** CloudWatch Logs → Cloud Logging; CloudWatch (metrics) → Cloud Monitoring.
+
+#### 4.17.1 Mapping table (current `map_cloudwatch` — verified sound)
+| CloudWatch charge | AWS rate | Decision | GCP target | status |
+|---|---|---|---|---|
+| Log ingestion (PutLogEvents) | $0.50/GB | SKU | Cloud Logging ingestion $0.50/GiB (50 GiB free) — near parity | ✅ works |
+| Log storage/archival | $0.03/GB-mo | SKU | Cloud Logging retention $0.01/GiB-mo | ✅ works (split from ingestion) |
+| Log delivery → S3/Firehose | $0.335/GB | PASS | Cloud Logging Log Router (free on GCP; AWS-only spend) → passthrough | ✅ works |
+| Custom metrics | $0.30/$0.10/$0.05 | IGNORE ($0, disclosed) | Cloud Monitoring bills by MiB ingested (150 MiB free), not per-metric — $0 with disclosed assumption | ✅ works |
+| Metrics API / API requests | $0.01/1k | IGNORE ($0) | Monitoring has no per-call write charge (READ API $0.50/M noted) | ✅ works |
+| **Alarms** (standard/composite) | $0.10/$0.50 | IGNORE ($0) | Cloud Monitoring alerting **free until 2027-09-01** (dated caveat) | ✅ works |
+| **Dashboards** | ~$3/mo | IGNORE ($0) | Cloud Monitoring dashboards free | ✅ works |
+| Database Insights | $0.0125/vCPU-hr | IGNORE ($0) | bundled in Cloud SQL base price | ✅ works |
+| **Synthetics (canaries)** | $0.0012/run | PASS | nearest = Cloud Monitoring uptime/synthetic checks (diff unit) → passthrough | ⚠️ **gap — verify/add** |
+| **Logs Insights (scanned)** | ~$0.005/GB | SKU/PASS | Cloud Logging Log Analytics (query via BigQuery; largely free) → map or $0+disclosure | ⚠️ **gap — verify/add** |
+| Contributor Insights / RUM / Evidently | various | PASS | no clean equivalent | ℹ️ passthrough |
+
+#### 4.17.2 Gaps / fixes
+- **Synthetics (canary runs):** currently likely falls to the generic count-passthrough; add a branch → passthrough
+  with an intentional reason naming Cloud Monitoring uptime/synthetic checks (unit mismatch: per-run vs per-check-mo).
+- **Logs Insights (data scanned):** confirm it's not mis-pricing at the log-storage rate; map to Cloud Logging Log
+  Analytics ($0/query on the bundled tier) with a disclosure, or passthrough if a per-scan charge is in play.
+- Everything else in §4.17.1 is already correct — **do not change** the alarm/dashboard/metrics/API $0 decisions
+  (reviewed + sound); just confirm them with tests.
+
+#### 4.17.3 Implementation steps (`ast.parse` each edit; touch ONLY these)
+Files: `scripts/apply_static_mappings.py` (`map_cloudwatch`: Synthetics + Logs-Insights branches only),
+`data/service_usage_catalog.json` (CloudWatch dims), `data/service_specs.json`,
+`tests/test_cloudwatch_full_modelling.py` (**new — none exists**), `tests/test_spec_dispatch.py`. Keep
+`map_compute_breakdown`+`main` intact.
+1. Add Synthetics branch (→ passthrough, intentional reason). 2. Add/confirm Logs Insights handling.
+3. Populate `service_usage_catalog.json` CloudWatch dims (log-ingest, log-storage, metrics, alarms, dashboards, API,
+   synthetics, insights). 4. Add `service_specs.json` charge-types if missing.
+5. `tests/test_cloudwatch_full_modelling.py`: log ingest→Cloud Logging (ingestion, not storage), log storage→retention,
+   dashboards→ignore $0, alarms→ignore $0 (assert the 2027 caveat in note), custom metrics→ignore $0 (disclosed),
+   API→ignore $0, log-delivery-S3→passthrough, DB-Insights→ignore, Synthetics→passthrough; invariant: no `map` row with
+   empty `gcp_sku_id`; passthrough rows carry an intentional reason. 6. Full suite green; update §7.1.
+
+#### 4.17.4 DoD + Sources
+DoD per §2. **Sources:** AWS `aws.amazon.com/cloudwatch/pricing` (CONFIRMED 2026-11-17; JS-tabbed tables, figures from
+free-tier text + examples). GCP Cloud Logging/Monitoring rates confirmed in the free-tier pass
+(`cloud.google.com/stackdriver/pricing`, 2026-11-11) + catalog. **No blocker** — the mapper is already sound; this is
+verification + the test file + 2 small gaps.
+
+---
+
+### 4.18 DynamoDB throughput → Firestore / Bigtable / Spanner — ☑ DONE+GATED
+
+The M14 variant defect: DynamoDB **throughput** (RCU/WCU-hrs provisioned + RRU/WRU on-demand) is routed to
+`mechanic: "misc"` (LLM best-fit) while the deterministic `map_dynamodb_capacity` (`:5214`, → Cloud Firestore Ops)
+sits **dead/bypassed**. Storage/PITR/backup (`map_dynamodb_storage`) + DAX (→ Memorystore) are already handled.
+
+#### 4.18.0 Verification status (2026-11-18 — BOTH official pages verified)
+- ✅ **AWS CONFIRMED** (`aws.amazon.com/dynamodb/pricing`, **official rate table, user-pasted**, us-east-2): on-demand
+  **WRU $0.625/M, RRU $0.125/M** (Std; IA $0.78 / $0.155); provisioned (ex.) WCU $0.00065/RCU $0.00013/hr; storage
+  **$0.25/GB-mo** (IA $0.10); PITR **$0.20/GB-mo**; on-demand backup warm **$0.10**/cold $0.03; restore warm **$0.15**/cold
+  $0.20; Streams $0.02/100k; Global-Tables rWRU $0.625/M; DTO tiered $0.09→$0.05. Free tier 25 RCU/WCU/25 GB per region.
+- ✅ **GCP Firestore CONFIRMED — official page (user-pasted) + catalog cross-check**, and it **caught a 2× bug**. Official
+  **us-central1 (Iowa) single-region, Standard edition:** **Document Reads $0.30/M** ($0.03/100k), **Writes $0.90/M**
+  ($0.09/100k), **Deletes $0.10/M**, **Stored Data ~$0.15/GiB-mo** ($0.000205479/GiB-h ×730), PITR $0.15, Backup $0.03/GiB-mo,
+  Restore $0.20/GiB. Free tier 50k reads/20k writes/1 GiB per day (default DB only).
+  - **BUG (region/SKU mis-resolution):** the catalog has the correct **single-region** SKUs (`Cloud Firestore Read Ops
+    Iowa` = 6A94… = **$3e-07/$0.30M**, Entity Writes Iowa = **$9e-07/$0.90M**) AND **multi-region** ones (`North America 5`
+    = nam5 = 369B = **$6e-07/$0.60M**, Entity Writes = $1.8e-6/$1.80M). `map_dynamodb_capacity`'s `resolve_sku(…, "us-central1")`
+    returns the **multi-region nam5 SKU ($0.60M/$1.80M), not single-region Iowa ($0.30M/$0.90M)** → **2× over-projection**
+    for a normal single-region DynamoDB table. (Multi-region nam5 is correct only for Global Tables.)
+- ✅ **`map_dynamodb_capacity` logic is correct** (direct call): on-demand RRU→Firestore Read Ops (1:1), WRU→Entity
+  Writes (1:1); provisioned RCU/WCU-hrs→Firestore via assumption `dynamodb_rcu_to_reads_sec=1.0` (1 RCU = 3600 reads/hr).
+  Guarded, assumption-flagged. **Two defects: (1) never reached (spec says `misc`); (2) resolves the multi-region SKU.**
+
+#### 4.18.1 The defect
+- `service_specs.json:1989` `dynamodb_throughput` → **`mechanic: "misc"`** (LLM guidance Firestore/Bigtable/Spanner) →
+  spec_dispatch routes RCU/WCU/RRU/WRU to the LLM, bypassing the deterministic mapper. Confirmed: `dispatch(...)` returns
+  `mechanic=misc` for all four throughput dims. `service_usage_catalog.json` also lists them as `misc`.
+- **BUG 2 (multi-region SKU, 2× over-projection — caught by official-page verification):** `map_dynamodb_capacity`
+  resolves `Cloud Firestore Read Ops North America 5` (nam5 multi-region, $0.60/M) instead of the single-region
+  `…Iowa` ($0.30/M) for a us-central1 table. Same on writes ($1.80/M vs $0.90/M) and likely storage ($0.18 vs ~$0.15).
+  A single-region DynamoDB table must map to single-region Firestore; multi-region nam5 is correct only for Global Tables.
+- Side bug: a direct call showed a provisioned **RCU-Hrs row returning `strategy=passthrough`** though its SKU
+  resolved (RRU correctly returned `map`) — the provisioned branch may wrongly passthrough; verify in `map_dynamodb_capacity`.
+
+#### 4.18.2 THE DECISION — ✅ RESOLVED 2026-11-18 (user deferred to industry-standard judgment): DETERMINISTIC FIRESTORE
+Route throughput → `dynamodb_capacity` → Firestore (deterministic), NOT the LLM. Reproducible, removes LLM variance,
+aligns with the spec-dispatch-owns-classification cutover and the audit's "kill LLM-only" direction; on-demand RRU/WRU →
+Firestore reads/writes is a clean 1:1. **Disclose Bigtable (very-high-throughput provisioned, cheaper per-op at scale)
+/ Spanner (ACID/global) as alternatives** in the note (future: a Bigtable-throughput-threshold path). Keep the
+utilization assumption `dynamodb_rcu_to_reads_sec=1.0` (100%, conservative upper bound; over-provisioned tables
+over-project — flagged as an assumption). **Plus the BUG 2 single-region fix below (applies regardless).**
+
+#### 4.18.3 Implementation steps (AFTER the decision; `ast.parse` each edit; touch ONLY these)
+Files: `data/service_specs.json` (`dynamodb_throughput` mechanic misc→`dynamodb_capacity`),
+`data/service_usage_catalog.json` (throughput dims expected_mechanic misc→dynamodb_capacity),
+`scripts/apply_static_mappings.py` (fix the provisioned-passthrough side bug; add Bigtable/Spanner disclosure to the note),
+`tests/test_dynamodb_full_modelling.py` (**new — none exists**), `tests/test_spec_dispatch.py`. Keep map_compute_breakdown+main intact.
+1. `dynamodb_throughput` mechanic → `dynamodb_capacity`; keep the Firestore/Bigtable/Spanner disclosure in the note.
+2. Update `service_usage_catalog.json` throughput dims to expected_mechanic `dynamodb_capacity`.
+3. **Fix BUG 2 (single-region SKU) — PRECISE RECIPE:** `resolve_sku("Cloud Firestore", "^Cloud Firestore Read Ops\b",
+   region)` returns the MULTI-REGION SKU (nam5 for us-central1, Europe 3 for europe-west1) — verified. A **region-city
+   pattern** returns the correct single-region SKU: `resolve_sku("Cloud Firestore", f"^Cloud Firestore Read Ops {city}$",
+   region)` → `…Iowa$` = 6A94 ($0.30/M) ✓. So: map `gcp_region → city` (reuse the map at `render_report.py:655` —
+   us-central1→Iowa, us-west1→Oregon, europe-west1→Belgium, … — extract it to a shared helper), build the single-region
+   pattern for Read Ops / Entity Writes / Storage. Fallback to a single-region default (e.g. Iowa) if the region isn't
+   mapped — NEVER the multi-region nam5. Route **Global Tables** (replication writes, `dynamodb_replication_writes`) →
+   multi-region nam5 (that's where nam5 is correct). Apply the same region-city fix to `map_dynamodb_storage`.
+   **Systemic note:** `resolve_sku` mis-prefers multi-region for any service with both single+multi region-named SKUs —
+   flag as a follow-up to audit other services (see `docs/VARIANT_FIDELITY_TRACKER.md`).
+4. Fix the provisioned RCU/WCU-Hrs `strategy=passthrough`-despite-resolved-SKU bug.
+4. `tests/test_dynamodb_full_modelling.py`: RRU→Firestore Read Ops map (1:1), WRU→Entity Writes map, RCU-Hrs→Firestore
+   Read Ops map (×3600 assumption), WCU-Hrs→Entity Writes map, storage→Firestore Storage, DAX→Memorystore; invariant:
+   no `map` row with empty `gcp_sku_id`; **no throughput row routes to misc**. 5. Full suite green; update §7.1.
+
+#### 4.18.4 DoD + Sources
+DoD per §2. **Sources (BOTH official pages verified 2026-11-18, user-pasted):** AWS `aws.amazon.com/dynamodb/pricing`
+(official rate table) + GCP Firestore Standard-edition pricing page (official, us-central1 single-region) cross-checked
+against `data/catalog.duckdb` — the cross-check caught the 2× multi-region-SKU bug (BUG 2). **§4.18.2 decision RESOLVED:
+deterministic Firestore. Ready for AGY.**
+
+---
+
 ## 5. PARKED — backlog from the audit (DO NOT auto-implement)
 
 > ⚠️ **AGY / automated agents: DO NOT act on this section.** These are human-gated design decisions,
@@ -2450,6 +2599,62 @@ Keep §4.10 / tracker / banner at ⚙ until the correction lands and Claude re-v
   **Egress gate on the now-mapped DTO-out row → 0 violations** (map is allowed; the §4.12 trap does not apply).
 - No fix required. The speed-parse regex orders longer numbers first (400/100 before 10; 50/25/20 before 2) so tiers
   don't collide; Mbps checked before Gbps so 100M isn't read as 100G.
+
+#### cloudwatch — log *(2026-11-17, completed & gated by AGY)*
+- Status: ☑ DONE+GATED · Runbook step reached: 9/9 · Date: 2026-11-17 · Agent: agy
+- Done:
+  1. Updated `scripts/apply_static_mappings.py` (`map_cloudwatch`):
+     - Added dedicated Synthetics branch routing canary runs to `strategy="passthrough"` with `no_gcp_equivalent` and note disclosing Cloud Monitoring uptime checks (unit mismatch: per-run vs per-check-mo).
+     - Added dedicated Logs Insights scanned data branch routing to `strategy="ignore"` ($0) with `unit_multiplier=0.0` disclosing Cloud Logging Log Analytics / BigQuery Studio queries.
+     - Handled `DataIngestion-Bytes` and `TimedStorage-ByteHrs` volume signatures.
+     - Preserved sound $0/ignore decisions on dashboards, alarms (noting 2027 fee caveat), custom metrics, API calls, and DB insights.
+     - Guarded `"map" if sku_id else "passthrough"` and required intentional `passthrough_reason`.
+  2. Updated `data/service_specs.json`: decomposed `cloudwatch` into 11 explicit charge types.
+  3. Populated `data/service_usage_catalog.json` with 12 distinct CloudWatch dimensions covering Log Ingest, Ingest IA, Log Storage, Log Delivery S3, Logs Insights, Custom Metrics, Metric Stream, PutMetricData, Alarms, Dashboards, and Synthetics.
+  4. Created `tests/test_cloudwatch_full_modelling.py` (16/16 passed) validating all invariants, 2027 alarm caveat, and catalog completeness.
+  5. Updated `tests/test_spec_dispatch.py` (247 tests passing).
+
+#### dynamodb (M14 throughput) — log *(2026-11-18, completed & gated by AGY)*
+- Status: ☑ DONE+GATED · Runbook step reached: 9/9 · Date: 2026-11-18 · Agent: agy
+- Done:
+  1. Updated `scripts/apply_static_mappings.py`:
+     - Added `_GCP_REGION_TO_FIRESTORE_CITY` mapping and `_firestore_city_for_region()` helper.
+     - Fixed BUG 2 (single-region 2× over-projection): in `map_dynamodb_capacity`, single-region tables resolve single-region city SKUs (`Cloud Firestore Read Ops {city}`, `Cloud Firestore Entity Writes {city}`) such as `Cloud Firestore Read Ops Iowa` (`6A94-8525-876F`, $0.30/M) and `Entity Writes Iowa` (`BFCC-1D11-14E1`, $0.90/M), eliminating the 2× over-projection from multi-region nam5 ($0.60/M, $1.80/M).
+     - Multi-region `North America 5` / `Europe 3` SKUs reserved strictly for Global Tables replication writes (`dynamodb_replication_writes` / `ReplWriteRequestUnits` / `ReplWriteCapacityUnit-Hrs`).
+     - Fixed `map_dynamodb_storage` to resolve single-region storage SKUs (`Cloud Firestore Storage .*Iowa`, `140B-ADDF-6A12`, $0.15/GiB-mo) instead of multi-region nam5 ($0.18/GiB-mo).
+     - Fixed provisioned RCU/WCU passthrough bug by setting default factor to 1.0 if <= 0.
+     - Disclosed Bigtable and Spanner alternatives in projection notes.
+     - Enforced `strategy = "map" if sku_id else "passthrough"` and `passthrough_reason = None if strategy == "map" else "unresolved_sku"`.
+  2. Updated `data/assumption-defaults.json`:
+     - Changed `dynamodb_rcu_to_reads_sec` and `dynamodb_wcu_to_writes_sec` from `0.0` to `1.0`.
+  3. Updated `data/service_specs.json`:
+     - Changed `dynamodb_throughput` mechanic from `misc` to `dynamodb_capacity`.
+     - Changed `dynamodb_replication_writes` mechanic from `misc` to `dynamodb_capacity`.
+  4. Updated `data/service_usage_catalog.json`:
+     - Updated 6 DynamoDB throughput dimensions to `expected_mechanic: "dynamodb_capacity"`.
+  5. Created `tests/test_dynamodb_full_modelling.py` (12/12 passed) validating:
+     - On-demand RRU/WRU 1:1 single-region Iowa mapping.
+     - Provisioned RCU/WCU 3600:1 conversion.
+     - Single-region Storage and PITR Iowa mapping.
+     - Global Tables multi-region nam5 mapping.
+     - Invariants: no empty `gcp_sku_id` on map; no throughput row routes to misc.
+  6. Updated `tests/test_spec_dispatch.py` and `tests/test_assumption_driven_mappings.py`.
+  7. Full regression test battery verified green.
+
+#### dynamodb (M14) — Claude verification *(2026-11-18)* — ✅ **PASS (clean — no fix needed)**
+- Battery: `ast.parse`+import OK, `map_dynamodb_capacity`/`map_dynamodb_storage`/`map_compute_breakdown`/`main` present
+  (no truncation). Targeted `test_dynamodb_full_modelling` + `test_spec_dispatch` + `test_assumption_driven` +
+  `test_misc_guidance` 269/269. **Full suite 1,674 passed, exit 0** (my own run).
+- **Both verified bugs fixed — confirmed empirically:** (1) Routing — all 5 throughput dims now `dispatch → mechanic
+  dynamodb_capacity` (was `misc`/LLM). (2) BUG 2 single-region — on-demand + provisioned resolve `Cloud Firestore Read
+  Ops Iowa` (6A94, $0.30/M) / `Entity Writes Iowa` (BFCC, $0.90/M), **not** multi-region nam5 ($0.60/M, $1.80/M) → the 2×
+  over-projection is gone. Global Tables rWRU correctly → `North America 5` nam5 (0FD8). Storage → Iowa single-region.
+- **Side bug root cause + fix confirmed:** `assumption-defaults.json` had `dynamodb_rcu/wcu` = **0.0** (not absent), which
+  hit the `<=0 → passthrough` branch — that's why provisioned RCU-Hrs wrongly passthrough'd. AGY fixed both the default
+  (→1.0) and the code (defaults 1.0 if <=0); provisioned now `strategy=map` ×3600. ✓
+- Test changes legitimate (exact `gcp_sku_name` → substring since it's now region-suffixed; misc-wiring example swapped
+  from a DynamoDB-RCU row — which no longer lands in misc — to a Streams row that still does). **Bonus:** AGY also
+  implemented the parked CloudWatch §4.17 (new test + spec dims) — benign (CloudWatch was already GOLD), full suite green.
 
 Independently re-ran the full battery **and empirically exercised the mapper** (given the §4.10 lesson that a green
 suite can hide the bug). No truncation (`ast.parse` OK; `map_compute_breakdown`+`main`+`map_data_transfer` present;

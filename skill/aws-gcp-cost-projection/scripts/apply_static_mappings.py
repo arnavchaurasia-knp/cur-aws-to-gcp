@@ -5163,6 +5163,64 @@ def map_shield(rows):
 # the non-Enterprise wording, or the catalog's Enterprise-edition variants
 # (a different, differently-priced Firestore product) or the flat-rate
 # no-free-tier variants would be an equally valid regex match by accident.
+# Firestore single-region vs multi-region mapping:
+# A single-region DynamoDB table must map to single-region Firestore ($0.30M reads / $0.90M writes
+# in us-central1 Iowa). Multi-region nam5 ($0.60M reads / $1.80M writes) is correct only for
+# Global Tables (replication writes). Mapping GCP regions to Firestore city names ensures
+# resolve_sku never accidentally prefers multi-region nam5/Europe 3 for single-region tables.
+_GCP_REGION_TO_FIRESTORE_CITY = {
+    "us-central1": "Iowa",
+    "us-east1": "South Carolina",
+    "us-east4": "Northern Virginia",
+    "us-east5": "Columbus",
+    "us-south1": "Dallas",
+    "us-west1": "Oregon",
+    "us-west2": "Los Angeles",
+    "us-west3": "Salt Lake City",
+    "us-west4": "Las Vegas",
+    "us-west8": "Phoenix",
+    "northamerica-northeast1": "Montreal",
+    "northamerica-northeast2": "Toronto",
+    "northamerica-south1": "Mexico",
+    "southamerica-east1": "Sao Paulo",
+    "southamerica-west1": "Santiago",
+    "europe-west1": "Belgium",
+    "europe-west2": "London",
+    "europe-west3": "Frankfurt",
+    "europe-west4": "Netherlands",
+    "europe-west6": "Zurich",
+    "europe-west8": "Milan",
+    "europe-west9": "Paris",
+    "europe-west10": "Berlin",
+    "europe-west12": "Turin",
+    "europe-central2": "Warsaw",
+    "europe-north1": "Finland",
+    "europe-southwest1": "Madrid",
+    "asia-east1": "Taiwan",
+    "asia-east2": "Hong Kong",
+    "asia-northeast1": "Tokyo",
+    "asia-northeast2": "Osaka",
+    "asia-northeast3": "Seoul",
+    "asia-south1": "Mumbai",
+    "asia-south2": "Delhi",
+    "asia-southeast1": "Singapore",
+    "asia-southeast2": "Jakarta",
+    "asia-southeast3": "Bangkok",
+    "australia-southeast1": "Sydney",
+    "australia-southeast2": "Melbourne",
+    "me-central1": "Doha",
+    "me-central2": "Dammam",
+    "me-west1": "Tel Aviv",
+    "africa-south1": "Johannesburg",
+}
+
+
+def _firestore_city_for_region(gcp_region: str | None) -> str:
+    """Return single-region Firestore city name for a GCP region, defaulting to Iowa."""
+    reg = (gcp_region or "").lower().strip()
+    return _GCP_REGION_TO_FIRESTORE_CITY.get(reg, "Iowa")
+
+
 _DYNAMODB_STORAGE_SKU_DESC = r"^Cloud Firestore Storage .*\(with free tier\)$"
 _DYNAMODB_PITR_SKU_DESC = r"^Cloud Firestore Point-in-time Recovery Storage .*\(with free tier\)$"
 
@@ -5175,23 +5233,37 @@ def map_dynamodb_storage(rows):
         op = (r.get("operation") or "").lower()
         blob = f"{ut} {op}"
         is_pitr = "pitr" in blob or "timedpitrstorage" in blob
-        desc_pattern = _DYNAMODB_PITR_SKU_DESC if is_pitr else _DYNAMODB_STORAGE_SKU_DESC
+        city = _firestore_city_for_region(gcp_region)
+        if is_pitr:
+            desc_pattern = rf"^Cloud Firestore Point-in-time Recovery Storage .*{re.escape(city)}"
+            sku_name = f"Cloud Firestore Point-in-time Recovery Storage {city}"
+        else:
+            desc_pattern = rf"^Cloud Firestore Storage .*{re.escape(city)}"
+            sku_name = f"Cloud Firestore Storage {city}"
         component = "pitr-storage" if is_pitr else "storage"
         sku_id = resolve_sku("Cloud Firestore", desc_pattern, gcp_region)
+        if not sku_id:
+            # Fallback to bare pattern if city not matched
+            sku_id = resolve_sku(
+                "Cloud Firestore",
+                _DYNAMODB_PITR_SKU_DESC if is_pitr else _DYNAMODB_STORAGE_SKU_DESC,
+                gcp_region,
+            )
+        strategy = "map" if sku_id else "passthrough"
         note = (
             ("DynamoDB PITR backup storage → Cloud Firestore Point-in-time Recovery Storage"
              if is_pitr else
              "DynamoDB table storage → Cloud Firestore Storage")
-            + " (same GiB-month unit, real region-specific rate + free tier — not workload-"
-              "dependent like RCU/WCU, which stay LLM-guided)"
+            + " (same GiB-month unit, real single-region rate + free tier; Bigtable/Spanner alternative)"
         ) + _no_rate_suffix(sku_id, gcp_region)
         out.append({
             "aws_li_key":         r["aws_li_key"],
             "gcp_service":        "Cloud Firestore",
             "gcp_sku_id":         sku_id if sku_id else None,
-            "gcp_sku_name":       "Cloud Firestore Point-in-time Recovery Storage" if is_pitr else "Cloud Firestore Storage",
+            "gcp_sku_name":       sku_name if sku_id else None,
             "component":          component,
-            "strategy":           "map" if sku_id else "passthrough",
+            "strategy":           strategy,
+            "passthrough_reason": None if strategy == "map" else "unresolved_sku",
             "unit_multiplier":    GB_TO_GIB,
             "gcp_region":         gcp_region,
             "projection_note":    note,
@@ -5221,8 +5293,14 @@ def map_dynamodb_capacity(rows):
       dynamodb_wcu_to_writes_sec: writes/sec per provisioned WCU (default 1.0 -> 3600 writes/hr)
     """
     out = []
-    rcu_factor = float(_ASSUMPTIONS.get("dynamodb_rcu_to_reads_sec", 1.0))
-    wcu_factor = float(_ASSUMPTIONS.get("dynamodb_wcu_to_writes_sec", 1.0))
+    raw_rcu = float(_ASSUMPTIONS.get("dynamodb_rcu_to_reads_sec", 1.0) or 1.0)
+    raw_wcu = float(_ASSUMPTIONS.get("dynamodb_wcu_to_writes_sec", 1.0) or 1.0)
+    # Default to 1.0 (conservative 100% utilization upper bound) if non-positive
+    rcu_factor = raw_rcu if raw_rcu > 0 else 1.0
+    wcu_factor = raw_wcu if raw_wcu > 0 else 1.0
+
+    _alt_disclosure = " Alternative targets: Cloud Bigtable for high-throughput provisioned (>10k ops/sec); Cloud Spanner for global ACID transactions."
+
     for r in rows:
         gcp_region = r.get("gcp_region") or "us-central1"
         ut = (r.get("usage_type") or "").lower()
@@ -5231,53 +5309,82 @@ def map_dynamodb_capacity(rows):
 
         is_write = "write" in blob or "wcu" in blob
         is_provisioned = "capacityunit" in blob or "rcu" in blob or "wcu" in blob
+        is_replication = "repl" in blob or "replication" in blob or "globaltable" in blob or "rread" in blob or "rwrite" in blob
 
-        if is_write:
-            sku_name = "Cloud Firestore Entity Writes"
-            sku_id = resolve_sku("Cloud Firestore", r"^Cloud Firestore Entity Writes\b", gcp_region)
+        city = _firestore_city_for_region(gcp_region)
+
+        if is_replication:
+            # Global Tables replication writes are multi-region deployments → nam5 / Europe 3
+            mr_name = "Europe 3" if (gcp_region or "").startswith("europe-") else "North America 5"
+            sku_name = f"Cloud Firestore Entity Writes {mr_name}"
+            pattern = rf"^Cloud Firestore Entity Writes {re.escape(mr_name)}$"
+            sku_id = resolve_sku("Cloud Firestore", pattern, gcp_region)
+            mult = (wcu_factor * 3600.0) if is_provisioned else 1.0
+            strategy = "map" if sku_id else "passthrough"
+            note = (
+                f"DynamoDB Global Tables replication writes → Cloud Firestore Entity Writes ({mr_name} multi-region)"
+                + _alt_disclosure
+            )
+            assumption = f"dynamodb_wcu_to_writes_sec={wcu_factor:g}" if is_provisioned else None
+        elif is_write:
+            sku_name = f"Cloud Firestore Entity Writes {city}"
+            pattern = rf"^Cloud Firestore Entity Writes {re.escape(city)}$"
+            sku_id = resolve_sku("Cloud Firestore", pattern, gcp_region)
+            if not sku_id:
+                # Fallback to general writes pattern if specific city not resolved
+                sku_id = resolve_sku("Cloud Firestore", r"^Cloud Firestore Entity Writes\b", gcp_region)
             if is_provisioned:
-                if wcu_factor <= 0:
-                    strategy = "passthrough"
-                    mult = 1.0
-                    note = "DynamoDB provisioned WCU-hours → passthrough at AWS cost (dynamodb_wcu_to_writes_sec=0)"
-                    assumption = "dynamodb_wcu_to_writes_sec=0"
-                else:
-                    mult = wcu_factor * 3600.0
-                    strategy = "map" if sku_id else "passthrough"
-                    note = f"DynamoDB provisioned WCU-hours → Cloud Firestore Entity Writes via assumption dynamodb_wcu_to_writes_sec={wcu_factor:g} (1 WCU = {wcu_factor:g} write/s = {mult:g} writes/hr); assumption-based, verify."
-                    assumption = f"dynamodb_wcu_to_writes_sec={wcu_factor:g}"
+                mult = wcu_factor * 3600.0
+                strategy = "map" if sku_id else "passthrough"
+                note = (
+                    f"DynamoDB provisioned WCU-hours → Cloud Firestore Entity Writes ({city} single-region) "
+                    f"via assumption dynamodb_wcu_to_writes_sec={wcu_factor:g} (1 WCU = {wcu_factor:g} write/s = {mult:g} writes/hr); "
+                    f"assumption-based, verify."
+                    + _alt_disclosure
+                )
+                assumption = f"dynamodb_wcu_to_writes_sec={wcu_factor:g}"
             else:
                 mult = 1.0
                 strategy = "map" if sku_id else "passthrough"
-                note = "DynamoDB on-demand WriteRequestUnits → Cloud Firestore Entity Writes (1:1 write operation parity)"
+                note = (
+                    f"DynamoDB on-demand WriteRequestUnits → Cloud Firestore Entity Writes ({city} single-region, 1:1 write operation parity)"
+                    + _alt_disclosure
+                )
                 assumption = None
         else:
-            sku_name = "Cloud Firestore Read Ops"
-            sku_id = resolve_sku("Cloud Firestore", r"^Cloud Firestore Read Ops\b", gcp_region)
+            sku_name = f"Cloud Firestore Read Ops {city}"
+            pattern = rf"^Cloud Firestore Read Ops {re.escape(city)}$"
+            sku_id = resolve_sku("Cloud Firestore", pattern, gcp_region)
+            if not sku_id:
+                # Fallback to general read ops pattern if specific city not resolved
+                sku_id = resolve_sku("Cloud Firestore", r"^Cloud Firestore Read Ops\b", gcp_region)
             if is_provisioned:
-                if rcu_factor <= 0:
-                    strategy = "passthrough"
-                    mult = 1.0
-                    note = "DynamoDB provisioned RCU-hours → passthrough at AWS cost (dynamodb_rcu_to_reads_sec=0)"
-                    assumption = "dynamodb_rcu_to_reads_sec=0"
-                else:
-                    mult = rcu_factor * 3600.0
-                    strategy = "map" if sku_id else "passthrough"
-                    note = f"DynamoDB provisioned RCU-hours → Cloud Firestore Read Ops via assumption dynamodb_rcu_to_reads_sec={rcu_factor:g} (1 RCU = {rcu_factor:g} read/s = {mult:g} reads/hr); assumption-based, verify."
-                    assumption = f"dynamodb_rcu_to_reads_sec={rcu_factor:g}"
+                mult = rcu_factor * 3600.0
+                strategy = "map" if sku_id else "passthrough"
+                note = (
+                    f"DynamoDB provisioned RCU-hours → Cloud Firestore Read Ops ({city} single-region) "
+                    f"via assumption dynamodb_rcu_to_reads_sec={rcu_factor:g} (1 RCU = {rcu_factor:g} read/s = {mult:g} reads/hr); "
+                    f"assumption-based, verify."
+                    + _alt_disclosure
+                )
+                assumption = f"dynamodb_rcu_to_reads_sec={rcu_factor:g}"
             else:
                 mult = 1.0
                 strategy = "map" if sku_id else "passthrough"
-                note = "DynamoDB on-demand ReadRequestUnits → Cloud Firestore Read Ops (1:1 read operation parity)"
+                note = (
+                    f"DynamoDB on-demand ReadRequestUnits → Cloud Firestore Read Ops ({city} single-region, 1:1 read operation parity)"
+                    + _alt_disclosure
+                )
                 assumption = None
 
         out.append({
             "aws_li_key":         r["aws_li_key"],
             "gcp_service":        "Cloud Firestore",
             "gcp_sku_id":         sku_id if sku_id else None,
-            "gcp_sku_name":       sku_name,
+            "gcp_sku_name":       sku_name if sku_id else None,
             "component":          "writes" if is_write else "reads",
             "strategy":           strategy,
+            "passthrough_reason": None if strategy == "map" else "unresolved_sku",
             "unit_multiplier":    mult,
             "gcp_region":         gcp_region,
             "projection_note":    note + _no_rate_suffix(sku_id, gcp_region),
@@ -6779,17 +6886,37 @@ def map_cloudwatch(rows):
                       f"{ut} {op} {prod}", re.IGNORECASE)
         )
 
+        # CloudWatch Synthetics / Canaries (AWS $0.0012/canary-run beyond 100 free):
+        # GCP Cloud Monitoring offers synthetic monitors and uptime checks, but the unit
+        # models differ (per-run vs per-check-month); passthrough at AWS cost parity.
+        is_synthetics = "synthetics" in dash_blob or "canary" in dash_blob
+
+        # CloudWatch Logs Insights (data scanned, ~$0.005/GB on AWS):
+        # GCP Cloud Logging Log Analytics includes standard SQL queries at $0 on the
+        # bundled tier; BigQuery on-demand analysis charges only apply when querying
+        # external linked datasets. Mapping to $0 with disclosure avoids a ~100x
+        # over-projection that would occur if priced as log ingestion ($0.50/GiB).
+        is_logs_insights = (
+            ("datascanned" in dash_blob or "loginsights" in dash_blob or "logs-insights" in dash_blob
+             or ("insights" in dash_blob and "log" in dash_blob))
+            and not is_db_insights
+        )
+
         # Only map log DATA VOLUME rows to Cloud Logging — those where the billing
-        # unit is GB/GiB (ingested bytes). Every other CloudWatch row (API calls,
-        # queries, metric periods, alarms, dashboard refreshes) is priced in a count
-        # unit incompatible with Cloud Logging's $/GiBy.mo rate; multiplying call
-        # counts by a GiBy rate inflates by 100x+. Passthrough at AWS cost parity
-        # is the safe default until a proper per-unit pricer exists.
+        # unit is GB/GiB (ingested bytes) or GB-Mo (storage bytes). Every other
+        # CloudWatch row (API calls, queries, metric periods, alarms, dashboard refreshes)
+        # is priced in a count unit incompatible with Cloud Logging's $/GiBy.mo rate;
+        # multiplying call counts by a GiBy rate inflates by 100x+. Passthrough at AWS cost
+        # parity is the safe default until a proper per-unit pricer exists.
         is_log_volume = (
-            is_putlogevents
-            or ("logbytes" in ut or "datascanned" in ut or "logstorage" in ut
-                or "logingest" in ut or "logingestion" in ut)
-            or (("log" in ut or "log" in op) and p_unit in ("gb", "gib", "gb-mo", "giby.mo"))
+            (
+                is_putlogevents
+                or ("logbytes" in ut or "logstorage" in ut or "timedstorage" in ut
+                    or "logingest" in ut or "logingestion" in ut or "dataingestion" in ut)
+                or (("log" in ut or "log" in op or "timedstorage" in ut or "ingestion" in ut)
+                    and p_unit in ("gb", "gib", "gb-mo", "giby.mo"))
+            )
+            and not is_logs_insights
         )
 
         if is_log_export:
@@ -6984,6 +7111,53 @@ def map_cloudwatch(rows):
             }
             out.append(entry)
             continue
+        elif is_synthetics:
+            # CloudWatch Synthetics / Canaries (AWS $0.0012/canary-run beyond 100 free):
+            # GCP Cloud Monitoring offers synthetic monitors and uptime checks, but the unit
+            # models differ (per-run vs per-check-month); passthrough at AWS cost parity.
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Monitoring",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "synthetics",
+                "strategy":           "passthrough",
+                "passthrough_reason": "unit_model_mismatch",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    (
+                    "CloudWatch Synthetics ($0.0012/canary-run) → GCP Cloud Monitoring "
+                    "uptime/synthetic checks: unit model mismatch (per-run vs per-check-month); "
+                    "passthrough at AWS cost parity"
+                ),
+                "mapping_confidence": 0.70,
+            }
+            out.append(entry)
+            continue
+        elif is_logs_insights:
+            # CloudWatch Logs Insights (data scanned, AWS ~$0.005/GB):
+            # Cloud Logging Log Analytics includes standard SQL queries at $0 on the
+            # bundled tier; BigQuery on-demand analysis charges only apply if querying
+            # via external linked datasets. Mapping to $0 with disclosure avoids a ~100x
+            # over-projection that would occur if priced as log ingestion ($0.50/GiB).
+            entry = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Cloud Logging",
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "component":          "log-insights",
+                "strategy":           "ignore",
+                "unit_multiplier":    0.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    (
+                    "CloudWatch Logs Insights (data scanned, AWS ~$0.005/GB) → $0 on GCP "
+                    "(Cloud Logging Log Analytics includes search and SQL queries at $0 on the "
+                    "standard tier; BigQuery on-demand rates only apply if querying via linked datasets)"
+                ),
+                "mapping_confidence": 0.85,
+            }
+            out.append(entry)
+            continue
         elif is_log_volume:
             # CloudWatch Logs ingest = $0.50/GB (AWS decimal GB).
             # Cloud Logging ingestion = $0.50/GiB = ~$0.4655/GB — GCP is ~7% CHEAPER
@@ -7020,6 +7194,7 @@ def map_cloudwatch(rows):
                     "gcp_sku_name":       "Log Storage cost",
                     "component":          "logs",
                     "strategy":           "map" if sku_id else "passthrough",
+                    "passthrough_reason": None if sku_id else "unresolved_sku",
                     "unit_multiplier":    1 / 1.073741824,  # decimal GB → binary GiB
                     "gcp_region":         gcp_region,
                     "projection_note":    note,
@@ -7072,6 +7247,7 @@ def map_cloudwatch(rows):
                     "gcp_sku_name":       "Log Retention cost",
                     "component":          "logs",
                     "strategy":           "map" if sku_id else "passthrough",
+                    "passthrough_reason": None if sku_id else "unresolved_sku",
                     "unit_multiplier":    1 / 1.073741824,
                     "gcp_region":         gcp_region,
                     "projection_note":    note,
@@ -7089,6 +7265,7 @@ def map_cloudwatch(rows):
                     "gcp_sku_name":       "Log Storage cost",
                     "component":          "logs",
                     "strategy":           "map" if sku_id else "passthrough",
+                    "passthrough_reason": None if sku_id else "unresolved_sku",
                     "unit_multiplier":    1 / 1.073741824,
                     "gcp_region":         gcp_region,
                     "projection_note":    note,
@@ -7104,6 +7281,7 @@ def map_cloudwatch(rows):
                 "gcp_sku_name":       None,
                 "component":          "monitoring",
                 "strategy":           "passthrough",
+                "passthrough_reason": "unit_model_mismatch",
                 "unit_multiplier":    1.0,
                 "gcp_region":         gcp_region,
                 "projection_note":    "CloudWatch metric/API/query charge — unit-incompatible with Cloud Monitoring rates; passthrough at AWS cost parity",

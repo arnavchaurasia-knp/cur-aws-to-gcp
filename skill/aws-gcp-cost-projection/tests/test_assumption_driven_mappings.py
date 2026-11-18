@@ -208,7 +208,7 @@ def test_r5_dynamodb_capacity(monkeypatch):
     out_rcu = asm.map_dynamodb_capacity([row_rcu])
     assert len(out_rcu) == 1
     assert out_rcu[0]["gcp_service"] == "Cloud Firestore"
-    assert out_rcu[0]["gcp_sku_name"] == "Cloud Firestore Read Ops"
+    assert "Cloud Firestore Read Ops" in out_rcu[0]["gcp_sku_name"]
     assert out_rcu[0]["strategy"] == "map"
     assert out_rcu[0]["unit_multiplier"] == 3600.0
     assert out_rcu[0]["is_assumption"] is True
@@ -217,7 +217,7 @@ def test_r5_dynamodb_capacity(monkeypatch):
     out_wcu = asm.map_dynamodb_capacity([row_wcu])
     assert len(out_wcu) == 1
     assert out_wcu[0]["gcp_service"] == "Cloud Firestore"
-    assert out_wcu[0]["gcp_sku_name"] == "Cloud Firestore Entity Writes"
+    assert "Cloud Firestore Entity Writes" in out_wcu[0]["gcp_sku_name"]
     assert out_wcu[0]["strategy"] == "map"
     assert out_wcu[0]["unit_multiplier"] == 3600.0
     assert out_wcu[0]["is_assumption"] is True

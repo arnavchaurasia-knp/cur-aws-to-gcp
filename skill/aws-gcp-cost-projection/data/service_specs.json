@@ -1900,7 +1900,7 @@
             "usage_type_re": "ReplWriteRequestUnits|ReplWriteCapacityUnit-Hrs"
           }
         ],
-        "mechanic": "misc",
+        "mechanic": "dynamodb_capacity",
         "fields": [
           {
             "name": "units",
@@ -1921,7 +1921,7 @@
           "confidence_max": 0.5,
           "guidance": "DynamoDB Global Tables replication writes indicate multi-region deployment. Map to multi-region Firestore or Cloud Spanner, and account for inter-region data transfer egress."
         },
-        "source_rule": "misc (DynamoDB replication writes -> multi-region + egress)"
+        "source_rule": "dynamodb_capacity (Global Tables replication writes -> multi-region nam5)"
       },
       {
         "id": "dynamodb_streams",
@@ -1999,7 +1999,7 @@
             ]
           }
         ],
-        "mechanic": "misc",
+        "mechanic": "dynamodb_capacity",
         "fields": [
           {
             "name": "units",
@@ -2018,9 +2018,9 @@
           "gcp_target": "Firestore / Bigtable / Spanner",
           "strategy": "map",
           "confidence_max": 0.5,
-          "guidance": "Decision rule: GetItem/PutItem/Query/Scan \u2192 Firestore; BatchWrite/high-volume throughput \u2192 Bigtable; transactional/ACID workloads \u2192 Cloud Spanner. Conversion assumption: 1 RCU \u2248 1 doc read, 1 WCU \u2248 1 doc write. Tunable assumptions dynamodb_rcu_to_reads_sec and dynamodb_wcu_to_writes_sec scale provisioned RCU/WCU (e.g. 1.0 = 3600 reads/hr). rcu/wcu/table_mode not in CUR \u2014 infer workload scale from total_usage."
+          "guidance": "Decision rule: GetItem/PutItem/Query/Scan -> Firestore; BatchWrite/high-volume throughput -> Bigtable; transactional/ACID workloads -> Cloud Spanner. Conversion assumption: 1 RCU ~ 1 doc read, 1 WCU ~ 1 doc write. Tunable assumptions dynamodb_rcu_to_reads_sec and dynamodb_wcu_to_writes_sec scale provisioned RCU/WCU (e.g. 1.0 = 3600 reads/hr). rcu/wcu/table_mode not in CUR - infer workload scale from total_usage."
         },
-        "source_rule": "misc (DynamoDB throughput rows deliberately guided to Firestore/Bigtable/Spanner)"
+        "source_rule": "dynamodb_capacity (DynamoDB throughput -> Cloud Firestore Ops)"
       },
       {
         "id": "dynamodb_backup",
@@ -2673,8 +2673,98 @@
     ],
     "charge_types": [
       {
-        "id": "cloudwatch_all",
-        "description": "Logs ingest / metrics / alarms / dashboards -> Cloud Logging+Monitoring.",
+        "id": "cw_log_export",
+        "description": "CloudWatch log delivery to S3/Firehose (free on GCP via Log Router).",
+        "match": {
+          "usage_type_re": "Delivered.*S3|S3.*Egress|Log.*Export|Export.*S3|Delivered.*Firehose|Delivered.*Kinesis|Subscription.*Filter"
+        },
+        "mechanic": "cloudwatch",
+        "source_rule": "cloudwatch (log export branch)"
+      },
+      {
+        "id": "cw_log_storage",
+        "description": "CloudWatch log retention/storage (GB-Mo) -> Cloud Logging Log Retention cost ($0.01/GiBy-mo).",
+        "match": {
+          "usage_type_re": "TimedStorage|LogStorage.*Byte"
+        },
+        "mechanic": "cloudwatch",
+        "source_rule": "cloudwatch (log storage branch)"
+      },
+      {
+        "id": "cw_log_insights",
+        "description": "CloudWatch Logs Insights query data scanned -> Cloud Logging Log Analytics ($0/query on bundled tier).",
+        "match": {
+          "usage_type_re": "DataScanned|LogInsights|StartQuery"
+        },
+        "mechanic": "cloudwatch",
+        "source_rule": "cloudwatch (log insights branch)"
+      },
+      {
+        "id": "cw_log_ingest",
+        "description": "CloudWatch log ingestion (PutLogEvents) -> Cloud Logging Log Storage cost ($0.50/GiB, 50 GiB free).",
+        "match": {
+          "usage_type_re": "PutLogEvents|LogIngest|DataIngestion|LogBytes"
+        },
+        "mechanic": "cloudwatch",
+        "source_rule": "cloudwatch (log ingest branch)"
+      },
+      {
+        "id": "cw_alarms",
+        "description": "CloudWatch Alarms (standard/composite) -> Cloud Monitoring alerting ($0 on GCP until 2027-09-01).",
+        "match": {
+          "usage_type_re": "Alarm|AlarmMonitor"
+        },
+        "mechanic": "cloudwatch",
+        "source_rule": "cloudwatch (alarms branch)"
+      },
+      {
+        "id": "cw_dashboards",
+        "description": "CloudWatch Dashboards -> Cloud Monitoring dashboards ($0 on GCP).",
+        "match": {
+          "usage_type_re": "Dashboard|DashboardHour"
+        },
+        "mechanic": "cloudwatch",
+        "source_rule": "cloudwatch (dashboards branch)"
+      },
+      {
+        "id": "cw_db_insights",
+        "description": "CloudWatch Database Insights -> Cloud SQL Query Insights ($0 on GCP).",
+        "match": {
+          "usage_type_re": "DatabaseInsights|DBInsights"
+        },
+        "mechanic": "cloudwatch",
+        "source_rule": "cloudwatch (db insights branch)"
+      },
+      {
+        "id": "cw_synthetics",
+        "description": "CloudWatch Synthetics (canary runs) -> Cloud Monitoring synthetic checks (passthrough, unit mismatch).",
+        "match": {
+          "usage_type_re": "Canary|Synthetics"
+        },
+        "mechanic": "cloudwatch",
+        "source_rule": "cloudwatch (synthetics branch)"
+      },
+      {
+        "id": "cw_custom_metrics",
+        "description": "CloudWatch Custom Metrics -> Cloud Monitoring metric ingestion (assumed within free tier $0 / Metric Volume).",
+        "match": {
+          "usage_type_re": "MetricMonitor|MetricStorage|CustomMetric"
+        },
+        "mechanic": "cloudwatch",
+        "source_rule": "cloudwatch (custom metrics branch)"
+      },
+      {
+        "id": "cw_api_requests",
+        "description": "CloudWatch API requests -> Cloud Monitoring ($0 on GCP, write API free).",
+        "match": {
+          "usage_type_re": "GMD-Metrics|Request"
+        },
+        "mechanic": "cloudwatch",
+        "source_rule": "cloudwatch (api requests branch)"
+      },
+      {
+        "id": "cw_other",
+        "description": "CloudWatch other charges (Contributor Insights, RUM, Evidently, misc) -> passthrough.",
         "match": {},
         "mechanic": "cloudwatch",
         "fields": [
@@ -2697,7 +2787,7 @@
             "required": true
           }
         ],
-        "source_rule": "cloudwatch"
+        "source_rule": "cloudwatch (default catch-all)"
       }
     ]
   },

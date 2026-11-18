@@ -64,8 +64,8 @@ def test_misc_guidance_wiring_integration(tmp_path):
     sample_rows = [
         # 1. Cognito row -> lands in misc
         ("k_cog", "Amazon Cognito", "AuthUsage", "Authenticate", "us-east-1", None, "OnDemand", "Usage", True, 100.0, 10.0, None, None, None, None, None, None, None, None, None, None, None, None, None, "Requests", None, "cur", "AmazonCognito"),
-        # 2. DynamoDB RCU row -> lands in misc (via dynamodb_throughput)
-        ("k_ddb", "Amazon DynamoDB", "APS3-ReadCapacityUnit", "Read", "ap-south-1", None, "OnDemand", "Usage", True, 500.0, 50.0, None, None, None, None, None, None, None, None, None, None, None, None, None, "rcu", None, "cur", "AmazonDynamoDB"),
+        # 2. DynamoDB Streams row -> lands in misc (via dynamodb_streams)
+        ("k_ddb", "Amazon DynamoDB", "Streams-RequestsCount", "GetRecords", "ap-south-1", None, "OnDemand", "Usage", True, 500.0, 50.0, None, None, None, None, None, None, None, None, None, None, None, None, None, "Requests", None, "cur", "AmazonDynamoDB"),
         # 3. Unknown third party row -> lands in misc (starts with AWS but unknown service)
         ("k_unk", "AWS Custom Novel Service", "CustomOps", "OperationX", "us-east-1", None, "OnDemand", "Usage", True, 10.0, 12.0, None, None, None, None, None, None, None, None, None, None, None, None, None, "Hrs", None, "cur", None),
         # 4. Data-gap row -> lands in misc

@@ -12,7 +12,21 @@ end-to-end before moving on.
 > This workorder is the vehicle that fixes all of that, one service at a time, with each service's
 > completion *enforced by the gate* so it can never silently regress.
 
-> ▶ **CURRENT ASSIGNMENT: NONE (awaiting next assignment from operator) — `emr` (§4.19) completed & gated.**
+> ▶ **CURRENT ASSIGNMENT: NONE (awaiting next assignment from operator) — `mwaa` (§4.20) completed & gated.**
+> MWAA (Amazon Managed Workflows for Apache Airflow) was completed, fully modelled, and gated on 2026-11-18:
+> - M13 variant defect resolved: all MWAA rows deterministically mapped to Cloud Composer Gen 2 explicit resource SKUs.
+> - **Base Environment row** breaks down to 3 entries:
+>   - **Compute mCPUs**: `unit_multiplier = base_vcpu × 1000` (milli-CPUs, $0.045/vCPU-h).
+>   - **Compute Memory**: `unit_multiplier = base_gib` (GiB, $0.005/GiB-h).
+>   - **Environment Fee**: `unit_multiplier = 1.0` ($0.35/$0.55/$0.85/hr tier covering managed Cloud SQL + infra; caps at Large for xlarge/2xlarge).
+>   - DB vCPU is NOT mapped to Compute mCPUs (covered by Environment Fee).
+> - **Worker / Scheduler / Webserver rows** break down to 2 entries: Compute mCPUs (`comp_vcpu × 1000`) + Compute Memory (`comp_gib`).
+> - **Metadata Database Storage** maps to Cloud Composer Database Storage (`unit_multiplier = 1.0`, $0.17/GiB-mo).
+> - `service_specs.json` decomposed into 6 explicit charge types: `mwaa_environment`, `mwaa_worker`, `mwaa_scheduler`, `mwaa_webserver`, `mwaa_storage`, `mwaa_other`.
+> - Populated `service_usage_catalog.json` with 14 MWAA billing dimensions.
+> - Dedicated `test_mwaa_full_modelling.py` (11 tests) created; full test suite (1,711 tests) green.
+>
+> `emr` (§4.19) completed & gated 2026-11-18.
 > EMR Serverless compute (vCPU-Hours + Memory-GB-Hours) was completed, fully modelled, and gated on 2026-11-18:
 > - M12 variant defect resolved: Serverless compute deterministically mapped to Dataproc Serverless Standard DCUs.
 > - **vCPU-Hours → DCU × 600.0** (0.6 DCU/vCPU-h × 1,000 milli-DCU).
@@ -137,7 +151,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | 11 | eks / ecs | GOOD | ☐ | — |
 | 12 | emr | Serverless gap (M12) | **☑ DONE+GATED** | §4.19 |
 | 13 | sagemaker | COLLAPSE (1 Vertex label) | **☑ DONE+GATED** | §4.2 |
-| 14 | mwaa | PARTIAL (unpriced) | ☐ | — |
+| 14 | mwaa | PARTIAL (unpriced, M13) | **☑ DONE+GATED** | §4.20 |
 | 15 | redshift | PARTIAL (mostly passthrough) | **☑ DONE+GATED** | §4.8 |
 | 16 | memorydb | MIS-TARGET (16GiB flat) | **☑ DONE+GATED** | §4.4 |
 | 17 | documentdb | MIS-TARGET (→MySQL) | **☑ DONE+GATED** | §4.5 |
@@ -2038,6 +2052,101 @@ shuffle $0.04/GiB-mo) cross-checked against `data/catalog.duckdb` (milli-DCU SKU
 
 ---
 
+### 4.20 MWAA → Cloud Composer (Gen 2 resource SKUs) — ☑ DONE+GATED
+
+The M13 variant defect: **MWAA** (Amazon Managed Workflows for Apache Airflow) — all rows (Environment / Worker /
+Scheduler / Webserver / meta-DB storage) fall through `map_mwaa` (`:5398`) to an **unpriced passthrough**
+(`strategy="passthrough"`, `gcp_sku_id=None`, `unit_multiplier=1.0`). The code comment already admits Cloud Composer
+has real priced SKUs but says it needs the AWS env-class → vCPU/RAM spec to size them. This section supplies that spec
+(official AWS docs) and the Composer rates (official GCP page + catalog) and makes the mapping deterministic.
+
+#### 4.20.0 Verification status (2026-11-18 — BOTH official pages verified via the in-app browser)
+- Tooling note: verified via the **in-app browser** and **re-confirmed with `bxw`** (the user's Windows-native Go CLI at
+  `C:\Users\arnav\Downloads\bxw\bxw.exe` that drives real Chrome over CDP and renders JS pages WebFetch misses — NOT the
+  macOS npm `bx`, which is darwin-only). AWS docs also expose a clean `…/<page>.md` markdown twin that flattens the tabbed
+  class table.
+- ✅ **AWS MWAA class specs CONFIRMED** (`docs.aws.amazon.com/mwaa/latest/userguide/environment-class.md`). MWAA runs on
+  **Fargate + Aurora PostgreSQL**; base environment **includes 1 worker + 2 schedulers**; extra workers/schedulers/web
+  servers bill per-hour. vCPU/RAM **per component, per class**:
+  | Class | Webserver ea | Worker ea | Scheduler ea | Database |
+  |---|---|---|---|---|
+  | mw1.micro | 1 vCPU/3 GB | 1 vCPU/3 GB (worker+sched shared) | — | 2 vCPU/4 GB |
+  | mw1.small | 1 vCPU/2 GB | 1 vCPU/2 GB | 1 vCPU/2 GB | 2 vCPU/4 GB |
+  | mw1.medium | 1 vCPU/2 GB | 2 vCPU/4 GB | 2 vCPU/4 GB | 2 vCPU/8 GB |
+  | mw1.large | 2 vCPU/4 GB | 4 vCPU/8 GB | 4 vCPU/8 GB | 2 vCPU/8 GB |
+  | mw1.xlarge | 4 vCPU/12 GB | 8 vCPU/24 GB | 8 vCPU/24 GB | 4 vCPU/32 GB |
+  | mw1.2xlarge | 8 vCPU/24 GB | 16 vCPU/48 GB | 16 vCPU/48 GB | 8 vCPU/64 GB |
+  AWS $/hr examples (us-east-1): small env $0.49, large env $0.99; meta DB storage $0.10/GB-mo. (Full class $/hr table is
+  in a JS iframe; not needed — the CUR carries AWS cost; AWS rates are not used to project GCP cost.)
+- ✅ **GCP Cloud Composer CONFIRMED** (`cloud.google.com/composer/pricing`, us-central1 + catalog cross-check), SKUs all
+  under service_name **`Cloud Composer`**:
+  - **Gen 2 (THE TARGET — explicit resource SKUs):** `Cloud Composer Compute mCPUs` **$4.5e-05/milli-CPU-h → $0.045/vCPU-h**
+    (per-milli SKU: ×1000 into multiplier), `Cloud Composer Compute Memory` **$0.005/GiB-h**, `Cloud Composer Compute
+    Storage` **$0.0002/GiB-h**, `Cloud Composer Database Storage` **$0.17/GiB-mo** (GiBy.mo — direct match to MWAA meta-DB
+    storage). Compute mCPUs = combined vCPU of **schedulers + web server + workers** (the page is explicit: NOT the DB).
+    **Environment Fee** (fixed $/hr, by size, covers the Cloud SQL instance + infra): `Small … Environment Fee` **$0.35**,
+    `Medium …` **$0.55**, `Large …` **$0.85** (Highly-Resilient/HA variants $0.49/$0.77/$1.19).
+  - **Gen 3:** `Cloud Composer 3 standard milli DCU-hours` $0.06/DCU-h + DB storage. DCU is an **abstract** metering unit
+    (vCPU+mem+storage of all components + env-size infra) with **NO published vCPU→DCU coefficient** → cannot be sized
+    deterministically from CUR data.
+  - Gen 1 SKUs (`Cloud Composer vCPU time in Iowa` $0.074, `… SQL vCPU time` $0.125) exist but are the legacy generation — not the target.
+- ✅ `map_mwaa` logic is a flat unpriced passthrough (confirmed `:5398`): no class parse, no sizing, no SKU.
+
+#### 4.20.1 The defect
+`map_mwaa` emits one passthrough row per input with `gcp_sku_id=None`, `unit_multiplier=1.0` for every MWAA charge — so
+MWAA projects at AWS-cost parity, never at Composer rates = the M13 bug.
+
+#### 4.20.2 THE DECISION — TARGET COMPOSER 2 (explicit resource SKUs), deterministic break-down
+Target **Composer 2 / Gen 2**, NOT Gen 3. Rationale: Gen 2 bills explicit vCPU/mem/storage SKUs that map **1:1** from
+MWAA's published per-class vCPU/RAM specs (fully deterministic, per-SKU auditable), whereas Gen 3's DCU is an abstract
+unit with **no published vCPU→DCU conversion** — it cannot be sized from CUR data without guessing a coefficient. Each
+MWAA row breaks down into Composer **Compute mCPUs + Compute Memory** components (and, for the Environment row, a fixed
+**Environment Fee**); meta-DB storage → **Database Storage**. The MWAA **database vCPU is NOT mapped to Compute mCPUs**
+(GCP's managed Cloud SQL compute is covered by the Environment Fee — mapping it would double-count). Note Gen 3 DCU as the
+current-generation alternative in the projection note. This parallels the EMR Serverless §4.19 per-milli-unit handling.
+
+#### 4.20.3 Implementation steps (`ast.parse` each edit; touch ONLY these; keep `map_compute_breakdown`+`main` intact)
+Files: `scripts/apply_static_mappings.py` (rewrite `map_mwaa`), `data/service_specs.json` + `data/service_usage_catalog.json`
+(MWAA charge-type dims → `mwaa` mechanic + component dims), `tests/test_mwaa_full_modelling.py` (**new**), `tests/test_spec_dispatch.py`.
+1. Add a class→spec constant, e.g. `_MWAA_CLASS_SPEC = { "mw1.micro": {...}, ... }` holding per-component (vCPU, GiB) from
+   the §4.20.0 table, plus `base = webserver + 1×worker + 2×scheduler` vCPU/GiB per class (micro: webserver + 1 worker/sched,
+   no separate scheduler, no autoscale). Add `_MWAA_CLASS_TO_COMPOSER_SIZE = {micro:Small, small:Small, medium:Medium,
+   large:Large, xlarge:Large, 2xlarge:Large}` (Composer 2 env fee caps at Large; note the cap for xlarge/2xlarge).
+2. Rewrite `map_mwaa`: for each row parse **class** (regex `mw1\.(micro|small|medium|large|xlarge|2xlarge)`; default to a
+   stated class — e.g. small — if absent, flag assumption) and **component** from usage_type/operation
+   (`environment` / `worker` / `scheduler` / `webserver` / `database|metereddb|storage`). Then emit (append multiple dicts
+   per input, break-down style):
+   - **Environment** row → THREE entries: (a) Compute mCPUs, `unit_multiplier = base_vcpu × 1000`, SKU
+     `resolve_sku("Cloud Composer", r"^Cloud Composer Compute mCPUs", region)`; (b) Compute Memory,
+     `unit_multiplier = base_gib`, SKU `^Cloud Composer Compute Memory`; (c) Environment Fee, `unit_multiplier = 1.0`,
+     SKU `^{Size} Cloud Composer Environment Fee` (non-HA). component labels `compute`/`memory`/`environment-fee`.
+   - **Worker / Scheduler / Webserver** row → TWO entries: Compute mCPUs (`×1000×component_vcpu`) + Compute Memory
+     (`×component_gib`).
+   - **Meta-DB storage** row (GB-Mo) → ONE entry: `^Cloud Composer Database Storage` ($0.17/GiB-mo), `unit_multiplier=1.0`.
+   - Guard every entry: `strategy = "map" if sku_id else "passthrough"`; set `passthrough_reason="no_rate_in_region"` only
+     when `sku_id` is None. Carry `gcp_sku_unit = sku_id.unit` on map. `projection_note` discloses the class, the components
+     summed, the per-milli ×1000, that DB compute is covered by the env fee, and Gen 3 DCU as the current-gen alternative.
+   - Milli caution (EMR §4.19 / Autopilot `:3391-3398` precedent): ×1000 is correct because Compute mCPUs is per-milli-CPU
+     (confirmed $4.5e-05 ×1000 = $0.045). Verify empirically: 1 environment-hour of mw1.large base (14 vCPU/28 GiB) ≈
+     Compute $0.63 + Memory $0.14 + env fee $0.85 = ~$1.62.
+3. `service_specs.json` / `service_usage_catalog.json`: ensure MWAA env/worker/scheduler/webserver/db-storage dims route to
+   `mwaa`. (No job DBs on this host — use the AWS canonical usage_type shapes `…-Environment-<class>`, `…-Worker-<class>`,
+   `…-Scheduler-<class>`, `…-Webserver-<class>`, `…-MeteredDatabaseStorage-GB`.)
+4. `tests/test_mwaa_full_modelling.py`: environment row → 3 entries (compute mult = base_vcpu×1000, memory, env fee by size),
+   worker/scheduler/webserver → compute+memory with correct per-class vCPU/GiB, db-storage → Database Storage map; empirical
+   rate check (mw1.large base ≈ $1.62/env-hr); invariants: no `map` row with empty `gcp_sku_id`; passthrough rows carry an
+   intentional reason; DB vCPU never mapped to Compute mCPUs. 5. Full suite green; update §7.1 mwaa log.
+
+#### 4.20.4 DoD + Sources
+DoD per §2. **Sources (BOTH official pages verified 2026-11-18 via in-app browser):** AWS
+`docs.aws.amazon.com/mwaa/latest/userguide/environment-class.md` (class → vCPU/RAM; Fargate + Aurora; base = 1 worker +
+2 schedulers) + `aws.amazon.com/managed-workflows-for-apache-airflow/pricing` (billing dims) + GCP
+`cloud.google.com/composer/pricing` (Gen 2 Compute mCPUs $0.045/vCPU-h, Memory $0.005/GiB-h, Storage $0.0002/GiB-h,
+Database Storage $0.17/GiB-mo, env fee S/M/L $0.35/$0.55/$0.85; Gen 3 DCU has no published conversion) cross-checked
+against `data/catalog.duckdb`. **Decision: Composer 2 explicit resource SKUs. Memory [[reference_gcp_composer_mwaa_rates]]. Ready for AGY.**
+
+---
+
 ## 5. PARKED — backlog from the audit (DO NOT auto-implement)
 
 > ⚠️ **AGY / automated agents: DO NOT act on this section.** These are human-gated design decisions,
@@ -2800,6 +2909,31 @@ ids the helpers emit (`GCP-EGRESS-INTERNET-*-T*`, `GCP-EGRESS-INTERREGION-<FROM>
   5. Created `tests/test_emr_serverless_full_modelling.py`:
      - 12 comprehensive unit and invariant tests verifying vCPU/Memory/Storage, Graviton/Flex variants, empirical rates, cluster mgmt regression, invariants (no empty `gcp_sku_id` on map; explicit reasons on passthrough), and catalog completeness.
   6. Verified full regression test suite: **1,692 passed in 208s** with 0 failures across the entire codebase.
+
+#### mwaa (Cloud Composer Gen 2 §4.20) — log *(2026-11-18, completed & gated by AGY)*
+- Status: ☑ DONE+GATED · Runbook step reached: 9/9 · Date: 2026-11-18 · Agent: agy
+- Done:
+  1. Updated `scripts/apply_static_mappings.py` (`map_mwaa`):
+     - Added `_MWAA_CLASS_SPEC` mapping each class (`mw1.micro` through `mw1.2xlarge`) to per-component (vCPU, GiB) for webserver, worker, scheduler, database, and base environment footprint.
+     - Added `_MWAA_CLASS_TO_COMPOSER_SIZE` mapping classes to Composer Environment Fee sizes (`Small`, `Medium`, `Large`), noting that `mw1.xlarge` and `mw1.2xlarge` cap at `Large`.
+     - Base Environment rows break down into 3 entries:
+       - Compute mCPUs: `unit_multiplier = base_vcpu * 1000.0` (milli-CPUs, $0.045/vCPU-h).
+       - Compute Memory: `unit_multiplier = base_gib` (GiB, $0.005/GiB-h).
+       - Environment Fee: `unit_multiplier = 1.0` (Small $0.35, Medium $0.55, Large $0.85 $/hr).
+       - Database vCPU is excluded from Compute mCPUs (covered by Environment Fee).
+     - Worker / Scheduler / Webserver additional hours break down into 2 entries: Compute mCPUs (`comp_vcpu * 1000.0`) + Compute Memory (`comp_gib`).
+     - Metadata DB storage maps to Cloud Composer Database Storage ($0.17/GiB-mo, `unit_multiplier = 1.0`, `GiBy.mo`).
+     - Guarded `strategy = "map" if sku_id else "passthrough"` and required intentional `passthrough_reason` on all fallbacks.
+     - Enforced that only query-backed row columns from `STATIC_MAPPER_ROW_COLS` are accessed (`unit`, `usage_type`, `operation`, `product`, `aws_li_key`, `gcp_region`).
+  2. Updated `data/service_specs.json`:
+     - Decomposed `mwaa` into 6 explicit charge types: `mwaa_environment`, `mwaa_worker`, `mwaa_scheduler`, `mwaa_webserver`, `mwaa_storage`, `mwaa_other`.
+  3. Populated `data/service_usage_catalog.json`:
+     - Added 14 comprehensive MWAA billing dimensions covering `mw1.micro` through `mw1.2xlarge` environments, additional workers, schedulers, webservers, and database storage variants.
+  4. Updated `tests/test_spec_dispatch.py`:
+     - Added MWAA environment, worker, scheduler, webserver, and storage test cases (261 tests passing).
+  5. Created `tests/test_mwaa_full_modelling.py`:
+     - 11 comprehensive unit and invariant tests verifying breakdown behavior, per-class specs, empirical rates (mw1.large base ≈ $1.62/hr), DB vCPU exclusion, SKU invariants, and catalog completeness.
+  6. Verified full regression test suite: **1,711 passed in 208s** with 0 failures across the entire codebase.
 
 ### 7.2 Stop-and-ask triggers (hand back to the human)
 - A rate or fact available only behind a login or only on a third-party site.

@@ -2128,5 +2128,119 @@
       "expected_mechanic": "emr",
       "description": "EMR Studio notebook hours -> passthrough"
     }
+  ],
+  "mwaa": [
+    {
+      "usage_type": "USE1-Environment-mw1.micro",
+      "operation": "CreateEnvironment",
+      "unit": "Hrs",
+      "expected_charge_type": "mwaa_environment",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA mw1.micro environment hours -> Cloud Composer Gen 2 (compute + memory + Small env fee)"
+    },
+    {
+      "usage_type": "USE1-Environment-mw1.small",
+      "operation": "CreateEnvironment",
+      "unit": "Hrs",
+      "expected_charge_type": "mwaa_environment",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA mw1.small environment hours -> Cloud Composer Gen 2 (compute + memory + Small env fee)"
+    },
+    {
+      "usage_type": "USE1-Environment-mw1.medium",
+      "operation": "CreateEnvironment",
+      "unit": "Hrs",
+      "expected_charge_type": "mwaa_environment",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA mw1.medium environment hours -> Cloud Composer Gen 2 (compute + memory + Medium env fee)"
+    },
+    {
+      "usage_type": "USE1-Environment-mw1.large",
+      "operation": "CreateEnvironment",
+      "unit": "Hrs",
+      "expected_charge_type": "mwaa_environment",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA mw1.large environment hours -> Cloud Composer Gen 2 (compute + memory + Large env fee)"
+    },
+    {
+      "usage_type": "USE1-Environment-mw1.xlarge",
+      "operation": "CreateEnvironment",
+      "unit": "Hrs",
+      "expected_charge_type": "mwaa_environment",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA mw1.xlarge environment hours -> Cloud Composer Gen 2 (compute + memory + Large capped env fee)"
+    },
+    {
+      "usage_type": "USE1-Environment-mw1.2xlarge",
+      "operation": "CreateEnvironment",
+      "unit": "Hrs",
+      "expected_charge_type": "mwaa_environment",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA mw1.2xlarge environment hours -> Cloud Composer Gen 2 (compute + memory + Large capped env fee)"
+    },
+    {
+      "usage_type": "USE1-Worker-mw1.small",
+      "operation": "CreateWorker",
+      "unit": "Hrs",
+      "expected_charge_type": "mwaa_worker",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA additional worker mw1.small hours -> Cloud Composer Gen 2 (compute + memory)"
+    },
+    {
+      "usage_type": "USE1-Worker-mw1.large",
+      "operation": "CreateWorker",
+      "unit": "Hrs",
+      "expected_charge_type": "mwaa_worker",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA additional worker mw1.large hours -> Cloud Composer Gen 2 (compute + memory)"
+    },
+    {
+      "usage_type": "USE1-Scheduler-mw1.small",
+      "operation": "CreateScheduler",
+      "unit": "Hrs",
+      "expected_charge_type": "mwaa_scheduler",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA additional scheduler mw1.small hours -> Cloud Composer Gen 2 (compute + memory)"
+    },
+    {
+      "usage_type": "USE1-Scheduler-mw1.large",
+      "operation": "CreateScheduler",
+      "unit": "Hrs",
+      "expected_charge_type": "mwaa_scheduler",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA additional scheduler mw1.large hours -> Cloud Composer Gen 2 (compute + memory)"
+    },
+    {
+      "usage_type": "USE1-Webserver-mw1.small",
+      "operation": "CreateWebserver",
+      "unit": "Hrs",
+      "expected_charge_type": "mwaa_webserver",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA additional webserver mw1.small hours -> Cloud Composer Gen 2 (compute + memory)"
+    },
+    {
+      "usage_type": "USE1-Webserver-mw1.large",
+      "operation": "CreateWebserver",
+      "unit": "Hrs",
+      "expected_charge_type": "mwaa_webserver",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA additional webserver mw1.large hours -> Cloud Composer Gen 2 (compute + memory)"
+    },
+    {
+      "usage_type": "USE1-MeteredDatabaseStorage-GB",
+      "operation": "CreateEnvironment",
+      "unit": "GB-Mo",
+      "expected_charge_type": "mwaa_storage",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA metadata database storage -> Cloud Composer Gen 2 Database Storage"
+    },
+    {
+      "usage_type": "USE1-Storage-mw1.small",
+      "operation": "CreateEnvironment",
+      "unit": "GB-Mo",
+      "expected_charge_type": "mwaa_storage",
+      "expected_mechanic": "mwaa",
+      "description": "MWAA storage variant -> Cloud Composer Gen 2 Database Storage"
+    }
   ]
 }

@@ -5395,32 +5395,254 @@ def map_dynamodb_capacity(rows):
     return out
 
 
+GCP_COMPOSER = "Cloud Composer"
+
+# MWAA (Amazon Managed Workflows for Apache Airflow) class specification
+# Official AWS docs: docs.aws.amazon.com/mwaa/latest/userguide/environment-class.md
+# Verified 2026-11-18. Fargate + Aurora PostgreSQL backing.
+# Per component (vCPU, GiB):
+_MWAA_CLASS_SPEC = {
+    "mw1.micro": {
+        "webserver": (1.0, 3.0),
+        "worker": (1.0, 3.0),      # worker+scheduler shared
+        "scheduler": (1.0, 3.0),   # shared with worker, no separate sched
+        "database": (2.0, 4.0),    # DB compute covered by Composer env fee
+        "base_vcpu": 2.0,          # 1 webserver (1) + 1 worker/sched (1)
+        "base_gib": 6.0,           # 3 + 3
+    },
+    "mw1.small": {
+        "webserver": (1.0, 2.0),
+        "worker": (1.0, 2.0),
+        "scheduler": (1.0, 2.0),
+        "database": (2.0, 4.0),
+        "base_vcpu": 4.0,          # 1 webserver (1) + 1 worker (1) + 2 schedulers (2*1)
+        "base_gib": 8.0,           # 2 + 2 + 2*2
+    },
+    "mw1.medium": {
+        "webserver": (1.0, 2.0),
+        "worker": (2.0, 4.0),
+        "scheduler": (2.0, 4.0),
+        "database": (2.0, 8.0),
+        "base_vcpu": 7.0,          # 1 webserver (1) + 1 worker (2) + 2 schedulers (2*2)
+        "base_gib": 14.0,          # 2 + 4 + 2*4
+    },
+    "mw1.large": {
+        "webserver": (2.0, 4.0),
+        "worker": (4.0, 8.0),
+        "scheduler": (4.0, 8.0),
+        "database": (2.0, 8.0),
+        "base_vcpu": 14.0,         # 1 webserver (2) + 1 worker (4) + 2 schedulers (2*4)
+        "base_gib": 28.0,          # 4 + 8 + 2*8
+    },
+    "mw1.xlarge": {
+        "webserver": (4.0, 12.0),
+        "worker": (8.0, 24.0),
+        "scheduler": (8.0, 24.0),
+        "database": (4.0, 32.0),
+        "base_vcpu": 28.0,         # 1 webserver (4) + 1 worker (8) + 2 schedulers (2*8)
+        "base_gib": 84.0,          # 12 + 24 + 2*24
+    },
+    "mw1.2xlarge": {
+        "webserver": (8.0, 24.0),
+        "worker": (16.0, 48.0),
+        "scheduler": (16.0, 48.0),
+        "database": (8.0, 64.0),
+        "base_vcpu": 56.0,         # 1 webserver (8) + 1 worker (16) + 2 schedulers (2*16)
+        "base_gib": 168.0,         # 24 + 48 + 2*48
+    },
+}
+
+_MWAA_CLASS_TO_COMPOSER_SIZE = {
+    "mw1.micro": "Small",
+    "mw1.small": "Small",
+    "mw1.medium": "Medium",
+    "mw1.large": "Large",
+    "mw1.xlarge": "Large",     # Composer 2 env fee caps at Large
+    "mw1.2xlarge": "Large",   # Composer 2 env fee caps at Large
+}
+
+_COMPOSER_COMPUTE_MCPU_SKU = r"^Cloud Composer Compute mCPUs"
+_COMPOSER_COMPUTE_MEMORY_SKU = r"^Cloud Composer Compute Memory"
+_COMPOSER_DB_STORAGE_SKU = r"^Cloud Composer Database Storage"
+
+
+def _make_mwaa_entry(aws_li_key, gcp_region, sku, sku_name, component, unit_mult, note, is_breakdown, assumption=None):
+    is_mapped = bool(sku)
+    sku_id = str(sku) if is_mapped else None
+    sku_unit = getattr(sku, "unit", None) if is_mapped else None
+    return {
+        "aws_li_key":         aws_li_key,
+        "gcp_service":        GCP_COMPOSER,
+        "gcp_sku_id":         sku_id,
+        "gcp_sku_name":       sku_name if is_mapped else None,
+        "gcp_sku_unit":       sku_unit,
+        "component":          component,
+        "strategy":           "map" if is_mapped else "passthrough",
+        "unit_multiplier":    unit_mult if is_mapped else 1.0,
+        "gcp_region":         gcp_region,
+        "projection_note":    note if is_mapped else (note + f" [passthrough: SKU unresolvable in {gcp_region}]"),
+        "mapping_confidence": 0.85 if is_mapped else 0.40,
+        "is_workload":        True,
+        "break_down":         is_breakdown,
+        "passthrough_reason": None if is_mapped else "no_rate_in_region",
+        "is_assumption":      bool(assumption),
+        "assumption":         assumption,
+    }
+
+
 def map_mwaa(rows):
+    """Deterministic mapper for MWAA (Amazon Managed Workflows for Apache Airflow) -> Cloud Composer Gen 2.
+
+    Official AWS docs: docs.aws.amazon.com/mwaa/latest/userguide/environment-class.md
+    Official GCP docs: cloud.google.com/composer/pricing (Gen 2 explicit resource SKUs).
+    Verified 2026-11-18 (§4.20).
+
+    Base environment:
+      - Compute mCPUs (base vCPU * 1000 milli-CPUs)
+      - Compute Memory (base RAM in GiB)
+      - Environment Fee (Small / Medium / Large $/hr, non-HA)
+      (DB vCPU is not mapped as Compute mCPUs; covered by Environment Fee).
+    Additional workers / schedulers / webservers:
+      - Compute mCPUs (component vCPU * 1000 milli-CPUs)
+      - Compute Memory (component RAM in GiB)
+    Metadata DB Storage:
+      - Database Storage ($0.17/GiB-mo, 1:1 match to Aurora PostgreSQL DB storage).
+    """
     out = []
     for r in rows:
+        aws_key = r["aws_li_key"]
         gcp_region = r.get("gcp_region")
         ut = r.get("usage_type") or ""
-        component = "worker" if "worker" in ut.lower() else "environment"
-        out.append({
-            "aws_li_key":         r["aws_li_key"],
-            "gcp_service":        "Cloud Composer",
-            "gcp_sku_id":         None,
-            "gcp_sku_name":       None,
-            "component":          component,
-            "strategy":           "passthrough",
-            "unit_multiplier":    1.0,
-            "gcp_region":         gcp_region,
-            "projection_note":    (
-                f"MWAA ({ut}) → Cloud Composer, GCP's own managed-Airflow service (a real "
-                f"1:1 product match). Cloud Composer bills by raw vCPU-hour/GiB-hour/storage "
-                f"(e.g. $0.088/vCPU-hr in this region) rather than MWAA's Environment/Worker "
-                f"class-hourly rate, so converting this row needs AWS's published vCPU/RAM "
-                f"spec for this environment/worker class — verify with the customer or AWS's "
-                f"MWAA docs before finalizing a sized Composer environment; passthrough at "
-                f"AWS cost until then"
-            ),
-            "mapping_confidence": 0.45,
-        })
+        op = r.get("operation") or ""
+        prod = r.get("product") or ""
+        blob = f"{prod} {ut} {op}".lower()
+
+        # Extract environment class (mw1.micro .. mw1.2xlarge)
+        m_class = re.search(r"mw1\.(micro|small|medium|large|xlarge|2xlarge)", blob)
+        if m_class:
+            env_class = m_class.group(0)
+            class_assumed = False
+        else:
+            env_class = "mw1.small"
+            class_assumed = True
+
+        spec = _MWAA_CLASS_SPEC.get(env_class, _MWAA_CLASS_SPEC["mw1.small"])
+        composer_size = _MWAA_CLASS_TO_COMPOSER_SIZE.get(env_class, "Small")
+        assump_note = " [assumed mw1.small: class not specified in CUR]" if class_assumed else ""
+        assump_dict = {"mwaa_default_class": "mw1.small"} if class_assumed else None
+
+        # Determine charge component
+        is_storage = bool(re.search(r"database|metered|storage|dbstorage", blob))
+        is_worker = bool(re.search(r"worker", blob))
+        is_scheduler = bool(re.search(r"scheduler", blob))
+        is_webserver = bool(re.search(r"webserver", blob))
+        is_environment = bool(re.search(r"environment", blob))
+
+        if is_storage:
+            sku = resolve_sku(GCP_COMPOSER, _COMPOSER_DB_STORAGE_SKU, gcp_region)
+            note = (
+                f"MWAA {env_class} metadata DB storage → Cloud Composer Gen 2 Database Storage "
+                f"($0.17/GiB-mo; direct match to Aurora PostgreSQL metadata DB storage){assump_note}"
+            )
+            out.append(_make_mwaa_entry(
+                aws_key, gcp_region, sku, "Cloud Composer Database Storage",
+                "database-storage", 1.0, note, False, assump_dict
+            ))
+
+        elif is_worker or is_scheduler or is_webserver:
+            comp_name = "worker" if is_worker else ("scheduler" if is_scheduler else "webserver")
+            comp_vcpu, comp_gib = spec[comp_name]
+
+            # 1. Compute mCPUs
+            mcpu_mult = comp_vcpu * 1000.0
+            sku_mcpu = resolve_sku(GCP_COMPOSER, _COMPOSER_COMPUTE_MCPU_SKU, gcp_region)
+            note_mcpu = (
+                f"MWAA {env_class} {comp_name} → Cloud Composer Gen 2 Compute mCPUs "
+                f"({comp_name} vCPU={comp_vcpu:g} × 1000 milli-CPUs; Gen 3 DCU is current-gen alternative){assump_note}"
+            )
+            out.append(_make_mwaa_entry(
+                aws_key, gcp_region, sku_mcpu, "Cloud Composer Compute mCPUs",
+                "compute", mcpu_mult, note_mcpu, True, assump_dict
+            ))
+
+            # 2. Compute Memory
+            mem_mult = comp_gib
+            sku_mem = resolve_sku(GCP_COMPOSER, _COMPOSER_COMPUTE_MEMORY_SKU, gcp_region)
+            note_mem = (
+                f"MWAA {env_class} {comp_name} → Cloud Composer Gen 2 Compute Memory "
+                f"({comp_name} RAM={comp_gib:g} GiB; Gen 3 DCU is current-gen alternative){assump_note}"
+            )
+            out.append(_make_mwaa_entry(
+                aws_key, gcp_region, sku_mem, "Cloud Composer Compute Memory",
+                "memory", mem_mult, note_mem, True, assump_dict
+            ))
+
+        elif is_environment or "hrs" in (r.get("unit") or "").lower():
+            base_vcpu = spec["base_vcpu"]
+            base_gib = spec["base_gib"]
+
+            # Cap note for xlarge / 2xlarge environment fee
+            cap_note = " (Composer 2 env fee caps at Large)" if env_class in ("mw1.xlarge", "mw1.2xlarge") else ""
+
+            # 1. Compute mCPUs (base)
+            mcpu_mult = base_vcpu * 1000.0
+            sku_mcpu = resolve_sku(GCP_COMPOSER, _COMPOSER_COMPUTE_MCPU_SKU, gcp_region)
+            note_mcpu = (
+                f"MWAA {env_class} environment → Cloud Composer Gen 2 Compute mCPUs "
+                f"(base vCPU={base_vcpu:g} × 1000 milli-CPUs across 1 webserver + 1 worker + 2 schedulers; "
+                f"DB compute covered by Composer env fee; Gen 3 DCU is current-gen alternative){assump_note}"
+            )
+            out.append(_make_mwaa_entry(
+                aws_key, gcp_region, sku_mcpu, "Cloud Composer Compute mCPUs",
+                "compute", mcpu_mult, note_mcpu, True, assump_dict
+            ))
+
+            # 2. Compute Memory (base)
+            mem_mult = base_gib
+            sku_mem = resolve_sku(GCP_COMPOSER, _COMPOSER_COMPUTE_MEMORY_SKU, gcp_region)
+            note_mem = (
+                f"MWAA {env_class} environment → Cloud Composer Gen 2 Compute Memory "
+                f"(base RAM={base_gib:g} GiB across 1 webserver + 1 worker + 2 schedulers; "
+                f"Gen 3 DCU is current-gen alternative){assump_note}"
+            )
+            out.append(_make_mwaa_entry(
+                aws_key, gcp_region, sku_mem, "Cloud Composer Compute Memory",
+                "memory", mem_mult, note_mem, True, assump_dict
+            ))
+
+            # 3. Environment Fee (by size)
+            fee_pat = rf"^{composer_size}\s+Cloud Composer Environment Fee"
+            sku_fee = resolve_sku(GCP_COMPOSER, fee_pat, gcp_region)
+            note_fee = (
+                f"MWAA {env_class} environment → Cloud Composer Gen 2 {composer_size} Environment Fee "
+                f"($/hr tier covering managed Cloud SQL DB + core orchestration infra{cap_note}; "
+                f"Gen 3 DCU is current-gen alternative){assump_note}"
+            )
+            out.append(_make_mwaa_entry(
+                aws_key, gcp_region, sku_fee, f"{composer_size} Cloud Composer Environment Fee",
+                "environment-fee", 1.0, note_fee, True, assump_dict
+            ))
+
+        else:
+            # Unmodeled MWAA charge
+            out.append({
+                "aws_li_key":         aws_key,
+                "gcp_service":        GCP_COMPOSER,
+                "gcp_sku_id":         None,
+                "gcp_sku_name":       None,
+                "gcp_sku_unit":       None,
+                "component":          "other",
+                "strategy":           "passthrough",
+                "unit_multiplier":    1.0,
+                "gcp_region":         gcp_region,
+                "projection_note":    f"MWAA unrecognized component ({ut}) — not modeled; passthrough pending review (Cloud Composer Gen 2 is the target service)",
+                "mapping_confidence": 0.40,
+                "is_workload":        True,
+                "break_down":         False,
+                "passthrough_reason": "service_policy_review",
+                "is_assumption":      False,
+                "assumption":         None,
+            })
     return out
 
 

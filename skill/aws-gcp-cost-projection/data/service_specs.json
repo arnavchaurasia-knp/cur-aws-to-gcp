@@ -2894,9 +2894,11 @@
     ],
     "charge_types": [
       {
-        "id": "mwaa_all",
-        "description": "Environment/Worker-class hours -> Cloud Composer (honest passthrough).",
-        "match": {},
+        "id": "mwaa_environment",
+        "description": "MWAA base environment hours -> Cloud Composer Gen 2 (compute + memory + env fee).",
+        "match": {
+          "usage_type_re": "Environment"
+        },
         "mechanic": "mwaa",
         "fields": [
           {
@@ -2918,7 +2920,138 @@
             "required": true
           }
         ],
-        "source_rule": "mwaa"
+        "source_rule": "mwaa_environment"
+      },
+      {
+        "id": "mwaa_worker",
+        "description": "MWAA additional worker hours -> Cloud Composer Gen 2 (compute + memory).",
+        "match": {
+          "usage_type_re": "Worker"
+        },
+        "mechanic": "mwaa",
+        "fields": [
+          {
+            "name": "environment_class",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "mwaa_worker"
+      },
+      {
+        "id": "mwaa_scheduler",
+        "description": "MWAA additional scheduler hours -> Cloud Composer Gen 2 (compute + memory).",
+        "match": {
+          "usage_type_re": "Scheduler"
+        },
+        "mechanic": "mwaa",
+        "fields": [
+          {
+            "name": "environment_class",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "mwaa_scheduler"
+      },
+      {
+        "id": "mwaa_webserver",
+        "description": "MWAA additional webserver hours -> Cloud Composer Gen 2 (compute + memory).",
+        "match": {
+          "usage_type_re": "Webserver"
+        },
+        "mechanic": "mwaa",
+        "fields": [
+          {
+            "name": "environment_class",
+            "cur_column": "product/instanceType",
+            "source": "cur",
+            "required": false
+          },
+          {
+            "name": "hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "mwaa_webserver"
+      },
+      {
+        "id": "mwaa_storage",
+        "description": "MWAA metadata database storage -> Cloud Composer Gen 2 Database Storage.",
+        "match": {
+          "usage_type_re": "Database|Metered|Storage"
+        },
+        "mechanic": "mwaa",
+        "fields": [
+          {
+            "name": "gigabyte_months",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "mwaa_storage"
+      },
+      {
+        "id": "mwaa_other",
+        "description": "MWAA other/unclassified usage -> Cloud Composer fallback.",
+        "match": {},
+        "mechanic": "mwaa",
+        "fields": [
+          {
+            "name": "usage",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "mwaa_other"
       }
     ]
   },

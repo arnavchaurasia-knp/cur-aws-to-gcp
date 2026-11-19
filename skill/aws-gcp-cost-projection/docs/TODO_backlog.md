@@ -26,12 +26,11 @@ Legend: 🔴 real dollar error · 🟡 needs decision/verify · ⚪ low/cosmetic
 
 ## NEXT (pick after the above)
 
-- 🟡 **PD Snapshot & GCS: regional vs multi-region target (NEEDS OFFICIAL-PAGE VERIFICATION).** Surfaced by the
-  multi-region audit. EBS snapshots are regional; GCP PD snapshots **default to multi-region** storage but can be
-  regional. Decide per service whether EBS→PD-snapshot and S3→GCS-Standard should target regional (cheaper, matches
-  AWS's regional scope) or keep GCP's multi-region default. Same question for GCS dual-region. Verify GCP snapshot /
-  GCS storage-location pricing + default behavior from the official pages (via bxw) before changing — do NOT flip
-  blind. If regional is chosen, extend `prefer_single_region` to those mappers (mechanism already exists).
+- ⚙ **PD Snapshot & GCS → REGIONAL targets — VERIFIED + WORKORDER WRITTEN → READY FOR AGY.** Official pages checked
+  2026-11-19: GCP explicitly recommends regional snapshots unless multi-region replication is needed, and regional
+  is cheaper (snapshot $0.05 vs $0.083/GiB-mo; GCS Standard $0.020 vs $0.026). EBS snapshots & S3 are regional, so
+  regional is the faithful target. Decision = regional; extend `prefer_single_region` to the snapshot + GCS mappers.
+  Full spec + verified rates + call sites + tests in `docs/WORKORDER_regional_vs_multiregion_targets.md`.
 
 - 🟡 **NAT gateway-hours per-VM-hour decision (USER INPUT NEEDED).** Cloud NAT bills per-VM-hour, not per-gateway;
   needs a VM-count assumption. Anchor: Cloud-NAT-for-LB ">32 VM" (see [[reference_gcp_cloud_lb_rates]]).

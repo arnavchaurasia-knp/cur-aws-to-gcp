@@ -35,6 +35,6 @@ def test_candidate_availability_gate_valkey():
     }
     mapped_unavail = map_elasticache([row_unavail])
     assert len(mapped_unavail) == 1
-    # Dropped Valkey due to region availability gate, falls back to Redis Basic
+    # Dropped Valkey due to region availability gate, falls back to Redis Cluster
     assert mapped_unavail[0]["gcp_service"] == GCP_MEMORYSTORE
-    assert "Redis Capacity Basic" in mapped_unavail[0]["gcp_sku_name"]
+    assert "Redis Cluster Node" in mapped_unavail[0]["gcp_sku_name"]

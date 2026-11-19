@@ -12,7 +12,23 @@ end-to-end before moving on.
 > This workorder is the vehicle that fixes all of that, one service at a time, with each service's
 > completion *enforced by the gate* so it can never silently regress.
 
-> ▶ **CURRENT ASSIGNMENT: NONE (awaiting next assignment from operator) — `mwaa` (§4.20) completed & gated.**
+> ▶ **CURRENT ASSIGNMENT: NONE (awaiting next assignment from operator) — `elasticache` (§4.21) completed & gated.**
+> `elasticache` Redis retarget (§4.21, M10) was completed, fully modelled, and gated on 2026-11-19:
+> - M10 defect resolved: ElastiCache Redis node-hours retargeted from legacy `Redis Capacity {Basic|Standard} M*` (per-GiBy.h, multiplier=RAM) to node-based **Memorystore for Redis Cluster** (`Redis Cluster Node ...`, multiplier=1.0).
+> - Corrects the 2–3× over-projection vs GCP's node-based Memorystore for Redis Cluster (e.g. 13 GiB HA $0.60/hr → $0.19/hr; 26 GiB $1.21/hr → $0.57/hr).
+> - Node-to-node ladder matching implemented with ~5% tolerance for binary GiB vs decimal GB nominal sizing:
+>   - 1.4 GB: `Redis Cluster Node Shared Core Nano` ($0.0318/hr, SKU `B4D9-BD1A-3BBC`)
+>   - 6.5 GB: `Redis Cluster Node Standard Small` ($0.1425/hr, SKU `02F6-0CB2-BDE1`)
+>   - 13.0 GB: `Redis Cluster Node Default` ($0.1923/hr, SKU `8513-DCBC-92D7`)
+>   - 26.0 GB: `Redis Cluster Node Standard Large` ($0.5698/hr, SKU `87AC-74F6-A953`)
+>   - 58.0 GB: `Redis Cluster Node Highmem XLarge` ($0.8581/hr, SKU `AAF7-95CD-2607`)
+>   - 116.0 GB: `Redis Cluster Node Highmem 2xlarge` ($1.6274/hr, SKU `BDF7-A6EC-FB85`)
+>   - >116 GB node RAM capped at 116 GB node as interim ceiling with explicit disclosure note.
+> - Preserved best-fit burstable Valkey selector for burstable single-node workloads.
+> - Serverless, Backup, Memcached dual-leg, DAX, and MemoryDB paths left completely untouched.
+> - Full regression suite green: 1,715 tests passing, 0 failures.
+>
+> `mwaa` (§4.20) completed & gated 2026-11-18.
 > MWAA (Amazon Managed Workflows for Apache Airflow) was completed, fully modelled, and gated on 2026-11-18:
 > - M13 variant defect resolved: all MWAA rows deterministically mapped to Cloud Composer Gen 2 explicit resource SKUs.
 > - **Base Environment row** breaks down to 3 entries:
@@ -139,7 +155,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | # | Service | Tier today (per audit) | Status | Section |
 |---|---|---|---|---|
 | 1 | **rds / aurora** | MIS-TARGET (SQL Server/Oracle→MySQL) | **☑ DONE+GATED** | §4.1 |
-| 2 | elasticache | GOOD (has candidate template) | **☑ DONE+GATED** | §4.15 |
+| 2 | elasticache | GOOD (Redis node retarget M10) | **☑ DONE+GATED** | §4.15, §4.21 |
 | 3 | dynamodb | GOLD (only gated service) | **☑ DONE+GATED** | §4.18 |
 | 4 | s3 | GOLD | ☐ | — |
 | 5 | ebs | GOLD | ☐ | — |
@@ -2147,6 +2163,85 @@ against `data/catalog.duckdb`. **Decision: Composer 2 explicit resource SKUs. Me
 
 ---
 
+### 4.21 ElastiCache for Redis → Memorystore for Redis **Cluster** (node-based retarget) — ☑ DONE+GATED
+
+The M10 item was framed as "detect sharded cluster-mode → Redis Cluster target; reserved nodes get no CUD." Verification
+(both official pages, via `bxw`) reframed it:
+- **Cluster-mode is NOT CUR-detectable.** AWS ElastiCache bills every node (primary and each replica, cluster-mode
+  enabled or disabled) identically as `NodeUsage:cache.<type>` per-node-hour; the CUR carries no shard/cluster-mode flag.
+  So "detect cluster mode" is unachievable and is NOT the fix.
+- **CUD is already handled** — Memorystore is in `data/cud_pct.json` `cud_eligible`; `apply_rates` synthesizes 1yr/3yr
+  CUD columns globally, and the OD-vs-OD headline is the decided policy ([[project_pricing_and_cutover_decisions]]).
+  Redis Cluster's own CUD columns (25%/40% off) are confirmed on the GCP page. Not a gap.
+- **The REAL defect (found by rate comparison):** §4.15 maps ElastiCache Redis node-hrs → *legacy* `Redis Capacity
+  {Basic|Standard} M*` (per-GiBy.h, `unit_multiplier=RAM_GiB`). That **over-projects 2–3× vs GCP's current node-based
+  Memorystore for Redis Cluster** — the natural node-to-node match to ElastiCache's node model. Empirical (us-central1,
+  Standard rate $0.046/GiBy.h): **13 GiB HA = $0.60/hr (legacy) vs $0.19/hr (redis-highmem-medium)** → 3.1×;
+  **26 GiB = $1.21 vs $0.57 (redis-standard-large)** → 2.1×. User decision 2026-11-18: **"whatever is more accurate" →
+  retarget to Redis Cluster.**
+
+#### 4.21.0 Verification status (2026-11-18 — BOTH official pages verified via `bxw`)
+- ✅ **AWS** (`aws.amazon.com/elasticache/pricing`): engines **Valkey / Redis OSS / Memcached**; on-demand **nodes**
+  (node type × count) + Serverless (ECPU) + Reserved nodes. Each node (incl. every replica) bills as its own
+  `NodeUsage` row — so a Multi-AZ/clustered deployment is already N separate node-hour rows. **⇒ map 1 node → 1 node,
+  no HA ×2 multiplier** (the replica rows arrive separately; doubling would double-count).
+- ✅ **GCP** (`cloud.google.com/memorystore/cluster/pricing`) + catalog: **Memorystore for Redis Cluster** is
+  **node-based** (per-node-hour), service_name `Cloud Memorystore for Redis`, capacity ladder (us-central1):
+  | node desc (resolve pattern) | capacity | $/hr |
+  |---|---|---|
+  | `Redis Cluster Node Shared Core Nano` | 1.4 GB | $0.0318 |
+  | `Redis Cluster Node Standard Small` | 6.5 GB | $0.1425 |
+  | `Redis Cluster Node Default` (=highmem-medium) | 13 GB | $0.1923 |
+  | `Redis Cluster Node Standard Large` | 26 GB | $0.5698 |
+  | `Redis Cluster Node Highmem XLarge` | 58 GB | $0.8581 |
+  | `Redis Cluster Node Highmem 2xlarge` | 116 GB | $1.6274 |
+  (`Redis Cluster Node Highcpu Medium` 13 GB $0.4986 is CPU-optimized — exclude from RAM-driven selection; CPU-bound
+  isn't CUR-detectable.) A parallel identically-priced bare-name set (`<Type> Node` under service `Cloud Memorystore`) is
+  the **Valkey** node set. CUD 1yr/3yr columns present.
+
+#### 4.21.1 The defect
+`map_elasticache` Redis node path → `_cheapest_memorystore_tier` → `Redis Capacity {Basic|Standard} M*` (legacy per-GiBy.h),
+`unit_multiplier=RAM_GiB`. Dollars run 2–3× high vs the node-based product that actually mirrors ElastiCache nodes.
+
+#### 4.21.2 THE DECISION — retarget Redis node-hrs → Redis Cluster node SKUs (node-to-node, ×1.0)
+Replace the legacy-Redis target for the **plain ElastiCache Redis node path only** (leave Serverless, Backup, Memcached
+dual-leg, DAX, and MemoryDB paths exactly as §4.15/§4.4 built them — MemoryDB and DAX are separate services with their own
+decisions). For each Redis node-hr row: pick the **cheapest Redis Cluster node whose capacity ≥ the ElastiCache node RAM**
+(`_elasticache_ram`), `unit_multiplier = 1.0` (node-hr → node-hr; HA replicas are already separate CUR rows). CUD stays
+global (no mapper change). Engine-aware note: if the row's engine/product is **Valkey**, say so and (optionally) resolve the
+bare `<Type> Node` SKUs under `Cloud Memorystore` (identical prices) — dollars are unaffected either way, so this is a label
+refinement, not a correctness item.
+
+#### 4.21.3 Implementation steps (`ast.parse`; touch ONLY these; keep `map_compute_breakdown`+`main` intact)
+Files: `scripts/apply_static_mappings.py` (the Redis node path in `map_elasticache`), `tests/test_elasticache_full_modelling.py`
+(extend), `tests/test_spec_dispatch.py` if needed.
+1. Add a node ladder constant, e.g. `_REDIS_CLUSTER_NODES = [(1.4,"Redis Cluster Node Shared Core Nano"),
+   (6.5,"Redis Cluster Node Standard Small"),(13.0,"Redis Cluster Node Default"),(26.0,"Redis Cluster Node Standard Large"),
+   (58.0,"Redis Cluster Node Highmem XLarge"),(116.0,"Redis Cluster Node Highmem 2xlarge")]` (ascending capacity).
+2. In the Redis node path (the block after Memcached/DAX/MemoryDB, where `ram` is known), REPLACE the
+   `_cheapest_memorystore_tier` + `Redis Capacity {tier} M*` selection with: pick the first ladder node whose capacity ≥
+   `ram` (if `ram` > 116, use the 116 GB node and note the ceiling — Redis Cluster shards across nodes; single-node ceiling
+   is an honest interim). `resolve_sku(GCP_MEMORYSTORE, rf"^{re.escape(node_desc)}", region)`; `unit_multiplier = 1.0`;
+   `strategy = "map" if sku_id else "passthrough"` with `passthrough_reason="no_rate_in_region"` when None. Drop the
+   Basic/Standard tier split for this path (Redis Cluster HA = replica nodes, already separate rows). `component="cache"`.
+   `projection_note` discloses: node RAM → chosen node type + capacity, 1:1 node mapping (replicas are separate rows),
+   engine (Redis/Valkey), and that this corrects the legacy per-GiBy.h 2–3× over-projection.
+3. Keep the `ram is None` passthrough branch (now labeled Redis Cluster). Leave Serverless/Backup/Memcached/DAX/MemoryDB
+   branches untouched.
+4. `tests/test_elasticache_full_modelling.py`: add cases — 13 GiB node → `Redis Cluster Node Default` map (empirical ≈
+   $0.1923/node-hr, mult 1.0), 26 GiB → `Standard Large` (≈$0.5698), 6 GiB → `Standard Small`, 200 GiB → `Highmem 2xlarge`
+   + ceiling note; Memcached/DAX/MemoryDB/Serverless branches unchanged (regression guard); invariants: no `map` row with
+   empty `gcp_sku_id`; no legacy `Redis Capacity … M*` target on the plain-Redis path. 5. Full suite green; update §7.1.
+
+#### 4.21.4 DoD + Sources
+DoD per §2. **Sources (BOTH official pages verified 2026-11-18 via `bxw`):** AWS `aws.amazon.com/elasticache/pricing`
+(node model; each node incl. replicas bills separately) + GCP `cloud.google.com/memorystore/cluster/pricing` (node-based
+Redis Cluster ladder + CUD) cross-checked against `data/catalog.duckdb` (node SKUs resolve, e.g.
+`Redis Cluster Node Standard Large` = 87AC-74F6-A953). **Decision: node-to-node retarget, ×1.0. Memory
+[[reference_gcp_memorystore_rates]]. Ready for AGY.**
+
+---
+
 ## 5. PARKED — backlog from the audit (DO NOT auto-implement)
 
 > ⚠️ **AGY / automated agents: DO NOT act on this section.** These are human-gated design decisions,
@@ -2934,6 +3029,33 @@ ids the helpers emit (`GCP-EGRESS-INTERNET-*-T*`, `GCP-EGRESS-INTERREGION-<FROM>
   5. Created `tests/test_mwaa_full_modelling.py`:
      - 11 comprehensive unit and invariant tests verifying breakdown behavior, per-class specs, empirical rates (mw1.large base ≈ $1.62/hr), DB vCPU exclusion, SKU invariants, and catalog completeness.
   6. Verified full regression test suite: **1,711 passed in 208s** with 0 failures across the entire codebase.
+
+#### elasticache (Redis Cluster retarget §4.21) — log *(2026-11-19, completed & gated by AGY)*
+- Status: ☑ DONE+GATED · Runbook step reached: 9/9 · Date: 2026-11-19 · Agent: agy
+- Done:
+  1. Updated `scripts/apply_static_mappings.py` (`map_elasticache`):
+     - Added `_REDIS_CLUSTER_NODES` ladder constant:
+       - 1.4 GB: `Redis Cluster Node Shared Core Nano` ($0.0318/h, SKU `B4D9-BD1A-3BBC`)
+       - 6.5 GB: `Redis Cluster Node Standard Small` ($0.1425/h, SKU `02F6-0CB2-BDE1`)
+       - 13.0 GB: `Redis Cluster Node Default` ($0.1923/h, SKU `8513-DCBC-92D7`)
+       - 26.0 GB: `Redis Cluster Node Standard Large` ($0.5698/h, SKU `87AC-74F6-A953`)
+       - 58.0 GB: `Redis Cluster Node Highmem XLarge` ($0.8581/h, SKU `AAF7-95CD-2607`)
+       - 116.0 GB: `Redis Cluster Node Highmem 2xlarge` ($1.6274/h, SKU `BDF7-A6EC-FB85`)
+     - Replaced legacy per-GiBy.h `Redis Capacity {Basic|Standard} M*` with Redis Cluster node-to-node matching:
+       - Node-to-node matching selects cheapest node where `(cap * 1.05) >= ram` (allowing ~5% tolerance for binary GiB vs decimal GB nominal sizing e.g. `cache.m5.2xlarge` 26.04 GiB → 26.0 GB node; `cache.r5.large` 13.07 GiB → 13.0 GB node).
+       - Node RAM > 116 GB caps at 116 GB node as interim ceiling with explicit disclosure note.
+       - Sets `unit_multiplier = 1.0` (AWS bills primary and each replica separately as `NodeUsage` rows — no HA multiplier).
+       - Explicit `strategy = "map" if sku_id else "passthrough"` with `passthrough_reason="no_rate_in_region"`.
+       - Detailed `projection_note` disclosing node RAM, selected node type & capacity, 1:1 mapping, engine (Redis/Valkey), and correction of legacy 2–3× over-projection.
+       - Preserved best-fit burstable Valkey selector for burstable single-node workloads.
+       - Preserved Serverless, Backup, Memcached dual-leg, DAX, and MemoryDB branches completely untouched.
+  2. Updated `tests/test_candidate_availability_gate.py`:
+     - Updated fallback assertion when Valkey is unavailable from `"Redis Capacity Basic"` to `"Redis Cluster Node"`.
+  3. Extended `tests/test_elasticache_full_modelling.py`:
+     - Updated single-AZ and multi-AZ tests to assert `Redis Cluster Node Standard Small` with `unit_multiplier = 1.0`.
+     - Added ladder coverage tests for 13 GiB (`Redis Cluster Node Default`), 26 GiB (`Redis Cluster Node Standard Large`), and 200 GiB (`Redis Cluster Node Highmem 2xlarge` with ceiling note).
+     - Added invariant test asserting no legacy `Redis Capacity ... M*` on the plain-Redis path.
+  4. Verified all targeted tests (61 tests) and full regression test suite: **1,715 passed in 217s** with 0 failures across the entire test suite.
 
 ### 7.2 Stop-and-ask triggers (hand back to the human)
 - A rate or fact available only behind a login or only on a third-party site.

@@ -6342,6 +6342,19 @@ def _cheapest_memorystore_tier(cache_tier, ram_gib, region):
     return None, None
 
 
+# Memorystore for Redis Cluster capacity ladder (§4.21, M10 node-to-node retarget).
+# Official GCP docs: cloud.google.com/memorystore/cluster/pricing
+# Ascending capacity: pick cheapest node whose capacity >= ElastiCache node RAM.
+_REDIS_CLUSTER_NODES = [
+    (1.4, "Redis Cluster Node Shared Core Nano"),
+    (6.5, "Redis Cluster Node Standard Small"),
+    (13.0, "Redis Cluster Node Default"),
+    (26.0, "Redis Cluster Node Standard Large"),
+    (58.0, "Redis Cluster Node Highmem XLarge"),
+    (116.0, "Redis Cluster Node Highmem 2xlarge"),
+]
+
+
 def map_elasticache(rows: list) -> list:
     """ElastiCache for Redis/Memcached → Cloud Memorystore for Redis.
 
@@ -6520,73 +6533,84 @@ def map_elasticache(rows: list) -> list:
 
         if ram is None:
             # Can't determine node size — passthrough with correct GCP label
+            if is_dax:
+                sku_name = "Redis Capacity Basic M1"
+                note = ("DynamoDB Accelerator (DAX) → Memorystore for Redis; node RAM unknown "
+                        "(instance_type missing from CUR) — passthrough at cost parity")
+            elif is_memdb:
+                sku_name = "Redis Capacity Standard M1"
+                note = ("Amazon MemoryDB → Memorystore for Redis Standard HA; node RAM unknown "
+                        "(instance_type missing from CUR) — passthrough at cost parity")
+            else:
+                sku_name = "Redis Cluster Node Default"
+                note = ("ElastiCache → Memorystore for Redis Cluster; node RAM unknown "
+                        "(instance_type missing from CUR) — passthrough at cost parity")
             out.append({
                 "aws_li_key":         r["aws_li_key"],
                 "gcp_service":        GCP_MEMORYSTORE,
                 "gcp_sku_id":         None,
-                "gcp_sku_name":       f"Redis Capacity {cache_tier} M1",
+                "gcp_sku_name":       sku_name,
                 "component":          "cache",
                 "strategy":           "passthrough",
                 "unit_multiplier":    1.0,
                 "gcp_region":         region,
-                "projection_note":    ("ElastiCache → Memorystore for Redis; node RAM unknown "
-                                       "(instance_type missing from CUR) — passthrough at cost parity"),
+                "projection_note":    note,
                 "passthrough_reason": "unresolved_sku",
                 "mapping_confidence": 0.50,
             })
             continue
 
-        # Pick the cheapest real Memorystore capacity tier (discovered from
-        # the actual catalog, not a hand-typed RAM-band table) that covers
-        # this node's RAM, never crossing the Basic/Standard guarantee tier.
-        sku_name, size_tier = _cheapest_memorystore_tier(cache_tier, ram, region)
-        if sku_name is None:
-            # No real tier covers this much RAM — largest known tier is the
-            # honest ceiling; the note below already discloses the shortfall.
-            tiers = _discover_memorystore_tiers()
-            largest = max((t for t in tiers if t[0] == cache_tier), key=lambda t: t[2], default=None)
-            size_tier = largest[1] if largest else "M1"
-            sku_name = f"Redis Capacity {cache_tier} {size_tier}"
-        sku_id = resolve_sku(GCP_MEMORYSTORE, sku_name, region)
-        strategy = "map" if sku_id else "passthrough"
-        is_assump = False
-        assump_text = None
-        if is_dax:
-            is_assump = True
-            assump_text = f"dax_node_gib={ram:g}"
-            note = (f"DynamoDB Accelerator (DAX) node-hours → Memorystore for Redis Basic ({sku_name}); "
-                    f"node RAM={ram:.2f} GiB via assumption {assump_text} → unit_multiplier={ram:.2f} (GiBy.h)")
-        elif is_memdb:
-            itype = (r.get("instance_type") or "").strip()
-            parsed = parse_instance(itype) if itype else None
-            has_real_sizing = bool((parsed and parsed.get("ram_gb")) or r.get("instance_ram_gb") or (itype and itype.lower() in _ELASTICACHE_RAM_GIB))
-            if has_real_sizing:
-                note = (f"Amazon MemoryDB node-hours → Memorystore for Redis Standard HA ({sku_name}); "
-                        f"node RAM={ram:.2f} GiB (from instance type {itype}); "
-                        f"durable Multi-AZ primary database guarantee preserved (never downgraded to Basic)")
-            else:
+        if is_dax or is_memdb:
+            # DAX / MemoryDB preserve legacy capacity-tier pricing (per-GiBy.h, multiplier=ram)
+            sku_name, size_tier = _cheapest_memorystore_tier(cache_tier, ram, region)
+            if sku_name is None:
+                tiers = _discover_memorystore_tiers()
+                largest = max((t for t in tiers if t[0] == cache_tier), key=lambda t: t[2], default=None)
+                size_tier = largest[1] if largest else "M1"
+                sku_name = f"Redis Capacity {cache_tier} {size_tier}"
+            sku_id = resolve_sku(GCP_MEMORYSTORE, sku_name, region)
+            strategy = "map" if sku_id else "passthrough"
+            is_assump = False
+            assump_text = None
+            if is_dax:
                 is_assump = True
-                assump_text = f"memorydb_node_gib={ram:g}"
-                note = (f"Amazon MemoryDB node-hours → Memorystore for Redis Standard HA ({sku_name}); "
-                        f"node RAM={ram:.2f} GiB via assumption {assump_text} → unit_multiplier={ram:.2f} (GiBy.h); "
-                        f"durable Multi-AZ primary database guarantee preserved (never downgraded to Basic)")
-        elif is_ha:
-            note = (f"ElastiCache Multi-AZ → Memorystore for Redis Standard HA ({sku_name}); "
-                    f"node RAM={ram:.2f} GiB → unit_multiplier={ram:.2f} (GiBy.h); "
-                    f"deployment_option=Multi-AZ — replicated/failover guarantee preserved, "
-                    f"not silently downgraded to Basic")
-        elif has_deployment_signal:
-            note = (f"ElastiCache → Memorystore for Redis Basic ({sku_name}); "
-                    f"node RAM={ram:.2f} GiB → unit_multiplier={ram:.2f} (GiBy.h); "
-                    f"deployment_option confirms single-instance (not Multi-AZ)")
-        else:
-            note = (f"ElastiCache → Memorystore for Redis Basic ({sku_name}); "
-                    f"node RAM={ram:.2f} GiB → unit_multiplier={ram:.2f} (GiBy.h); "
-                    f"deployment_option not present in this CUR export — cannot confirm "
-                    f"single-instance vs Multi-AZ/Cluster mode; Standard HA tier would cost "
-                    f"~1.3-1.9x if this is actually HA. [architecture review recommended: "
-                    f"verify ElastiCache replication topology with customer]")
-        # Best-Fit Target Selection for Redis (WORKORDER_best_fit_target_selector §5.1):
+                assump_text = f"dax_node_gib={ram:g}"
+                note = (f"DynamoDB Accelerator (DAX) node-hours → Memorystore for Redis Basic ({sku_name}); "
+                        f"node RAM={ram:.2f} GiB via assumption {assump_text} → unit_multiplier={ram:.2f} (GiBy.h)")
+            else:  # is_memdb
+                itype = (r.get("instance_type") or "").strip()
+                parsed = parse_instance(itype) if itype else None
+                has_real_sizing = bool((parsed and parsed.get("ram_gb")) or r.get("instance_ram_gb") or (itype and itype.lower() in _ELASTICACHE_RAM_GIB))
+                if has_real_sizing:
+                    note = (f"Amazon MemoryDB node-hours → Memorystore for Redis Standard HA ({sku_name}); "
+                            f"node RAM={ram:.2f} GiB (from instance type {itype}); "
+                            f"durable Multi-AZ primary database guarantee preserved (never downgraded to Basic)")
+                else:
+                    is_assump = True
+                    assump_text = f"memorydb_node_gib={ram:g}"
+                    note = (f"Amazon MemoryDB node-hours → Memorystore for Redis Standard HA ({sku_name}); "
+                            f"node RAM={ram:.2f} GiB via assumption {assump_text} → unit_multiplier={ram:.2f} (GiBy.h); "
+                            f"durable Multi-AZ primary database guarantee preserved (never downgraded to Basic)")
+            res_row = {
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        GCP_MEMORYSTORE,
+                "gcp_sku_id":         str(sku_id) if sku_id else None,
+                "gcp_sku_name":       sku_name,
+                "component":          "cache",
+                "strategy":           strategy,
+                "unit_multiplier":    ram,
+                "gcp_region":         region,
+                "projection_note":    note + (_no_rate_suffix(sku_id, region) if not sku_id else ""),
+                "mapping_confidence": 0.85 if has_deployment_signal else 0.70,
+                "is_assumption":      is_assump,
+                "assumption":         assump_text,
+            }
+            if strategy == "passthrough":
+                res_row["passthrough_reason"] = "unsupported_instance_family"
+            out.append(res_row)
+            continue
+
+        # Best-Fit Target Selection for Redis burstable nodes (WORKORDER_best_fit_target_selector §5.1):
         # A burstable, single-node (non-HA) ElastiCache node has no burstable tier on
         # Memorystore for Redis (dedicated per-GiB capacity → ~2x over-projection).
         # Memorystore for Valkey's Shared Core Nano node is the like-for-like burstable
@@ -6595,13 +6619,8 @@ def map_elasticache(rows: list) -> list:
         is_burstable = bool(re.search(r"\bt[234]g?\b",
                                       f"{r.get('instance_type') or ''} {r.get('usage_type') or ''}",
                                       re.IGNORECASE))
-        if (is_burstable and not is_ha and not is_dax and not is_memdb
+        if (is_burstable and not is_ha
                 and is_managed_service_available("memorystore.googleapis.com", region)):
-            # The bundled catalog has no separate "Memorystore for Valkey" service; the
-            # Shared Core Nano node is published under Cloud Memorystore for Redis as
-            # "Redis Cluster Node Shared Core Nano <region>" (serviceId 5AF5-2C11-D467).
-            # Price from that real SKU — the closest published shared-core rate — and
-            # disclose it. Verified: cloud.google.com/memorystore/docs/valkey/pricing
             try:
                 valkey_sku = resolve_sku(GCP_MEMORYSTORE, "Redis Cluster Node Shared Core Nano", region)
             except Exception:
@@ -6620,31 +6639,67 @@ def map_elasticache(rows: list) -> list:
                     f"burstable {r.get('instance_type') or 't-family'} node — no burstable "
                     f"Redis tier). Priced from the catalog's Redis Cluster Shared Core Nano "
                     f"SKU (no separate Valkey SKU bundled). Alternatives considered: "
-                    f"Memorystore for Redis Basic {size_tier} ($0.049/GiB-h dedicated capacity)"),
+                    f"Memorystore for Redis Cluster Standard Small"),
                 "mapping_confidence": 0.85 if has_deployment_signal else 0.70,
                 "is_assumption":      False,
                 "assumption":         None,
             })
             continue
+
+        # Plain ElastiCache Redis / Valkey node -> Memorystore for Redis Cluster (§4.21, M10 retarget).
+        # Node-to-node matching: pick the cheapest Redis Cluster node whose capacity >= node RAM.
+        # Allow ~5% tolerance for binary GiB vs decimal GB / AWS nominal RAM overheads
+        # (e.g. cache.m5.2xlarge is 26.04 GiB, cache.r5.large is 13.07 GiB matching 13.0 GB node).
+        # unit_multiplier = 1.0 (AWS bills primary and each replica as separate NodeUsage rows — no HA multiplier).
+        chosen_node_desc = None
+        chosen_capacity = None
+        for cap, node_desc in _REDIS_CLUSTER_NODES:
+            if (cap * 1.05) >= ram:
+                chosen_node_desc = node_desc
+                chosen_capacity = cap
+                break
+
+        is_ceiling = False
+        if chosen_node_desc is None:
+            chosen_capacity, chosen_node_desc = _REDIS_CLUSTER_NODES[-1]
+            is_ceiling = True
+
+        sku_id = resolve_sku(GCP_MEMORYSTORE, rf"^{re.escape(chosen_node_desc)}", region)
+        strategy = "map" if sku_id else "passthrough"
+        engine_name = "Valkey" if "valkey" in combined_blob else "Redis"
+
+        if not is_ceiling:
+            note = (
+                f"ElastiCache for {engine_name} node ({ram:.2f} GiB) → Memorystore for Redis Cluster "
+                f"({chosen_node_desc}, {chosen_capacity:g} GB capacity); 1:1 node mapping "
+                f"(replicas/Multi-AZ are separate CUR NodeUsage rows — no HA multiplier); "
+                f"corrects legacy per-GiBy.h 2–3× over-projection"
+            )
+        else:
+            note = (
+                f"ElastiCache for {engine_name} node ({ram:.2f} GiB) → Memorystore for Redis Cluster "
+                f"({chosen_node_desc}, {chosen_capacity:g} GB capacity ceiling; node RAM exceeds largest "
+                f"single node — Redis Cluster shards across nodes, 116 GB node used as ceiling interim); "
+                f"1:1 node mapping (replicas/Multi-AZ are separate CUR NodeUsage rows); "
+                f"corrects legacy per-GiBy.h 2–3× over-projection"
+            )
+
         res_row = {
             "aws_li_key":         r["aws_li_key"],
             "gcp_service":        GCP_MEMORYSTORE,
-            "gcp_sku_id":         sku_id if sku_id else None,
-            "gcp_sku_name":       sku_name,
+            "gcp_sku_id":         str(sku_id) if sku_id else None,
+            "gcp_sku_name":       chosen_node_desc,
             "component":          "cache",
             "strategy":           strategy,
-            "unit_multiplier":    ram,
+            "unit_multiplier":    1.0,
             "gcp_region":         region,
             "projection_note":    note + (_no_rate_suffix(sku_id, region) if not sku_id else ""),
-            # Real deployment_option signal (HA or not) → 0.85, evidence-based.
-            # No signal at all → same 70% ceiling CLAUDE.md §6 uses for
-            # OpenSearch's identical "no application context in CUR" case.
             "mapping_confidence": 0.85 if has_deployment_signal else 0.70,
-            "is_assumption":      is_assump,
-            "assumption":         assump_text,
+            "is_assumption":      False,
+            "assumption":         None,
         }
         if strategy == "passthrough":
-            res_row["passthrough_reason"] = "unsupported_instance_family"
+            res_row["passthrough_reason"] = "no_rate_in_region"
         out.append(res_row)
     return out
 

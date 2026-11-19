@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import pytest
+import duckdb
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -30,6 +31,14 @@ sys.path.insert(0, _SCRIPTS)
 
 from apply_static_mappings import map_elasticache
 import spec_dispatch as sd
+
+
+def _get_catalog_rate(sku_id: str) -> float:
+    con = duckdb.connect(os.path.join(_ROOT, "data", "catalog.duckdb"), read_only=True)
+    res = con.execute("SELECT rate_usd FROM tiered_rates WHERE sku_id = ?", [sku_id]).fetchone()
+    con.close()
+    assert res is not None, f"SKU {sku_id} not found in tiered_rates"
+    return float(res[0])
 
 
 def _row(usage_type: str = "NodeUsage:cache.m5.large",
@@ -61,30 +70,88 @@ def _row(usage_type: str = "NodeUsage:cache.m5.large",
     }
 
 
-def test_redis_single_az_maps_to_basic_tier():
+def test_redis_single_az_maps_to_cluster_standard_small():
     r = _row(usage_type="NodeUsage:cache.m5.large", instance_type="cache.m5.large", deployment_option="Single-AZ")
     out = map_elasticache([r])
     assert len(out) == 1
     res = out[0]
     assert res["strategy"] == "map"
     assert res["gcp_service"] == "Cloud Memorystore for Redis"
-    assert "Basic" in res["gcp_sku_name"]
-    assert res["gcp_sku_id"] is not None
-    assert abs(res["unit_multiplier"] - 6.38) < 0.1
-    assert "deployment_option confirms single-instance" in res["projection_note"]
+    assert res["gcp_sku_name"] == "Redis Cluster Node Standard Small"
+    assert res["gcp_sku_id"] == "02F6-0CB2-BDE1"
+    assert res["unit_multiplier"] == 1.0
+    assert "1:1 node mapping" in res["projection_note"]
+    assert "corrects legacy per-GiBy.h 2–3× over-projection" in res["projection_note"]
 
 
-def test_redis_multi_az_maps_to_standard_tier():
+def test_redis_multi_az_maps_to_cluster_no_ha_multiplier():
     r = _row(usage_type="USE1-NodeUsage:cache.m5.large", instance_type="cache.m5.large", deployment_option="Multi-AZ")
     out = map_elasticache([r])
     assert len(out) == 1
     res = out[0]
     assert res["strategy"] == "map"
     assert res["gcp_service"] == "Cloud Memorystore for Redis"
-    assert "Standard" in res["gcp_sku_name"]
-    assert res["gcp_sku_id"] is not None
-    assert abs(res["unit_multiplier"] - 6.38) < 0.1
-    assert "deployment_option=Multi-AZ" in res["projection_note"]
+    assert res["gcp_sku_name"] == "Redis Cluster Node Standard Small"
+    assert res["gcp_sku_id"] == "02F6-0CB2-BDE1"
+    assert res["unit_multiplier"] == 1.0
+    assert "replicas/Multi-AZ are separate CUR NodeUsage rows — no HA multiplier" in res["projection_note"]
+
+
+def test_redis_cluster_ladder_node_default_13gib():
+    """13 GiB node maps to Redis Cluster Node Default ($0.1923/hr in us-central1)."""
+    r = _row(usage_type="NodeUsage:cache.m5.xlarge", instance_type="cache.m5.xlarge", deployment_option="Single-AZ")
+    out = map_elasticache([r])
+    assert len(out) == 1
+    res = out[0]
+    assert res["strategy"] == "map"
+    assert res["gcp_service"] == "Cloud Memorystore for Redis"
+    assert res["gcp_sku_name"] == "Redis Cluster Node Default"
+    assert res["gcp_sku_id"] == "8513-DCBC-92D7"
+    assert res["unit_multiplier"] == 1.0
+    rate = _get_catalog_rate(res["gcp_sku_id"])
+    assert rate == pytest.approx(0.1923, abs=0.001)
+
+
+def test_redis_cluster_ladder_standard_large_26gib():
+    """26 GiB node maps to Redis Cluster Node Standard Large ($0.5698/hr in us-central1)."""
+    r = _row(usage_type="NodeUsage:cache.m5.2xlarge", instance_type="cache.m5.2xlarge", deployment_option="Single-AZ")
+    out = map_elasticache([r])
+    assert len(out) == 1
+    res = out[0]
+    assert res["strategy"] == "map"
+    assert res["gcp_service"] == "Cloud Memorystore for Redis"
+    assert res["gcp_sku_name"] == "Redis Cluster Node Standard Large"
+    assert res["gcp_sku_id"] == "87AC-74F6-A953"
+    assert res["unit_multiplier"] == 1.0
+    rate = _get_catalog_rate(res["gcp_sku_id"])
+    assert rate == pytest.approx(0.5698, abs=0.001)
+
+
+def test_redis_cluster_ladder_highmem_2xlarge_ceiling_200gib():
+    """200 GiB node maps to 116 GB Redis Cluster Node Highmem 2xlarge with ceiling note."""
+    r = _row(usage_type="NodeUsage:cache.r5.24xlarge", instance_type="cache.r5.24xlarge", deployment_option="Single-AZ")
+    out = map_elasticache([r])
+    assert len(out) == 1
+    res = out[0]
+    assert res["strategy"] == "map"
+    assert res["gcp_service"] == "Cloud Memorystore for Redis"
+    assert res["gcp_sku_name"] == "Redis Cluster Node Highmem 2xlarge"
+    assert res["gcp_sku_id"] == "BDF7-A6EC-FB85"
+    assert res["unit_multiplier"] == 1.0
+    assert "ceiling interim" in res["projection_note"]
+    rate = _get_catalog_rate(res["gcp_sku_id"])
+    assert rate == pytest.approx(1.6274, abs=0.001)
+
+
+def test_redis_cluster_no_legacy_capacity_on_plain_redis():
+    """Invariant: plain Redis node rows must never target legacy Redis Capacity M* SKUs."""
+    for itype in ["cache.m5.large", "cache.m5.xlarge", "cache.m5.2xlarge", "cache.m5.4xlarge", "cache.r5.24xlarge"]:
+        r = _row(usage_type=f"NodeUsage:{itype}", instance_type=itype, deployment_option="Single-AZ")
+        out = map_elasticache([r])
+        assert len(out) == 1
+        res = out[0]
+        assert "Redis Capacity" not in res["gcp_sku_name"], f"Plain Redis node {itype} mapped to legacy capacity: {res}"
+        assert "Redis Cluster Node" in res["gcp_sku_name"], f"Expected Redis Cluster Node, got {res}"
 
 
 def test_redis_burstable_maps_to_valkey_shared_core():

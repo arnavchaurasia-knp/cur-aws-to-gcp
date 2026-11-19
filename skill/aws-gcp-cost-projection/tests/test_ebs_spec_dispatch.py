@@ -98,7 +98,8 @@ def test_map_block_storage_snapshot_tiering():
     mapped = {r["aws_li_key"]: r for r in res}
 
     assert mapped["snap_std"]["gcp_sku_name"] == "Storage PD Snapshot"
-    assert mapped["snap_std"]["gcp_sku_id"] == "6E69-DD68-8DCA"
+    # With prefer_single_region=True, resolves to regional Singapore snapshot instead of multi-region Asia (6E69-DD68-8DCA)
+    assert mapped["snap_std"]["gcp_sku_id"] == "EC5A-D05B-E188"
 
     assert mapped["snap_arc"]["gcp_sku_name"] == "Regional Archive Snapshot Data Storage"
     assert mapped["snap_arc"]["gcp_sku_id"] == "9DB9-341A-E6D3"

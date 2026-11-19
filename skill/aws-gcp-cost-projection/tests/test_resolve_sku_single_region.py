@@ -91,3 +91,129 @@ def test_firestore_single_region_is_cheaper_than_multi():
     assert r_single is not None and r_single <= 5e-07, (
         f"single-region Read Ops rate {r_single} should be the ~$0.30/M (3e-7) side, not the 2x nam5 ($0.60/M)"
     )
+
+
+# ---------------------------------------------------------------------------
+# WORKORDER: EBS snapshot & S3 -> REGIONAL GCP targets
+# ---------------------------------------------------------------------------
+
+def test_ebs_snapshot_maps_to_regional_pd_snapshot():
+    """EBS snapshot rows map to regional PD Snapshot in <city>, not multi-region in US/Asia."""
+    from scripts.apply_static_mappings import map_block_storage
+    rows = [
+        {
+            "aws_li_key": "k_snap_va",
+            "product": "Amazon Elastic Compute Cloud",
+            "usage_type": "USE1-EBS:SnapshotUsage",
+            "operation": "",
+            "volume_type": "",
+            "gcp_region": "us-east4",
+            "unit": "GB-Mo",
+        },
+        {
+            "aws_li_key": "k_snap_mum",
+            "product": "Amazon Elastic Compute Cloud",
+            "usage_type": "APS3-EBS:SnapshotUsage",
+            "operation": "",
+            "volume_type": "",
+            "gcp_region": "asia-south1",
+            "unit": "GB-Mo",
+        },
+    ]
+    out = map_block_storage(rows)
+    assert len(out) == 2
+
+    # us-east4 -> Storage PD Snapshot in Virginia (3FB1-991D-37F5, REGIONAL)
+    assert out[0]["strategy"] == "map"
+    assert out[0]["gcp_sku_id"] == "3FB1-991D-37F5"
+    assert _geo_type("Compute Engine", out[0]["gcp_sku_id"]) == "REGIONAL"
+
+    # asia-south1 -> Storage PD Snapshot in Mumbai (A0EA-3B8B-0794, REGIONAL)
+    assert out[1]["strategy"] == "map"
+    assert out[1]["gcp_sku_id"] == "A0EA-3B8B-0794"
+    assert _geo_type("Compute Engine", out[1]["gcp_sku_id"]) == "REGIONAL"
+
+
+def test_aws_backup_ebs_maps_to_regional_pd_snapshot():
+    """AWS Backup EBS warm storage maps to regional PD Snapshot."""
+    from scripts.apply_static_mappings import map_backup
+    rows = [
+        {
+            "aws_li_key": "k_backup_ebs",
+            "product": "AWS Backup",
+            "usage_type": "WarmStorage-ByteHrs-EBS",
+            "operation": "",
+            "gcp_region": "us-east4",
+            "unit": "GB-Mo",
+        },
+        {
+            "aws_li_key": "k_backup_ebs_mum",
+            "product": "AWS Backup",
+            "usage_type": "WarmStorage-ByteHrs-EBS",
+            "operation": "",
+            "gcp_region": "asia-south1",
+            "unit": "GB-Mo",
+        },
+    ]
+    mapped, _ = map_backup(rows)
+    assert len(mapped) == 2
+    assert mapped[0]["strategy"] == "map"
+    assert mapped[0]["gcp_sku_id"] == "3FB1-991D-37F5"
+    assert _geo_type("Compute Engine", mapped[0]["gcp_sku_id"]) == "REGIONAL"
+
+    assert mapped[1]["strategy"] == "map"
+    assert mapped[1]["gcp_sku_id"] == "A0EA-3B8B-0794"
+    assert _geo_type("Compute Engine", mapped[1]["gcp_sku_id"]) == "REGIONAL"
+
+
+def test_s3_standard_storage_maps_to_regional_gcs():
+    """S3 Standard storage maps to regional GCS Standard (not multi-region)."""
+    from scripts.apply_static_mappings import map_object_storage
+    rows = [
+        {
+            "aws_li_key": "k_s3_iowa",
+            "product": "Amazon Simple Storage Service",
+            "usage_type": "TimedStorage-ByteHrs",
+            "operation": "StandardStorage",
+            "gcp_region": "us-central1",
+            "unit": "GB-Mo",
+        },
+        {
+            "aws_li_key": "k_s3_sc",
+            "product": "Amazon Simple Storage Service",
+            "usage_type": "TimedStorage-ByteHrs",
+            "operation": "StandardStorage",
+            "gcp_region": "us-east1",
+            "unit": "GB-Mo",
+        },
+    ]
+    mapped, _ = map_object_storage(rows)
+    assert len(mapped) == 2
+    assert mapped[0]["strategy"] == "map"
+    assert _geo_type("Cloud Storage", mapped[0]["gcp_sku_id"]) == "REGIONAL"
+    assert mapped[0]["gcp_sku_id"] != "0D5D-6E23-4250"  # NOT US Multi-region
+
+    assert mapped[1]["strategy"] == "map"
+    assert _geo_type("Cloud Storage", mapped[1]["gcp_sku_id"]) == "REGIONAL"
+    assert mapped[1]["gcp_sku_id"] != "0D5D-6E23-4250"  # NOT US Multi-region
+
+
+def test_dynamodb_global_tables_remains_multiregional():
+    """Guard: DynamoDB Global Tables replication writes still target multi-region nam5."""
+    from scripts.apply_static_mappings import map_dynamodb_capacity
+    rows = [
+        {
+            "aws_li_key": "k_d_repl",
+            "product": "Amazon DynamoDB",
+            "usage_type": "USE1-ReplicationWriteRequestUnits",
+            "operation": "",
+            "gcp_region": "us-central1",
+            "unit": "Requests",
+            "pricing_unit": "Requests",
+        }
+    ]
+    res = map_dynamodb_capacity(rows)
+    assert len(res) == 1
+    assert res[0]["strategy"] == "map"
+    assert _geo_type("Cloud Firestore", res[0]["gcp_sku_id"]) == "MULTI_REGIONAL"
+    assert "North America 5" in res[0]["gcp_sku_name"]

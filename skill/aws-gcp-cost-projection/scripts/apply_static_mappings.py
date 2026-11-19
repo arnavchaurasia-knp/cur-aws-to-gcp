@@ -2207,7 +2207,7 @@ def _strict_resolve_sku(gcp_service, desc_pattern, gcp_region, *args, **kwargs):
     return resolve_sku(gcp_service, desc_pattern, gcp_region, *args, **kwargs)
 
 
-def resolve_sku_with_fallback(candidates, gcp_region):
+def resolve_sku_with_fallback(candidates, gcp_region, prefer_single_region=False):
     """Try each (gcp_service, desc_pattern, display_name) in order (cheapest first)
     until one resolves in gcp_region.  Returns:
         (sku_id, display_name, fallback_used, original_display_name)
@@ -2223,7 +2223,7 @@ def resolve_sku_with_fallback(candidates, gcp_region):
         return None, None, False, None
     original_name = candidates[0][2]
     for idx, (gcp_service, desc_pattern, display_name) in enumerate(candidates):
-        sku_id = resolve_sku(gcp_service, desc_pattern, gcp_region)
+        sku_id = resolve_sku(gcp_service, desc_pattern, gcp_region, prefer_single_region=prefer_single_region)
         if sku_id:
             return sku_id, display_name, idx > 0, original_name
     return None, original_name, False, original_name
@@ -2377,7 +2377,7 @@ def map_object_storage(rows):
                 # step up to the next cheapest available class instead of emitting
                 # a map row with no SKU ID.
                 candidates = _GCS_CLASS_FALLBACKS.get(result, [(GCP_CLOUD_STORAGE, result, result)])
-                sku_id, resolved_name, fell_back, orig_name = resolve_sku_with_fallback(candidates, gcp_region)
+                sku_id, resolved_name, fell_back, orig_name = resolve_sku_with_fallback(candidates, gcp_region, prefer_single_region=True)
                 sku_name = resolved_name or result
                 note = f"S3 usage_type routing → {sku_name}"
                 if fell_back:
@@ -2433,7 +2433,7 @@ def map_object_storage(rows):
                         })
                     else:
                         candidates = _GCS_CLASS_FALLBACKS.get(_r, [(GCP_CLOUD_STORAGE, _r, _r)])
-                        sku_id, resolved_name, fell_back, orig_name = resolve_sku_with_fallback(candidates, gcp_region)
+                        sku_id, resolved_name, fell_back, orig_name = resolve_sku_with_fallback(candidates, gcp_region, prefer_single_region=True)
                         sku_name = resolved_name or _r
                         note = f"S3 product-code routing → {sku_name} (extracted from product)"
                         if fell_back:
@@ -2486,7 +2486,7 @@ def map_object_storage(rows):
                 })
             else:
                 candidates = _GCS_CLASS_FALLBACKS.get(result_blob, [(GCP_CLOUD_STORAGE, result_blob, result_blob)])
-                sku_id, resolved_name, fell_back, orig_name = resolve_sku_with_fallback(candidates, gcp_region)
+                sku_id, resolved_name, fell_back, orig_name = resolve_sku_with_fallback(candidates, gcp_region, prefer_single_region=True)
                 sku_name = resolved_name or result_blob
                 note = f"S3 blob fallback → {sku_name}"
                 if fell_back:
@@ -4425,7 +4425,7 @@ def map_block_storage(rows):
                      f"(${cap_rate:.4f}/GiBy-mo, cheapest of Hyperdisk Extreme / legacy Extreme PD "
                      f"Capacity in this region)")
         else:
-            sku_id = resolve_sku(service, desc, gcp_region)
+            sku_id = resolve_sku(service, desc, gcp_region, prefer_single_region=is_snapshot)
         entry = {
             "aws_li_key":       r["aws_li_key"],
             "gcp_service":      service,
@@ -11270,7 +11270,7 @@ def map_backup(rows: list) -> tuple:
 
         # 7. EBS / AMI or default warm backup -> Compute Engine Storage PD Snapshot
         # NEVER emit live Hyperdisk / PD capacity!
-        sku_id = resolve_sku(GCP_COMPUTE_ENGINE, "Storage PD Snapshot", region)
+        sku_id = resolve_sku(GCP_COMPUTE_ENGINE, "Storage PD Snapshot", region, prefer_single_region=True)
         mapped.append({
             "aws_li_key":         aws_key,
             "gcp_service":        GCP_COMPUTE_ENGINE,

@@ -1,6 +1,6 @@
 # WORKORDER — EBS snapshot & S3 → REGIONAL GCP targets (not multi-region)
 
-Status: READY FOR AGY · Author: Claude (Opus 4.8) · 2026-11-19 · Loop: Claude modelled+verified → AGY implements → operator "verify".
+Status: COMPLETE · Implemented & Verified by AGY · 2026-11-19 · Full test suite 1732 passed.
 Origin: surfaced by the multi-region `resolve_sku` audit (commit `2c1e7a3`, [[project_multiregion_resolve_sku_guard]]). That audit fixed Firestore and deliberately left PD-snapshot/GCS alone pending official-page verification. **Verification is now done (below) — the decision is REGIONAL.**
 
 ---

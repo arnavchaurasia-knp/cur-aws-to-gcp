@@ -31,9 +31,12 @@ Legend: 🔴 real dollar error · 🟡 needs decision/verify · ⚪ low/cosmetic
   → cheapest REGIONAL GCS (us-east1 → $0.022, down from US-multi $0.026); DynamoDB Global Tables stays multi-region.
   `prefer_single_region` extended to snapshot/backup/GCS mappers. Spec: `docs/WORKORDER_regional_vs_multiregion_targets.md`.
 
-- 🟡 **NAT gateway-hours per-VM-hour decision (USER INPUT NEEDED).** Cloud NAT bills per-VM-hour, not per-gateway;
-  needs a VM-count assumption. Anchor: Cloud-NAT-for-LB ">32 VM" (see [[reference_gcp_cloud_lb_rates]]).
-  SP/RI netting is already DECIDED (OD-vs-OD, [[project_pricing_and_cutover_decisions]]) — not open.
+- ✅ **NAT gateway-hours per-VM-hour — DONE 2026-11-19 (commit f38a082).** Rate verified (cloud.google.com/nat/pricing:
+  $0.0014/VM-hr, 32-VM cap → $0.044/hr flat, data $0.045/GiB). Per-VM model + 32-cap multiplier was already correct;
+  the gap was that the BILL_CALIBRATED `nat_vms_per_gateway` derivation was dead code AND counted DISTINCT
+  instance_type (undercount). Replaced with concurrent-VM estimate = Σ(compute instance-hours)/period/gateways
+  (`_estimate_vms_per_gateway`), wired in with committed default 32 as fallback (no resource_id in CUR). 1746 tests.
+  SP/RI netting already DECIDED (OD-vs-OD, [[project_pricing_and_cutover_decisions]]).
 
 - ⚪ **LOW / cosmetic sweep (all dollar-safe today; declaration tidy-ups only):**
   - CloudTrail free management-events → explicitly declared IGNORE

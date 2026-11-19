@@ -101,6 +101,74 @@ def inject_oracle_rates(conn):
             )
 
 
+def inject_kafka_rates(conn):
+    """Insert pinned Managed Service for Apache Kafka rates into gcp_sku_rates.
+    Rates per cloud.google.com/managed-service-for-apache-kafka/pricing (bxw-verified 2026-11-19):
+    - CPU and RAM: $0.09 / DCU-h (1 DCU = 0.6 vCPU + 0.1 GiB RAM)
+    - Connect CPU and RAM: $0.12 / DCU-h (1 MCU = 1 vCPU + 4 GiB = 1.0 DCU)
+    - Local Storage: $0.17 / GiB-mo ($0.000232877 / GiB-h)
+    - Long-term Storage: $0.10 / GiB-mo ($0.000136986 / GiB-h)
+    Source: https://cloud.google.com/managed-service-for-apache-kafka/pricing
+    """
+    kafka_skus = [
+        ("KAFKA-DCU-CPURAM", "Managed Service for Apache Kafka: CPU and RAM (DCU)", "DCU-hour", 0.09),
+        ("KAFKA-DCU-CONNECT", "Managed Service for Apache Kafka: Connect CPU and RAM (DCU)", "DCU-hour", 0.12),
+        ("KAFKA-LOCAL-STORAGE", "Managed Service for Apache Kafka: Local Storage", "GiBy.mo", 0.17),
+        ("KAFKA-LONGTERM-STORAGE", "Managed Service for Apache Kafka: Long-term Storage", "GiBy.mo", 0.10),
+    ]
+    regions = [
+        "global", "us-east4", "us-east1", "us-central1", "us-west1", "us-west2", "us-south1",
+        "europe-west1", "europe-west2", "europe-west3", "europe-west4", "europe-west9",
+        "europe-north1", "asia-southeast1", "asia-northeast1", "asia-south1",
+        "australia-southeast1", "southamerica-east1", "me-central1",
+    ]
+    for sku_id, sku_name, unit, rate in kafka_skus:
+        for reg in regions:
+            conn.execute(
+                """
+                INSERT INTO gcp_sku_rates VALUES
+                (?, 'Managed Service for Apache Kafka', ?, 'ApplicationServices', 'Kafka', 'OnDemand', ?, ?, ?, 'canonical-kafka-gcp', 'https://cloud.google.com/managed-service-for-apache-kafka/pricing')
+                ON CONFLICT DO NOTHING
+                """,
+                (sku_id, sku_name, reg, unit, rate),
+            )
+
+
+def inject_netapp_parallelstore_rates(conn):
+    """Insert pinned NetApp Volumes and Parallelstore rates into gcp_sku_rates.
+    Rates per cloud.google.com/netapp/volumes/pricing and cloud.google.com/parallelstore/pricing (bxw-verified 2026-11-19):
+    - NetApp Volumes Standard: $0.20 / GiB-mo ($0.000273973 / GiB-h)
+    - NetApp Volumes Premium: $0.294 / GiB-mo ($0.000403014 / GiB-h)
+    - NetApp Volumes Extreme: $0.393 / GiB-mo ($0.000537945 / GiB-h)
+    - Parallelstore Capacity: $0.14 / GiB-mo ($0.000191781 / GiB-h)
+    Sources:
+      https://cloud.google.com/netapp/volumes/pricing
+      https://cloud.google.com/parallelstore/pricing
+    """
+    fsx_skus = [
+        ("NETAPP-STANDARD", "Google Cloud NetApp Volumes", "NetApp Volumes Standard", 0.20, "canonical-netapp-gcp", "https://cloud.google.com/netapp/volumes/pricing"),
+        ("NETAPP-PREMIUM", "Google Cloud NetApp Volumes", "NetApp Volumes Premium", 0.294, "canonical-netapp-gcp", "https://cloud.google.com/netapp/volumes/pricing"),
+        ("NETAPP-EXTREME", "Google Cloud NetApp Volumes", "NetApp Volumes Extreme", 0.393, "canonical-netapp-gcp", "https://cloud.google.com/netapp/volumes/pricing"),
+        ("PARALLELSTORE-CAPACITY", "Parallelstore", "Parallelstore Capacity", 0.14, "canonical-parallelstore-gcp", "https://cloud.google.com/parallelstore/pricing"),
+    ]
+    regions = [
+        "global", "us-east4", "us-east1", "us-central1", "us-west1", "us-west2", "us-south1",
+        "europe-west1", "europe-west2", "europe-west3", "europe-west4", "europe-west9",
+        "europe-north1", "asia-southeast1", "asia-northeast1", "asia-south1",
+        "australia-southeast1", "southamerica-east1", "me-central1",
+    ]
+    for sku_id, svc, sku_name, rate, src, url in fsx_skus:
+        for reg in regions:
+            conn.execute(
+                """
+                INSERT INTO gcp_sku_rates VALUES
+                (?, ?, ?, 'Storage', 'FileStorage', 'OnDemand', ?, 'GiBy.mo', ?, ?, ?)
+                ON CONFLICT DO NOTHING
+                """,
+                (sku_id, svc, sku_name, reg, rate, src, url),
+            )
+
+
 def load_cud_pct():
     """Load CUD multipliers from data/cud_pct.json, falling back to the dict above."""
     json_path = os.path.join(DATA_DIR, "cud_pct.json")
@@ -1111,6 +1179,12 @@ def main():
 
         # Oracle Database@Google Cloud Base Database Service (ECPU-hour): pinned on-demand rates
         inject_oracle_rates(conn)
+
+        # Managed Service for Apache Kafka (§4.22): pinned DCU and storage rates
+        inject_kafka_rates(conn)
+
+        # NetApp Volumes & Parallelstore (§4.23): pinned storage rates
+        inject_netapp_parallelstore_rates(conn)
 
         # Cloud Logging Log Ingestion: NOT injected as a pseudo-SKU — the real
         # catalog SKU "Log Storage cost" (143F-A1B0-E0BE) already carries the

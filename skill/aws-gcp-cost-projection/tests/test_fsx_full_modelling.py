@@ -24,8 +24,8 @@ def _row(**kw):
     }
 
 
-def test_fsx_lustre_storage_maps_to_managed_lustre_or_filestore():
-    """FSx for Lustre storage maps to Google Cloud Managed Lustre or Filestore High Scale fallback."""
+def test_fsx_lustre_storage_maps_to_parallelstore():
+    """FSx for Lustre storage maps to Parallelstore Capacity per WORKORDER §4.23 ($0.14/GiB-mo)."""
     rows = [
         _row(
             aws_li_key="k_lustre_ssd",
@@ -47,17 +47,19 @@ def test_fsx_lustre_storage_maps_to_managed_lustre_or_filestore():
     res = asm.map_fsx(rows)
     assert len(res) == 2
     for r in res:
-        assert r["gcp_service"] in (asm.GCP_MANAGED_LUSTRE, "Cloud Filestore")
+        assert r["gcp_service"] == "Parallelstore"
+        assert r["gcp_sku_id"] == "PARALLELSTORE-CAPACITY"
         assert r["strategy"] == "map"
         assert r["component"] == "storage"
         assert pytest.approx(r["unit_multiplier"], rel=1e-5) == asm.GB_TO_GIB
+        assert "$0.14/GiB-mo" in r["projection_note"]
         # Invariant: No FSx row is ever priced as live Hyperdisk/PD
         assert "Hyperdisk" not in str(r.get("projection_note"))
         assert "Persistent Disk" not in str(r.get("projection_note"))
 
 
-def test_fsx_ontap_storage_maps_to_netapp_volumes():
-    """FSx for NetApp ONTAP storage maps to Google Cloud NetApp Volumes (never blanket passthrough)."""
+def test_fsx_ontap_storage_maps_to_netapp_volumes_premium_default():
+    """FSx for NetApp ONTAP SSD storage maps to NetApp Volumes Premium ($0.294/GiB-mo)."""
     rows = [
         _row(
             aws_li_key="k_ontap_ssd",
@@ -71,14 +73,39 @@ def test_fsx_ontap_storage_maps_to_netapp_volumes():
     res = asm.map_fsx(rows)
     assert len(res) == 1
     r = res[0]
-    assert r["gcp_service"] in (asm.GCP_NETAPP_VOLUMES, "Cloud Filestore")
-    assert r["strategy"] in ("map", "passthrough")
+    assert r["gcp_service"] == asm.GCP_NETAPP_VOLUMES
+    assert r["gcp_sku_id"] == "NETAPP-PREMIUM"
+    assert r["strategy"] == "map"
     assert r["component"] == "storage"
-    if r["strategy"] == "map":
-        assert r.get("gcp_sku_id")
-    else:
-        assert "NetApp Volumes" in str(r.get("projection_note"))
-    assert pytest.approx(r["unit_multiplier"], rel=1e-5) in (asm.GB_TO_GIB, 1.0)
+    assert pytest.approx(r["unit_multiplier"], rel=1e-5) == asm.GB_TO_GIB
+    assert "$0.294/GiB-mo" in r["projection_note"]
+
+
+def test_fsx_ontap_storage_subtiers_standard_and_extreme():
+    """FSx for NetApp ONTAP HDD/capacity maps to Standard ($0.20), extreme maps to Extreme ($0.393)."""
+    rows = [
+        _row(
+            aws_li_key="k_ontap_hdd",
+            product="Amazon FSx for NetApp ONTAP",
+            usage_type="APS3-FSx:ONTAP-HDD-Storage",
+            unit="GB-Mo",
+        ),
+        _row(
+            aws_li_key="k_ontap_ext",
+            product="Amazon FSx for NetApp ONTAP",
+            usage_type="APS3-FSx:ONTAP-Extreme-Storage",
+            unit="GB-Mo",
+        ),
+    ]
+    res = asm.map_fsx(rows)
+    assert len(res) == 2
+    assert res[0]["gcp_sku_id"] == "NETAPP-STANDARD"
+    assert pytest.approx(res[0]["unit_multiplier"], rel=1e-5) == asm.GB_TO_GIB
+    assert "$0.200/GiB-mo" in res[0]["projection_note"]
+
+    assert res[1]["gcp_sku_id"] == "NETAPP-EXTREME"
+    assert pytest.approx(res[1]["unit_multiplier"], rel=1e-5) == asm.GB_TO_GIB
+    assert "$0.393/GiB-mo" in res[1]["projection_note"]
 
 
 def test_fsx_windows_storage_maps_to_netapp_volumes_or_enterprise():
@@ -286,4 +313,19 @@ def test_fsx_catalog_and_spec_dispatch_coverage():
         assert d["mechanic"] == entry["expected_mechanic"], (
             f"Expected {entry['expected_mechanic']}, got {d['mechanic']} for {entry['usage_type']}"
         )
+
+
+def test_fsx_mapping_invariants():
+    """Invariant: every mapped FSx row has a valid gcp_sku_id (never empty)."""
+    rows = [
+        _row(usage_type="APS3-FSx:Lustre-Storage", product="Amazon FSx for Lustre"),
+        _row(usage_type="APS3-FSx:ONTAP-Storage", product="Amazon FSx for NetApp ONTAP"),
+        _row(usage_type="APS3-FSx:CapacityPool-GB", product="Amazon FSx for NetApp ONTAP"),
+        _row(usage_type="APS3-FSx:OpenZFS-Storage", product="Amazon FSx for OpenZFS"),
+        _row(usage_type="APS3-FSx:Backup-GB-Mo", product="Amazon FSx"),
+    ]
+    res = asm.map_fsx(rows)
+    for r in res:
+        if r["strategy"] == "map":
+            assert r.get("gcp_sku_id"), f"Mapped row missing gcp_sku_id: {r}"
 

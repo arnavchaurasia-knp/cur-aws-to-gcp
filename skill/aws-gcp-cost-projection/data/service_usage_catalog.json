@@ -2242,5 +2242,111 @@
       "expected_mechanic": "mwaa",
       "description": "MWAA storage variant -> Cloud Composer Gen 2 Database Storage"
     }
+  ],
+  "msk": [
+    {
+      "usage_type": "APS5-Kafka.m5.large",
+      "operation": "RunBroker",
+      "unit": "Hrs",
+      "expected_charge_type": "msk_broker_hours",
+      "expected_mechanic": "msk",
+      "description": "MSK kafka.m5.large broker hours (2 vCPU / 8 GiB) -> Managed Service for Apache Kafka (2.0 DCU)"
+    },
+    {
+      "usage_type": "APS5-Kafka.m5.xlarge",
+      "operation": "RunBroker",
+      "unit": "Hrs",
+      "expected_charge_type": "msk_broker_hours",
+      "expected_mechanic": "msk",
+      "description": "MSK kafka.m5.xlarge broker hours (4 vCPU / 16 GiB) -> Managed Service for Apache Kafka (4.0 DCU)"
+    },
+    {
+      "usage_type": "APS5-Kafka.m5.2xlarge",
+      "operation": "RunBroker",
+      "unit": "Hrs",
+      "expected_charge_type": "msk_broker_hours",
+      "expected_mechanic": "msk",
+      "description": "MSK kafka.m5.2xlarge broker hours (8 vCPU / 32 GiB) -> Managed Service for Apache Kafka (8.0 DCU)"
+    },
+    {
+      "usage_type": "APS5-Kafka.t3.small",
+      "operation": "RunBroker",
+      "unit": "Hrs",
+      "expected_charge_type": "msk_broker_hours",
+      "expected_mechanic": "msk",
+      "description": "MSK kafka.t3.small burstable broker hours (2 vCPU / 2 GiB) -> Managed Service for Apache Kafka (1.4 DCU)"
+    },
+    {
+      "usage_type": "APS5-Kafka.m7g.large",
+      "operation": "RunBroker",
+      "unit": "Hrs",
+      "expected_charge_type": "msk_broker_hours",
+      "expected_mechanic": "msk",
+      "description": "MSK kafka.m7g.large Graviton broker hours (2 vCPU / 8 GiB) -> Managed Service for Apache Kafka (2.0 DCU)"
+    },
+    {
+      "usage_type": "APS5-Kafka.r5.large",
+      "operation": "RunBroker",
+      "unit": "Hrs",
+      "expected_charge_type": "msk_broker_hours",
+      "expected_mechanic": "msk",
+      "description": "MSK kafka.r5.large memory-optimized broker hours (2 vCPU / 16 GiB) -> Managed Service for Apache Kafka (2.8 DCU)"
+    },
+    {
+      "usage_type": "APS5-Kafka.r7g.large",
+      "operation": "RunBroker",
+      "unit": "Hrs",
+      "expected_charge_type": "msk_broker_hours",
+      "expected_mechanic": "msk",
+      "description": "MSK kafka.r7g.large Graviton memory broker hours (2 vCPU / 16 GiB) -> Managed Service for Apache Kafka (2.8 DCU)"
+    },
+    {
+      "usage_type": "APS5-Kafka.mcu.general",
+      "operation": "RunConnect",
+      "unit": "Hrs",
+      "expected_charge_type": "msk_broker_hours",
+      "expected_mechanic": "msk",
+      "description": "MSK Connect worker hours (1 MCU = 1 vCPU / 4 GiB = 1.0 DCU) -> Managed Service for Apache Kafka Connect ($0.12/DCU-h)"
+    },
+    {
+      "usage_type": "APS5-Kafka.Storage",
+      "operation": "",
+      "unit": "GB-Mo",
+      "expected_charge_type": "msk_storage",
+      "expected_mechanic": "block_storage",
+      "description": "MSK broker storage GB-Mo -> Managed Service for Apache Kafka Local Storage ($0.17/GiB-mo)"
+    },
+    {
+      "usage_type": "Storage.gp3",
+      "operation": "",
+      "unit": "GB-Mo",
+      "expected_charge_type": "msk_storage",
+      "expected_mechanic": "block_storage",
+      "description": "MSK broker gp3 storage GB-Mo -> Managed Service for Apache Kafka Local Storage"
+    },
+    {
+      "usage_type": "Kafka-Storage-ByteHrs",
+      "operation": "",
+      "unit": "GB-Mo",
+      "expected_charge_type": "msk_storage",
+      "expected_mechanic": "block_storage",
+      "description": "MSK storage Byte-Hours -> Managed Service for Apache Kafka Local Storage"
+    },
+    {
+      "usage_type": "DataTransfer-Out-Bytes",
+      "operation": "",
+      "unit": "GB",
+      "expected_charge_type": "msk_data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "MSK data transfer out -> Cloud Data Transfer inter-zone"
+    },
+    {
+      "usage_type": "DataTransfer-In-Bytes",
+      "operation": "",
+      "unit": "GB",
+      "expected_charge_type": "msk_data_transfer",
+      "expected_mechanic": "data_transfer",
+      "description": "MSK data transfer in -> Cloud Data Transfer"
+    }
   ]
 }

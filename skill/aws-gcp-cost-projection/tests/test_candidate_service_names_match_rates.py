@@ -44,9 +44,17 @@ def test_cud_eligible_services_have_matching_catalog_or_alias():
         "Cloud Run": {"Cloud Run"},
     }
 
+    # Synthetic services injected at runtime (not present in raw catalog.duckdb)
+    synthetic_services = {
+        "Managed Service for Apache Kafka",
+        "Google Cloud NetApp Volumes",
+    }
+
     # Every eligible service must either be in catalog directly or have an alias in catalog
     if catalog_services:
         for svc in cud_eligible:
+            if svc in synthetic_services:
+                continue
             aliases = known_aliases.get(svc, {svc})
             matched = any(a in catalog_services for a in aliases)
             assert matched, f"CUD-eligible service '{svc}' not found in catalog.duckdb services and has no matching alias."

@@ -16,7 +16,9 @@
     "Cloud Memorystore for Redis",
     "Cloud Memorystore for Memcached",
     "AlloyDB",
-    "Cloud Run"
+    "Cloud Run",
+    "Managed Service for Apache Kafka",
+    "Google Cloud NetApp Volumes"
   ],
   "Compute Engine": {
     "1yr_multiplier": 0.63,
@@ -71,6 +73,16 @@
     "1yr_multiplier": 0.83,
     "3yr_multiplier": 0.67,
     "note": "Committed use for minimum instances"
+  },
+  "Managed Service for Apache Kafka": {
+    "1yr_multiplier": 0.80,
+    "3yr_multiplier": 0.60,
+    "note": "20%/40% CUD discount: cloud.google.com/managed-service-for-apache-kafka/pricing"
+  },
+  "Google Cloud NetApp Volumes": {
+    "1yr_multiplier": 0.85,
+    "3yr_multiplier": 0.80,
+    "note": "Standard OD $0.000273973/GiB-h, CUD 1yr $0.000232877 (0.85) / 3yr $0.000219178 (0.80): cloud.google.com/netapp/volumes/pricing (verified 2026-11-19)"
   },
   "DEFAULT": {
     "1yr_multiplier": 1.0,

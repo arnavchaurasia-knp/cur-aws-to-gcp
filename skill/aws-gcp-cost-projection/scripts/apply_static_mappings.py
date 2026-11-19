@@ -3879,6 +3879,7 @@ def map_block_storage(rows):
         op = (r.get("operation") or "").lower()
         vol = (r.get("volume_type") or "").lower().strip()
         gcp_region = r.get("gcp_region")
+        blob = f"{ut} {op} {product}"
 
         # Infer gcp_region from usage_type prefix when ingest left it as 'global'/blank.
         # PDF/flat-CSV bills omit the aws_region column; the usage_type prefix encodes it
@@ -3910,10 +3911,32 @@ def map_block_storage(rows):
                 "mapping_confidence": 0.65,
             })
             continue
+
+        # MSK (Kafka) broker storage → Managed Service for Apache Kafka Local Storage
+        if any(k in product for k in ("kafka", "msk", "managed streaming for apache kafka")) or "kafka" in blob or re.search(r'\bmsk\b', blob):
+            sku_id = "KAFKA-LOCAL-STORAGE"
+            sku_name = "Managed Service for Apache Kafka: Local Storage"
+            is_monthly = any(u in (r.get("unit") or "").lower() for u in ["gb-mo", "gb month", "gb-month", "byte-mo", "byte-month"]) or (r.get("unit") or "").lower() in ("", "gb")
+            mult = GB_TO_GIB if is_monthly else (GB_TO_GIB / 730.0)
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Managed Service for Apache Kafka",
+                "gcp_sku_id":         sku_id,
+                "gcp_sku_name":       sku_name,
+                "gcp_sku_unit":       "GiBy.mo",
+                "component":          "storage",
+                "strategy":           "map",
+                "unit_multiplier":    mult,
+                "gcp_region":         gcp_region or "global",
+                "projection_note":    (f"MSK broker storage → Managed Service for Apache Kafka Local Storage ({sku_id}); "
+                                       f"$0.17/GiB-mo (cloud.google.com/managed-service-for-apache-kafka/pricing); "
+                                       f"unit_multiplier={mult:.4f}"),
+                "mapping_confidence": 0.85,
+            })
+            continue
         # PDF/summary bills leave the product/volumetype column blank, so fall
         # back to inferring the volume type and snapshot flag from the free text
         # (usage_type + operation + product description).
-        blob = f"{ut} {op} {product}"
         if not vol:
             mvol = re.search(r'\b(gp3|gp2|io2|io1|st1|sc1|standard|magnetic)\b', blob)
             if mvol:
@@ -8011,23 +8034,25 @@ def map_fsx(rows):
                     "mapping_confidence": 0.70,
                 })
             else:
-                sku_name = "NetApp Volumes Auto-tiering Cold Capacity"
-                candidates = [(GCP_NETAPP_VOLUMES, "Standard", sku_name)]
-                sku_id, display_name, fallback_used, orig_name = resolve_sku_with_fallback(candidates, gcp_region)
+                is_monthly = any(u in (r.get("unit") or "").lower() for u in ["gb-mo", "gb month", "gb-month", "byte-mo", "byte-month"]) or (r.get("unit") or "").lower() in ("", "gb")
+                mult = GB_TO_GIB if is_monthly else (GB_TO_GIB / 730.0)
+                sku_id = "NETAPP-STANDARD"
+                sku_name = "NetApp Volumes Standard (Auto-tiering Cold Capacity)"
                 entry = {
                     "aws_li_key":         r["aws_li_key"],
                     "gcp_service":        GCP_NETAPP_VOLUMES,
-                    "gcp_sku_name":       display_name if sku_id else None,
+                    "gcp_sku_id":         sku_id,
+                    "gcp_sku_name":       sku_name,
+                    "gcp_sku_unit":       "GiBy.mo",
                     "component":          "storage",
-                    "strategy":           "map" if sku_id else "passthrough",
-                    "unit_multiplier":    GB_TO_GIB if sku_id else 1.0,
+                    "strategy":           "map",
+                    "unit_multiplier":    mult,
                     "gcp_region":         gcp_region,
-                    "projection_note":    "FSx for NetApp ONTAP Capacity Pool tiered storage → NetApp Volumes auto-tiering cold capacity ($0.03–$0.06/GiB-mo; cloud.google.com/netapp/volumes/pricing; passthrough review if uncataloged)." + _no_rate_suffix(sku_id, gcp_region),
-                    "mapping_confidence": 0.80 if sku_id else 0.65,
+                    "projection_note":    (f"FSx for NetApp ONTAP Capacity Pool tiered storage → NetApp Volumes Standard "
+                                           f"($0.20/GiB-mo; cloud.google.com/netapp/volumes/pricing); "
+                                           f"unit_multiplier={mult:.4f}"),
+                    "mapping_confidence": 0.85,
                 }
-                if sku_id:
-                    entry["gcp_sku_id"] = sku_id
-                    entry["gcp_sku_unit"] = sku_id.unit
                 out.append(entry)
             continue
 
@@ -8063,67 +8088,62 @@ def map_fsx(rows):
 
         # 6. Primary Storage Capacity (GB-Mo)
         if "lustre" in blob:
-            candidates = [
-                (GCP_MANAGED_LUSTRE, "Storage", f"{GCP_MANAGED_LUSTRE} Storage"),
-                ("Cloud Filestore", GCP_FILESTORE_ZONAL, GCP_FILESTORE_ZONAL),
-            ]
-            sku_id, display_name, fallback_used, orig_name = resolve_sku_with_fallback(candidates, gcp_region)
-            if sku_id:
-                matched_svc = "Cloud Filestore" if GCP_FILESTORE_ZONAL in display_name else GCP_MANAGED_LUSTRE
-                note = f"FSx for Lustre → {display_name} (high-throughput parallel HPC; cloud.google.com/filestore/pricing)."
-                entry = {
-                    "aws_li_key":         r["aws_li_key"],
-                    "gcp_service":        matched_svc,
-                    "gcp_sku_id":         sku_id,
-                    "gcp_sku_name":       display_name,
-                    "gcp_sku_unit":       sku_id.unit,
-                    "component":          "storage",
-                    "strategy":           "map",
-                    "unit_multiplier":    GB_TO_GIB,
-                    "gcp_region":         gcp_region,
-                    "projection_note":    note + _no_rate_suffix(sku_id, gcp_region),
-                    "mapping_confidence": 0.80,
-                }
-            else:
-                entry = {
-                    "aws_li_key":         r["aws_li_key"],
-                    "gcp_service":        GCP_MANAGED_LUSTRE,
-                    "gcp_sku_id":         None,
-                    "gcp_sku_name":       None,
-                    "component":          "storage",
-                    "strategy":           "passthrough",
-                    "unit_multiplier":    1.0,
-                    "gcp_region":         gcp_region,
-                    "projection_note":    f"FSx for Lustre → {GCP_MANAGED_LUSTRE} (5 performance tiers $0.06–$0.60/GiB-mo; cloud.google.com/products/managed-lustre/pricing); passthrough at cost parity.",
-                    "mapping_confidence": 0.65,
-                }
-            out.append(entry)
+            is_monthly = any(u in (r.get("unit") or "").lower() for u in ["gb-mo", "gb month", "gb-month", "byte-mo", "byte-month"]) or (r.get("unit") or "").lower() in ("", "gb")
+            mult = GB_TO_GIB if is_monthly else (GB_TO_GIB / 730.0)
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Parallelstore",
+                "gcp_sku_id":         "PARALLELSTORE-CAPACITY",
+                "gcp_sku_name":       "Parallelstore Capacity",
+                "gcp_sku_unit":       "GiBy.mo",
+                "component":          "storage",
+                "strategy":           "map",
+                "unit_multiplier":    mult,
+                "gcp_region":         gcp_region,
+                "projection_note":    (f"FSx for Lustre → Parallelstore Capacity (high-throughput parallel HPC; "
+                                       f"$0.14/GiB-mo; cloud.google.com/parallelstore/pricing); "
+                                       f"unit_multiplier={mult:.4f}"),
+                "mapping_confidence": 0.85,
+            })
 
         elif "ontap" in blob or "netapp" in blob:
-            sku_name = "NetApp Volumes Premium Storage"
-            candidates = [
-                (GCP_NETAPP_VOLUMES, "Premium", sku_name),
-                ("Cloud Filestore", GCP_FILESTORE_REGIONAL, GCP_FILESTORE_REGIONAL),
-            ]
-            sku_id, display_name, fallback_used, orig_name = resolve_sku_with_fallback(candidates, gcp_region)
-            matched_svc = "Cloud Filestore" if GCP_FILESTORE_REGIONAL in display_name else GCP_NETAPP_VOLUMES
-            entry = {
-                "aws_li_key":         r["aws_li_key"],
-                "gcp_service":        matched_svc,
-                "gcp_sku_name":       display_name if sku_id else None,
-                "component":          "storage",
-                "strategy":           "map" if sku_id else "passthrough",
-                "unit_multiplier":    GB_TO_GIB if sku_id else 1.0,
-                "gcp_region":         gcp_region,
-                "projection_note":    f"FSx for NetApp ONTAP SSD storage → {display_name} (Premium $0.29/GiB-mo; cloud.google.com/netapp/volumes/pricing; fallback Filestore Regional $0.45/GiB-mo)." + _no_rate_suffix(sku_id, gcp_region),
-                "mapping_confidence": 0.80 if sku_id else 0.65,
-            }
-            if sku_id:
-                entry["gcp_sku_id"] = sku_id
-                entry["gcp_sku_unit"] = sku_id.unit
+            is_monthly = any(u in (r.get("unit") or "").lower() for u in ["gb-mo", "gb month", "gb-month", "byte-mo", "byte-month"]) or (r.get("unit") or "").lower() in ("", "gb")
+            mult = GB_TO_GIB if is_monthly else (GB_TO_GIB / 730.0)
+
+            is_hdd = any(k in blob for k in ("hdd", "st1", "sc1", "capacitypool", "capacity-pool"))
+            is_extreme = any(k in blob for k in ("extreme", "high-iops", "highiops", "perf"))
+
+            if is_hdd:
+                tier_label = "Standard"
+                sku_id = "NETAPP-STANDARD"
+                sku_name = "NetApp Volumes Standard"
+                mo_rate = 0.20
+            elif is_extreme:
+                tier_label = "Extreme"
+                sku_id = "NETAPP-EXTREME"
+                sku_name = "NetApp Volumes Extreme"
+                mo_rate = 0.393
             else:
-                entry["passthrough_reason"] = "no_rate_in_region"
-            out.append(entry)
+                tier_label = "Premium"
+                sku_id = "NETAPP-PREMIUM"
+                sku_name = "NetApp Volumes Premium"
+                mo_rate = 0.294
+
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        GCP_NETAPP_VOLUMES,
+                "gcp_sku_id":         sku_id,
+                "gcp_sku_name":       sku_name,
+                "gcp_sku_unit":       "GiBy.mo",
+                "component":          "storage",
+                "strategy":           "map",
+                "unit_multiplier":    mult,
+                "gcp_region":         gcp_region,
+                "projection_note":    (f"FSx for NetApp ONTAP {tier_label} storage → Google Cloud NetApp Volumes ({sku_name}; "
+                                       f"${mo_rate:.3f}/GiB-mo; cloud.google.com/netapp/volumes/pricing); "
+                                       f"unit_multiplier={mult:.4f}"),
+                "mapping_confidence": 0.85,
+            })
 
         elif "windows" in blob:
             candidates = [
@@ -8776,18 +8796,21 @@ def _nearby_arm_hint(region, vcpu, ram_gib, arm_default, tiers, workloads):
 
 
 def map_msk(rows: list) -> list:
-    """MSK broker-hours → self-hosted Kafka on GCE (core + ram breakdown).
+    """MSK broker-hours → Managed Service for Apache Kafka (DCU retarget per §4.22).
 
-    Deterministic alternative to the LLM compute_breakdown path.  Parses the
-    Kafka instance type from usage_type (e.g. 'APS5-Kafka.t3.small'), looks up
-    vCPU/RAM from _MSK_VCPU_RAM, and emits the same core+ram component pair that
-    the EC2 compute_breakdown mapper would produce.  Falls back to passthrough with
-    a Compute Engine label when the instance type is not in the table.
+    Retargets MSK broker-hours to GCP's Managed Service for Apache Kafka DCU
+    (DCU = 0.6 * vCPU + 0.1 * RAM_GiB) at the synthetic $0.09/DCU-h CPU+RAM SKU,
+    or $0.12/DCU-h for Connect workers (MCU).
+    Storage rows map to Managed Service for Apache Kafka Local Storage
+    ($0.000232877/GiB-h ~ $0.17/GiB-mo).
+    Falls back to self-hosted Kafka on GCE passthrough when the instance type is unknown.
     """
     out = []
     for r in rows:
         ut     = r.get("usage_type") or ""
         region = r.get("gcp_region") or ""
+        unit_low = (r.get("unit") or "").lower()
+        blob_low = f"{r.get('product') or ''} {ut} {r.get('operation') or ''}".lower()
 
         # Derive GCP region from usage_type prefix when ingest left it as 'global' or blank.
         if not region or region == "global":
@@ -8807,6 +8830,32 @@ def map_msk(rows: list) -> list:
                     tinfo = _EC2_TYPES_FOR_VCPU[itype]
                     specs = (tinfo.get("vcpus"), tinfo.get("ram_gb"))
 
+        # Storage rows (GB-Mo / Byte-Hours)
+        is_storage = (
+            any(u in unit_low for u in ["gb-mo", "gb month", "gb-month", "byte-mo", "byte-month"])
+            or "storage" in blob_low
+            or "storage" in ut.lower()
+        ) and not (specs is not None and any(k in ut.lower() for k in ["kafka.t", "kafka.m", "kafka.r", "kafka.c", "broker-hour", "runconnect"]))
+
+        if is_storage:
+            is_monthly = any(u in unit_low for u in ["gb-mo", "gb month", "gb-month", "byte-mo", "byte-month"]) or unit_low in ("", "gb")
+            mult = GB_TO_GIB if is_monthly else (GB_TO_GIB / 730.0)
+            out.append({
+                "aws_li_key":         r["aws_li_key"],
+                "gcp_service":        "Managed Service for Apache Kafka",
+                "gcp_sku_id":         "KAFKA-LOCAL-STORAGE",
+                "gcp_sku_name":       "Managed Service for Apache Kafka: Local Storage",
+                "gcp_sku_unit":       "GiBy.mo",
+                "component":          "storage",
+                "strategy":           "map",
+                "unit_multiplier":    mult,
+                "gcp_region":         region or r.get("gcp_region") or "global",
+                "projection_note":    (f"MSK broker storage → Managed Service for Apache Kafka Local Storage (KAFKA-LOCAL-STORAGE); "
+                                       f"$0.17/GiB-mo (cloud.google.com/managed-service-for-apache-kafka/pricing); unit_multiplier={mult:.4f}"),
+                "mapping_confidence": 0.85,
+            })
+            continue
+
         if specs is None:
             out.append({
                 "aws_li_key":         r["aws_li_key"],
@@ -8818,147 +8867,41 @@ def map_msk(rows: list) -> list:
                 "unit_multiplier":    1.0,
                 "gcp_region":         region or r.get("gcp_region"),
                 "projection_note":    (f"MSK broker {itype or ut!r} not in instance table — "
-                                       "passthrough at cost parity with Compute Engine label"),
+                                       "passthrough at cost parity with Compute Engine label (self-hosted GCE fallback)"),
+                "passthrough_reason": "unsupported_instance_family",
                 "mapping_confidence": 0.40,
             })
             continue
 
         vcpu, ram_gib = specs
-        fam = itype.split(".")[0]
-        is_arm_burstable = fam == "t4g"
-        is_arm_sustained = bool(re.match(r"^[a-z]+\d+g", fam)) and fam != "t4g"
-        is_arm = is_arm_burstable or is_arm_sustained
-        # t3 is AWS's burstable broker family; m5/r5/m6g/m7g/r7g are sustained.
-        # The old code resolved both through a single "N2 Instance Core|E2
-        # Instance Core" regex-OR pattern — whichever the catalog scan hit
-        # first won, non-deterministically, regardless of whether the source
-        # broker was actually burstable. A sustained r5/m5 broker could land
-        # on E2 (a real performance-tier downgrade) purely by catalog list
-        # order. Branch explicitly instead, same as map_compute_windows.
-        is_burstable = fam in ("t3", "t2")
-        cost_tag = ""
+        dcu = 0.6 * float(vcpu) + 0.1 * float(ram_gib)
+        is_connect = (itype and itype.startswith("mcu.")) or "runconnect" in blob_low or "connect" in blob_low
+        is_arm = (itype and (itype.startswith("r6g") or itype.startswith("m7g") or itype.startswith("c7g") or itype.startswith("t4g") or "graviton" in blob_low or "arm" in blob_low))
+        sku_id = "KAFKA-DCU-CONNECT" if is_connect else "KAFKA-DCU-CPURAM"
+        sku_name = ("Managed Service for Apache Kafka: Connect CPU and RAM (DCU)"
+                    if is_connect else
+                    "Managed Service for Apache Kafka: CPU and RAM (DCU)")
+        rate_str = "$0.12/DCU-h" if is_connect else "$0.09/DCU-h"
+        worker_label = "Connect worker" if is_connect else "broker"
+        arm_label = " (Graviton ARM)" if is_arm else ""
 
-        if is_arm:
-            # Was hardcoded to "C4A Arm Instance Core/Ram" directly for EVERY
-            # ARM broker (t4g included, lumped in with sustained m6g/m7g/r6g/
-            # r7g/c6g/c7g under the same branch) — no cheapest_in_scope()
-            # sweep, no workload-tier awareness, and t4g (burstable ARM)
-            # incorrectly forced onto C4A (sustained ARM) instead of its own
-            # native burstable family T2A Arm. Same bug class already fixed
-            # in map_compute_arm()/map_compute_burstable() — fixed the same
-            # way here: sweep real ARM candidates for the correct tier, fall
-            # back to same-tier x86 only if no ARM family is available in
-            # region, and disclose (never silently switch) a cheaper x86
-            # alternative when a real ARM SKU was found.
-            arm_default = "T2A Arm" if is_arm_burstable else "C4A Arm"
-            arm_tiers = ("burstable", "sustained") if is_arm_burstable else ("sustained",)
-            family_label, cpu_desc, ram_desc, switched, reason = cheapest_in_scope(
-                arm_default, vcpu, ram_gib, region, archs=("arm",), tiers=arm_tiers,
-                workloads=_arm_workloads())
-            # _strict_resolve_sku — see its docstring: plain resolve_sku()
-            # could continent-fallback to a different region's SKU/price for
-            # an ARM family cheapest_in_scope() already confirmed unavailable
-            # here, which would make `found_arm` wrongly True below.
-            cpu_sku = _strict_resolve_sku("Compute Engine", cpu_desc, region) if cpu_desc else None
-            ram_sku = _strict_resolve_sku("Compute Engine", ram_desc, region) if ram_desc else None
-            found_arm = bool(cpu_sku and ram_sku)
-            if found_arm:
-                if switched:
-                    cost_tag = (f" [cost-tier: {family_label} cheaper here, same tier as {arm_default}]" if reason == "cheaper"
-                                else f" [cost-tier: {arm_default} unavailable in region — {family_label} used instead, same tier]")
-            else:
-                # BUG (found during a repo-wide audit after fixing the same
-                # class of issue in family_mapper.py's map_gce_row() and
-                # apply_static_mappings.py's map_compute_arm()): this used to
-                # silently REPRICE the row onto x86 (E2/N2D AMD) here — even
-                # for is_arm_burstable, where the tier crossing (burstable->
-                # sustained) is safe but the ARCHITECTURE crossing (ARM->x86)
-                # is not, same reasoning as every other ARM/x86 boundary in
-                # this file. "No ARM family available here" is a customer
-                # decision, never a silent substitution — passthrough +
-                # disclosure only.
-                cpu_sku = ram_sku = None
-                x86_default = "E2" if is_arm_burstable else "N4D"
-                x86_tiers = ("burstable", "sustained") if is_arm_burstable else ("sustained",)
-                family_label = arm_default
-                passthrough_reason = "family_not_available_in_region"
-                x86_label, x86_core, x86_ram, _, _ = cheapest_in_scope(
-                    x86_default, vcpu, ram_gib, region, archs=("x86",), tiers=x86_tiers)
-                x86_core_rate = _family_hourly_rate("Compute Engine", x86_core, region)
-                x86_ram_rate = _family_hourly_rate("Compute Engine", x86_ram, region)
-                if x86_core_rate is not None and x86_ram_rate is not None:
-                    x86_total = vcpu * x86_core_rate + ram_gib * x86_ram_rate
-                    cost_tag = (f" [architecture review recommended: no ARM family available in this "
-                                f"region; x86 {x86_label} would cost ~${x86_total:.4f}/hr here — not "
-                                "switched automatically since Graviton/ARM binaries aren't x86-compatible "
-                                "without a rebuild; confirm with customer whether x86 is viable, or "
-                                "whether a different region is acceptable]")
-                    hint = _nearby_arm_hint(region, vcpu, ram_gib, arm_default, arm_tiers, _arm_workloads())
-                    if hint:
-                        hint_region, hint_label, hint_cost = hint
-                        cost_tag = cost_tag[:-1] + (f"; {hint_label} IS available in nearby {hint_region} "
-                                                     f"at ~${hint_cost:.4f}/hr if migrating region is acceptable]")
+        note = (f"MSK {worker_label}{arm_label} ({itype}: {vcpu} vCPU / {ram_gib:g} GiB RAM) → "
+                f"Managed Service for Apache Kafka ({sku_name}); "
+                f"DCU={dcu:.2f} (0.6×vCPU + 0.1×GiB) → unit_multiplier={dcu:.2f} ({rate_str}); "
+                f"replaces self-hosted-GCE proxy")
 
-            if found_arm:
-                x86_label, x86_core, x86_ram, _, _ = cheapest_in_scope(
-                    "E2" if is_arm_burstable else "N4D", vcpu, ram_gib, region,
-                    archs=("x86",), tiers=("burstable", "sustained") if is_arm_burstable else ("sustained",))
-                arm_core_rate = _family_hourly_rate("Compute Engine", cpu_desc, region)
-                arm_ram_rate = _family_hourly_rate("Compute Engine", ram_desc, region)
-                x86_core_rate = _family_hourly_rate("Compute Engine", x86_core, region)
-                x86_ram_rate = _family_hourly_rate("Compute Engine", x86_ram, region)
-                if None not in (arm_core_rate, arm_ram_rate, x86_core_rate, x86_ram_rate):
-                    arm_total = vcpu * arm_core_rate + ram_gib * arm_ram_rate
-                    x86_total = vcpu * x86_core_rate + ram_gib * x86_ram_rate
-                    if x86_total < arm_total:
-                        pct = round((1 - x86_total / arm_total) * 100)
-                        cost_tag += (f" [architecture review recommended: x86 {x86_label} would be "
-                                     f"~{pct}% cheaper here than {family_label} — not switched automatically "
-                                     "since Graviton/ARM binaries aren't x86-compatible without a rebuild; "
-                                     "confirm with customer whether x86 is viable]")
-        elif is_burstable:
-            # min_generation floored to N4D's generation, not E2's — see the
-            # identical fix (and its rationale) in map_compute_burstable above.
-            family_label, cpu_desc, ram_desc, switched, reason = cheapest_in_scope(
-                "E2", vcpu, ram_gib, region, archs=("x86",), tiers=("burstable", "sustained"),
-                min_generation=_GP_FAMILY_GENERATION.get("N4D", 4))
-            cpu_sku = _strict_resolve_sku("Compute Engine", cpu_desc, region)
-            ram_sku = _strict_resolve_sku("Compute Engine", ram_desc, region)
-            if switched:
-                cost_tag = (f" [cost-tier: {family_label} cheaper than E2 here, same/better perf — AWS credits don't lower price]" if reason == "cheaper"
-                            else f" [cost-tier: E2 unavailable in region — {family_label} used instead, same/better perf]")
-        else:
-            family_label, cpu_desc, ram_desc, switched, reason = cheapest_in_scope(
-                "N4D", vcpu, ram_gib, region, archs=("x86",), tiers=("sustained",))
-            cpu_sku = _strict_resolve_sku("Compute Engine", cpu_desc, region)
-            ram_sku = _strict_resolve_sku("Compute Engine", ram_desc, region)
-            if switched:
-                cost_tag = (f" [cost-tier: {family_label} cheaper here, same tier as default]" if reason == "cheaper"
-                            else f" [cost-tier: default unavailable in region — {family_label} used instead, same tier]")
-
-        for comp, sku, mult, desc in (
-            ("core", cpu_sku, float(vcpu),    cpu_desc),
-            ("ram",  ram_sku, float(ram_gib), ram_desc),
-        ):
-            strategy = "map" if sku else "passthrough"
-            row_dict = {
-                "aws_li_key":         r["aws_li_key"],
-                "gcp_service":        "Compute Engine",
-                "gcp_sku_id":         sku if sku else None,
-                "gcp_sku_name":       desc if sku else None,
-                "component":          comp,
-                "strategy":           strategy,
-                "unit_multiplier":    mult,
-                "gcp_region":         region or r.get("gcp_region"),
-                "projection_note":    (f"MSK {itype} {'Connect worker' if itype.startswith('mcu.') else 'broker'} "
-                                       f"→ GCE self-hosted Kafka{' Connect' if itype.startswith('mcu.') else ''}; "
-                                       f"{vcpu} vCPU / {ram_gib} GiB RAM; "
-                                       f"component={comp}{cost_tag}"),
-                "mapping_confidence": 0.72,
-            }
-            if not sku and passthrough_reason:
-                row_dict["passthrough_reason"] = passthrough_reason
-            out.append(row_dict)
+        out.append({
+            "aws_li_key":         r["aws_li_key"],
+            "gcp_service":        "Managed Service for Apache Kafka",
+            "gcp_sku_id":         sku_id,
+            "gcp_sku_name":       sku_name,
+            "component":          "connect" if is_connect else "broker",
+            "strategy":           "map",
+            "unit_multiplier":    dcu,
+            "gcp_region":         region or r.get("gcp_region") or "global",
+            "projection_note":    note,
+            "mapping_confidence": 0.85,
+        })
     return out
 
 

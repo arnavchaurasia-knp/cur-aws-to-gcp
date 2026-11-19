@@ -881,9 +881,8 @@ RULES = [
         ),
     ),
     (
-        # MSK broker-hours → static GCE equivalent mapper (deterministic vCPU/RAM lookup).
-        # Storage sub-lines (Kafka.Storage.*) stay in block_storage; data-transfer stays
-        # in data_transfer. Only broker compute-hours land here.
+        # MSK broker-hours & storage → Managed Service for Apache Kafka (§4.22)
+        # Data-transfer stays in data_transfer.
         "msk",
         lambda r: (
             (
@@ -892,19 +891,8 @@ RULES = [
                 or _ilike(r["product"], "MSK")
                 or r.get("canonical") == "msk"
             )
-            # Broker-hours (compute) only — storage GB-Mo rows are caught earlier
-            # by block_storage. CUR carries the broker signal in usage_type
-            # ("Kafka.t3..."); PDF/flat bills leave usage_type blank and carry it
-            # in operation ("... per broker hour for Kafka.t3.small ..."), so
-            # check both or PDF broker rows fall to misc.
-            and (
-                _re(r.get("usage_type", ""), r"Kafka\.[a-z]")
-                or _re(r.get("operation", ""), r"broker[\s-]hour|Kafka\.[a-z]")
-            )
-            # PDF/flat-CSV bills leave the unit blank — _is_hourly_unit accepts ""
-            # alongside the explicit hour units, while still excluding GB-Mo
-            # storage rows (which belong to block_storage, matched above).
-            and _is_hourly_unit(r["unit"])
+            and not _ilike(r.get("usage_type", ""), "DataTransfer")
+            and not _re(r.get("usage_type", ""), r"Out-Bytes|In-Bytes")
         ),
     ),
     (

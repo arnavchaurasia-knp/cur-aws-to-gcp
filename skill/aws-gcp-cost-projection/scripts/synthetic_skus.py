@@ -53,9 +53,27 @@ except Exception:
 # Pinned SaaS / non-catalog services:
 # - Looker Studio Pro: SaaS seat pricing outside Google Cloud Billing catalog.
 # - Cloud TPU v5e: Pinned on-demand chip-hour rate (data/tpu-rates.json).
+# - Managed Service for Apache Kafka: DCU and storage rates (§4.22).
+# - NetApp Volumes & Parallelstore: synthetic storage rates (§4.23).
+# - Oracle Database@Google Cloud: Base Database Service ECPU rates.
 _PINNED_SYNTHETIC_IDS = {
     "GCP-LOOKER-STUDIO-PRO-USER",
     "TPU-V5E-ONDEMAND",
+    # Managed Service for Apache Kafka (§4.22)
+    "KAFKA-DCU-CPURAM",
+    "KAFKA-DCU-CONNECT",
+    "KAFKA-LOCAL-STORAGE",
+    "KAFKA-LONGTERM-STORAGE",
+    # NetApp Volumes & Parallelstore (§4.23)
+    "NETAPP-STANDARD",
+    "NETAPP-PREMIUM",
+    "NETAPP-EXTREME",
+    "PARALLELSTORE-CAPACITY",
+    # Oracle Database@Google Cloud
+    "ORACLE-BASE-DB-SE-ECPU",
+    "ORACLE-BASE-DB-EE-ECPU",
+    "ORACLE-BASE-DB-BYOL-ECPU",
+    "ORACLE-BASE-DB-HP-ECPU",
 }
 
 SYNTHETIC_SKU_IDS: set[str] = _EGRESS_IDS | _CDN_IDS | _PINNED_SYNTHETIC_IDS | _INTERNET_IDS | _INTERREGION_IDS
@@ -67,6 +85,13 @@ def is_synthetic_sku(sku_id: str | None) -> bool:
         return False
     if sku_id in SYNTHETIC_SKU_IDS:
         return True
-    if sku_id.startswith("GCP-EGRESS-") or sku_id.startswith("GCP-CDN-"):
+    if (
+        sku_id.startswith("GCP-EGRESS-")
+        or sku_id.startswith("GCP-CDN-")
+        or sku_id.startswith("KAFKA-")
+        or sku_id.startswith("NETAPP-")
+        or sku_id.startswith("PARALLELSTORE-")
+        or sku_id.startswith("ORACLE-")
+    ):
         return True
     return False

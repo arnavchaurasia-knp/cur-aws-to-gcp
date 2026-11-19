@@ -1459,7 +1459,7 @@
     "charge_types": [
       {
         "id": "msk_storage",
-        "description": "Broker storage GB-Mo -> Persistent Disk.",
+        "description": "Broker storage GB-Mo -> Managed Service for Apache Kafka Local Storage.",
         "any_of": [
           {
             "unit_in": [
@@ -1514,7 +1514,7 @@
       },
       {
         "id": "msk_broker_hours",
-        "description": "Broker compute-hours -> self-hosted GCE.",
+        "description": "Broker compute-hours -> Managed Service for Apache Kafka (DCU retarget).",
         "match": {
           "unit_hourly": true
         },

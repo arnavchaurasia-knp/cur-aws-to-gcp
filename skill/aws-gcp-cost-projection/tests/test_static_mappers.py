@@ -508,7 +508,7 @@ def test_fsx_lustre_maps_to_managed_lustre():
     rows = [row(product="Amazon FSx for Lustre",
                 usage_type="FSx:Lustre-Storage", unit="GB-Mo")]
     out = _with_sku(map_fsx, rows)
-    assert out[0]["gcp_service"] in ("Google Cloud Managed Lustre", "Cloud Filestore")
+    assert out[0]["gcp_service"] in ("Parallelstore", "Google Cloud Managed Lustre", "Cloud Filestore")
     assert out[0]["strategy"] == "map"
 
 

@@ -87,6 +87,8 @@ def test_cud_pct_schema_and_defaults():
         "Cloud Memorystore for Memcached",
         "AlloyDB",
         "Cloud Run",
+        "Managed Service for Apache Kafka",
+        "Google Cloud NetApp Volumes",
     }
     assert set(data["cud_eligible"]) == expected_eligible
 

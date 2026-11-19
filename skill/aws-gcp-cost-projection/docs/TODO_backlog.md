@@ -53,6 +53,13 @@ Legend: 🔴 real dollar error · 🟡 needs decision/verify · ⚪ low/cosmetic
 1. Populate `service_usage_catalog.json` per service → completeness gate protects every variant. Highest leverage.
 2. Extend `gcp_candidates` best-fit beyond ElastiCache (DynamoDB, RDS, Redshift, FSx).
 3. Kill `else`-branch `strategy=map` on a guessed target (latent silent mis-targets).
+3b. **Deterministic `_select` + ambiguous-resolution diagnostic → WORKORDER WRITTEN, READY FOR AGY**
+   (`docs/WORKORDER_deterministic_sku_select.md`). Generalizes the multi-region fix: a generic `desc_pattern`
+   matching several priced variants is resolved by catalog FILE ORDER (non-deterministic across refreshes,
+   silently wrong). Audit: 28 services show same-region rate splits; real unguarded axes = **Spot** (`"spot"`
+   not in `_NOISE_QUALIFIERS`, only `preemptible`), **Premium/Standard tiers**, **editions**, + a `Cloud IDS`
+   21× oddity. Fix = add `"spot"` to the denylist + make `_select` deterministic (specificity→rate→sku_id) +
+   emit `ambiguous_sku_resolution` diag. One structural change defends every service.
 4. Keep rate granularity ≥ direction granularity.
 
 ---

@@ -64,3 +64,8 @@ scripts/extract_bill_csv.py
 scripts/filter_bill_csv.py
 projection-audit/
 .claude/settings.local.json
+
+# Stray local artifacts (macOS bx tool + scratch) — not project source
+facets-cloud-bx-*.tgz
+/package/
+failure.txt

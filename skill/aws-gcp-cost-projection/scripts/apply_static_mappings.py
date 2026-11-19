@@ -1807,11 +1807,16 @@ def _sku_meta(sku):
     return sku["skuId"], unit, resource_group
 
 
-def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=False):
+def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=False, prefer_single_region=False):
     """
     Search the bundled GCP catalog for the first SKU whose description matches
     desc_pattern (regex) and whose serviceRegions include gcp_region (or is GLOBAL).
     Returns (sku_id, unit, resource_group) tuple, or (None, None, None).
+
+    prefer_single_region: opt-in. When True, a SKU that genuinely serves gcp_region as
+    a single region is chosen over MULTI_REGIONAL/GLOBAL SKUs that merely also cover it
+    (kills the nam5-over-Iowa 2x trap for Firestore §4.18). Off by default so GCP's
+    multi-region-by-default services (snapshots, GCS) keep their intentional mappings.
     """
     # See _family_phantom_unavailable() above _family_hourly_rate_uncached:
     # some (family, region) pairs have a real, priced billing-catalog SKU
@@ -1895,7 +1900,45 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region, allow_continent
     desc_matches = [sku for sku in skus
                     if re.search(desc_pattern, sku.get("description", ""), re.IGNORECASE)]
 
+    def _is_true_regional(sku):
+        # A SKU that is genuinely single-region AND explicitly serves gcp_region
+        # (not merely a MULTI_REGIONAL/GLOBAL SKU that also happens to cover it).
+        geo = sku.get("geoTaxonomy", {}) or {}
+        if (geo.get("type") or "").upper() != "REGIONAL":
+            return False
+        if not gcp_region:
+            return False
+        return gcp_region in (sku.get("serviceRegions", []) or []) \
+            or gcp_region in (geo.get("regions", []) or [])
+
+    def _geo_rank(sku):
+        # SYSTEMIC multi-region fix: when several SKUs match the SAME desc_pattern
+        # AND the SAME region (e.g. generic "Cloud Firestore Read Ops" matches both
+        # the single-region "Iowa" SKU and the MULTI_REGIONAL "North America 5"/"Nam7"
+        # SKU, whose us-central1 is a member region), the multi-region SKU is a
+        # DIFFERENT product priced ~2x higher. A single-region workload must resolve
+        # to the single-region SKU. '_select' returns the first candidate in file
+        # order, which is non-deterministic between the two → the nam5-over-Iowa 2x
+        # over-projection trap (caught in DynamoDB→Firestore §4.18, then generalized
+        # here). Promote a SKU that genuinely serves gcp_region as a single region;
+        # everything else (MULTI_REGIONAL, and GLOBAL-typed city SKUs that cover any
+        # region) keeps its original file order. This changes selection ONLY where a
+        # true single-region SKU exists for the target region, so regions that have
+        # no single-region SKU (the generic multi-region/global rate is the best
+        # available) are left exactly as before.
+        return 0 if _is_true_regional(sku) else 1
+
     def _select(candidates):
+        if prefer_single_region:
+            # Opt-in only: promote a SKU that genuinely serves gcp_region as a single
+            # region over MULTI_REGIONAL / GLOBAL SKUs that merely also cover it. Used
+            # for services where single-region is definitively the correct target for a
+            # single-region workload (Firestore, §4.18 — multi-region nam5 is 2x). NOT a
+            # global default: GCP's default snapshot/bucket storage location is itself
+            # multi-regional, so flipping every service to single-region would silently
+            # change deliberate multi-region mappings (PD snapshots, GCS). Those are a
+            # separate per-service decision (see docs/TODO_backlog.md).
+            candidates = sorted(candidates, key=_geo_rank)  # stable: true single-region first
         # Pass 1: non-Preemptible, non-noise (the ideal match)
         for sku in candidates:
             desc = sku.get("description", "").lower()
@@ -2083,9 +2126,13 @@ def _live_sku_fetch(gcp_service, desc_pattern, gcp_region):
 _RUNTIME_SKU_CACHE = {}
 
 
-def resolve_sku(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=False):
+def resolve_sku(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=False, prefer_single_region=False):
     """
     Return the GCP SKU ID for (service, desc_pattern, region).
+
+    prefer_single_region (opt-in): prefer a true single-region SKU for gcp_region over
+    MULTI_REGIONAL/GLOBAL matches — see lookup_sku_in_catalog. Used by Firestore (§4.18)
+    to avoid the 2x multi-region (nam5) over-projection on single-region workloads.
 
     AR-1: Strict exact-region (or genuine GLOBAL) matching is the DEFAULT
     (allow_continent_fallback=False). Only callers that explicitly pass
@@ -2099,6 +2146,8 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=
 
     catalog_version = _catalog_version()
     key = f"{gcp_service}|{desc_pattern}|{gcp_region or ''}|{allow_continent_fallback}"
+    if prefer_single_region:
+        key += "|psr"
 
     if key in _RUNTIME_SKU_CACHE:
         v = _RUNTIME_SKU_CACHE[key]
@@ -2113,8 +2162,13 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=
         except Exception:
             cache = {}
 
-    # Exact cache key or legacy 3-part key
-    cache_key = key if key in cache else f"{gcp_service}|{desc_pattern}|{gcp_region or ''}"
+    # Exact cache key or legacy 3-part key. A prefer_single_region call must NOT fall
+    # back to the legacy 3-part key — that entry holds the un-flagged (possibly
+    # multi-region) resolution, which would defeat the flag.
+    if prefer_single_region:
+        cache_key = key
+    else:
+        cache_key = key if key in cache else f"{gcp_service}|{desc_pattern}|{gcp_region or ''}"
     if cache_key in cache:
         v = cache[cache_key]
         cached_sku_id = v.get("sku_id") if isinstance(v, dict) else v
@@ -2127,7 +2181,8 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=
 
     # Bundled catalog lookup (strict by default)
     sku_id, unit, resource_group = lookup_sku_in_catalog(
-        gcp_service, desc_pattern, gcp_region, allow_continent_fallback=allow_continent_fallback
+        gcp_service, desc_pattern, gcp_region, allow_continent_fallback=allow_continent_fallback,
+        prefer_single_region=prefer_single_region,
     )
 
     if sku_id:
@@ -5354,8 +5409,11 @@ def map_dynamodb_capacity(rows):
             pattern = rf"^Cloud Firestore Entity Writes {re.escape(city)}$"
             sku_id = resolve_sku("Cloud Firestore", pattern, gcp_region)
             if not sku_id:
-                # Fallback to general writes pattern if specific city not resolved
-                sku_id = resolve_sku("Cloud Firestore", r"^Cloud Firestore Entity Writes\b", gcp_region)
+                # Fallback to general writes pattern if specific city not resolved.
+                # prefer_single_region=True: the generic pattern matches BOTH the Iowa
+                # single-region SKU and the North America 5 / Nam7 multi-region SKU
+                # (priced 2x) — a single-region table must not land on multi-region.
+                sku_id = resolve_sku("Cloud Firestore", r"^Cloud Firestore Entity Writes\b", gcp_region, prefer_single_region=True)
             if is_provisioned:
                 mult = wcu_factor * 3600.0
                 strategy = "map" if sku_id else "passthrough"
@@ -5379,8 +5437,11 @@ def map_dynamodb_capacity(rows):
             pattern = rf"^Cloud Firestore Read Ops {re.escape(city)}$"
             sku_id = resolve_sku("Cloud Firestore", pattern, gcp_region)
             if not sku_id:
-                # Fallback to general read ops pattern if specific city not resolved
-                sku_id = resolve_sku("Cloud Firestore", r"^Cloud Firestore Read Ops\b", gcp_region)
+                # Fallback to general read ops pattern if specific city not resolved.
+                # prefer_single_region=True: the generic pattern matches BOTH the Iowa
+                # single-region SKU and the North America 5 / Nam7 multi-region SKU
+                # (priced 2x) — a single-region table must not land on multi-region.
+                sku_id = resolve_sku("Cloud Firestore", r"^Cloud Firestore Read Ops\b", gcp_region, prefer_single_region=True)
             if is_provisioned:
                 mult = rcu_factor * 3600.0
                 strategy = "map" if sku_id else "passthrough"

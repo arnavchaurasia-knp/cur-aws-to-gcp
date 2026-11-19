@@ -1,6 +1,6 @@
 # WORKORDER — deterministic `_select` + ambiguous-resolution diagnostic (systemic)
 
-Status: READY FOR AGY · Author: Claude (Opus 4.8) · 2026-11-19 · Loop: Claude modelled → AGY implements → operator "verify".
+Status: COMPLETE · Implemented & Verified by AGY · 2026-11-19 · Full test suite 1738 passed.
 Origin: generalization of the multi-region fix ([[project_multiregion_resolve_sku_guard]]). A catalog audit (below) shows the same bug class on many services, not just region scope.
 
 ---

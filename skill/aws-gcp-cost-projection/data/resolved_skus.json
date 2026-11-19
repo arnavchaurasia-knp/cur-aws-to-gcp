@@ -31,22 +31,22 @@
   },
   "Cloud Firestore|Cloud Firestore Entity Writes Northern Virginia|global": {
     "resource_group": "FirestoreEntityPutOps",
-    "sku_id": "1DD9-7A1B-32D4",
+    "sku_id": "DD6F-CAC5-6BBC",
     "unit": "count"
   },
   "Cloud Firestore|Cloud Firestore Entity Writes Northern Virginia|us-east4": {
     "catalog_version": "2026-07-27T06:50:51Z",
-    "resource_group": null,
-    "sku_id": null,
-    "unit": null
+    "resource_group": "FirestoreEntityPutOps",
+    "sku_id": "DD6F-CAC5-6BBC",
+    "unit": "count"
   },
   "Cloud Firestore|Cloud\\ Firestore\\ Entity\\ Writes\\ Northern\\ Virginia|global": {
     "resource_group": "FirestoreEntityPutOps",
-    "sku_id": "1DD9-7A1B-32D4",
+    "sku_id": "DD6F-CAC5-6BBC",
     "unit": "count"
   },
-  "Cloud Firestore|Entity Writes|global": "0001-48D2-BE14",
-  "Cloud Firestore|Read Ops|global": "03C2-1F50-C09A",
+  "Cloud Firestore|Entity Writes|global": "16D8-07A3-07ED",
+  "Cloud Firestore|Read Ops|global": "1E79-E8DD-E058",
   "Cloud Key Management Service (KMS)|Active software symmetric key versions|asia-southeast1": "E09C-32B3-9AC7",
   "Cloud Key Management Service (KMS)|Active software symmetric key versions|global": "E09C-32B3-9AC7",
   "Cloud Key Management Service (KMS)|Active software symmetric key versions|us-east4": {
@@ -71,7 +71,7 @@
   "Cloud Key Management Service (KMS)|Cryptographic operations.*software symmetric key|us-west2": "3BDA-77FB-678B",
   "Cloud Load Balancing|Cloud Load Balancer Forwarding Rule Minimum|asia-southeast1": {
     "resource_group": "LoadBalancing",
-    "sku_id": "BD15-114E-9273",
+    "sku_id": "DEE3-C42E-3E4D",
     "unit": "h"
   },
   "Cloud Logging|Log Storage cost|asia-northeast1": "143F-A1B0-E0BE",
@@ -340,21 +340,21 @@
   },
   "Cloud SQL|Cloud SQL for PostgreSQL: Regional - vCPU|us-east4": "0154-7BAE-89A4",
   "Cloud SQL|Cloud SQL for PostgreSQL: Zonal - Enterprise Plus C4A RAM|asia-southeast1": "CC67-BB20-EBC5",
-  "Cloud SQL|Cloud SQL for PostgreSQL: Zonal - RAM|asia-southeast1": "B5FB-A86D-93E5",
-  "Cloud SQL|Cloud SQL for PostgreSQL: Zonal - RAM|us-east4": "26FD-7344-3E99",
+  "Cloud SQL|Cloud SQL for PostgreSQL: Zonal - RAM|asia-southeast1": "EF83-F6A8-8EA7",
+  "Cloud SQL|Cloud SQL for PostgreSQL: Zonal - RAM|us-east4": "8B1E-B6B1-CCB4",
   "Cloud SQL|Cloud SQL for PostgreSQL: Zonal - SSD storage|asia-south1": {
     "catalog_version": "2026-07-27T06:50:51Z",
     "resource_group": null,
     "sku_id": null,
     "unit": null
   },
-  "Cloud SQL|Cloud SQL for PostgreSQL: Zonal - vCPU|asia-southeast1": "7CCB-32BC-7C57",
+  "Cloud SQL|Cloud SQL for PostgreSQL: Zonal - vCPU|asia-southeast1": "DE86-B401-E60F",
   "Cloud SQL|Cloud SQL for PostgreSQL: Zonal - vCPU|us-east4": "99EA-F8FA-6640",
   "Cloud SQL|Cloud SQL for Postgres: Zonal - Enterprise Plus Performance Optimized C4A vCPU|asia-southeast1": "3B94-D60C-9FA8",
   "Cloud SQL|Cloud SQL.*Regional.*RAM|us-east4": "1501-9589-4062",
   "Cloud SQL|Cloud SQL.*Regional.*vCPU|us-east4": "0154-7BAE-89A4",
   "Cloud SQL|Cloud SQL.*Zonal.*RAM|us-east4": "0D7A-665F-71DE",
-  "Cloud SQL|Cloud SQL.*Zonal.*vCPU|us-east4": "3608-47CD-223B",
+  "Cloud SQL|Cloud SQL.*Zonal.*vCPU|us-east4": "3EFB-5438-0C31",
   "Cloud SQL|Cloud SQL: Regional - SSD storage|asia-south1": {
     "catalog_version": "2026-07-27T06:50:51Z",
     "resource_group": null,
@@ -369,7 +369,7 @@
   },
   "Cloud SQL|Cloud\\ SQL\\ for\\ PostgreSQL:\\ Zonal\\ \\-\\ RAM|us-east4": {
     "resource_group": "SQLGen2InstancesRAM",
-    "sku_id": "26FD-7344-3E99",
+    "sku_id": "8B1E-B6B1-CCB4",
     "unit": "GiBy.h"
   },
   "Cloud SQL|Cloud\\ SQL\\ for\\ PostgreSQL:\\ Zonal\\ \\-\\ vCPU|us-east4": {
@@ -499,8 +499,8 @@
     "unit": "GiBy.mo"
   },
   "Cloud Storage|Standard Storage|us-east1": {
-    "resource_group": "MultiRegionalStorage",
-    "sku_id": "0D5D-6E23-4250",
+    "resource_group": "RegionalStorage",
+    "sku_id": "E5F0-6A5D-7BAD",
     "unit": "GiBy.mo"
   },
   "Cloud Storage|Standard Storage|us-east4": {
@@ -702,7 +702,7 @@
   "Compute Engine|E2 Instance Core|us-east4": "D5C5-E209-22D3",
   "Compute Engine|E2 Instance Ram|N2D AMD Instance Ram|asia-southeast1": {
     "resource_group": "RAM",
-    "sku_id": "92EB-71EA-DA74",
+    "sku_id": "E277-7DC2-2C7D",
     "unit": "GiBy.h"
   },
   "Compute Engine|E2 Instance Ram|asia-south1": "90AB-A7A8-F873",
@@ -836,10 +836,10 @@
     "sku_id": "6E2A-DCD9-87ED",
     "unit": "GiBy.h"
   },
-  "Compute Engine|N2 Custom Instance Core|asia-south1": "B427-FD14-9876",
+  "Compute Engine|N2 Custom Instance Core|asia-south1": "FC69-4A67-C34D",
   "Compute Engine|N2 Custom Instance Core|asia-southeast1": {
     "resource_group": "CPU",
-    "sku_id": "A0A6-F9E8-C0C2",
+    "sku_id": "D432-F64C-0F60",
     "unit": "h"
   },
   "Compute Engine|N2 Custom Instance Core|europe-west1": {
@@ -848,7 +848,7 @@
     "unit": "h"
   },
   "Compute Engine|N2 Custom Instance Core|us-east4": "0B2D-BDE1-6668",
-  "Compute Engine|N2 Custom Instance Ram|asia-south1": "643D-AE0D-2051",
+  "Compute Engine|N2 Custom Instance Ram|asia-south1": "88AC-E248-BFC6",
   "Compute Engine|N2 Custom Instance Ram|asia-southeast1": {
     "resource_group": "RAM",
     "sku_id": "1F19-9175-5B89",
@@ -859,7 +859,7 @@
     "sku_id": "CA5F-A13B-29EA",
     "unit": "GiBy.h"
   },
-  "Compute Engine|N2 Custom Instance Ram|us-east4": "3552-7924-04CD",
+  "Compute Engine|N2 Custom Instance Ram|us-east4": "A996-8018-FA18",
   "Compute Engine|N2 Instance Core|asia-south1": "3A1A-7CFC-5747",
   "Compute Engine|N2 Instance Core|asia-south2": {
     "resource_group": "CPU",
@@ -874,7 +874,7 @@
   "Compute Engine|N2D AMD Custom Instance Core|asia-south1": "665E-E4CD-1D74",
   "Compute Engine|N2D AMD Custom Instance Core|asia-southeast1": {
     "resource_group": "CPU",
-    "sku_id": "263D-00EF-EB69",
+    "sku_id": "FDBB-84BE-0AF7",
     "unit": "h"
   },
   "Compute Engine|N2D AMD Custom Instance Core|us-east4": "115C-7108-8B9E",
@@ -955,7 +955,7 @@
   },
   "Compute Engine|Nvidia H100 80GB GPU|asia-southeast1": {
     "resource_group": "GPU",
-    "sku_id": "0148-BB07-E78B",
+    "sku_id": "A26F-44D0-9A76",
     "unit": "h"
   },
   "Compute Engine|Nvidia H100 80GB GPU|us-east4": {
@@ -970,7 +970,7 @@
   },
   "Compute Engine|Nvidia L4 GPU running in|europe-west1": {
     "resource_group": "GPU",
-    "sku_id": "4A4C-5C8F-A6AB",
+    "sku_id": "AF48-297E-CF43",
     "unit": "h"
   },
   "Compute Engine|Nvidia L4 GPU running in|us-east4": {
@@ -980,7 +980,7 @@
   },
   "Compute Engine|Nvidia Tesla A100 GPU running in|asia-southeast1": {
     "resource_group": "GPU",
-    "sku_id": "3C9B-9F2F-F8F4",
+    "sku_id": "D37C-7DA9-71FA",
     "unit": "h"
   },
   "Compute Engine|Nvidia Tesla A100 GPU running in|europe-west1": {
@@ -990,12 +990,12 @@
   },
   "Compute Engine|Nvidia Tesla A100 GPU running in|us-east4": {
     "resource_group": "GPU",
-    "sku_id": "11A1-17CA-448D",
+    "sku_id": "55CD-B842-ABA8",
     "unit": "h"
   },
   "Compute Engine|Nvidia Tesla T4 GPU running in|asia-southeast1": {
     "resource_group": "GPU",
-    "sku_id": "2ED5-9DA9-AFA6",
+    "sku_id": "589B-0FAB-031A",
     "unit": "h"
   },
   "Compute Engine|Nvidia Tesla T4 GPU running in|europe-west1": {
@@ -1025,12 +1025,12 @@
   },
   "Compute Engine|SSD backed Local Storage|asia-southeast1": {
     "resource_group": "LocalSSD",
-    "sku_id": "18D2-F254-69B8",
+    "sku_id": "F8F1-D370-6212",
     "unit": "GiBy.mo"
   },
   "Compute Engine|SSD backed Local Storage|europe-west1": {
     "resource_group": "LocalSSD",
-    "sku_id": "4B42-FAA2-A346",
+    "sku_id": "62AF-A39E-269B",
     "unit": "GiBy.mo"
   },
   "Compute Engine|SSD backed Local Storage|us-east4": {
@@ -1043,7 +1043,7 @@
   "Compute Engine|Storage PD Capacity|asia-south1": "320C-7688-1A62",
   "Compute Engine|Storage PD Capacity|asia-southeast1": "0572-568A-4FC4",
   "Compute Engine|Storage PD Capacity|us-east4": "8AF1-1146-E7DA",
-  "Compute Engine|Storage PD Snapshot|asia-south1": "6E69-DD68-8DCA",
+  "Compute Engine|Storage PD Snapshot|asia-south1": "A0EA-3B8B-0794",
   "Compute Engine|Storage PD Snapshot|asia-south2": {
     "resource_group": "PDSnapshot",
     "sku_id": "246B-6075-A49D",
@@ -1051,12 +1051,12 @@
   },
   "Compute Engine|Storage PD Snapshot|asia-southeast1": {
     "resource_group": "PDSnapshot",
-    "sku_id": "6E69-DD68-8DCA",
+    "sku_id": "EC5A-D05B-E188",
     "unit": "GiBy.mo"
   },
   "Compute Engine|Storage PD Snapshot|us-east4": {
     "resource_group": "PDSnapshot",
-    "sku_id": "34CF-7D88-5D40",
+    "sku_id": "3FB1-991D-37F5",
     "unit": "GiBy.mo"
   },
   "Compute Engine|T2A Arm Instance Core|asia-southeast1": "21FA-D397-3735",
@@ -1068,7 +1068,7 @@
     "sku_id": "229C-8FDA-854F",
     "unit": "GiBy.h"
   },
-  "Compute Engine|Windows Server.*Datacenter Edition.*CPU cost|global": "00B2-37B0-B8BB",
+  "Compute Engine|Windows Server.*Datacenter Edition.*CPU cost|global": "6E4C-59D1-830D",
   "Compute Engine|Zonal Extended support vCPU|us-east4": {
     "catalog_version": "2026-07-27T06:50:51Z",
     "resource_group": null,
@@ -1077,7 +1077,7 @@
   },
   "Compute Engine|^Nvidia\\s+(?:Tesla\\s+)?A100\\s+80GB\\s+GPU\\b|us-east4": {
     "resource_group": "GPU",
-    "sku_id": "70A0-6026-94AD",
+    "sku_id": "7DB9-FA3F-C73C",
     "unit": "h"
   },
   "Compute Engine|^Nvidia\\s+(?:Tesla\\s+)?A100\\s+GPU\\b|us-east4": {

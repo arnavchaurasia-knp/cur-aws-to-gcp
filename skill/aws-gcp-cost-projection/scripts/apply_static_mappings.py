@@ -1269,7 +1269,12 @@ _NOISE_QUALIFIERS = ["autoclass", "early delete", "dual-region", "multi-region",
                      # SKU it had resolved to for months. Note "c4"/"c4a" are
                      # deliberately NOT listed — those substrings appear in
                      # Compute Engine machine-family descriptions.
-                     "enterprise plus", "performance optimized", "extended support"]
+                     "enterprise plus", "performance optimized", "extended support",
+                     # Spot variants are a different commercial mechanism (and renamed
+                     # from Preemptible by GCP) — OD-vs-OD headline policy requires
+                     # comparing on-demand to on-demand. A generic pattern must never
+                     # resolve to a Spot SKU.
+                     "spot"]
 
 
 # Legacy Cloud SQL "N vCPU + MGB RAM" SKUs price a WHOLE INSTANCE hour, not a
@@ -1807,6 +1812,36 @@ def _sku_meta(sku):
     return sku["skuId"], unit, resource_group
 
 
+def _sku_rate(sku):
+    """Extract primary tiered rate float from SKU pricingInfo, or None if unpriced/malformed."""
+    pricing = sku.get("pricingInfo", [])
+    if not pricing:
+        return None
+    rates = pricing[0].get("pricingExpression", {}).get("tieredRates", [])
+    if not rates:
+        return None
+    rate = rates[0].get("unitPrice", {})
+    try:
+        r = int(rate.get("units", 0) or 0) + (rate.get("nanos", 0) or 0) / 1e9
+        if r == 0 and len(rates) > 1:
+            r1_up = rates[1].get("unitPrice", {})
+            r1 = int(r1_up.get("units", 0) or 0) + (r1_up.get("nanos", 0) or 0) / 1e9
+            if r1 > 0:
+                return r1
+        return r
+    except (TypeError, ValueError):
+        return None
+
+
+def _description_extra_tokens(desc_pattern, sku_desc):
+    """Count description tokens not present in desc_pattern.
+    Fewer extra tokens indicates a closer match to intent.
+    """
+    pattern_tokens = set(re.findall(r"[a-z0-9]+", (desc_pattern or "").lower()))
+    desc_tokens = re.findall(r"[a-z0-9]+", (sku_desc or "").lower())
+    return sum(1 for t in desc_tokens if t not in pattern_tokens)
+
+
 def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=False, prefer_single_region=False):
     """
     Search the bundled GCP catalog for the first SKU whose description matches
@@ -1929,29 +1964,79 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region, allow_continent
         return 0 if _is_true_regional(sku) else 1
 
     def _select(candidates):
-        if prefer_single_region:
-            # Opt-in only: promote a SKU that genuinely serves gcp_region as a single
-            # region over MULTI_REGIONAL / GLOBAL SKUs that merely also cover it. Used
-            # for services where single-region is definitively the correct target for a
-            # single-region workload (Firestore, §4.18 — multi-region nam5 is 2x). NOT a
-            # global default: GCP's default snapshot/bucket storage location is itself
-            # multi-regional, so flipping every service to single-region would silently
-            # change deliberate multi-region mappings (PD snapshots, GCS). Those are a
-            # separate per-service decision (see docs/TODO_backlog.md).
-            candidates = sorted(candidates, key=_geo_rank)  # stable: true single-region first
+        if not candidates:
+            return None
+
         # Pass 1: non-Preemptible, non-noise (the ideal match)
-        for sku in candidates:
-            desc = sku.get("description", "").lower()
-            if "preemptible" not in desc and not _has_noise(sku.get("description", "")):
-                return _sku_meta(sku)
+        pass1 = [s for s in candidates
+                 if "preemptible" not in s.get("description", "").lower()
+                 and not _has_noise(s.get("description", ""))]
         # Pass 2: non-Preemptible but allow noise (e.g. if only Autoclass SKU exists)
-        for sku in candidates:
-            if "preemptible" not in sku.get("description", "").lower():
-                return _sku_meta(sku)
+        pass2 = [s for s in candidates
+                 if "preemptible" not in s.get("description", "").lower()]
         # Pass 3: accept Preemptible as last resort
-        for sku in candidates:
-            return _sku_meta(sku)
-        return None
+        pass3 = list(candidates)
+
+        surviving = pass1 if pass1 else (pass2 if pass2 else pass3)
+        if not surviving:
+            return None
+
+        def _sort_key(sku):
+            geo_key = _geo_rank(sku) if prefer_single_region else 0
+            spec_key = _description_extra_tokens(desc_pattern, sku.get("description", ""))
+            rate = _sku_rate(sku)
+            rate_key = float("inf") if rate is None else rate
+            sku_id = sku.get("skuId", "")
+            return (geo_key, spec_key, rate_key, sku_id)
+
+        sorted_candidates = sorted(surviving, key=_sort_key)
+        chosen = sorted_candidates[0]
+
+        # Part C: diagnostic on ambiguous resolution
+        # When a pass has >1 surviving candidate with >=2 DISTINCT rates
+        if prefer_single_region:
+            best_geo = min(_geo_rank(s) for s in surviving)
+            active_pool = [s for s in surviving if _geo_rank(s) == best_geo]
+        else:
+            active_pool = surviving
+
+        distinct_rates = {r for r in (_sku_rate(s) for s in active_pool) if r is not None}
+        if len(active_pool) > 1 and len(distinct_rates) >= 2:
+            chosen_id, chosen_unit, chosen_rg = _sku_meta(chosen)
+            chosen_rate = _sku_rate(chosen)
+            chosen_rate_str = f"{chosen_rate}" if chosen_rate is not None else "unpriced"
+            other_candidates = [s for s in active_pool if s.get("skuId") != chosen_id]
+            other_ids_rates = ", ".join(
+                f"{s.get('skuId')} (${_sku_rate(s) if _sku_rate(s) is not None else 'unpriced'})"
+                for s in other_candidates
+            )
+            n = len(active_pool)
+            diag(
+                WARN,
+                "ambiguous_sku_resolution",
+                "apply_static_mappings.py",
+                f"{gcp_service} / {desc_pattern!r} @ {gcp_region}: {n} priced variants, "
+                f"picked {chosen_id} (${chosen_rate_str}); others: {other_ids_rates}",
+                detail={
+                    "gcp_service": gcp_service,
+                    "desc_pattern": desc_pattern,
+                    "gcp_region": gcp_region,
+                    "chosen_sku_id": chosen_id,
+                    "chosen_rate": chosen_rate,
+                    "candidate_count": n,
+                    "distinct_rates": sorted(list(distinct_rates)),
+                    "other_candidates": [
+                        {
+                            "sku_id": s.get("skuId"),
+                            "description": s.get("description"),
+                            "rate": _sku_rate(s),
+                        }
+                        for s in other_candidates
+                    ],
+                },
+            )
+
+        return _sku_meta(chosen)
 
     # Exact-region (or GLOBAL) candidates always take priority.
     exact = [sku for sku in desc_matches if _exact_region_match(sku)]

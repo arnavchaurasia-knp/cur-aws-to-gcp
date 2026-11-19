@@ -135,7 +135,7 @@ def test_pitr_storage_maps_to_single_region_pitr_sku():
     m = out[0]
     assert m["strategy"] == "map"
     assert m["gcp_service"] == "Cloud Firestore"
-    assert m["gcp_sku_id"] == "9AC7-D7C1-66E7"  # Single-region Iowa PITR
+    assert m["gcp_sku_id"] == "A979-304C-860F"  # Single-region Iowa PITR (exact specificity match)
     assert "Point-in-time Recovery" in m["gcp_sku_name"]
     assert m["component"] == "pitr-storage"
 

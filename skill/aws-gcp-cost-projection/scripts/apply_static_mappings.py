@@ -8036,8 +8036,12 @@ def map_fsx(rows):
             else:
                 is_monthly = any(u in (r.get("unit") or "").lower() for u in ["gb-mo", "gb month", "gb-month", "byte-mo", "byte-month"]) or (r.get("unit") or "").lower() in ("", "gb")
                 mult = GB_TO_GIB if is_monthly else (GB_TO_GIB / 730.0)
-                sku_id = "NETAPP-STANDARD"
-                sku_name = "NetApp Volumes Standard (Auto-tiering Cold Capacity)"
+                # Capacity Pool is FSx ONTAP's cold/auto-tiered tier ($0.0438/GB-mo AWS);
+                # maps to NetApp Volumes auto-tiering COLD capacity ($0.06/GiB-mo), NOT the
+                # Standard hot rate ($0.20) — cold rate verified cloud.google.com/netapp/volumes/pricing
+                # (Auto tiering: Premium/Extreme Cold $0.000082192/GiB-h ×730, 2026-11-19).
+                sku_id = "NETAPP-AUTOTIER-COLD"
+                sku_name = "NetApp Volumes Auto-tiering Cold Capacity"
                 entry = {
                     "aws_li_key":         r["aws_li_key"],
                     "gcp_service":        GCP_NETAPP_VOLUMES,
@@ -8048,8 +8052,8 @@ def map_fsx(rows):
                     "strategy":           "map",
                     "unit_multiplier":    mult,
                     "gcp_region":         gcp_region,
-                    "projection_note":    (f"FSx for NetApp ONTAP Capacity Pool tiered storage → NetApp Volumes Standard "
-                                           f"($0.20/GiB-mo; cloud.google.com/netapp/volumes/pricing); "
+                    "projection_note":    (f"FSx for NetApp ONTAP Capacity Pool (cold/auto-tiered) storage → NetApp Volumes "
+                                           f"Auto-tiering Cold Capacity ($0.06/GiB-mo; cloud.google.com/netapp/volumes/pricing); "
                                            f"unit_multiplier={mult:.4f}"),
                     "mapping_confidence": 0.85,
                 }

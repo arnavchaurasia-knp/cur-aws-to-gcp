@@ -140,6 +140,7 @@ def inject_netapp_parallelstore_rates(conn):
     - NetApp Volumes Standard: $0.20 / GiB-mo ($0.000273973 / GiB-h)
     - NetApp Volumes Premium: $0.294 / GiB-mo ($0.000403014 / GiB-h)
     - NetApp Volumes Extreme: $0.393 / GiB-mo ($0.000537945 / GiB-h)
+    - NetApp Volumes Auto-tiering Cold: $0.06 / GiB-mo ($0.000082192 / GiB-h)
     - Parallelstore Capacity: $0.14 / GiB-mo ($0.000191781 / GiB-h)
     Sources:
       https://cloud.google.com/netapp/volumes/pricing
@@ -149,6 +150,7 @@ def inject_netapp_parallelstore_rates(conn):
         ("NETAPP-STANDARD", "Google Cloud NetApp Volumes", "NetApp Volumes Standard", 0.20, "canonical-netapp-gcp", "https://cloud.google.com/netapp/volumes/pricing"),
         ("NETAPP-PREMIUM", "Google Cloud NetApp Volumes", "NetApp Volumes Premium", 0.294, "canonical-netapp-gcp", "https://cloud.google.com/netapp/volumes/pricing"),
         ("NETAPP-EXTREME", "Google Cloud NetApp Volumes", "NetApp Volumes Extreme", 0.393, "canonical-netapp-gcp", "https://cloud.google.com/netapp/volumes/pricing"),
+        ("NETAPP-AUTOTIER-COLD", "Google Cloud NetApp Volumes", "NetApp Volumes Auto-tiering Cold Capacity", 0.06, "canonical-netapp-gcp", "https://cloud.google.com/netapp/volumes/pricing"),
         ("PARALLELSTORE-CAPACITY", "Parallelstore", "Parallelstore Capacity", 0.14, "canonical-parallelstore-gcp", "https://cloud.google.com/parallelstore/pricing"),
     ]
     regions = [

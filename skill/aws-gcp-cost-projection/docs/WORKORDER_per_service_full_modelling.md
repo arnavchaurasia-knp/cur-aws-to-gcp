@@ -12,7 +12,14 @@ end-to-end before moving on.
 > This workorder is the vehicle that fixes all of that, one service at a time, with each service's
 > completion *enforced by the gate* so it can never silently regress.
 
-> ▶ **CURRENT ASSIGNMENT: NONE (awaiting next assignment from operator) — `elasticache` (§4.21) completed & gated.**
+> ▶ **CURRENT ASSIGNMENT: TWO workorders written & READY FOR AGY — `msk` (§4.22) and `fsx` sub-tiers (§4.23).**
+> Both were parked because their GCP pages were JS-blocked; bxw unblocked them (rates verified 2026-11-19). Both need
+> **synthetic rate injection** (TPU/Oracle precedent) because the catalog lacks the SKUs: §4.22 retargets MSK broker-hrs →
+> Managed Service for Apache Kafka DCU ($0.09/DCU-h, DCU=0.6×vCPU+0.1×GiB); §4.23 injects NetApp Volumes
+> (Standard/Premium/Extreme $0.20/$0.294/$0.393 GiB-mo) + Parallelstore ($0.14/GiB-mo) so map_fsx's targets resolve instead
+> of passing through. **AGY: implement §4.22.2 and §4.23.2 (independent — do either order), then operator verifies.**
+>
+> `elasticache` (§4.21) completed & gated 2026-11-19.
 > `elasticache` Redis retarget (§4.21, M10) was completed, fully modelled, and gated on 2026-11-19:
 > - M10 defect resolved: ElastiCache Redis node-hours retargeted from legacy `Redis Capacity {Basic|Standard} M*` (per-GiBy.h, multiplier=RAM) to node-based **Memorystore for Redis Cluster** (`Redis Cluster Node ...`, multiplier=1.0).
 > - Corrects the 2–3× over-projection vs GCP's node-based Memorystore for Redis Cluster (e.g. 13 GiB HA $0.60/hr → $0.19/hr; 26 GiB $1.21/hr → $0.57/hr).
@@ -160,7 +167,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | 4 | s3 | GOLD | ☐ | — |
 | 5 | ebs | GOLD | ☐ | — |
 | 6 | efs | PARTIAL (Basic pinned) | **☑ DONE+GATED** | §4.9 |
-| 7 | fsx | PARTIAL | **⚙ IN PROGRESS (correction pass)** | §4.10 |
+| 7 | fsx | PARTIAL (sub-tier rates verified) | **⚙ §4.10 + §4.23 READY** | §4.10, §4.23 |
 | 8 | backup | MIS-TARGET (no mapper) | **☑ DONE+GATED** | §4.3 |
 | 9 | lambda | GOOD (2 dim gaps) | **☑ DONE+GATED** | §4.7 |
 | 10 | fargate | GOLD | ☐ | — |
@@ -180,7 +187,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | 24 | cloudtrail | GOOD | ☐ | — |
 | 25 | dms | MIS-TARGET (free-tier over-proj) | **☑ DONE+GATED** | §4.6 |
 | 26 | kinesis | GOOD (unit caveat) | ☐ | — |
-| 27 | msk | GOLD | ☐ | — |
+| 27 | msk | self-hosted-GCE proxy; DCU retarget ready | **⚙ §4.22 READY** | §4.22 |
 | 28 | glue | GOOD | ☐ | — |
 | 29 | kms | GOLD | ☐ | — |
 | 30 | secretsmanager | GOLD | ☐ | — |
@@ -2239,6 +2246,104 @@ DoD per §2. **Sources (BOTH official pages verified 2026-11-18 via `bxw`):** AW
 Redis Cluster ladder + CUD) cross-checked against `data/catalog.duckdb` (node SKUs resolve, e.g.
 `Redis Cluster Node Standard Large` = 87AC-74F6-A953). **Decision: node-to-node retarget, ×1.0. Memory
 [[reference_gcp_memorystore_rates]]. Ready for AGY.**
+
+---
+
+### 4.22 MSK → Managed Service for Apache Kafka (DCU retarget + synthetic rates) — ⚙ READY FOR AGY
+
+`map_msk` (`:8778`) maps MSK broker-hours → **self-hosted Kafka on GCE** (N-series core+ram, like EC2 compute_breakdown).
+Verification (bxw, 2026-11-19) shows GCP has a real **managed** product — Managed Service for Apache Kafka — that is the
+truer target and carries a management premium the self-hosted proxy misses. The official page even confirms the product
+runs on N2 Compute Engine, so self-hosted-GCE is a sound *proxy*, but the DCU-priced managed SKU is the accurate target.
+
+#### 4.22.0 Verification status (2026-11-19 — GCP page verified via bxw; AWS known)
+- ✅ **GCP** (`cloud.google.com/managed-service-for-apache-kafka/pricing`): **CPU+RAM $0.09/DCU-h** (CUD 1yr $0.072 /
+  3yr $0.054), **Connect CPU+RAM $0.12/DCU-h**, **Local Storage $0.000232877/GiB-h** (~$0.17/GiB-mo), **Long-term Storage
+  $0.000136986/GiB-h** (~$0.10/GiB-mo), **Inter-zone transfer $0.01/GiB**. **DCU = 0.6×vCPU + 0.1×GiB RAM** (additive;
+  1 vCPU+4 GiB = 1 DCU — same family as Dataproc Serverless §4.19 / Composer 3).
+- ✅ **AWS MSK:** broker-hours per `kafka.<family>.<size>` instance class (vCPU/RAM in `_MSK_VCPU_RAM`) + storage GB-mo +
+  data transfer. (MSK Connect = MCU; Serverless = partition/throughput.)
+- ⚠️ **Catalog GAP:** `catalog.duckdb` has **0 Managed Kafka SKUs** (confirmed) → requires **synthetic rate injection**
+  (the TPU/Oracle precedent: `apply_rates.inject_tpu_rates`/`inject_oracle_rates` + `synthetic_skus.SYNTHETIC_SKU_IDS`).
+
+#### 4.22.1 THE DECISION — retarget broker-hrs → Managed Kafka DCU; inject synthetic rates
+Convert each MSK broker-hour (vCPU, RAM from `_MSK_VCPU_RAM`) to DCUs (`0.6×vCPU + 0.1×RAM_GiB`) and price at the synthetic
+**$0.09/DCU-h** CPU+RAM SKU; storage GB-mo → Local Storage synthetic SKU ($0.17/GiB-mo); MSK data-transfer → inter-zone
+$0.01/GiB (existing data_transfer mechanic). CUD is global (add "Managed Service for Apache Kafka" to `cud_pct.json`
+`cud_eligible` with 20%/40%). Keep the self-hosted-GCE path as the fallback when the instance type is unknown.
+
+#### 4.22.2 Implementation steps (`ast.parse`; keep `map_compute_breakdown`+`main` intact)
+Files: `scripts/synthetic_skus.py` (+ Kafka SKU IDs), `scripts/apply_rates.py` (new `inject_kafka_rates(conn)`, call it
+beside `inject_tpu_rates`/`inject_oracle_rates` ~:1110), `scripts/apply_static_mappings.py` (`map_msk` DCU branch),
+`data/cud_pct.json` (Kafka → cud_eligible), `tests/test_msk_full_modelling.py` (**new**), `tests/test_spec_dispatch.py`.
+1. `synthetic_skus.py`: add `KAFKA-DCU-CPURAM` ($0.09), `KAFKA-DCU-CONNECT` ($0.12), `KAFKA-LOCAL-STORAGE`
+   ($0.000232877/GiB-h), `KAFKA-LONGTERM-STORAGE` ($0.000136986/GiB-h) to `SYNTHETIC_SKU_IDS`.
+2. `apply_rates.inject_kafka_rates(conn)`: INSERT those into `gcp_sku_rates` for the Oracle region list + `global`
+   (service_name `Managed Service for Apache Kafka`, unit `DCU-hour`/`GiBy.h`, source `canonical-kafka-gcp`, cite the URL).
+   Register in the injection block and the synthetic-id gap-report whitelist.
+3. `map_msk`: when `specs=(vcpu,ram)` resolve, add a DCU branch BEFORE the self-hosted-GCE core+ram emit: one entry
+   `gcp_service="Managed Service for Apache Kafka"`, `gcp_sku_id="KAFKA-DCU-CPURAM"`, `unit_multiplier = 0.6*vcpu + 0.1*ram`
+   (DCU per broker-hour), `strategy="map"`, note disclosing the DCU formula + that it supersedes the self-hosted-GCE proxy.
+   Storage rows (GB-mo) → `KAFKA-LOCAL-STORAGE`. Keep the `specs is None` passthrough. (Decide: replace the GCE core+ram
+   emit, don't double — DCU already covers compute.)
+4. `data/cud_pct.json`: add `Managed Service for Apache Kafka` to `cud_eligible` (+ 0.8/0.6 multipliers).
+5. `tests/test_msk_full_modelling.py`: broker-hr (e.g. kafka.m5.large = 2 vCPU/8 GiB → 0.6*2+0.1*8 = 2.0 DCU → $0.18/hr)
+   maps to KAFKA-DCU-CPURAM; storage → Local Storage; unknown type → self-hosted-GCE fallback; invariants: no `map` row with
+   empty gcp_sku_id. 6. Full suite green; update §7.1.
+
+#### 4.22.3 DoD + Sources
+DoD per §2. **Sources:** GCP `cloud.google.com/managed-service-for-apache-kafka/pricing` (bxw-verified 2026-11-19) + AWS
+MSK instance classes. **Decision: DCU retarget via synthetic injection; self-hosted-GCE fallback. Memory
+[[reference_gcp_managed_kafka_rates]]. Ready for AGY.**
+
+---
+
+### 4.23 FSx sub-tiers → NetApp Volumes / Parallelstore (synthetic rates) — ⚙ READY FOR AGY
+
+`map_fsx` (`:7881`, the §4.10 interim) already routes FSx-ONTAP → `Google Cloud NetApp Volumes`, FSx-Lustre → Managed
+Lustre (fallback Filestore), FSx-Windows → NetApp Volumes/Filestore, FSx-OpenZFS → Filestore. **The catalog has 0 NetApp
+Volumes, 0 Parallelstore, 1 Managed Lustre SKUs** (Filestore has 624) → the protocol-matched targets resolve to None and
+**fall to passthrough** (why §4.10 is "dollar-safe interim"). This completes it with the verified rates via synthetic injection.
+
+#### 4.23.0 Verification status (2026-11-19 — GCP pages verified via bxw)
+- ✅ **NetApp Volumes** (`cloud.google.com/netapp/volumes/pricing`, us-central1, GiB-h; ×730≈/mo): **Standard
+  $0.000273973/GiB-h (~$0.20/GiB-mo)**, **Premium $0.000403014 (~$0.294)**, **Extreme $0.000537945 (~$0.393)**; **Flex
+  Regional** capacity $0.000287671/GiB-h + throughput $0.003424658/MBps-h + IOPS $0.000046575/IOPS-h (first 1024 IOPS +
+  64 MBps free). Spend-based CUDs all levels.
+- ✅ **Parallelstore** (`cloud.google.com/parallelstore/pricing`): **$0.000191781/GiB-h (~$0.14/GiB-mo)** on **provisioned**
+  capacity. (`/managed-lustre/pricing` 404s — Parallelstore is the FSx-for-Lustre analogue per
+  [[reference_aws_gcp_service_comparison]].)
+- ✅ **Catalog GAP:** NetApp Volumes / Parallelstore absent → **synthetic rate injection** (TPU/Oracle precedent). Filestore
+  (624 SKUs) stays the resolvable fallback.
+
+#### 4.23.1 THE DECISION — inject NetApp Volumes + Parallelstore synthetic SKUs; select the real sub-tier
+Keep map_fsx's existing target routing; make the targets resolve by injecting the verified rates, and select the service
+level instead of collapsing: FSx-ONTAP SSD → NetApp **Premium/Extreme** (by throughput/IOPS signal; default Premium),
+capacity/HDD → **Standard**; FSx-Lustre → **Parallelstore** ($0.14/GiB-mo provisioned); FSx-Windows → NetApp (SMB) or
+Filestore Enterprise; FSx-OpenZFS → Filestore (existing). Throughput/IOPS stay $0-ignore (bundled) EXCEPT NetApp Flex
+Regional, where they are separately priced — out of scope for this pass (note it).
+
+#### 4.23.2 Implementation steps (`ast.parse`; keep `map_compute_breakdown`+`main` intact)
+Files: `scripts/synthetic_skus.py`, `scripts/apply_rates.py` (`inject_netapp_parallelstore_rates(conn)` beside the others),
+`scripts/apply_static_mappings.py` (`map_fsx` tier selection), `data/cud_pct.json`, `tests/test_fsx_full_modelling.py`
+(extend §4.10's if present), `tests/test_spec_dispatch.py`.
+1. `synthetic_skus.py` + `apply_rates.inject_netapp_parallelstore_rates`: inject `NETAPP-STANDARD` ($0.000273973/GiB-h),
+   `NETAPP-PREMIUM` ($0.000403014), `NETAPP-EXTREME` ($0.000537945), `PARALLELSTORE-CAPACITY` ($0.000191781) for the region
+   list + global (service_name `Google Cloud NetApp Volumes` / `Parallelstore`, unit `GiBy.h`, cite URLs). Register in the
+   injection block + gap-report whitelist.
+2. `map_fsx`: in the ONTAP/NetApp capacity branch resolve the chosen tier's synthetic SKU (default Premium; Standard for
+   capacity/HDD; Extreme if an SSD/high-IOPS signal present), `unit_multiplier = GB_TO_GIB × 730` or per-GiB-h as the unit
+   dictates (match the GiBy.h synthetic unit — usage GB-mo × 730 → GiB-h, or inject a /GiB-mo SKU to keep mult simple).
+   Lustre capacity branch → `PARALLELSTORE-CAPACITY`. Keep Filestore fallback when a synthetic SKU is somehow absent.
+3. `data/cud_pct.json`: add `Google Cloud NetApp Volumes` to `cud_eligible`.
+4. `tests/test_fsx_full_modelling.py`: ONTAP capacity → NetApp tier SKU (empirical ≈ $0.20/$0.294/$0.393 GiB-mo), Lustre →
+   Parallelstore (≈$0.14/GiB-mo), Windows/OpenZFS unchanged, backup/throughput branches not regressed; invariants: no `map`
+   row with empty gcp_sku_id. 5. Full suite green; update §7.1.
+
+#### 4.23.3 DoD + Sources
+DoD per §2. **Sources (bxw-verified 2026-11-19):** GCP `cloud.google.com/netapp/volumes/pricing` +
+`cloud.google.com/parallelstore/pricing`; AWS `aws.amazon.com/fsx/pricing`. **Decision: synthetic NetApp/Parallelstore
+rates + real sub-tier selection; Filestore fallback. Memory [[reference_gcp_fsx_netapp_parallelstore_rates]]. Ready for AGY.**
 
 ---
 

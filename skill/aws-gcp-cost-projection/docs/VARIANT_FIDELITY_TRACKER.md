@@ -33,9 +33,9 @@ Legend: 🔴 still broken · 🟡 verify (may be partly done) · ✅ done this s
 
 ## Deferred
 
-- ⏸ **M9 FSx sub-tiers** → §4.10 — **RATES VERIFIED 2026-11-19 via bxw** ([[reference_gcp_fsx_netapp_parallelstore_rates]]): NetApp Volumes (ONTAP) Standard/Premium/Extreme $0.20/$0.294/$0.393 GiB-mo + Flex Regional (capacity+throughput+IOPS); Parallelstore (Lustre analogue) ~$0.14/GiB-mo provisioned. Dollar-safe interim still in place; these rates enable the real sub-tier completion in a future §4.10 pass.
+- ⏸ **M9 FSx sub-tiers** → §4.10 — **RATES VERIFIED 2026-11-19 via bxw** ([[reference_gcp_fsx_netapp_parallelstore_rates]]): NetApp Volumes (ONTAP) Standard/Premium/Extreme $0.20/$0.294/$0.393 GiB-mo + Flex Regional (capacity+throughput+IOPS); Parallelstore (Lustre analogue) ~$0.14/GiB-mo provisioned. Dollar-safe interim still in place; catalog has 0 NetApp/Parallelstore SKUs (Filestore 624). **Workorder §4.23 written → READY FOR AGY (synthetic injection + real sub-tier selection).**
 - ⏸ **CloudWatch §4.17** — PARKED: audit tiers it 🥇 GOLD (dashboards/alarms/API/metrics IGNORE splits already correct). Only a test file + 2 tiny gaps (Synthetics, Logs Insights) remain — low value.
-- ⏸ **MSK** — **RATES VERIFIED 2026-11-19 via bxw** ([[reference_gcp_managed_kafka_rates]]): GCP Managed Service for Apache Kafka is DCU-priced ($0.09/DCU-h, DCU=0.6×vCPU+0.1×GiB; storage $0.17/$0.10 GiB-mo; inter-zone $0.01/GiB). **Catalog still MISSING these SKUs** → a future MSK retarget (broker-hrs→DCU) needs synthetic rate injection; self-hosted-GCE proxy confirmed adequate meanwhile (the page confirms Managed Kafka runs on N2 CE vCPU+RAM). No longer blocked on page access.
+- ⏸ **MSK** — **RATES VERIFIED 2026-11-19 via bxw** ([[reference_gcp_managed_kafka_rates]]): GCP Managed Service for Apache Kafka is DCU-priced ($0.09/DCU-h, DCU=0.6×vCPU+0.1×GiB; storage $0.17/$0.10 GiB-mo; inter-zone $0.01/GiB). **Catalog still MISSING these SKUs** → a future MSK retarget (broker-hrs→DCU) needs synthetic rate injection; self-hosted-GCE proxy confirmed adequate meanwhile (the page confirms Managed Kafka runs on N2 CE vCPU+RAM). No longer blocked on page access. **Workorder §4.22 written → READY FOR AGY (DCU retarget + synthetic injection).**
 
 ## 🥇 GOLD — already variant-correct, DO NOT touch (would only regress)
 

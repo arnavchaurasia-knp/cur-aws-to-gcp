@@ -26,8 +26,23 @@ Origin: generalization of the multi-region fix ([[project_multiregion_resolve_sk
 
 ## Fix — two safe parts + one review loop
 
-### Part A (safe, targeted): add `"spot"` to `_NOISE_QUALIFIERS`
-`scripts/apply_static_mappings.py` ~:1261. GCP renamed preemptible→Spot; the denylist still only has `"preemptible"`. A Spot SKU must never be picked unless the pattern asks for it (a mapper wanting Spot names it). Add `"spot"`. Low risk, clear correctness.
+### Part A (HIGH PRIORITY — OD-vs-OD policy breach, not just a tiebreak): add `"spot"` to `_NOISE_QUALIFIERS`
+`scripts/apply_static_mappings.py` ~:1261. This enforces the **OD-vs-OD headline policy** (D1,
+[[project_pricing_and_cutover_decisions]]) on the GCP side. How the two sides are supposed to line up:
+- **AWS side (verified, correct):** `ingest.py` normalizes Spot usage UP to on-demand list — `aws_od_cost` =
+  `public_on_demand_cost` if present, else reconstructed from row rates, else a portfolio-default gross-up
+  `aws_amortized_cost / spot_div` (spot_div = 1 − 0.70 = 0.30, i.e. ×3.33), `od_basis='reconstructed_default'`.
+  So AWS Spot is compared at OD list, NOT its cheap actual price.
+- **GCP side (intended, correct):** Preemptible rate synthesis was removed (OD-vs-OD, `apply_rates.py` ~:1055),
+  `_select` skips `"preemptible"`, and preemptible-only resolutions fall to passthrough (`apply_rates.py` ~:1338).
+- **THE GAP:** GCP renamed Preemptible→**Spot**, but `_select` only filters the string `"preemptible"`.
+  **525 catalog SKUs carry "spot" in the description without "preemptible"** (e.g. `Autopilot Arm Spot Pod CPU`,
+  `Autopilot Performance Spot Memory Premium`) → they slip past the filter. A generic `desc_pattern` can then resolve
+  to a **cheap GCP Spot rate**, comparing AWS-**OD** vs GCP-**Spot** — asymmetric, silently favorable to GCP.
+
+Fix: add `"spot"` to `_NOISE_QUALIFIERS` so a Spot SKU is never chosen unless the pattern explicitly asks for it,
+exactly mirroring the AWS-Spot→OD normalization. Low risk, high correctness. Verify no mapper relies on resolving a
+Spot SKU via a generic pattern (none should — OD-vs-OD).
 
 ### Part B (structural): make `_select` deterministic instead of file-order
 Replace "first in file order" with a **stable, explicit tiebreak** so resolution is reproducible across catalog refreshes. Within each existing pass (pass-1 non-noise, pass-2 allow-noise, pass-3 allow-preemptible), sort candidates by:

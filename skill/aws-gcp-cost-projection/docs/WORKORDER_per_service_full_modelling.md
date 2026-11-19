@@ -12,7 +12,7 @@ end-to-end before moving on.
 > This workorder is the vehicle that fixes all of that, one service at a time, with each service's
 > completion *enforced by the gate* so it can never silently regress.
 
-> ▶ **CURRENT ASSIGNMENT: NONE (awaiting next assignment from operator) — `msk` (§4.22) and `fsx` sub-tiers (§4.23) completed & gated 2026-11-19.**
+> ▶ **CURRENT ASSIGNMENT: NONE (awaiting next assignment from operator) — `msk` (§4.22 DCU retarget) and `fsx` (§4.10+§4.23 sub-tiers incl. auto-tiering cold-rate fix) completed, verified & gated 2026-11-19. All 🔴/🟡 variant gaps closed; only 🥇 GOLD + LOW/cosmetic items remain.**
 >
 > `msk` (§4.22) and `fsx` sub-tiers (§4.23) were completed, fully modelled, and gated on 2026-11-19:
 > - **MSK (§4.22):** Retargeted MSK broker-hours to GCP's Managed Service for Apache Kafka DCU ($0.09/DCU-h, SKU `KAFKA-DCU-CPURAM`), where $\text{DCU} = 0.6 \times \text{vCPU} + 0.1 \times \text{RAM\_GiB}$. Connect worker hours mapped to $0.12/DCU-h (`KAFKA-DCU-CONNECT`, $1\text{ MCU} = 1\text{ vCPU} + 4\text{ GiB} = 1.0\text{ DCU}$). MSK broker storage (GB-Mo) mapped to Local Storage (`KAFKA-LOCAL-STORAGE`, $0.17/GiB-mo). Unknown instance types fall back to self-hosted GCE passthrough with Compute Engine label. Graviton ARM architecture detected and disclosed in `projection_note`. Added `Managed Service for Apache Kafka` to `cud_pct.json` with 20%/40% CUD multipliers. Populated `service_usage_catalog.json` with 13 MSK billing dimensions and added 7 dedicated unit tests in `test_msk_full_modelling.py`.
@@ -77,16 +77,14 @@ end-to-end before moving on.
 > Lambda §4.7, Redshift §4.8, EFS §4.9, Data Transfer §4.11, ELB §4.12, Route 53 §4.13, VPC/NAT/TGW §4.14,
 > ElastiCache §4.15, Direct Connect §4.16 — all modelled, implemented, full suite green.)
 >
-> **⏸ DEFERRED (interim fix Claude-VERIFIED; real completion still pending): `fsx` (§4.10) — ⚙.**
-> Dollar-safe interim fix applied per §7.1 option 2 and **Claude-verified empirically 2026-11-14**: ONTAP SSD →
-> `map` Filestore Regional (real SKU `0413-DF42-2B69`), ONTAP capacity-pool → `passthrough` (no fake map),
-> **no map-with-no-rate rows**, tests now assert `strategy in ("map","passthrough")` with a sku_id guard — the
-> AGENTS-violation bug is **gone**. REAL COMPLETION still pending: NetApp Volumes + Managed Lustre have 0 catalog
-> SKUs, so ONTAP/Lustre fall back to Filestore (approximate — Filestore Regional $0.45 vs NetApp Premium $0.29).
-> Finish by seeding those two services' rates into a SEPARATE `data/supplemental_sku_rates.json` +
-> `inject_supplemental_rates()` (mirror `inject_oracle_rates`; never into catalog.duckdb — survives refresh), then
-> flip the branches to prefer the real target. Same map-with-no-rate class still unaudited in other mappers
-> (global `_emit_mapped` + generic invariant test deferred). Rate-pins → `WORKORDER_followup_fixes.md` §C.
+> **☑ DONE+GATED: `fsx` (§4.10 + §4.23) — real sub-tier completion landed & Claude-verified 2026-11-19.**
+> ONTAP SSD → NetApp Volumes Premium ($0.294/GiB-mo), ONTAP Capacity Pool (cold/auto-tiered) → NetApp
+> Auto-tiering Cold Capacity ($0.06/GiB-mo — NOT hot Standard; 3.3× over-projection fixed), Lustre →
+> Parallelstore ($0.14/GiB-mo). Synthetic rate injection (`inject_netapp_parallelstore_rates`, incl.
+> `NETAPP-AUTOTIER-COLD`) replaces the Filestore-fallback interim. All rates bxw/official-page verified
+> 2026-11-19 (netapp/volumes/pricing + aws fsx/netapp-ontap/pricing). 1724 tests pass. Commits `6b1ed56`
+> (§4.23) + `0285456` (cold-tier fix). FSx for Windows → Filestore unchanged; OpenZFS target still a later
+> refinement.
 
 ---
 
@@ -2798,7 +2796,7 @@ Structure is correct and complete (no truncation; +251 lines; map_fsx branches p
    GB_TO_GIB if sku_id else 1.0`; give ONTAP a Filestore fallback via `resolve_sku_with_fallback` (like Windows:
    NetApp Premium → Filestore Regional); amend the two tests to assert `strategy in ("map","passthrough")`.
 > ✅ **Option 2 implemented (2026-11-14):** `map_fsx` ONTAP storage & capacity-pool branches guarded with `"strategy": "map" if sku_id else "passthrough"` + `resolve_sku_with_fallback` added for ONTAP with Filestore Regional fallback. `tests/test_fsx_full_modelling.py` updated and passing (9/9).
-Keep §4.10 / tracker / banner at ⚙ until the correction lands and Claude re-verifies.
+> ☑ **REAL COMPLETION — Claude-verified PASS (2026-11-19), §4.23.** Option 1 (real rates) done via **synthetic injection**, not catalog seeding: `inject_netapp_parallelstore_rates()` seeds NetApp Volumes Standard/Premium/Extreme + **Auto-tiering Cold** + Parallelstore across 19 regions (survives catalog refresh, like `inject_oracle_rates`). Branches flipped to the real targets (ONTAP SSD → Premium, Capacity Pool cold → **NETAPP-AUTOTIER-COLD $0.06/GiB-mo** not Standard $0.20 — a 3.3× over-projection fix caught by official-page cross-check, Lustre → Parallelstore). All rates bxw/official verified. Full suite **1724 green** (real gate now: SKUs resolve, no map-with-no-rate). Commits `6b1ed56` + `0285456`. §4.10/tracker/banner → ☑.
 
 #### datatransfer — log *(2026-11-14, completed by AGY)*
 - Status: ☑ DONE+GATED · Runbook step reached: 9/9 · Date: 2026-11-14 · Agent: agy

@@ -26,11 +26,10 @@ Legend: 🔴 real dollar error · 🟡 needs decision/verify · ⚪ low/cosmetic
 
 ## NEXT (pick after the above)
 
-- ⚙ **PD Snapshot & GCS → REGIONAL targets — VERIFIED + WORKORDER WRITTEN → READY FOR AGY.** Official pages checked
-  2026-11-19: GCP explicitly recommends regional snapshots unless multi-region replication is needed, and regional
-  is cheaper (snapshot $0.05 vs $0.083/GiB-mo; GCS Standard $0.020 vs $0.026). EBS snapshots & S3 are regional, so
-  regional is the faithful target. Decision = regional; extend `prefer_single_region` to the snapshot + GCS mappers.
-  Full spec + verified rates + call sites + tests in `docs/WORKORDER_regional_vs_multiregion_targets.md`.
+- ✅ **PD Snapshot & GCS → REGIONAL targets — DONE+GATED 2026-11-19 (commit 4ef2a08).** AGY implemented, Claude-
+  verified (1732 tests). EBS snapshot → regional PD snapshot (us-east4 → Virginia, not multi-region US); S3 Standard
+  → cheapest REGIONAL GCS (us-east1 → $0.022, down from US-multi $0.026); DynamoDB Global Tables stays multi-region.
+  `prefer_single_region` extended to snapshot/backup/GCS mappers. Spec: `docs/WORKORDER_regional_vs_multiregion_targets.md`.
 
 - 🟡 **NAT gateway-hours per-VM-hour decision (USER INPUT NEEDED).** Cloud NAT bills per-VM-hour, not per-gateway;
   needs a VM-count assumption. Anchor: Cloud-NAT-for-LB ">32 VM" (see [[reference_gcp_cloud_lb_rates]]).

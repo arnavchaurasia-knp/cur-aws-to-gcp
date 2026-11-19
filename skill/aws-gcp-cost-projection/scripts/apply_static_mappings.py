@@ -2636,16 +2636,44 @@ _FLAT_HOURLY_APPROXIMATE_NOTE = {
 }
 
 
+def _estimate_vms_per_gateway(compute_instance_hours, n_gateways, period_hours=730.0):
+    """Estimate average concurrent VM instances behind each public NAT gateway.
+
+    Cloud NAT bills per VM-hour (capped at 32 VMs/gateway → $0.044/hr), whereas
+    AWS bills a flat per-gateway hour — so the faithful GCP figure needs how many
+    VMs sit behind each gateway. The CUR carries no VM resource-id, so we ESTIMATE
+    average concurrent instances = Σ(compute instance-hours) / hours-in-period,
+    split across the gateways. Returns None when there is nothing to derive from
+    (caller then falls back to the committed nat_vms_per_gateway default).
+
+    NOT a distinct-instance-TYPE count (a 500-VM fleet of one type is 500 VMs, not
+    1) — that was the prior proxy's bug.
+    """
+    try:
+        hrs = float(compute_instance_hours or 0.0)
+        ng = max(1, int(n_gateways or 1))
+        ph = float(period_hours) if period_hours else 730.0
+    except (TypeError, ValueError):
+        return None
+    if hrs <= 0 or ph <= 0:
+        return None
+    concurrent_vms = hrs / ph               # avg instances running at once
+    return max(1.0, concurrent_vms / ng)
+
+
 def map_flat_hourly(rows):
     out = []
-    # Bill-derived VMs-per-gateway for public NAT (P-15):
+    # Bill-derived VMs-per-gateway for public NAT (P-15). nat_vms_per_gateway is a
+    # BILL_CALIBRATED assumption; honor that by estimating concurrent VMs from the
+    # bill's compute instance-hours, falling back to the committed default when no
+    # job DB or no compute rows are available (topology genuinely not in the CUR).
     nat_gw_rows = [
         r for r in rows
         if re.search(r"NatGateway-Hours|NatGateway", f"{r.get('usage_type') or ''} {r.get('operation') or ''}", re.IGNORECASE)
     ]
     tot_nat_hours = sum(float(r.get("total_usage") or 0.0) for r in nat_gw_rows)
     n_gateways = max(1, round(tot_nat_hours / 730.0))
-    vms_per_gw = 16
+    vms_per_gw = None
     vms_derived = False
 
     db_candidate = sys.argv[1] if len(sys.argv) > 1 and os.path.exists(sys.argv[1]) else None
@@ -2653,15 +2681,15 @@ def map_flat_hourly(rows):
         try:
             con_vm = duckdb.connect(db_candidate, read_only=True)
             res = con_vm.execute("""
-                SELECT COUNT(DISTINCT COALESCE(NULLIF(instance_type, ''), aws_li_key))
+                SELECT COALESCE(SUM(total_usage), 0.0)
                 FROM aws_li_catalog
                 WHERE mechanic_group IN ('compute_breakdown', 'compute_windows', 'compute_arm', 'compute_burstable')
-                  AND (instance_type IS NOT NULL OR usage_type LIKE '%BoxUsage%')
+                  AND total_usage > 0
             """).fetchone()
             con_vm.close()
-            if res and res[0] and res[0] > 0:
-                n_vms = res[0]
-                vms_per_gw = max(1, round(n_vms / n_gateways))
+            est = _estimate_vms_per_gateway(res[0] if res else 0.0, n_gateways)
+            if est is not None:
+                vms_per_gw = est
                 vms_derived = True
         except Exception:
             pass
@@ -2856,7 +2884,16 @@ def map_flat_hourly(rows):
             else:
                 desc = "Networking Cloud Nat Gateway Uptime"
                 sku_id = resolve_sku("Networking", desc, gcp_region)
-                nat_vms = float(_ASSUMPTIONS.get("nat_vms_per_gateway", 32.0))
+                # Prefer the bill-derived concurrent-VM estimate (BILL_CALIBRATED);
+                # fall back to the committed nat_vms_per_gateway default (topology
+                # not in the CUR). Verified rate (cloud.google.com/nat/pricing,
+                # 2026-11-19): $0.0014/VM-hr, capped at 32 VMs → $0.044/hr flat.
+                if vms_derived and vms_per_gw:
+                    nat_vms = float(vms_per_gw)
+                    nat_vms_basis = "bill-derived (Σ compute instance-hours / period / gateways)"
+                else:
+                    nat_vms = float(_ASSUMPTIONS.get("nat_vms_per_gateway", 32.0))
+                    nat_vms_basis = "committed default (topology not in CUR)"
                 # GCP Cloud NAT hourly caps at 32 VMs: beyond 32 there is no extra
                 # per-hour charge (https://cloud.google.com/nat/pricing). Clamp so
                 # the multiplier never scales past the cap. <32 scales down linearly.
@@ -2864,8 +2901,8 @@ def map_flat_hourly(rows):
                 base_mult = round(0.044 / 0.0014, 8) if (sku_id and getattr(sku_id, 'rate', None) == 0.0014) else 31.42857143
                 mult = round((nat_vms_billable / 32.0) * base_mult, 8)
                 note_text = (
-                    f"Cloud NAT gateway modeled via assumption nat_vms_per_gateway={nat_vms:g} "
-                    f"(GCP bills per-VM-hour at ~$0.0014/hr; {nat_vms:g} VMs assumed; 32-VM cap AWS parity)."
+                    f"Cloud NAT gateway modeled at nat_vms_per_gateway={nat_vms:g} [{nat_vms_basis}] "
+                    f"(GCP bills per-VM-hour at ~$0.0014/hr, capped at 32 VMs = $0.044/hr AWS parity)."
                 ) + _no_rate_suffix(sku_id, gcp_region)
                 entry = {
                     "aws_li_key": r["aws_li_key"],
@@ -2879,7 +2916,7 @@ def map_flat_hourly(rows):
                     "projection_note": note_text,
                     "mapping_confidence": 0.85,
                     "is_assumption": True,
-                    "assumption": f"Cloud NAT gateway priced at the 32-VM cap ($0.044/hr) — AWS parity; nat_vms_per_gateway={nat_vms:g}",
+                    "assumption": f"Cloud NAT per-VM-hour ($0.0014, 32-VM cap = $0.044/hr); nat_vms_per_gateway={nat_vms:g} [{nat_vms_basis}]",
                 }
                 if sku_id:
                     entry["gcp_sku_id"] = sku_id

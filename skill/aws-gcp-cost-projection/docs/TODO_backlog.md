@@ -36,6 +36,14 @@ Legend: 🔴 real dollar error · 🟡 needs decision/verify · ⚪ low/cosmetic
     are invisible to it — they can carry no `passthrough_reason` and still pass. Worth extending the guardrail to
     also scan expression-valued strategy dicts. Overlaps `WORKORDER_passthrough_reason_declarations.md`.
 
+- ✅ **EBS (§4.25) full modelling — DONE+GATED 2026-11-20 (Claude, direct).** All 8 GCP disk targets verified EXACT
+  vs official page (us-central1 ×730): Balanced PD $0.100 / Hyperdisk Balanced Cap $0.080 / HB IOPS $0.00500 /
+  HB Throughput $0.0400 / Hyperdisk Extreme IOPS $0.0320 / Storage PD $0.0400 / PD Snapshot $0.0500 / Regional
+  Archive Snapshot $0.0190. AWS units verified (gp3/io1/io2 provisioned IOPS all $/IOPS-month → ×1.0). **FIXED real
+  bug:** io1/io2 provisioned-IOPS rows were intercepted by the throughput-ceiling branch (`provisioned*1024 > 2400`
+  true for an IOPS count) → mislabelled Extreme PD Throughput ×1024, bypassing the Hyperdisk Extreme IOPS handler;
+  guarded with `not is_iops`. 17 catalog dims (0 gaps), `test_ebs_full_modelling.py` (12 tests).
+
 ## NEXT (pick after the above)
 
 - ✅ **PD Snapshot & GCS → REGIONAL targets — DONE+GATED 2026-11-19 (commit 4ef2a08).** AGY implemented, Claude-

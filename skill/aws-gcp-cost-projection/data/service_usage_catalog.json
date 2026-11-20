@@ -302,6 +302,127 @@
    "description": "Cross-region replication transfer"
   }
  ],
+ "ebs": [
+  {
+   "usage_type": "APS3-EBS:VolumeUsage.gp2",
+   "unit": "GB-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "gp2 volume capacity"
+  },
+  {
+   "usage_type": "APS3-EBS:VolumeUsage.gp3",
+   "unit": "GB-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "gp3 volume capacity"
+  },
+  {
+   "usage_type": "APS3-EBS:VolumeP-IOPS.gp3",
+   "unit": "IOPS-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "gp3 provisioned IOPS"
+  },
+  {
+   "usage_type": "APS3-EBS:VolumeP-Throughput.gp3",
+   "unit": "GiBps-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "gp3 provisioned throughput"
+  },
+  {
+   "usage_type": "APS3-EBS:VolumeUsage.io1",
+   "unit": "GB-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "io1 volume capacity"
+  },
+  {
+   "usage_type": "APS3-EBS:VolumeUsage.io2",
+   "unit": "GB-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "io2 volume capacity"
+  },
+  {
+   "usage_type": "APS3-EBS:VolumeP-IOPS.io1",
+   "unit": "IOPS-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "io1 provisioned IOPS"
+  },
+  {
+   "usage_type": "APS3-EBS:VolumeP-IOPS.io2",
+   "unit": "IOPS-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "io2 provisioned IOPS"
+  },
+  {
+   "usage_type": "APS3-EBS:VolumeUsage.sc1",
+   "unit": "GB-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "sc1 Cold HDD capacity"
+  },
+  {
+   "usage_type": "APS3-EBS:VolumeUsage.st1",
+   "unit": "GB-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "st1 Throughput HDD capacity"
+  },
+  {
+   "usage_type": "APS3-EBS:VolumeUsage.standard",
+   "unit": "GB-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "Magnetic (standard) capacity"
+  },
+  {
+   "usage_type": "APS3-EBS:SnapshotUsage",
+   "unit": "GB-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_snapshot_standard",
+   "description": "Standard snapshot storage"
+  },
+  {
+   "usage_type": "APS3-EBS:SnapshotCopy",
+   "unit": "GB-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_snapshot_standard",
+   "description": "Snapshot copy storage"
+  },
+  {
+   "usage_type": "APS3-EBS:SnapshotArchiveStorage",
+   "unit": "GB-Mo",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_snapshot_archive",
+   "description": "Snapshot archive storage"
+  },
+  {
+   "usage_type": "APS3-EBS:VolumeIOUsage.io1",
+   "unit": "IOs",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "io1 per-I/O requests"
+  },
+  {
+   "usage_type": "APS3-EBS:FastSnapshotRestore",
+   "unit": "Hrs",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "Fast Snapshot Restore"
+  },
+  {
+   "usage_type": "APS3-EBS:directAPI.snapshot.Gets",
+   "unit": "Requests",
+   "expected_mechanic": "block_storage",
+   "expected_charge_type": "ebs_volume",
+   "description": "EBS direct API snapshot reads"
+  }
+ ],
  "rds": [
   {
    "usage_type": "APS3-InstanceUsage:db.m5.large",

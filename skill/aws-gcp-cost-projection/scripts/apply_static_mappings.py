@@ -4316,7 +4316,13 @@ def map_block_storage(rows):
                                              f"($0.006/IOPS-mo parity); region={gcp_region}"),
                         "mapping_confidence": 0.88,
                     })
-                elif (not gp3_like) and provisioned * 1024.0 > _HYPERDISK_BALANCED_MAX_MIBPS:
+                elif (not gp3_like) and (not is_iops) and provisioned * 1024.0 > _HYPERDISK_BALANCED_MAX_MIBPS:
+                    # NB: `not is_iops` guard is load-bearing — without it an io1/io2
+                    # provisioned-IOPS row (provisioned = thousands of IOPS) satisfies
+                    # `provisioned*1024 > 2400 MiBps` and gets misrouted here to the
+                    # throughput-ceiling escalation (Extreme PD Throughput, ×1024),
+                    # instead of falling through to the correct Hyperdisk Extreme IOPS
+                    # handler below. This branch is throughput-only.
                     out.append({
                         "aws_li_key":       r["aws_li_key"],
                         "gcp_service":      GCP_COMPUTE_ENGINE,

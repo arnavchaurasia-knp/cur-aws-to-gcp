@@ -41,7 +41,7 @@ set (37 phase scripts), `main()` presence, and test-only imports. Numbers are a 
 | System | Built to be | Reality | Decision |
 |---|---|---|---|
 | `spec_match` (85 ln) | "one shared definition of 'does this GCP candidate meet/exceed the AWS spec'" | Canonical absolute rule; `reconcile_capacity` locked to it via `test_spec_match_parity`; `auto_review` clarified as shape/burstable review (D-SPEC-1 resolved). See `WORKORDER_spec_match_consolidation.md`. | ✅ LOCKED & CONSOLIDATED |
-| `sku_catalog` (137 ln) | "**single source of truth** for querying `catalog.duckdb`" | **0 importers.** Catalog queries are done ad-hoc (`duckdb.connect(...)`) all over, incl. in mappers and audits. | ☐ migrate catalog reads to it, or delete |
+| `sku_catalog` (137 ln) | "**single source of truth** for querying `catalog.duckdb`" | **CORRECTED 2026-11-20:** most `duckdb.connect` read the per-job DB, not the catalog. Catalog read by ~4 paths; `resolve_sku` is the de-facto SSOT (cached conn, resolve-one); `sku_catalog` is dormant but provides list-all (`query_skus`) which resolve_sku lacks. Real debt = no single catalog connection. Decision D-CAT-1. See `WORKORDER_sku_catalog_consolidation.md`. | ◐ decision pending (A: absorb+delete / B: primitive / C: unify conn) |
 | `candidate_tier` (159 ln) | "Phase L: candidate tiering between hard-constraint filtering and scoring" | **0 callers, no CLI, not orchestrated.** `candidate_pool` (the scorer) runs without it. | ☐ wire into candidate_pool, or delete |
 
 ### C. Validation / review systems built, not orchestrated  🟡 (have CLI, pipeline never runs them)

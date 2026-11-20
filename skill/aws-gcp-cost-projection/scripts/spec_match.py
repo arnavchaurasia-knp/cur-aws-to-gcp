@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 """
-spec_match.py — one shared definition of "does this GCP candidate meet or
-exceed the AWS source's spec," used by the CUR Line Analysis Tool, and meant
-to replace the three independent reimplementations of this comparison found
-in auto_review.py, reconcile_capacity.py, and (implicitly) family_mapper.py.
+spec_match.py — the canonical definition of ABSOLUTE capacity adequacy: "is the
+GCP candidate at least as capable as the AWS source on every field both provide."
+
+Status of consumers (see WORKORDER_spec_match_consolidation.md):
+  * reconcile_capacity.py (post-merge) enforces this SAME absolute rule in SQL
+    (gcp < aws on vcpu/ram → repair). test_spec_match_parity.py locks the two
+    together so they cannot silently diverge.
+  * auto_review.py uses a DIFFERENT rule — a memory:cpu RATIO/shape check, not
+    absolute capacity. It is NOT a reimplementation of this; converging it is a
+    pending decision (D-SPEC-1), not a cleanup.
+  * family_mapper does family SELECTION (best-fit sizing), not a pass/fail
+    comparison — also not a reimplementation of this.
+This module does NOT know where GCP capability numbers come from — callers pass
+both sides in as plain dicts.
 
 This module does NOT know where GCP capability numbers come from — callers
 pass both sides in as plain dicts. Today that means family_mapper.py's

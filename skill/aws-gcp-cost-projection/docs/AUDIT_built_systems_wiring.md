@@ -40,7 +40,7 @@ set (37 phase scripts), `main()` presence, and test-only imports. Numbers are a 
 
 | System | Built to be | Reality | Decision |
 |---|---|---|---|
-| `spec_match` (85 ln) | "one shared definition of 'does this GCP candidate meet/exceed the AWS spec' … **meant to replace the three reimplementations in `auto_review.py`, `reconcile_capacity.py`, `family_mapper.py`**" | **0 callers.** The three reimplementations still stand; the unifier is dead. | ☐ wire the 3 callers through it, or delete + record why |
+| `spec_match` (85 ln) | "one shared definition of 'does this GCP candidate meet/exceed the AWS spec'" | **CORRECTED 2026-11-20:** not 3 identical copies. `reconcile_capacity` uses the SAME absolute rule (now **parity-locked** via test_spec_match_parity — spec_match is its canonical definition); `auto_review` uses a DIFFERENT ratio/shape rule (decision D-SPEC-1); `family_mapper` does selection, not comparison. See `WORKORDER_spec_match_consolidation.md`. | ◐ reconcile locked; auto_review pending D-SPEC-1 |
 | `sku_catalog` (137 ln) | "**single source of truth** for querying `catalog.duckdb`" | **0 importers.** Catalog queries are done ad-hoc (`duckdb.connect(...)`) all over, incl. in mappers and audits. | ☐ migrate catalog reads to it, or delete |
 | `candidate_tier` (159 ln) | "Phase L: candidate tiering between hard-constraint filtering and scoring" | **0 callers, no CLI, not orchestrated.** `candidate_pool` (the scorer) runs without it. | ☐ wire into candidate_pool, or delete |
 

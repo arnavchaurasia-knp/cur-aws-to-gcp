@@ -902,7 +902,7 @@
           },
           {
             "operation_re": "Infrequent Access|Glacier|Intelligent-Tiering|Deep Archive",
-            "exclude_operation_re": "Request|Data Returned|Select"
+            "exclude_operation_re": "Request|Retrieval|Data Returned|Select"
           }
         ],
         "mechanic": "object_storage",

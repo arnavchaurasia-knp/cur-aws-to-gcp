@@ -24,6 +24,18 @@ Legend: 🔴 real dollar error · 🟡 needs decision/verify · ⚪ low/cosmetic
     *intentional*, not bugs — flipping them blanket would silently change deliberate mappings. Left the global
     default alone; see the new item below. See [[reference_gcp_firestore_rates]].
 
+- ✅ **S3 (§4.24) full modelling — DONE+GATED 2026-11-20 (Claude, direct).** GCS tier rates verified exact vs
+  official page (us-central1 ×730: Standard $0.0200 / Nearline $0.0100 / Coldline $0.0040 / Archive $0.0012).
+  Fixed 3 real gaps: (1) s3_storage clause-3 `exclude_operation_re` lacked `Retrieval` → Glacier/IA retrieval
+  REQUESTS swallowed as Archive storage; (2) IT-monitoring (unit=Objects→per_request) passthrough→ignore (Autoclass
+  free); (3) S3 per-request passthroughs undeclared + escaping the guardrail. 31 catalog dims (0 spec-gaps),
+  `test_s3_full_modelling.py` (17 tests). See [[reference_aws_gcp_service_comparison]].
+  - ⚠️ **Guardrail blind spot found (follow-up).** `test_apply_static_mappings_undeclared_passthrough_guardrail`
+    only flags dicts whose `strategy` is a literal `"passthrough"`. Passthroughs built with `strategy` as a
+    conditional **expression** (e.g. the S3 per_request branch `strat if sku_id or strat != "map" else "passthrough"`)
+    are invisible to it — they can carry no `passthrough_reason` and still pass. Worth extending the guardrail to
+    also scan expression-valued strategy dicts. Overlaps `WORKORDER_passthrough_reason_declarations.md`.
+
 ## NEXT (pick after the above)
 
 - ✅ **PD Snapshot & GCS → REGIONAL targets — DONE+GATED 2026-11-19 (commit 4ef2a08).** AGY implemented, Claude-

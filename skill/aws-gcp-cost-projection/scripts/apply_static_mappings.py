@@ -3858,11 +3858,25 @@ def map_per_request(rows):
             op = (r.get("operation") or "").lower()
             blob = ut + " " + op
 
+            reason = None  # passthrough_reason, set per branch when strat == passthrough
             if "storagelens" in blob or "generalpurposebuckets" in blob:
                 # Storage Lens and bucket-count fees: $0 on GCP
                 strat, sku_desc, note, conf = (
                     "ignore", None,
                     "S3 Storage Lens / bucket fee — no GCS equivalent; $0 on GCP", 0.90
+                )
+            elif "monitoring" in blob:
+                # S3 Intelligent-Tiering per-object monitoring/automation fee. GCS
+                # Autoclass (the IT analogue) has NO monitoring charge → $0 on GCP.
+                # map_object_storage routes this to 'ignore' too, but IT-monitoring
+                # rows are billed per-object (unit=Objects/Count), so spec_dispatch
+                # sends them to per_request, not object_storage — this branch is the
+                # one that actually fires for them. Without it they fell to the
+                # 'else' catch-all and passed through at AWS cost (over-projection).
+                strat, sku_desc, note, conf = (
+                    "ignore", None,
+                    "S3 Intelligent-Tiering monitoring/automation fee — GCS Autoclass has no monitoring charge; $0 on GCP",
+                    0.90,
                 )
             elif re.search(r"lifecycle|transition|replicat|replication", blob):
                 # Lifecycle transitions and replication requests: no unit-compatible GCS SKU
@@ -3870,6 +3884,7 @@ def map_per_request(rows):
                     "passthrough", None,
                     "S3 lifecycle/replication request — no GCS equivalent; passthrough at cost parity", 0.45
                 )
+                reason = "no_gcp_equivalent"
             elif re.search(r"tier1|tier2|get|head|select|put|copy|post|list", blob):
                 # S3 requests (Tier 1 / Tier 2): unit models incompatible ($/1k vs $/10k class ops),
                 # causing ~770x underestimation on Tier 2. Passthrough at cost parity per AGENTS.md
@@ -3879,25 +3894,31 @@ def map_per_request(rows):
                     "S3 per-request charge (Tier 1/2) — unit models incompatible ($/1k vs $/10k class ops); passthrough at cost parity",
                     0.85,
                 )
+                reason = "unit_model_mismatch"
             else:
                 strat, sku_desc, note, conf = (
                     "passthrough", None,
                     "S3 per-request charge — tier unknown; passthrough at cost parity", 0.40
                 )
+                reason = "unit_model_mismatch"
 
             sku_id = resolve_sku(GCP_CLOUD_STORAGE, sku_desc, gcp_region) if sku_desc else None
-            out.append({
+            _final_strat = strat if sku_id or strat != "map" else "passthrough"
+            entry = {
                 "aws_li_key":         r["aws_li_key"],
                 "gcp_service":        GCP_CLOUD_STORAGE,
                 "gcp_sku_id":         sku_id if sku_id else None,
                 "gcp_sku_name":       sku_desc,
                 "component":          "requests",
-                "strategy":           strat if sku_id or strat != "map" else "passthrough",
+                "strategy":           _final_strat,
                 "unit_multiplier":    1.0,
                 "gcp_region":         gcp_region,
                 "projection_note":    note,
                 "mapping_confidence": conf,
-            })
+            }
+            if _final_strat == "passthrough" and reason:
+                entry["passthrough_reason"] = reason
+            out.append(entry)
             continue
         else:
             # CloudFront per-HTTPS-request charges have no GCP equivalent: Cloud CDN

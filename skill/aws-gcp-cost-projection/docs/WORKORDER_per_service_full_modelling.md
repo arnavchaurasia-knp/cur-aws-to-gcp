@@ -12,7 +12,8 @@ end-to-end before moving on.
 > This workorder is the vehicle that fixes all of that, one service at a time, with each service's
 > completion *enforced by the gate* so it can never silently regress.
 
-> ▶ **CURRENT ASSIGNMENT: deterministic `_select` + ambiguous-resolution diagnostic — READY FOR AGY. Spec: `docs/WORKORDER_deterministic_sku_select.md`. Part A (HIGH): add `"spot"` to `_NOISE_QUALIFIERS` — 525 GCP SKUs say "spot" not "preemptible" and escape `_select`, letting a generic pattern pick a cheap GCP Spot rate → AWS-OD vs GCP-Spot asymmetry (breaks OD-vs-OD). Part B: deterministic `_select` tiebreak (specificity→rate→sku_id) instead of catalog file order. Part C: `ambiguous_sku_resolution` diagnostic.**
+> ▶ **CURRENT ASSIGNMENT: S3 (§4.24) — DONE+GATED 2026-11-20 (Claude, direct). GCS tier rates verified vs official page (cloud.google.com/storage/pricing, us-central1 ×730: Standard $0.0200 / Nearline $0.0100 / Coldline $0.0040 / Archive $0.0012 per GiB-mo — exact). Storage-class→tier map already GOLD. Found+fixed 3 real gaps: (1) `service_specs.json` s3_storage clause-3 `exclude_operation_re` lacked `Retrieval` (clause 1 had it) → Glacier/IA retrieval REQUESTS were swallowed as Archive storage (request-count mis-priced as GB-Mo); (2) IT-monitoring rows (unit=Objects → per_request) fell to passthrough instead of ignore — GCS Autoclass has no monitoring fee, now $0; (3) S3 per-request passthroughs carried no `passthrough_reason` AND escaped the guardrail (strategy is a conditional expr, not a literal) → now declare unit_model_mismatch / no_gcp_equivalent. Populated `service_usage_catalog.json` with 31 S3 dimensions (0 spec-gaps); `tests/test_s3_full_modelling.py` (17 tests).**
+> Prior assignment (DONE 5a423b4): deterministic `_select` + `"spot"` in `_NOISE_QUALIFIERS` + `ambiguous_sku_resolution` diagnostic. Passthrough_reason declarations DONE 213551b.
 > Prior (all verified & gated 2026-11-19): `msk` §4.22 · `fsx` §4.10+§4.23 (incl. cold-rate fix) · Firestore multi-region 2× trap (2c1e7a3) · **EBS-snapshot & S3 → REGIONAL targets (4ef2a08, `docs/WORKORDER_regional_vs_multiregion_targets.md`, DONE+GATED)**. Backlog + process notes in `docs/TODO_backlog.md`.
 >
 > `msk` (§4.22) and `fsx` sub-tiers (§4.23) were completed, fully modelled, and gated on 2026-11-19:
@@ -163,7 +164,7 @@ Legend: ☐ not started · ◧ modelled (design agreed, code pending) · ⚙ imp
 | 1 | **rds / aurora** | MIS-TARGET (SQL Server/Oracle→MySQL) | **☑ DONE+GATED** | §4.1 |
 | 2 | elasticache | GOOD (Redis node retarget M10) | **☑ DONE+GATED** | §4.15, §4.21 |
 | 3 | dynamodb | GOLD (only gated service) | **☑ DONE+GATED** | §4.18 |
-| 4 | s3 | GOLD | ☐ | — |
+| 4 | s3 | GOLD | **☑ DONE+GATED** | §4.24 |
 | 5 | ebs | GOLD | ☐ | — |
 | 6 | efs | PARTIAL (Basic pinned) | **☑ DONE+GATED** | §4.9 |
 | 7 | fsx | PARTIAL (sub-tier rates verified) | **☑ DONE+GATED** | §4.10, §4.23 |

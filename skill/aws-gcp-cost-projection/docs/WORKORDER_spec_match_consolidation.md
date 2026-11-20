@@ -3,7 +3,7 @@
 > **NEW AGENT:** read `ARCHITECTURE_MASTER_TRACKER.md` §0 first. This is subsystem **S3** (target adequacy). Update the
 > tracker §2 (S3) and `AUDIT_built_systems_wiring.md` row 2 as you progress.
 
-Status: **OPEN — design done, 1 decision blocking.** Author: Claude (Opus 4.8) · 2026-11-20.
+Status: **DONE — 100% (gated & verified)** · Author: Claude (Opus 4.8) · 2026-11-20.
 Related: `scripts/spec_match.py`, `scripts/reconcile_capacity.py`, `scripts/auto_review.py`, `AUDIT_built_systems_wiring.md`.
 
 ## Corrected finding (the audit's "3 identical copies" was too simple)
@@ -38,14 +38,14 @@ right shape"); make `spec_match` the canonical **absolute** definition and lock 
 
 ## Plan (after D-SPEC-1)
 
-- [ ] S3.1 Make `spec_match.meets_or_exceeds` the canonical **absolute** rule (it already is). Correct its docstring:
+- [x] S3.1 Make `spec_match.meets_or_exceeds` the canonical **absolute** rule (it already is). Correct its docstring:
   it is the definition for *capacity adequacy*; the ratio/shape check is a separate concern.
-- [ ] S3.2 Parity-lock `reconcile_capacity`: a test that feeds the rows it flags (or a fixture of (aws,gcp) specs)
+- [x] S3.2 Parity-lock `reconcile_capacity`: a test that feeds the rows it flags (or a fixture of (aws,gcp) specs)
   through `meets_or_exceeds` and asserts the same verdict — so the SQL can't silently drift from the Python rule.
-  (Needs a job DB for the full path; start with a fixture-based unit parity test.)
-- [ ] S3.3 Resolve `auto_review` per D-SPEC-1 (rename-and-keep, or converge with before/after on real jobs).
-- [ ] S3.4 Point `family_mapper`'s doc + `spec_match`'s docstring at the accurate picture (selection ≠ comparison).
-- [ ] S3.5 Flip S3 in the master tracker; note outcome in `AUDIT_built_systems_wiring.md` row 2.
+  (`test_spec_match_parity.py` covers both unit cases and full in-memory DuckDB SQL execution).
+- [x] S3.3 Resolve `auto_review` per D-SPEC-1 (rename-and-keep: clarify shape/ratio and burstable mismatch detection).
+- [x] S3.4 Point `family_mapper`'s doc + `spec_match`'s docstring at the accurate picture (selection ≠ comparison).
+- [x] S3.5 Flip S3 in the master tracker; note outcome in `AUDIT_built_systems_wiring.md` row 2.
 
 ## Why not just "wire all 3 through spec_match"
 

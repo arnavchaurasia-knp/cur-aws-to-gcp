@@ -40,7 +40,7 @@ set (37 phase scripts), `main()` presence, and test-only imports. Numbers are a 
 
 | System | Built to be | Reality | Decision |
 |---|---|---|---|
-| `spec_match` (85 ln) | "one shared definition of 'does this GCP candidate meet/exceed the AWS spec'" | **CORRECTED 2026-11-20:** not 3 identical copies. `reconcile_capacity` uses the SAME absolute rule (now **parity-locked** via test_spec_match_parity — spec_match is its canonical definition); `auto_review` uses a DIFFERENT ratio/shape rule (decision D-SPEC-1); `family_mapper` does selection, not comparison. See `WORKORDER_spec_match_consolidation.md`. | ◐ reconcile locked; auto_review pending D-SPEC-1 |
+| `spec_match` (85 ln) | "one shared definition of 'does this GCP candidate meet/exceed the AWS spec'" | Canonical absolute rule; `reconcile_capacity` locked to it via `test_spec_match_parity`; `auto_review` clarified as shape/burstable review (D-SPEC-1 resolved). See `WORKORDER_spec_match_consolidation.md`. | ✅ LOCKED & CONSOLIDATED |
 | `sku_catalog` (137 ln) | "**single source of truth** for querying `catalog.duckdb`" | **0 importers.** Catalog queries are done ad-hoc (`duckdb.connect(...)`) all over, incl. in mappers and audits. | ☐ migrate catalog reads to it, or delete |
 | `candidate_tier` (159 ln) | "Phase L: candidate tiering between hard-constraint filtering and scoring" | **0 callers, no CLI, not orchestrated.** `candidate_pool` (the scorer) runs without it. | ☐ wire into candidate_pool, or delete |
 
@@ -89,8 +89,8 @@ Each needs an owner decision: **WIRE** (make it load-bearing), **DELETE** (remov
 
 | # | System | Category | Decision | Done |
 |---|---|---|---|---|
-| 1 | unit_equivalence (conversion) | A | WIRE (via unit workorder) | ☐ |
-| 2 | spec_match | B | ? | ☐ |
+| 1 | unit_equivalence (conversion) | A | WIRE (via unit workorder) | ☑ |
+| 2 | spec_match | B | WIRE (canonical rule + parity locked) | ☑ |
 | 3 | sku_catalog | B | ? | ☐ |
 | 4 | candidate_tier | B | ? | ☐ |
 | 5 | service_contracts | C | ? | ☐ |

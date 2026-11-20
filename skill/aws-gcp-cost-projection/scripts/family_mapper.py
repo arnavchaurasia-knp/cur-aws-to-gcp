@@ -4,6 +4,11 @@
 All compute mapping logic has been consolidated into apply_static_mappings.py.
 This module re-exports functions, classes, and constants for full backwards
 compatibility with existing tests and callers.
+
+Architecture note (Subsystem S3):
+Compute mapping in family_mapper / apply_static_mappings performs machine family
+SELECTION (best-fit sizing / candidate generation). This is orthogonal to spec
+COMPARISON (absolute capacity adequacy), which is canonically defined in spec_match.py.
 """
 from __future__ import annotations
 import os

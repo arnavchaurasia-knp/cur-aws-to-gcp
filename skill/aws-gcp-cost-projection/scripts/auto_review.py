@@ -4,7 +4,9 @@ auto_review.py — Phase 3 suggestion engine. NEVER modifies the database.
 
 Detects mapping issues and pre-computes candidate fixes:
   - Illegal passthroughs: core services (EC2/RDS/S3/etc.) marked passthrough
-  - Spec violations: break_down rows with wrong unit_multipliers vs instance spec
+  - Shape & burstable mismatches (spec violations): break_down rows with memory:cpu
+    ratio deficits vs instance spec or non-burstable instances mapped to shared-core
+    (distinct from absolute capacity adequacy enforced in reconcile_capacity.py / spec_match.py)
 
 Writes:
   review_flags.md         — human-readable report with candidates (LLM input)
@@ -75,7 +77,7 @@ def main():
 
 
     # ------------------------------------------------------------------ #
-    # 2. Detect spec violations (break_down multiplier wrong)              #
+    # 2. Detect shape & burstable mismatches (ratio/spec violations)      #
     # ------------------------------------------------------------------ #
 
     SKILL_DIR_PATH = os.environ.get("SKILL_DIR", "")
@@ -360,8 +362,8 @@ def main():
 
         if spec_violations:
             f.write("---\n\n")
-            f.write("## Spec Violations\n\n")
-            f.write("These break_down rows have wrong unit_multipliers. "
+            f.write("## Shape & Spec Mismatches (Ratio / Burstable)\n\n")
+            f.write("These break_down rows have memory:cpu ratio deficits or burstable tier mismatches. "
                     "Correct values (HIGH confidence) are from the instance spec.\n\n")
             for row in spec_violations:
                 key = row[0]

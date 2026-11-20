@@ -3,23 +3,20 @@
 spec_match.py — the canonical definition of ABSOLUTE capacity adequacy: "is the
 GCP candidate at least as capable as the AWS source on every field both provide."
 
-Status of consumers (see WORKORDER_spec_match_consolidation.md):
+Subsystem S3 role (see WORKORDER_spec_match_consolidation.md):
   * reconcile_capacity.py (post-merge) enforces this SAME absolute rule in SQL
-    (gcp < aws on vcpu/ram → repair). test_spec_match_parity.py locks the two
+    (gcp < aws on vcpu/ram -> repair). test_spec_match_parity.py locks the two
     together so they cannot silently diverge.
-  * auto_review.py uses a DIFFERENT rule — a memory:cpu RATIO/shape check, not
-    absolute capacity. It is NOT a reimplementation of this; converging it is a
-    pending decision (D-SPEC-1), not a cleanup.
-  * family_mapper does family SELECTION (best-fit sizing), not a pass/fail
-    comparison — also not a reimplementation of this.
-This module does NOT know where GCP capability numbers come from — callers pass
-both sides in as plain dicts.
+  * auto_review.py uses a DIFFERENT rule — a memory:cpu RATIO/shape check and
+    burstable tier check, not absolute capacity. It is a shape-mismatch detector,
+    not a capacity adequacy checker (D-SPEC-1).
+  * family_mapper / apply_static_mappings does family SELECTION (best-fit sizing),
+    which is candidate generation, not a pass/fail spec comparison.
 
 This module does NOT know where GCP capability numbers come from — callers
-pass both sides in as plain dicts. Today that means family_mapper.py's
-hardcoded per-family vCPU/RAM tables; the intent is for every spec comparison
-in the codebase to eventually call meets_or_exceeds() instead of writing its
-own vCPU/RAM delta check, so there is exactly one definition of "equivalent."
+pass both sides in as plain dicts. Every spec comparison in the codebase
+should align to meets_or_exceeds() instead of writing ad-hoc vCPU/RAM delta checks,
+so there is exactly one definition of "equivalent capacity."
 
 Recognized keys in a spec dict (all optional — only keys present on BOTH
 sides are compared; a key missing from the GCP side is NOT treated as a

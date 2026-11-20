@@ -56,3 +56,84 @@ def test_spec_match_reports_unchecked_not_silent_pass():
     r = meets_or_exceeds({"vcpu": 4, "ram_gb": 16, "iops": 3000}, {"vcpu": 4, "ram_gb": 16})
     assert r.passed is True
     assert "iops" in r.unchecked
+
+
+def test_reconcile_capacity_sql_parity_with_spec_match():
+    """End-to-end SQL fixture test: runs the actual SQL query from reconcile_capacity.py
+    in DuckDB and asserts that the set of rows flagged for repair matches the set of
+    rows where meets_or_exceeds(aws_spec, gcp_spec).passed is False."""
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    con.execute("""
+        CREATE TABLE aws_li_catalog (
+            aws_li_key VARCHAR,
+            instance_vcpus DOUBLE,
+            instance_ram_gb DOUBLE,
+            instance_type VARCHAR
+        );
+        CREATE TABLE aws_li_to_gcp_li (
+            aws_li_key VARCHAR,
+            strategy VARCHAR,
+            component VARCHAR,
+            unit_multiplier DOUBLE
+        );
+    """)
+
+    test_data = [
+        # (key, aws_vcpu, aws_ram, gcp_vcpu, gcp_ram, strategy)
+        ("row_exact", 4.0, 16.0, 4.0, 16.0, "map"),
+        ("row_exceeds", 4.0, 16.0, 8.0, 32.0, "break_down"),
+        ("row_vcpu_under", 4.0, 16.0, 2.0, 16.0, "map"),
+        ("row_ram_under", 4.0, 16.0, 4.0, 8.0, "break_down"),
+        ("row_both_under", 4.0, 16.0, 2.0, 8.0, "map"),
+        ("row_passthrough", 4.0, 16.0, 2.0, 8.0, "passthrough"),
+    ]
+
+    for key, aws_v, aws_r, gcp_v, gcp_r, strat in test_data:
+        con.execute("INSERT INTO aws_li_catalog VALUES (?, ?, ?, ?)", [key, aws_v, aws_r, "m5.xlarge"])
+        con.execute("INSERT INTO aws_li_to_gcp_li VALUES (?, ?, 'core', ?)", [key, strat, gcp_v])
+        con.execute("INSERT INTO aws_li_to_gcp_li VALUES (?, ?, 'ram', ?)", [key, strat, gcp_r])
+
+    # Run actual reconcile_capacity.py SQL
+    sql_under_vcpu = con.execute("""
+        SELECT m.aws_li_key
+        FROM aws_li_to_gcp_li m
+        JOIN aws_li_catalog c USING (aws_li_key)
+        WHERE m.strategy IN ('break_down', 'map')
+          AND m.component  = 'core'
+          AND c.instance_vcpus IS NOT NULL
+          AND m.unit_multiplier < c.instance_vcpus
+    """).fetchall()
+
+    sql_under_ram = con.execute("""
+        SELECT m.aws_li_key
+        FROM aws_li_to_gcp_li m
+        JOIN aws_li_catalog c USING (aws_li_key)
+        WHERE m.strategy IN ('break_down', 'map')
+          AND m.component  = 'ram'
+          AND c.instance_ram_gb IS NOT NULL
+          AND m.unit_multiplier < c.instance_ram_gb
+    """).fetchall()
+
+    flagged_in_sql = {r[0] for r in sql_under_vcpu} | {r[0] for r in sql_under_ram}
+
+    # Compare against spec_match.meets_or_exceeds for map / break_down rows
+    spec_fails = set()
+    for key, aws_v, aws_r, gcp_v, gcp_r, strat in test_data:
+        if strat in ("map", "break_down"):
+            aws_spec = {"vcpu": aws_v, "ram_gb": aws_r}
+            gcp_spec = {"vcpu": gcp_v, "ram_gb": gcp_r}
+            if not meets_or_exceeds(aws_spec, gcp_spec).passed:
+                spec_fails.add(key)
+
+    assert flagged_in_sql == spec_fails, (
+        f"SQL repair set {flagged_in_sql} diverges from spec_match failure set {spec_fails}"
+    )
+    assert "row_vcpu_under" in flagged_in_sql
+    assert "row_ram_under" in flagged_in_sql
+    assert "row_both_under" in flagged_in_sql
+    assert "row_exact" not in flagged_in_sql
+    assert "row_exceeds" not in flagged_in_sql
+    con.close()
+

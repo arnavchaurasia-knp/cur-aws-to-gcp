@@ -1,0 +1,2906 @@
+{
+  "athena_scan": {
+    "component": "analysis",
+    "gcp_service": "BigQuery",
+    "gcp_sku_name": "Analysis (us-central1)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9094947017729282
+  },
+  "ec2_c5_xlarge": {
+    "component": "ram",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "C4D Instance Ram",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 8.0
+  },
+  "ec2_c7g_large": {
+    "component": "ram",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "N4A Instance Ram",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 4.0
+  },
+  "ec2_g4dn_xl": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "SSD backed Local Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.17123287671232876
+  },
+  "ec2_g5_xl": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "SSD backed Local Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.3424657534246575
+  },
+  "ec2_local_ssd": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "SSD backed Local Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.7123287671232876
+  },
+  "ec2_m5_large": {
+    "component": "ram",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "N4D Instance Ram",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 8.0
+  },
+  "ec2_r5_2xlarge": {
+    "component": "ram",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "N4D Instance Ram",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 64.0
+  },
+  "ec2_t3_micro": {
+    "component": "ram",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "E2 Instance Ram",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "ec2_t4g_medium": {
+    "component": "ram",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "T2A Arm Instance Ram",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 4.0
+  },
+  "ec2_win_m5": {
+    "component": "license",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Windows Server 2019 Standard Edition license",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "glue_dpu": {
+    "component": "ram",
+    "gcp_service": "Cloud Dataflow",
+    "gcp_sku_name": "Dataflow RAM Time",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 16.0
+  },
+  "guardduty_flow": {
+    "component": "security",
+    "gcp_service": "Security Command Center",
+    "gcp_sku_name": null,
+    "passthrough_reason": "unit_model_mismatch",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "inspector_ec2": {
+    "component": "security",
+    "gcp_service": "Security Command Center",
+    "gcp_sku_name": null,
+    "passthrough_reason": "unit_model_mismatch",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "kinesis_shards": {
+    "component": "messaging",
+    "gcp_service": "Cloud Pub/Sub",
+    "gcp_sku_name": null,
+    "passthrough_reason": "unit_model_mismatch",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "lambda_concurrency": {
+    "component": "cpu",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": "Cloud Run functions Min-Instance CPU (Request-based billing)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.4096
+  },
+  "lambda_gb_sec": {
+    "component": "cpu",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": "Cloud Run functions CPU (Request-based billing)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.4096
+  },
+  "lambda_req": {
+    "component": "requests",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": "Cloud Run Functions Invocations",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "mkt_saas": {
+    "component": "saas",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "mwaa_env": {
+    "component": "environment-fee",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Small Cloud Composer Environment Fee",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "non_workload_sup": {
+    "component": "passthrough",
+    "gcp_service": "AWS Support (Passthrough)",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "quicksight_author": {
+    "component": "bi",
+    "gcp_service": "Looker Studio Pro",
+    "gcp_sku_name": "Looker Studio Pro (per user)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "quicksight_reader": {
+    "component": "bi",
+    "gcp_service": "Looker Studio Pro",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "rds_db2": {
+    "component": "db_instance",
+    "gcp_service": "Manual Review",
+    "gcp_sku_name": "RDS for Db2 (no native GCP managed Db2)",
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "rds_docdb": {
+    "component": "db_instance",
+    "gcp_service": "Firestore",
+    "gcp_sku_name": "Firestore (MongoDB compatibility)",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "rds_ext_supp": {
+    "component": "extended-support",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "rds_mysql_m5": {
+    "component": "ram",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": "Cloud SQL for MySQL: Zonal - RAM",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 8.0
+  },
+  "rds_pg_r5": {
+    "component": "ram",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": "Cloud SQL for PostgreSQL: Zonal - RAM",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 32.0
+  },
+  "shield_adv": {
+    "component": "shield_other",
+    "gcp_service": "Cloud Armor",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "shield_dt": {
+    "component": "data_transfer",
+    "gcp_service": "Networking",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "ssm_param": {
+    "component": "api-requests",
+    "gcp_service": "Secret Manager",
+    "gcp_sku_name": null,
+    "passthrough_reason": "unresolved_sku",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_0": {
+    "component": "backup_storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Snapshot",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_1": {
+    "component": "backup_storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Snapshot",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_10": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": "Cloud SQL: Backups",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_11": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Nearline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_12": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Nearline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_13": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Nearline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_14": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Nearline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_15": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Nearline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_16": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Nearline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_17": {
+    "component": "backup_restore",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Data Retrieval",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_18": {
+    "component": "backup_restore",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Data Retrieval",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_19": {
+    "component": "backup_restore",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Data Retrieval",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_2": {
+    "component": "backup_storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Snapshot",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_20": {
+    "component": "backup_copy",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Inter-region",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_21": {
+    "component": "backup_copy",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Inter-region",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_22": {
+    "component": "backup_audit",
+    "gcp_service": "Manual Review",
+    "gcp_sku_name": "Backup Audit Manager",
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_23": {
+    "component": "backup_search",
+    "gcp_service": "Manual Review",
+    "gcp_sku_name": "Backup Search",
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_24": {
+    "component": "backup_malware",
+    "gcp_service": "Manual Review",
+    "gcp_sku_name": "Backup Malware Protection",
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_3": {
+    "component": "backup_storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Snapshot",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_4": {
+    "component": "backup_storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Snapshot",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_5": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Archive Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_6": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Archive Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_7": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Archive Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_8": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Archive Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_backup_9": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": "Cloud SQL: Backups",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_cloudwatch_0": {
+    "component": "logs",
+    "gcp_service": "Cloud Logging",
+    "gcp_sku_name": "Log Storage cost",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9313225746154784
+  },
+  "suc_cloudwatch_1": {
+    "component": "logs",
+    "gcp_service": "Cloud Logging",
+    "gcp_sku_name": "Log Storage cost",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9313225746154784
+  },
+  "suc_cloudwatch_10": {
+    "component": "synthetics",
+    "gcp_service": "Cloud Monitoring",
+    "gcp_sku_name": null,
+    "passthrough_reason": "unit_model_mismatch",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_cloudwatch_11": {
+    "component": "monitoring",
+    "gcp_service": "Cloud Monitoring",
+    "gcp_sku_name": null,
+    "passthrough_reason": "unit_model_mismatch",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_cloudwatch_2": {
+    "component": "logs",
+    "gcp_service": "Cloud Logging",
+    "gcp_sku_name": "Log Retention cost",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9313225746154784
+  },
+  "suc_cloudwatch_3": {
+    "component": "log-insights",
+    "gcp_service": "Cloud Logging",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_cloudwatch_4": {
+    "component": "log-export",
+    "gcp_service": "Cloud Logging",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_cloudwatch_5": {
+    "component": "alarms",
+    "gcp_service": "Cloud Monitoring",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_cloudwatch_6": {
+    "component": "dashboard",
+    "gcp_service": "Cloud Monitoring",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_cloudwatch_7": {
+    "component": "custom-metrics",
+    "gcp_service": "Cloud Monitoring",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_cloudwatch_8": {
+    "component": "monitoring",
+    "gcp_service": "Cloud Monitoring",
+    "gcp_sku_name": null,
+    "passthrough_reason": "unit_model_mismatch",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_cloudwatch_9": {
+    "component": "db-insights",
+    "gcp_service": "Cloud Monitoring",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_datatransfer_0": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_1": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Middle East/Africa (Tier <= 1024 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_10": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Inter Zone Data Transfer Out",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_11": {
+    "component": "transfer",
+    "gcp_service": "Cloud NAT",
+    "gcp_sku_name": "Cloud Nat Data Processing",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_12": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Americas (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_13": {
+    "component": "transfer",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Data Transfer for advanced data networking",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_14": {
+    "component": "transfer",
+    "gcp_service": "Networking",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_15": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Americas (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_16": {
+    "component": "transfer",
+    "gcp_service": "Cloud CDN",
+    "gcp_sku_name": "Cloud CDN Cache Egress - APAC",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_17": {
+    "component": "transfer",
+    "gcp_service": "Cloud CDN",
+    "gcp_sku_name": "Cloud CDN Cache Egress - Americas",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_2": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Americas (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_3": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Europe (Tier <= 1024 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_4": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Asia (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_5": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Inter Zone Data Transfer Out",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_6": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Inter-Region Egress (Northamerica to Europe)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_7": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Inter-Region Egress (Asia to Europe)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_8": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Inter Zone Data Transfer Out",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_datatransfer_9": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Inter Zone Data Transfer Out",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_0": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - 400Gbps Dedicated circuit",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_1": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - 100Gbps Dedicated circuit",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_10": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - Local Data Transfer in UnitedStates",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_11": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - Local Data Transfer in UnitedStates",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_12": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - Local Data Transfer in UnitedStates",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_13": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_2": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - 10Gbps Dedicated circuit",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_3": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - 1Gbps VLAN attachment via Google partner",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_4": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - 10Gbps Dedicated circuit",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_5": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - 50Mbps VLAN attachment via Google partner",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_6": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - 100Mbps VLAN attachment via Google partner",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_7": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - 500Mbps VLAN attachment via Google partner",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_8": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - 1Gbps VLAN attachment via Google partner",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_directconnect_9": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Cloud Interconnect - 10Gbps VLAN attachment via Google partner",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_dms_6": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Asia (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_documentdb_0": {
+    "component": "db_instance",
+    "gcp_service": "Firestore",
+    "gcp_sku_name": "Firestore (MongoDB compatibility)",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_documentdb_1": {
+    "component": "db_instance",
+    "gcp_service": "Firestore",
+    "gcp_sku_name": "Firestore (MongoDB compatibility)",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_documentdb_2": {
+    "component": "db_instance",
+    "gcp_service": "Firestore",
+    "gcp_sku_name": "Firestore (MongoDB compatibility)",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_documentdb_4": {
+    "component": "storage",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": "Cloud SQL: Zonal - Enterprise Storage Hyperdisk Balanced Capacity",
+    "passthrough_reason": "no_rate_in_region",
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_documentdb_5": {
+    "component": "backup_storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Nearline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_documentdb_7": {
+    "component": "ram",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": "Cloud SQL for MySQL: Zonal - RAM",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_dynamodb_0": {
+    "component": "cache",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": "Redis Capacity Basic M3",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 16.0
+  },
+  "suc_dynamodb_1": {
+    "component": "reads",
+    "gcp_service": "Cloud Firestore",
+    "gcp_sku_name": "Cloud Firestore Read Ops Iowa",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 3600.0
+  },
+  "suc_dynamodb_10": {
+    "component": "pitr-storage",
+    "gcp_service": "Cloud Firestore",
+    "gcp_sku_name": "Cloud Firestore Point-in-time Recovery Storage Iowa",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_dynamodb_11": {
+    "component": "storage",
+    "gcp_service": "Cloud Firestore",
+    "gcp_sku_name": "Cloud Firestore Storage Iowa",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_dynamodb_12": {
+    "component": "storage",
+    "gcp_service": "Cloud Firestore",
+    "gcp_sku_name": "Cloud Firestore Storage Iowa",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_dynamodb_2": {
+    "component": "writes",
+    "gcp_service": "Cloud Firestore",
+    "gcp_sku_name": "Cloud Firestore Entity Writes Iowa",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 3600.0
+  },
+  "suc_dynamodb_3": {
+    "component": "reads",
+    "gcp_service": "Cloud Firestore",
+    "gcp_sku_name": "Cloud Firestore Read Ops Iowa",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_dynamodb_4": {
+    "component": "writes",
+    "gcp_service": "Cloud Firestore",
+    "gcp_sku_name": "Cloud Firestore Entity Writes Iowa",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_dynamodb_5": {
+    "component": "writes",
+    "gcp_service": "Cloud Firestore",
+    "gcp_sku_name": "Cloud Firestore Entity Writes North America 5",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_dynamodb_6": {
+    "component": "writes",
+    "gcp_service": "Cloud Firestore",
+    "gcp_sku_name": "Cloud Firestore Entity Writes North America 5",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 3600.0
+  },
+  "suc_dynamodb_9": {
+    "component": "storage",
+    "gcp_service": "Cloud Firestore",
+    "gcp_sku_name": "Cloud Firestore Storage Iowa",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_0": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Balanced PD Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_1": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Hyperdisk Balanced Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_10": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_11": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Snapshot",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_12": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Snapshot",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_13": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Regional Archive Snapshot Data Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_14": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Hyperdisk Balanced Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_15": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Snapshot",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_16": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Snapshot",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_2": {
+    "component": "iops",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Hyperdisk Balanced IOPS",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_ebs_3": {
+    "component": "throughput",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Hyperdisk Balanced Throughput",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1024.0
+  },
+  "suc_ebs_4": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Hyperdisk Balanced Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_5": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Hyperdisk Balanced Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_6": {
+    "component": "iops",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Hyperdisk Extreme IOPS",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_ebs_7": {
+    "component": "iops",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Hyperdisk Extreme IOPS",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_ebs_8": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ebs_9": {
+    "component": "throughput",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Extreme PD Throughput",
+    "passthrough_reason": "no_rate_in_region",
+    "strategy": "passthrough",
+    "unit_multiplier": 1024.0
+  },
+  "suc_ecs_0": {
+    "component": "vcpu",
+    "gcp_service": "Kubernetes Engine",
+    "gcp_sku_name": "Autopilot Pod mCPU Requests",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1000.0
+  },
+  "suc_ecs_1": {
+    "component": "memory",
+    "gcp_service": "Kubernetes Engine",
+    "gcp_sku_name": "Autopilot Pod Memory Requests",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ecs_2": {
+    "component": "vcpu",
+    "gcp_service": "Kubernetes Engine",
+    "gcp_sku_name": "Autopilot Scale-Out Arm Pod mCPU Requests",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1000.0
+  },
+  "suc_ecs_3": {
+    "component": "memory",
+    "gcp_service": "Kubernetes Engine",
+    "gcp_sku_name": "Autopilot Scale-Out Arm Pod Memory Requests",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ecs_4": {
+    "component": "vcpu",
+    "gcp_service": "Kubernetes Engine",
+    "gcp_sku_name": "Autopilot Pod mCPU Requests",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1000.0
+  },
+  "suc_ecs_5": {
+    "component": "memory",
+    "gcp_service": "Kubernetes Engine",
+    "gcp_sku_name": "Autopilot Pod Memory Requests",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ecs_6": {
+    "component": "storage",
+    "gcp_service": "Kubernetes Engine",
+    "gcp_sku_name": "Autopilot Pod Ephemeral Storage Requests",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_ecs_7": {
+    "component": "vcpu",
+    "gcp_service": "Kubernetes Engine",
+    "gcp_sku_name": "Autopilot Pod mCPU Requests",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1000.0
+  },
+  "suc_ecs_9": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Asia (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_efs_0": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": "Filestore Capacity Regional and Enterprise",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_efs_1": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": "Filestore Capacity Regional and Enterprise",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_efs_10": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_efs_11": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": "Filestore Capacity Regional and Enterprise",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_efs_12": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": "Filestore Capacity Regional and Enterprise",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_efs_13": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_efs_14": {
+    "component": "backup",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": "Filestore Backup Usage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_efs_15": {
+    "component": "backup",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": "Filestore Backup Usage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_efs_16": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Asia (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_efs_2": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": "Filestore Capacity Zonal and High Scale",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_efs_3": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": "Filestore Capacity Zonal and High Scale",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_efs_4": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_efs_5": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_efs_6": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_efs_7": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_efs_8": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_efs_9": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_elasticache_0": {
+    "component": "cache",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": "Redis Cluster Node Default",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_elasticache_1": {
+    "component": "cache",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": "Redis Cluster Node Default",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_elasticache_10": {
+    "component": "backup",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": "Memorystore for Redis Cluster: Backups",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 730.0
+  },
+  "suc_elasticache_2": {
+    "component": "cache",
+    "gcp_service": "Memorystore for Valkey",
+    "gcp_sku_name": "Shared Core Nano Node",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_elasticache_3": {
+    "component": "core",
+    "gcp_service": "Cloud Memorystore for Memcached",
+    "gcp_sku_name": "Custom Core M2",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_elasticache_4": {
+    "component": "core",
+    "gcp_service": "Cloud Memorystore for Memcached",
+    "gcp_sku_name": "Custom Core M2",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_elasticache_5": {
+    "component": "cache",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": "Redis Capacity Basic M1",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_elasticache_6": {
+    "component": "cache",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": "Redis Capacity Basic M1",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_elasticache_7": {
+    "component": "cache",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_elasticache_8": {
+    "component": "cache",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_elasticache_9": {
+    "component": "backup",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": "Memorystore for Redis Cluster: Backups",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 730.0
+  },
+  "suc_elb_0": {
+    "component": "hourly",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Regional External Application Load Balancer Forwarding Rule Minimum",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_elb_1": {
+    "component": "hourly",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Global External Passthrough Network Load Balancer Forwarding Rule",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_elb_10": {
+    "component": "gwlb",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_elb_11": {
+    "component": "gwlb",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_elb_12": {
+    "component": "gwlb",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_elb_2": {
+    "component": "hourly",
+    "gcp_service": "Cloud Load Balancing",
+    "gcp_sku_name": "Cloud Load Balancer Forwarding Rule Minimum",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_elb_3": {
+    "component": "hourly",
+    "gcp_service": "Cloud Load Balancing",
+    "gcp_sku_name": "Cloud Load Balancer Forwarding Rule Minimum",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_elb_4": {
+    "component": "transfer",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Regional External Application Load Balancer Inbound Data Processing",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_elb_5": {
+    "component": "transfer",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "External Passthrough Network Load Balancer Inbound Data Processing",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_elb_6": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Americas (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_elb_7": {
+    "component": "transfer",
+    "gcp_service": "Networking",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_elb_8": {
+    "component": "gwlb",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_elb_9": {
+    "component": "gwlb",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_emr_0": {
+    "component": "management",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Licensing Fee for Google Cloud Dataproc (CPU cost)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_emr_1": {
+    "component": "management",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Licensing Fee for Google Cloud Dataproc (CPU cost)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_emr_10": {
+    "component": "management",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Licensing Fee for Google Cloud Dataproc (CPU cost)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_emr_11": {
+    "component": "management",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Licensing Fee for Google Cloud Dataproc (CPU cost)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_emr_12": {
+    "component": "management",
+    "gcp_service": "Dataproc",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_emr_13": {
+    "component": "management",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Licensing Fee for Google Cloud Dataproc (CPU cost)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_emr_2": {
+    "component": "management",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Licensing Fee for Google Cloud Dataproc (CPU cost)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_emr_3": {
+    "component": "storage",
+    "gcp_service": "Dataproc",
+    "gcp_sku_name": null,
+    "passthrough_reason": "unit_model_mismatch",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_emr_4": {
+    "component": "management",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Licensing Fee for Google Cloud Dataproc (CPU cost)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_emr_5": {
+    "component": "management",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Licensing Fee for Google Cloud Dataproc (CPU cost)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_emr_6": {
+    "component": "management",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Licensing Fee for Google Cloud Dataproc (CPU cost)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_emr_7": {
+    "component": "management",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Licensing Fee for Google Cloud Dataproc (CPU cost)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_emr_8": {
+    "component": "management",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Licensing Fee for Google Cloud Dataproc (CPU cost)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_emr_9": {
+    "component": "management",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Licensing Fee for Google Cloud Dataproc (CPU cost)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_fsx_0": {
+    "component": "storage",
+    "gcp_service": "Parallelstore",
+    "gcp_sku_name": "Parallelstore Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_fsx_1": {
+    "component": "storage",
+    "gcp_service": "Parallelstore",
+    "gcp_sku_name": "Parallelstore Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_fsx_10": {
+    "component": "storage",
+    "gcp_service": "Google Cloud NetApp Volumes",
+    "gcp_sku_name": "NetApp Volumes Auto-tiering Cold Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_fsx_11": {
+    "component": "storage",
+    "gcp_service": "Google Cloud NetApp Volumes",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_fsx_12": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_fsx_13": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_fsx_14": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_fsx_15": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_fsx_16": {
+    "component": "backup",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": "Filestore Backup Usage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_fsx_17": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Asia (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_fsx_2": {
+    "component": "storage",
+    "gcp_service": "Google Cloud NetApp Volumes",
+    "gcp_sku_name": "NetApp Volumes Premium",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_fsx_3": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": "Filestore Capacity Regional and Enterprise",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_fsx_4": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": "Filestore Capacity Regional and Enterprise",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_fsx_5": {
+    "component": "storage",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": "Filestore Capacity Zonal and High Scale",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_fsx_6": {
+    "component": "throughput",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_fsx_7": {
+    "component": "throughput",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_fsx_8": {
+    "component": "throughput",
+    "gcp_service": "Cloud Filestore",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_fsx_9": {
+    "component": "throughput",
+    "gcp_service": "Google Cloud Managed Lustre",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_lambda_0": {
+    "component": "cpu",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": "Cloud Run functions CPU (Request-based billing)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.4096
+  },
+  "suc_lambda_1": {
+    "component": "cpu",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": "Cloud Run functions CPU (Request-based billing)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.4096
+  },
+  "suc_lambda_10": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Asia (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_lambda_2": {
+    "component": "requests",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": "Cloud Run Functions Invocations",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_lambda_3": {
+    "component": "requests",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": "Cloud Run Functions Invocations",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_lambda_4": {
+    "component": "cpu",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": "Cloud Run functions Min-Instance CPU (Request-based billing)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.4096
+  },
+  "suc_lambda_5": {
+    "component": "cpu",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": "Cloud Run functions Min-Instance CPU (Request-based billing)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.4096
+  },
+  "suc_lambda_6": {
+    "component": "cpu",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": "Cloud Run functions Min-Instance CPU (Request-based billing)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.4096
+  },
+  "suc_lambda_7": {
+    "component": "storage",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_lambda_8": {
+    "component": "storage",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_lambda_9": {
+    "component": "storage",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_memorydb_0": {
+    "component": "cache",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": "Redis Capacity Standard M2",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 8.0
+  },
+  "suc_memorydb_1": {
+    "component": "cache",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": "Redis Capacity Standard M2",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 8.0
+  },
+  "suc_memorydb_2": {
+    "component": "cache",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": "Redis Capacity Standard M2",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 8.0
+  },
+  "suc_memorydb_3": {
+    "component": "cache",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": "Redis Capacity Standard M2",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 8.0
+  },
+  "suc_memorydb_4": {
+    "component": "cache",
+    "gcp_service": "Cloud Memorystore for Redis",
+    "gcp_sku_name": "Redis Capacity Standard M2",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 8.0
+  },
+  "suc_memorydb_6": {
+    "component": "backup_storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Snapshot",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_msk_0": {
+    "component": "broker",
+    "gcp_service": "Managed Service for Apache Kafka",
+    "gcp_sku_name": "Managed Service for Apache Kafka: CPU and RAM (DCU)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_msk_1": {
+    "component": "broker",
+    "gcp_service": "Managed Service for Apache Kafka",
+    "gcp_sku_name": "Managed Service for Apache Kafka: CPU and RAM (DCU)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 4.0
+  },
+  "suc_msk_10": {
+    "component": "storage",
+    "gcp_service": "Managed Service for Apache Kafka",
+    "gcp_sku_name": "Managed Service for Apache Kafka: Local Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_msk_11": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Inter Zone Data Transfer Out",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_msk_12": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 1.0
+  },
+  "suc_msk_2": {
+    "component": "broker",
+    "gcp_service": "Managed Service for Apache Kafka",
+    "gcp_sku_name": "Managed Service for Apache Kafka: CPU and RAM (DCU)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 8.0
+  },
+  "suc_msk_3": {
+    "component": "broker",
+    "gcp_service": "Managed Service for Apache Kafka",
+    "gcp_sku_name": "Managed Service for Apache Kafka: CPU and RAM (DCU)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.4
+  },
+  "suc_msk_4": {
+    "component": "broker",
+    "gcp_service": "Managed Service for Apache Kafka",
+    "gcp_sku_name": "Managed Service for Apache Kafka: CPU and RAM (DCU)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_msk_5": {
+    "component": "broker",
+    "gcp_service": "Managed Service for Apache Kafka",
+    "gcp_sku_name": "Managed Service for Apache Kafka: CPU and RAM (DCU)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.8
+  },
+  "suc_msk_6": {
+    "component": "broker",
+    "gcp_service": "Managed Service for Apache Kafka",
+    "gcp_sku_name": "Managed Service for Apache Kafka: CPU and RAM (DCU)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.8
+  },
+  "suc_msk_7": {
+    "component": "connect",
+    "gcp_service": "Managed Service for Apache Kafka",
+    "gcp_sku_name": "Managed Service for Apache Kafka: Connect CPU and RAM (DCU)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_msk_8": {
+    "component": "storage",
+    "gcp_service": "Managed Service for Apache Kafka",
+    "gcp_sku_name": "Managed Service for Apache Kafka: Local Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_msk_9": {
+    "component": "storage",
+    "gcp_service": "Managed Service for Apache Kafka",
+    "gcp_sku_name": "Managed Service for Apache Kafka: Local Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_mwaa_0": {
+    "component": "environment-fee",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Small Cloud Composer Environment Fee",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_mwaa_1": {
+    "component": "environment-fee",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Small Cloud Composer Environment Fee",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_mwaa_10": {
+    "component": "memory",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Cloud Composer Compute Memory",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_mwaa_11": {
+    "component": "memory",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Cloud Composer Compute Memory",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 4.0
+  },
+  "suc_mwaa_12": {
+    "component": "database-storage",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Cloud Composer Database Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_mwaa_13": {
+    "component": "database-storage",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Cloud Composer Database Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_mwaa_2": {
+    "component": "environment-fee",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Medium Cloud Composer Environment Fee",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_mwaa_3": {
+    "component": "environment-fee",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Large Cloud Composer Environment Fee",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_mwaa_4": {
+    "component": "environment-fee",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Large Cloud Composer Environment Fee",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_mwaa_5": {
+    "component": "environment-fee",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Large Cloud Composer Environment Fee",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_mwaa_6": {
+    "component": "memory",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Cloud Composer Compute Memory",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_mwaa_7": {
+    "component": "memory",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Cloud Composer Compute Memory",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 8.0
+  },
+  "suc_mwaa_8": {
+    "component": "memory",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Cloud Composer Compute Memory",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_mwaa_9": {
+    "component": "memory",
+    "gcp_service": "Cloud Composer",
+    "gcp_sku_name": "Cloud Composer Compute Memory",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 8.0
+  },
+  "suc_rds_0": {
+    "component": "db_instance",
+    "gcp_service": "Manual Review",
+    "gcp_sku_name": "Manual Review \u2014 DB Engine Unknown",
+    "passthrough_reason": null,
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_rds_1": {
+    "component": "db_instance",
+    "gcp_service": "Manual Review",
+    "gcp_sku_name": "Manual Review \u2014 DB Engine Unknown",
+    "passthrough_reason": null,
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_rds_10": {
+    "component": "storage",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": "Cloud SQL: Zonal - Enterprise Storage Hyperdisk Balanced Capacity",
+    "passthrough_reason": "no_rate_in_region",
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_rds_13": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Hyperdisk Balanced Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_rds_14": {
+    "component": "storage",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 1.0
+  },
+  "suc_rds_15": {
+    "component": "storage",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 1.0
+  },
+  "suc_rds_16": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Hyperdisk Balanced Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_rds_17": {
+    "component": "storage",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": "Cloud SQL: Zonal - Enterprise Storage Hyperdisk Balanced Capacity",
+    "passthrough_reason": "no_rate_in_region",
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_rds_18": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Asia (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_rds_19": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Inter-Region Egress (Asia to Europe)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_rds_2": {
+    "component": "db_instance",
+    "gcp_service": "Manual Review",
+    "gcp_sku_name": "Manual Review \u2014 DB Engine Unknown",
+    "passthrough_reason": null,
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_rds_20": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 1.0
+  },
+  "suc_rds_3": {
+    "component": "ram",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": "Cloud SQL for MySQL: Zonal - RAM",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 2.0
+  },
+  "suc_rds_4": {
+    "component": "extended-support",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_rds_5": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Balanced PD Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_rds_6": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Hyperdisk Balanced Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_rds_7": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_rds_8": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Storage PD Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_rds_9": {
+    "component": "storage",
+    "gcp_service": "Cloud SQL",
+    "gcp_sku_name": "Cloud SQL: Zonal - Enterprise Storage Hyperdisk Balanced Capacity",
+    "passthrough_reason": "no_rate_in_region",
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_redshift_0": {
+    "component": "compute",
+    "gcp_service": "BigQuery Reservation API",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_redshift_1": {
+    "component": "compute",
+    "gcp_service": "BigQuery Reservation API",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_redshift_10": {
+    "component": "compute",
+    "gcp_service": "BigQuery",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_redshift_11": {
+    "component": "backup",
+    "gcp_service": "BigQuery",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_redshift_12": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Asia (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_redshift_2": {
+    "component": "compute",
+    "gcp_service": "BigQuery Reservation API",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_redshift_3": {
+    "component": "compute",
+    "gcp_service": "BigQuery Reservation API",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_redshift_4": {
+    "component": "compute",
+    "gcp_service": "BigQuery Reservation API",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_redshift_5": {
+    "component": "storage",
+    "gcp_service": "BigQuery",
+    "gcp_sku_name": "Active Logical Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_redshift_6": {
+    "component": "storage",
+    "gcp_service": "BigQuery",
+    "gcp_sku_name": "Active Logical Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_redshift_7": {
+    "component": "compute",
+    "gcp_service": "BigQuery",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_redshift_8": {
+    "component": "analysis",
+    "gcp_service": "BigQuery",
+    "gcp_sku_name": "Analysis",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9095
+  },
+  "suc_redshift_9": {
+    "component": "analysis",
+    "gcp_service": "BigQuery",
+    "gcp_sku_name": "Analysis",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 9.094947017729282e-13
+  },
+  "suc_route53_0": {
+    "component": "zones",
+    "gcp_service": "Cloud DNS",
+    "gcp_sku_name": "ManagedZone",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_1": {
+    "component": "zones",
+    "gcp_service": "Cloud DNS",
+    "gcp_sku_name": "ManagedZone",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_10": {
+    "component": "traffic_flow",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_11": {
+    "component": "security",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_12": {
+    "component": "resolver",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_13": {
+    "component": "resolver",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_14": {
+    "component": "records",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 0.0
+  },
+  "suc_route53_2": {
+    "component": "requests",
+    "gcp_service": "Cloud DNS",
+    "gcp_sku_name": "DNS Query",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_3": {
+    "component": "requests",
+    "gcp_service": "Cloud DNS",
+    "gcp_sku_name": "DNS Query",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_4": {
+    "component": "queries",
+    "gcp_service": "Cloud DNS",
+    "gcp_sku_name": "DNS Query (Routing Policy)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_5": {
+    "component": "queries",
+    "gcp_service": "Cloud DNS",
+    "gcp_sku_name": "DNS Query (Routing Policy)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_6": {
+    "component": "healthcheck",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Cloud DNS Routing Policy Internet Fast Health Check",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_7": {
+    "component": "healthcheck",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Cloud DNS Routing Policy Internet Fast Health Check",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_8": {
+    "component": "healthcheck",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Cloud DNS Routing Policy Internet Premium Health Check",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_route53_9": {
+    "component": "traffic_flow",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_0": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Standard Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_s3_1": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Standard Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_s3_10": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Archive Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_s3_11": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_12": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": null,
+    "passthrough_reason": "no_gcp_equivalent",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_13": {
+    "component": "requests",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_14": {
+    "component": "requests",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_15": {
+    "component": "requests",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_16": {
+    "component": "requests",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_17": {
+    "component": "requests",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_18": {
+    "component": "requests",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_19": {
+    "component": "requests",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_2": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Nearline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_s3_20": {
+    "component": "requests",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_21": {
+    "component": "requests",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": null,
+    "passthrough_reason": "unit_model_mismatch",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_22": {
+    "component": "requests",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": null,
+    "passthrough_reason": "unit_model_mismatch",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_23": {
+    "component": "requests",
+    "gcp_service": "Cloud Run Functions",
+    "gcp_sku_name": null,
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_24": {
+    "component": "requests",
+    "gcp_service": null,
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_25": {
+    "component": "requests",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": null,
+    "passthrough_reason": "unit_model_mismatch",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_26": {
+    "component": "requests",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_27": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Asia (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_28": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": null,
+    "passthrough_reason": null,
+    "strategy": "ignore",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_29": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Inter-Region Egress (Asia to Northamerica)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_3": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Nearline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_s3_30": {
+    "component": "transfer",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Network Internet Egress - Asia (Tier <= 10240 GB)",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_s3_4": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Coldline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_s3_5": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Coldline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_s3_6": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Archive Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_s3_7": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Standard Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_s3_8": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Nearline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_s3_9": {
+    "component": "storage",
+    "gcp_service": "Cloud Storage",
+    "gcp_sku_name": "Coldline Storage",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_sagemaker_15": {
+    "component": "featurestore",
+    "gcp_service": "Vertex AI",
+    "gcp_sku_name": "Feature Store V2",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_sagemaker_16": {
+    "component": "featurestore",
+    "gcp_service": "Vertex AI",
+    "gcp_sku_name": "Feature Store V2",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_sagemaker_17": {
+    "component": "featurestore",
+    "gcp_service": "Vertex AI",
+    "gcp_sku_name": "Feature Store V2",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_sagemaker_18": {
+    "component": "featurestore",
+    "gcp_service": "Vertex AI",
+    "gcp_sku_name": "Feature Store V2",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_sagemaker_19": {
+    "component": "sagemaker",
+    "gcp_service": "Vertex AI",
+    "gcp_sku_name": "Manual Review",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_sagemaker_20": {
+    "component": "sagemaker",
+    "gcp_service": "Vertex AI",
+    "gcp_sku_name": "Manual Review",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_sagemaker_21": {
+    "component": "sagemaker",
+    "gcp_service": "Vertex AI",
+    "gcp_sku_name": "Manual Review",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_sagemaker_22": {
+    "component": "sagemaker",
+    "gcp_service": "Vertex AI",
+    "gcp_sku_name": "Manual Review",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_sagemaker_23": {
+    "component": "sagemaker",
+    "gcp_service": "Vertex AI",
+    "gcp_sku_name": "Manual Review",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_sagemaker_24": {
+    "component": "sagemaker",
+    "gcp_service": "Vertex AI",
+    "gcp_sku_name": "Manual Review",
+    "passthrough_reason": "service_policy_review",
+    "strategy": "passthrough",
+    "unit_multiplier": 1.0
+  },
+  "suc_sagemaker_25": {
+    "component": "storage",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Hyperdisk Balanced Capacity",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 0.9310986964618249
+  },
+  "suc_vpc_0": {
+    "component": "hourly",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Networking Cloud Nat Gateway Uptime",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 31.42857143
+  },
+  "suc_vpc_1": {
+    "component": "hourly",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Networking Cloud Nat Gateway Uptime",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 31.42857143
+  },
+  "suc_vpc_10": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Static IP Charge",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_vpc_11": {
+    "component": "hourly",
+    "gcp_service": "Cloud VPN",
+    "gcp_sku_name": "Cloud VPN Tunnel",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_vpc_12": {
+    "component": "hourly",
+    "gcp_service": "Cloud VPN",
+    "gcp_sku_name": "Cloud VPN Tunnel",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_vpc_2": {
+    "component": "hourly",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Networking Private Nat Gateway Uptime",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_vpc_3": {
+    "component": "hourly",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Network Connectivity Center Spoke Hours VPC Network Spoke",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_vpc_4": {
+    "component": "hourly",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Network Connectivity Center Spoke Hours VPC Network Spoke",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_vpc_5": {
+    "component": "transfer",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Data Transfer for advanced data networking",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_vpc_6": {
+    "component": "transfer",
+    "gcp_service": "Networking",
+    "gcp_sku_name": "Data Transfer for advanced data networking",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_vpc_7": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "External IP Charge on a Standard VM",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_vpc_8": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "External IP Charge on a Standard VM",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  },
+  "suc_vpc_9": {
+    "component": "hourly",
+    "gcp_service": "Compute Engine",
+    "gcp_sku_name": "Static IP Charge",
+    "passthrough_reason": null,
+    "strategy": "map",
+    "unit_multiplier": 1.0
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "enterprise_high_sp": {
+    "ebs_gp3_1": 188.0,
+    "ec2_c5_1": 230.11,
+    "ec2_m5_1": 519.82,
+    "ec2_spot_1": 56.4,
+    "egress_1": 423.0,
+    "sp_fee_1": 0.0
+  },
+  "modern_serverless": {
+    "aurora_acu": 282.0,
+    "cw_logs": 470.0,
+    "dynamodb_req": 58.75,
+    "fargate_vcpu": 76.1,
+    "kms_keys": 9.4,
+    "lambda_gb_sec": 156.67
+  },
+  "standard_workload": {
+    "alb_usage": 15.23,
+    "cw_alarms": 0.0,
+    "ec2_m5_od": 64.97,
+    "ec2_t4g_od": 22.74,
+    "rds_r5_od": 324.86,
+    "s3_std": 1081.0
+  }
+}

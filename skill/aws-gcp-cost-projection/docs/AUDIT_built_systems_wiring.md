@@ -1,5 +1,8 @@
 # AUDIT — built systems & their wiring status
 
+> **NEW AGENT:** read `ARCHITECTURE_MASTER_TRACKER.md` §0 first (working rules + the one-engine map). This audit is the
+> evidence behind §2 of that tracker. When you WIRE/DELETE a system here, flip its status in the tracker's §2 too.
+
 Status: **OPEN — audit complete, decisions pending.** Author: Claude (Opus 4.8) · 2026-11-20.
 Trigger: the unit-conversion finding (`conversion_factor` built but never called) is not unique — several "system"
 modules were built to unify or gate the pipeline and then **never wired in**, so the ad-hoc code they were meant to

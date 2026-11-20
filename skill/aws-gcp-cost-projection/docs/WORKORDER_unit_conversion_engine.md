@@ -1,5 +1,9 @@
 # WORKORDER — Unit-conversion engine + three-layer multiplier architecture
 
+> **NEW AGENT:** read `ARCHITECTURE_MASTER_TRACKER.md` §0 (working rules) first. This is subsystem **S4** of the one
+> engine; it is one of several "built but unwired" systems in `AUDIT_built_systems_wiring.md`. Update the tracker's §2
+> (S4) and §3 row as you advance phases here.
+
 Status: **OPEN — not started (0%)** · Author: Claude (Opus 4.8) · Opened 2026-11-20 · Owner-driven, staged.
 Related: [[project_layer1_product_code]], [[project_service_specs_registry]], `scripts/unit_equivalence.py`,
 `data/unit_dimensions.json`, `scripts/resolve_sku.py`, `scripts/apply_static_mappings.py`.

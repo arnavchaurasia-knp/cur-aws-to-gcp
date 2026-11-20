@@ -1,5 +1,9 @@
 # TODO backlog — cost-projection modelling loop
 
+> **Architecture / systems work has a master index: `ARCHITECTURE_MASTER_TRACKER.md` (read its §0 first).** It holds
+> the one-engine map, the per-subsystem wiring status, and the consolidation plan. This backlog is the service/tactical
+> list; the tracker is the strategic one.
+
 Durable pick-up list. Source of truth for "what's next" once the current assignment closes.
 Keep in sync with `VARIANT_FIDELITY_TRACKER.md` (variant gaps) and `WORKORDER_per_service_full_modelling.md` (§3 table + §7.1 log).
 

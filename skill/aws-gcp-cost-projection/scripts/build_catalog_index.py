@@ -58,7 +58,8 @@ def build():
                 usage_type      VARCHAR,
                 description     VARCHAR,
                 usage_unit      VARCHAR,
-                service_regions VARCHAR[]
+                service_regions VARCHAR[],
+                display_quantity DOUBLE DEFAULT 1.0
             )
         """)
         con.execute("""
@@ -74,7 +75,7 @@ def build():
 
         def flush():
             if sku_batch:
-                con.executemany("INSERT INTO skus VALUES (?,?,?,?,?,?,?,?)", sku_batch)
+                con.executemany("INSERT INTO skus VALUES (?,?,?,?,?,?,?,?,?)", sku_batch)
                 sku_batch.clear()
             if rate_batch:
                 con.executemany("INSERT INTO tiered_rates VALUES (?,?,?)", rate_batch)
@@ -99,6 +100,7 @@ def build():
                     sku.get("description", ""),
                     expr.get("usageUnit", ""),
                     sku.get("serviceRegions", []),
+                    float(expr.get("displayQuantity") or 1.0),
                 ))
                 for tier in expr.get("tieredRates", []):
                     price = tier.get("unitPrice", {})

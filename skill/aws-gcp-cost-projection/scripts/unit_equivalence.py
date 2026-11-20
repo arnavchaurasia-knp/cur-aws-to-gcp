@@ -122,6 +122,31 @@ def conversion_factor(a: str | None, b: str | None) -> float | None:
     return scale_a / scale_b
 
 
+def derive_multiplier(
+    source_unit: str | None,
+    target_unit: str | None,
+    display_quantity: float = 1.0,
+) -> float | None:
+    """
+    Derives unit multiplier = physical_factor (L1) * granularity_factor (L2).
+    - L1 physical factor: dimension-preserving scale ratio (scale_source / scale_target).
+    - L2 granularity factor: display_quantity from GCP billing catalog (e.g. 1000 for mCPU, 10000 for ops).
+    Returns None on dimensional mismatch or unknown unit (fail closed).
+    """
+    if not source_unit or not target_unit:
+        return None
+    factor = conversion_factor(source_unit, target_unit)
+    if factor is None:
+        return None
+    dq = float(display_quantity) if display_quantity else 1.0
+    return factor * dq
+
+
+# Canonical physical constants derived from the engine
+GB_TO_GIB = conversion_factor("gb-mo", "giby.mo")  # exact 1 / 1.073741824 = 0.9313225746154785
+GIBPS_TO_MIBPS = conversion_factor("gibps-mo", "mibps-mo")  # exact 1024.0 (GiBps -> MiBps)
+
+
 def unit_class(unit: str | None) -> str | None:
     """
     Backward-compatible shim for legacy callers.

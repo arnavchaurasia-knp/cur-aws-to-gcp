@@ -94,7 +94,7 @@ def test_alb_lcu_data_processing():
     assert res["strategy"] == "map"
     assert res["gcp_sku_id"] is not None and len(res["gcp_sku_id"]) > 0
     assert "Application Load Balancer Inbound Data Processing" in res["gcp_sku_name"]
-    assert res["unit_multiplier"] == pytest.approx(1.0 / 1.074, rel=1e-4)
+    assert res["unit_multiplier"] == pytest.approx(1.0 / 1.073741824, rel=1e-5)
 
 
 def test_nlb_nlcu_data_processing_and_overprojection_note():

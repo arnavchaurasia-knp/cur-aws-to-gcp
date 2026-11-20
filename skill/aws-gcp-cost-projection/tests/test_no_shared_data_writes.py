@@ -36,6 +36,9 @@ ALLOWED_MAINTENANCE_WRITERS = {
     # and Python (config_loader reads) validate against one source of truth.
     # test_assumptions.py asserts the generated file stays in sync.
     "gen_ratio_registry.py",
+    # Developer tool / maintenance script: regenerates data/unit_dimensions.json
+    # from first principles per WORKORDER_unit_conversion_engine.md P1.3.
+    "gen_unit_dimensions.py",
     # Developer tool / maintenance script: regenerates or flags assumption domains
     # in data/assumption_domains.json per WORKORDER_assumption_value_domains.md.
     "refresh_assumption_domains.py",

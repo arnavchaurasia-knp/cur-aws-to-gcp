@@ -143,3 +143,4 @@ def test_pipeline_golden_snapshot():
                 diffs.append(f"{corpus_name}.{key}: expected ${exp_cost:.4f}, got ${act_cost}")
 
         assert not diffs, f"Pipeline golden mismatch in {corpus_name}:\n" + "\n".join(diffs)
+

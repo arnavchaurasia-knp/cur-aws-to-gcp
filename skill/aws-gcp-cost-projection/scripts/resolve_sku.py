@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+import re
 from collections import namedtuple
 import duckdb
 
@@ -44,12 +45,51 @@ _SERVICES_CACHE: set[str] | None = None
 _VALID_SKUS_CACHE: set[str] | None = None
 
 
-class ResolvedSKU(namedtuple("ResolvedSKU", ["sku_id", "unit", "note"])):
+class ResolvedSKU(namedtuple("ResolvedSKU", ["sku_id", "unit", "note", "display_quantity"], defaults=[1.0])):
     """Immutable result of SKU intent resolution."""
     __slots__ = ()
 
     def __bool__(self) -> bool:
         return self.sku_id is not None
+
+
+# Semantic Component Guard (L3) rules:
+# Each component specifies disallowed patterns in target SKU description.
+_COMPONENT_DISALLOWED_PATTERNS: dict[str, list[re.Pattern]] = {
+    "ephemeral": [
+        re.compile(r"\b(?:memory|ram)\b", re.I),
+        re.compile(r"\b(?:vcpu|core|cpu)\b", re.I),
+    ],
+    "memory": [
+        re.compile(r"\b(?:ephemeral)\b", re.I),
+        re.compile(r"\b(?:storage|disk|pd-ssd|pd-standard|pd-balanced)\b", re.I),
+        re.compile(r"\b(?:vcpu|core|cpu)\b", re.I),
+        re.compile(r"\b(?:iops|throughput)\b", re.I),
+    ],
+    "storage": [
+        re.compile(r"\b(?:memory|ram)\b", re.I),
+        re.compile(r"\b(?:vcpu|core|cpu)\b", re.I),
+        re.compile(r"\b(?:iops|throughput)\b", re.I),
+    ],
+    "vcpu": [
+        re.compile(r"\b(?:memory|ram)\b", re.I),
+        re.compile(r"\b(?:storage|disk|ephemeral)\b", re.I),
+        re.compile(r"\b(?:iops|throughput)\b", re.I),
+    ],
+    "core": [
+        re.compile(r"\b(?:memory|ram)\b", re.I),
+        re.compile(r"\b(?:storage|disk|ephemeral)\b", re.I),
+        re.compile(r"\b(?:iops|throughput)\b", re.I),
+    ],
+    "iops": [
+        re.compile(r"\b(?:throughput|bandwidth|mb/s|mibps|gibps)\b", re.I),
+        re.compile(r"\b(?:memory|ram|vcpu|core)\b", re.I),
+    ],
+    "throughput": [
+        re.compile(r"\b(?:iops)\b", re.I),
+        re.compile(r"\b(?:memory|ram|vcpu|core)\b", re.I),
+    ],
+}
 
 
 def get_catalog_connection() -> duckdb.DuckDBPyConnection | None:
@@ -277,9 +317,11 @@ def resolve_intent_to_sku(
     try:
         tables = {r[0] for r in active_conn.execute("SHOW TABLES").fetchall()}
         has_tiered = "tiered_rates" in tables
+        sku_cols = {c[1].lower() for c in active_conn.execute("PRAGMA table_info('skus')").fetchall()}
+        disp_col = "s.display_quantity" if "display_quantity" in sku_cols else "1.0 AS display_quantity"
         if has_tiered:
-            rows = active_conn.execute("""
-                SELECT s.sku_id, s.description, s.usage_unit, s.service_regions
+            rows = active_conn.execute(f"""
+                SELECT s.sku_id, s.description, s.usage_unit, s.service_regions, {disp_col}
                 FROM skus s
                 JOIN tiered_rates t ON t.sku_id = s.sku_id
                 WHERE (s.service_name = ? OR s.service_name = ?)
@@ -287,8 +329,8 @@ def resolve_intent_to_sku(
                   AND t.rate_usd > 0
             """, [svc_lookup, gcp_service]).fetchall()
         else:
-            rows = active_conn.execute("""
-                SELECT s.sku_id, s.description, s.usage_unit, s.service_regions
+            rows = active_conn.execute(f"""
+                SELECT s.sku_id, s.description, s.usage_unit, s.service_regions, {disp_col}
                 FROM skus s
                 WHERE (s.service_name = ? OR s.service_name = ?)
                   AND s.usage_type = 'OnDemand'
@@ -301,7 +343,7 @@ def resolve_intent_to_sku(
         best_exact_score, best_exact_res = (-1, 0), None
         best_any_score, best_any_res = (-1, 0), None
 
-        for sku, desc, unit, regions in rows:
+        for sku, desc, unit, regions, display_qty in rows:
             dl = desc.lower()
             if "free tier" in dl or "promotional" in dl or "trial" in dl:
                 continue
@@ -321,12 +363,13 @@ def resolve_intent_to_sku(
             else:
                 reg_list = []
 
+            disp = float(display_qty) if display_qty else 1.0
             if gcp_region and (gcp_region in reg_list or "global" in reg_list):
                 if rank > best_exact_score:
-                    best_exact_score, best_exact_res = rank, (sku, unit)
+                    best_exact_score, best_exact_res = rank, (sku, unit, disp, desc)
 
             if rank > best_any_score:
-                best_any_score, best_any_res = rank, (sku, unit)
+                best_any_score, best_any_res = rank, (sku, unit, disp, desc)
 
         if best_exact_res is not None and best_any_res is not None:
             best_match = best_exact_res if best_exact_score >= best_any_score else best_any_res
@@ -336,7 +379,21 @@ def resolve_intent_to_sku(
         if not best_match:
             return ResolvedSKU(None, None, f"[no-catalog-sku: no catalog SKU for '{gcp_sku_name}']")
 
-        resolved_sku_id, resolved_unit = best_match
+        resolved_sku_id, resolved_unit, resolved_disp_qty, resolved_desc = best_match
+
+        # Semantic Component Guard (L3):
+        # Reject same-dimension semantic mismatches (e.g. ephemeral storage resolving memory SKU)
+        if component:
+            comp_norm = str(component).strip().lower()
+            disallowed = _COMPONENT_DISALLOWED_PATTERNS.get(comp_norm, [])
+            for pat in disallowed:
+                if pat.search(resolved_desc):
+                    return ResolvedSKU(
+                        None,
+                        None,
+                        f"[component-mismatch: component '{component}' cannot resolve '{resolved_desc}' — passthrough]",
+                        1.0,
+                    )
 
         # G-1b & RV-2/RV-3: Authoritative expected unit validation
         # The authoritative expected unit is the mechanic/charge-type, NOT the LLM's own gcp_sku_unit
@@ -366,11 +423,12 @@ def resolve_intent_to_sku(
                     None,
                     None,
                     f"[unit-mismatch: {why} — passthrough]",
+                    1.0,
                 )
             # Compatible dimensions -> accept
-            return ResolvedSKU(resolved_sku_id, resolved_unit, None)
+            return ResolvedSKU(resolved_sku_id, resolved_unit, None, resolved_disp_qty)
 
-        return ResolvedSKU(resolved_sku_id, resolved_unit, None)
+        return ResolvedSKU(resolved_sku_id, resolved_unit, None, resolved_disp_qty)
 
     except Exception as e:
         return ResolvedSKU(None, None, f"[resolver-error: {e}]")

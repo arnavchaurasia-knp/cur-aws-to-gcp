@@ -66,8 +66,8 @@ def test_s3_storage_class_maps_to_expected_gcs_tier(usage_type, expected_tier):
     )
     assert r["strategy"] == "map"
     assert r["component"] == "storage"
-    # GB (decimal) -> GiB (binary) conversion, 1/1.074
-    assert pytest.approx(r["unit_multiplier"], rel=1e-5) == 1.0 / 1.074
+    # GB (decimal) -> GiB (binary) conversion: exact 1 / 1.073741824
+    assert pytest.approx(r["unit_multiplier"], rel=1e-5) == asm.GB_TO_GIB
 
 
 def test_s3_storage_prefers_single_region_sku():

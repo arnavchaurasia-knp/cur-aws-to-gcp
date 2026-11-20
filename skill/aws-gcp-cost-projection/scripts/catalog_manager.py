@@ -623,6 +623,11 @@ def cmd_refresh(p, refresh_all=False):
                 summary["anomalies"].append(f"build_catalog_index.py exited {r.returncode}")
                 print(f"REFRESH_SUMMARY {json.dumps(summary)}")
                 return 1
+
+            # Regenerate unit dimensions (P1.3: WORKORDER_unit_conversion_engine.md)
+            gen_script = os.path.join(SCRIPT_DIR, "gen_unit_dimensions.py")
+            if os.path.exists(gen_script):
+                subprocess.run([sys.executable, gen_script], cwd=p["skill"], env=env)
         else:
             print("\nNo new source fetched — catalog.duckdb left as-is.")
 

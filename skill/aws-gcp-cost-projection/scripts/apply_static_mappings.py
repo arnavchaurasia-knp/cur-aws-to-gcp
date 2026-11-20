@@ -69,7 +69,7 @@ GCS_STANDARD            = "Standard Storage"
 GCS_ARCHIVE             = "Archive Storage"
 GCS_COLDLINE            = "Coldline Storage"
 GCP_COMPUTE_ENGINE      = "Compute Engine"
-GB_TO_GIB = 1.0 / 1.074  # AWS decimal GB-Mo -> GCP GiBy.mo (1 GiB = 1.074 GB)
+from unit_equivalence import GB_TO_GIB, GIBPS_TO_MIBPS, derive_multiplier  # Exact IEC 80000-13 constants
 
 
 # CUD discount multipliers — single source of truth for the last-resort
@@ -233,12 +233,13 @@ def intentional_passthrough_exclude_clause(column):
 class SKUMeta(str):
     """str subclass returned by resolve_sku().
     Existing callers that do `if sku:` or `entry["gcp_sku_id"] = sku` continue
-    to work unchanged. New callers access .unit and .resource_group.
+    to work unchanged. New callers access .unit, .resource_group, and .display_quantity.
     """
-    def __new__(cls, sku_id, unit=None, resource_group=None):
+    def __new__(cls, sku_id, unit=None, resource_group=None, display_quantity=1.0):
         obj = str.__new__(cls, sku_id or "")
         obj.unit = unit
         obj.resource_group = resource_group
+        obj.display_quantity = float(display_quantity or 1.0)
         return obj
 
     def __bool__(self):
@@ -866,7 +867,7 @@ def _cheapest_same_tier_sku(gcp_service, candidate_desc_patterns, gcp_region):
         if best is None or rate < best[0]:
             best = (rate, desc_pattern)
     if best is None:
-        return None, None, None
+        return LookupResult(None, None, None, 1.0)
     rate, desc_pattern = best
     sku_id = resolve_sku(gcp_service, desc_pattern, gcp_region)
     return desc_pattern, sku_id, rate
@@ -1801,15 +1802,32 @@ def cheapest_gpu_in_scope(default_model, default_vram_gb, required_count, vcpu, 
     return best_model, best_vram, best_core, best_ram, best_gpu_desc, best_display_desc, switched, reason
 
 
+class LookupResult(tuple):
+    """3-tuple subclass returned by lookup_sku_in_catalog().
+    Unpacks as (sku_id, unit, resource_group) for backwards compatibility.
+    Provides .display_quantity attribute for SKU granularity (L2).
+    """
+    def __new__(cls, sku_id, unit, resource_group, display_quantity=1.0):
+        return super().__new__(cls, (sku_id, unit, resource_group))
+
+    def __init__(self, sku_id, unit, resource_group, display_quantity=1.0):
+        self.sku_id = sku_id
+        self.unit = unit
+        self.resource_group = resource_group
+        self.display_quantity = float(display_quantity or 1.0)
+
+
 def _sku_meta(sku):
-    """Extract (sku_id, unit, resource_group) from a catalog SKU dict."""
+    """Extract (sku_id, unit, resource_group, display_quantity) from a catalog SKU dict."""
     unit = None
+    display_quantity = 1.0
     pricing = sku.get("pricingInfo", [])
     if pricing:
         expr = pricing[0].get("pricingExpression", {})
         unit = expr.get("usageUnit")
+        display_quantity = float(expr.get("displayQuantity") or 1.0)
     resource_group = sku.get("category", {}).get("resourceGroup")
-    return sku["skuId"], unit, resource_group
+    return LookupResult(sku["skuId"], unit, resource_group, display_quantity)
 
 
 def _sku_rate(sku):
@@ -1862,7 +1880,7 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region, allow_continent
     # that resolves a SKU without going through cheapest_in_scope first would
     # still get handed the phantom SKU ID.
     if _family_phantom_unavailable(gcp_service, desc_pattern, gcp_region):
-        return None, None, None
+        return LookupResult(None, None, None, 1.0)
     # Some user-facing GCP service names differ from the billing catalog display name.
     _CATALOG_SERVICE_ALIASES = {
         "Cloud VPN": "Networking",
@@ -1881,11 +1899,11 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region, allow_continent
     services = _load_services()
     service_id = services.get(gcp_service) or services.get(_CATALOG_SERVICE_ALIASES.get(gcp_service, ""))
     if not service_id:
-        return None, None, None
+        return LookupResult(None, None, None, 1.0)
 
     sku_file = os.path.join(DATA_DIR, "skus", f"{service_id}.json.gz")
     if not os.path.exists(sku_file):
-        return None, None, None
+        return LookupResult(None, None, None, 1.0)
 
     skus = _load_sku_file(sku_file)
 
@@ -2051,7 +2069,7 @@ def lookup_sku_in_catalog(gcp_service, desc_pattern, gcp_region, allow_continent
         if result:
             return result
 
-    return None, None, None
+    return LookupResult(None, None, None, 1.0)
 
 
 _TOKEN_CACHE = None
@@ -2237,7 +2255,7 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=
     if key in _RUNTIME_SKU_CACHE:
         v = _RUNTIME_SKU_CACHE[key]
         if v.get("sku_id") is not None or v.get("catalog_version") == catalog_version:
-            return SKUMeta(v.get("sku_id"), v.get("unit"), v.get("resource_group"))
+            return SKUMeta(v.get("sku_id"), v.get("unit"), v.get("resource_group"), v.get("display_quantity", 1.0))
 
     cache = {}
     if os.path.exists(RESOLVED_SKUS_FILE):
@@ -2259,16 +2277,18 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=
         cached_sku_id = v.get("sku_id") if isinstance(v, dict) else v
         if cached_sku_id is not None:
             if isinstance(v, dict):
-                return SKUMeta(v.get("sku_id"), v.get("unit"), v.get("resource_group"))
+                return SKUMeta(v.get("sku_id"), v.get("unit"), v.get("resource_group"), v.get("display_quantity", 1.0))
             return SKUMeta(v)
         if isinstance(v, dict) and v.get("catalog_version") == catalog_version:
             return SKUMeta(None, None, None)
 
     # Bundled catalog lookup (strict by default)
-    sku_id, unit, resource_group = lookup_sku_in_catalog(
+    res = lookup_sku_in_catalog(
         gcp_service, desc_pattern, gcp_region, allow_continent_fallback=allow_continent_fallback,
         prefer_single_region=prefer_single_region,
     )
+    sku_id, unit, resource_group = res[0], res[1], res[2]
+    display_quantity = getattr(res, "display_quantity", 1.0)
 
     if sku_id:
         print(f"  resolved SKU: {gcp_service} / {desc_pattern!r} → {sku_id}")
@@ -2276,13 +2296,15 @@ def resolve_sku(gcp_service, desc_pattern, gcp_region, allow_continent_fallback=
         # AR-2: No inline live API fetch during pricing run
         unit = None
         resource_group = None
+        display_quantity = 1.0
 
     _RUNTIME_SKU_CACHE[key] = {
         "sku_id": sku_id, "unit": unit, "resource_group": resource_group,
+        "display_quantity": display_quantity,
         "catalog_version": catalog_version if sku_id is None else None,
     }
 
-    return SKUMeta(sku_id, unit, resource_group)
+    return SKUMeta(sku_id, unit, resource_group, display_quantity)
 
 
 # AR-1: resolve_sku is strict by default. Keep _strict_resolve_sku as alias with hourly rate check.
@@ -2476,9 +2498,8 @@ def map_object_storage(rows):
                     "gcp_sku_name":       sku_name,
                     "component":          "storage",
                     "strategy":           "map",
-                    # 1 GiB = 1.074 GB → ÷1.074 converts AWS decimal GB-Mo to GCP binary GiBy-Mo.
-                    # (1/1.024 was wrong — that is the MiB/MB ratio, not GiB/GB.)
-                    "unit_multiplier":    1.0 / 1.074,
+                    # 1 GiB = 1.073741824 GB -> GB_TO_GIB converts AWS decimal GB-Mo to GCP binary GiBy-Mo.
+                    "unit_multiplier":    GB_TO_GIB,
                     "gcp_region":         gcp_region,
                     "projection_note":    note,
                     "mapping_confidence": 0.90 if fell_back else 0.95,
@@ -2529,7 +2550,7 @@ def map_object_storage(rows):
                         entry = {
                             "aws_li_key": r["aws_li_key"], "gcp_service": GCP_CLOUD_STORAGE,
                             "gcp_sku_name": sku_name, "component": "storage", "strategy": "map",
-                            "unit_multiplier": 1.0 / 1.074,
+                            "unit_multiplier": GB_TO_GIB,
                             "gcp_region": gcp_region,
                             "projection_note": note,
                             "mapping_confidence": 0.85 if fell_back else 0.90,
@@ -2586,7 +2607,7 @@ def map_object_storage(rows):
                     "gcp_sku_name":       sku_name,
                     "component":          "storage",
                     "strategy":           "map",
-                    "unit_multiplier":    1.0 / 1.074,
+                    "unit_multiplier":    GB_TO_GIB,
                     "gcp_region":         gcp_region,
                     "projection_note":    note,
                     "mapping_confidence": 0.70 if fell_back else 0.75,
@@ -4371,7 +4392,7 @@ def map_block_storage(rows):
                         "component":        "throughput",
                         "strategy":         "passthrough",
                         "passthrough_reason": "no_rate_in_region",
-                        "unit_multiplier":  1024.0,
+                        "unit_multiplier":  GIBPS_TO_MIBPS,
                         "gcp_region":       gcp_region,
                         "projection_note":  (f"EBS provisioned throughput ({provisioned:.0f} MiBps) exceeds "
                                              f"Hyperdisk Balanced's published ceiling ({_HYPERDISK_BALANCED_MAX_MIBPS} MiBps) — "
@@ -4395,7 +4416,7 @@ def map_block_storage(rows):
                         "gcp_sku_name":     "Hyperdisk Balanced Throughput",
                         "component":        "throughput",
                         "strategy":         "map" if tp_sku else "passthrough",
-                        "unit_multiplier":  1024.0,
+                        "unit_multiplier":  GIBPS_TO_MIBPS,
                         "gcp_region":       gcp_region,
                         "projection_note":  ("EBS gp3 provisioned throughput → Hyperdisk Balanced Throughput "
                                              "(AWS CUR stores GiBps-month; ×1024 converts to MiBps-month for GCP rate)"),
@@ -4975,7 +4996,7 @@ def map_data_transfer(rows):
                     "gcp_sku_name":     _lcu_sku_name,
                     "component":        "transfer",
                     "strategy":         _lcu_strategy,
-                    "unit_multiplier":  (1.0 / 1.074) if _lcu_sku_id else 1.0,
+                    "unit_multiplier":  GB_TO_GIB if _lcu_sku_id else 1.0,
                     "gcp_region":       r.get("gcp_region"),
                     "projection_note":  note + _no_rate_suffix(_lcu_sku_id, r.get("gcp_region")),
                     "mapping_confidence": 0.65,
@@ -7771,7 +7792,7 @@ def map_cloudwatch(rows):
                     "component":          "logs",
                     "strategy":           "map" if sku_id else "passthrough",
                     "passthrough_reason": None if sku_id else "unresolved_sku",
-                    "unit_multiplier":    1 / 1.073741824,  # decimal GB → binary GiB
+                    "unit_multiplier":    GB_TO_GIB,  # decimal GB → binary GiB
                     "gcp_region":         gcp_region,
                     "projection_note":    note,
                     "mapping_confidence": confidence,
@@ -7824,7 +7845,7 @@ def map_cloudwatch(rows):
                     "component":          "logs",
                     "strategy":           "map" if sku_id else "passthrough",
                     "passthrough_reason": None if sku_id else "unresolved_sku",
-                    "unit_multiplier":    1 / 1.073741824,
+                    "unit_multiplier":    GB_TO_GIB,
                     "gcp_region":         gcp_region,
                     "projection_note":    note,
                     "mapping_confidence": 0.90 if sku_id else 0.60,
@@ -7842,7 +7863,7 @@ def map_cloudwatch(rows):
                     "component":          "logs",
                     "strategy":           "map" if sku_id else "passthrough",
                     "passthrough_reason": None if sku_id else "unresolved_sku",
-                    "unit_multiplier":    1 / 1.073741824,
+                    "unit_multiplier":    GB_TO_GIB,
                     "gcp_region":         gcp_region,
                     "projection_note":    note,
                     "mapping_confidence": 0.90 if sku_id else 0.60,

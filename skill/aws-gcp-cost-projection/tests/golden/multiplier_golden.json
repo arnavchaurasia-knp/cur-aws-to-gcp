@@ -453,7 +453,7 @@
     "gcp_sku_name": "Log Storage cost",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9313225746154784
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_cloudwatch_1": {
     "component": "logs",
@@ -461,7 +461,7 @@
     "gcp_sku_name": "Log Storage cost",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9313225746154784
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_cloudwatch_10": {
     "component": "synthetics",
@@ -485,7 +485,7 @@
     "gcp_sku_name": "Log Retention cost",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9313225746154784
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_cloudwatch_3": {
     "component": "log-insights",
@@ -837,7 +837,7 @@
     "gcp_sku_name": "Cloud SQL: Zonal - Enterprise Storage Hyperdisk Balanced Capacity",
     "passthrough_reason": "no_rate_in_region",
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_documentdb_5": {
     "component": "backup_storage",
@@ -877,7 +877,7 @@
     "gcp_sku_name": "Cloud Firestore Point-in-time Recovery Storage Iowa",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_dynamodb_11": {
     "component": "storage",
@@ -885,7 +885,7 @@
     "gcp_sku_name": "Cloud Firestore Storage Iowa",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_dynamodb_12": {
     "component": "storage",
@@ -893,7 +893,7 @@
     "gcp_sku_name": "Cloud Firestore Storage Iowa",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_dynamodb_2": {
     "component": "writes",
@@ -941,7 +941,7 @@
     "gcp_sku_name": "Cloud Firestore Storage Iowa",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_0": {
     "component": "storage",
@@ -949,7 +949,7 @@
     "gcp_sku_name": "Balanced PD Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_1": {
     "component": "storage",
@@ -957,7 +957,7 @@
     "gcp_sku_name": "Hyperdisk Balanced Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_10": {
     "component": "storage",
@@ -965,7 +965,7 @@
     "gcp_sku_name": "Storage PD Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_11": {
     "component": "storage",
@@ -973,7 +973,7 @@
     "gcp_sku_name": "Storage PD Snapshot",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_12": {
     "component": "storage",
@@ -981,7 +981,7 @@
     "gcp_sku_name": "Storage PD Snapshot",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_13": {
     "component": "storage",
@@ -989,7 +989,7 @@
     "gcp_sku_name": "Regional Archive Snapshot Data Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_14": {
     "component": "storage",
@@ -997,7 +997,7 @@
     "gcp_sku_name": "Hyperdisk Balanced Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_15": {
     "component": "storage",
@@ -1005,7 +1005,7 @@
     "gcp_sku_name": "Storage PD Snapshot",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_16": {
     "component": "storage",
@@ -1013,7 +1013,7 @@
     "gcp_sku_name": "Storage PD Snapshot",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_2": {
     "component": "iops",
@@ -1037,7 +1037,7 @@
     "gcp_sku_name": "Hyperdisk Balanced Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_5": {
     "component": "storage",
@@ -1045,7 +1045,7 @@
     "gcp_sku_name": "Hyperdisk Balanced Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_6": {
     "component": "iops",
@@ -1069,7 +1069,7 @@
     "gcp_sku_name": "Storage PD Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ebs_9": {
     "component": "throughput",
@@ -1093,7 +1093,7 @@
     "gcp_sku_name": "Autopilot Pod Memory Requests",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ecs_2": {
     "component": "vcpu",
@@ -1109,7 +1109,7 @@
     "gcp_sku_name": "Autopilot Scale-Out Arm Pod Memory Requests",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ecs_4": {
     "component": "vcpu",
@@ -1125,7 +1125,7 @@
     "gcp_sku_name": "Autopilot Pod Memory Requests",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ecs_6": {
     "component": "storage",
@@ -1133,7 +1133,7 @@
     "gcp_sku_name": "Autopilot Pod Ephemeral Storage Requests",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_ecs_7": {
     "component": "vcpu",
@@ -1157,7 +1157,7 @@
     "gcp_sku_name": "Filestore Capacity Regional and Enterprise",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_efs_1": {
     "component": "storage",
@@ -1165,7 +1165,7 @@
     "gcp_sku_name": "Filestore Capacity Regional and Enterprise",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_efs_10": {
     "component": "storage",
@@ -1181,7 +1181,7 @@
     "gcp_sku_name": "Filestore Capacity Regional and Enterprise",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_efs_12": {
     "component": "storage",
@@ -1189,7 +1189,7 @@
     "gcp_sku_name": "Filestore Capacity Regional and Enterprise",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_efs_13": {
     "component": "storage",
@@ -1205,7 +1205,7 @@
     "gcp_sku_name": "Filestore Backup Usage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_efs_15": {
     "component": "backup",
@@ -1213,7 +1213,7 @@
     "gcp_sku_name": "Filestore Backup Usage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_efs_16": {
     "component": "transfer",
@@ -1229,7 +1229,7 @@
     "gcp_sku_name": "Filestore Capacity Zonal and High Scale",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_efs_3": {
     "component": "storage",
@@ -1237,7 +1237,7 @@
     "gcp_sku_name": "Filestore Capacity Zonal and High Scale",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_efs_4": {
     "component": "storage",
@@ -1437,7 +1437,7 @@
     "gcp_sku_name": "Regional External Application Load Balancer Inbound Data Processing",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_elb_5": {
     "component": "transfer",
@@ -1445,7 +1445,7 @@
     "gcp_sku_name": "External Passthrough Network Load Balancer Inbound Data Processing",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_elb_6": {
     "component": "transfer",
@@ -1597,7 +1597,7 @@
     "gcp_sku_name": "Parallelstore Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_fsx_1": {
     "component": "storage",
@@ -1605,7 +1605,7 @@
     "gcp_sku_name": "Parallelstore Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_fsx_10": {
     "component": "storage",
@@ -1613,7 +1613,7 @@
     "gcp_sku_name": "NetApp Volumes Auto-tiering Cold Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_fsx_11": {
     "component": "storage",
@@ -1661,7 +1661,7 @@
     "gcp_sku_name": "Filestore Backup Usage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_fsx_17": {
     "component": "transfer",
@@ -1677,7 +1677,7 @@
     "gcp_sku_name": "NetApp Volumes Premium",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_fsx_3": {
     "component": "storage",
@@ -1685,7 +1685,7 @@
     "gcp_sku_name": "Filestore Capacity Regional and Enterprise",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_fsx_4": {
     "component": "storage",
@@ -1693,7 +1693,7 @@
     "gcp_sku_name": "Filestore Capacity Regional and Enterprise",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_fsx_5": {
     "component": "storage",
@@ -1701,7 +1701,7 @@
     "gcp_sku_name": "Filestore Capacity Zonal and High Scale",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_fsx_6": {
     "component": "throughput",
@@ -1893,7 +1893,7 @@
     "gcp_sku_name": "Managed Service for Apache Kafka: Local Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_msk_11": {
     "component": "transfer",
@@ -1965,7 +1965,7 @@
     "gcp_sku_name": "Managed Service for Apache Kafka: Local Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_msk_9": {
     "component": "storage",
@@ -1973,7 +1973,7 @@
     "gcp_sku_name": "Managed Service for Apache Kafka: Local Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_mwaa_0": {
     "component": "environment-fee",
@@ -2109,7 +2109,7 @@
     "gcp_sku_name": "Cloud SQL: Zonal - Enterprise Storage Hyperdisk Balanced Capacity",
     "passthrough_reason": "no_rate_in_region",
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_rds_13": {
     "component": "storage",
@@ -2117,7 +2117,7 @@
     "gcp_sku_name": "Hyperdisk Balanced Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_rds_14": {
     "component": "storage",
@@ -2141,7 +2141,7 @@
     "gcp_sku_name": "Hyperdisk Balanced Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_rds_17": {
     "component": "storage",
@@ -2149,7 +2149,7 @@
     "gcp_sku_name": "Cloud SQL: Zonal - Enterprise Storage Hyperdisk Balanced Capacity",
     "passthrough_reason": "no_rate_in_region",
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_rds_18": {
     "component": "transfer",
@@ -2205,7 +2205,7 @@
     "gcp_sku_name": "Balanced PD Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_rds_6": {
     "component": "storage",
@@ -2213,7 +2213,7 @@
     "gcp_sku_name": "Hyperdisk Balanced Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_rds_7": {
     "component": "storage",
@@ -2221,7 +2221,7 @@
     "gcp_sku_name": "Storage PD Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_rds_8": {
     "component": "storage",
@@ -2229,7 +2229,7 @@
     "gcp_sku_name": "Storage PD Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_rds_9": {
     "component": "storage",
@@ -2237,7 +2237,7 @@
     "gcp_sku_name": "Cloud SQL: Zonal - Enterprise Storage Hyperdisk Balanced Capacity",
     "passthrough_reason": "no_rate_in_region",
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_redshift_0": {
     "component": "compute",
@@ -2469,7 +2469,7 @@
     "gcp_sku_name": "Standard Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_s3_1": {
     "component": "storage",
@@ -2477,7 +2477,7 @@
     "gcp_sku_name": "Standard Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_s3_10": {
     "component": "storage",
@@ -2485,7 +2485,7 @@
     "gcp_sku_name": "Archive Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_s3_11": {
     "component": "storage",
@@ -2565,7 +2565,7 @@
     "gcp_sku_name": "Nearline Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_s3_20": {
     "component": "requests",
@@ -2653,7 +2653,7 @@
     "gcp_sku_name": "Nearline Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_s3_30": {
     "component": "transfer",
@@ -2669,7 +2669,7 @@
     "gcp_sku_name": "Coldline Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_s3_5": {
     "component": "storage",
@@ -2677,7 +2677,7 @@
     "gcp_sku_name": "Coldline Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_s3_6": {
     "component": "storage",
@@ -2685,7 +2685,7 @@
     "gcp_sku_name": "Archive Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_s3_7": {
     "component": "storage",
@@ -2693,7 +2693,7 @@
     "gcp_sku_name": "Standard Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_s3_8": {
     "component": "storage",
@@ -2701,7 +2701,7 @@
     "gcp_sku_name": "Nearline Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_s3_9": {
     "component": "storage",
@@ -2709,7 +2709,7 @@
     "gcp_sku_name": "Coldline Storage",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_sagemaker_15": {
     "component": "featurestore",
@@ -2797,7 +2797,7 @@
     "gcp_sku_name": "Hyperdisk Balanced Capacity",
     "passthrough_reason": null,
     "strategy": "map",
-    "unit_multiplier": 0.9310986964618249
+    "unit_multiplier": 0.9313225746154785
   },
   "suc_vpc_0": {
     "component": "hourly",

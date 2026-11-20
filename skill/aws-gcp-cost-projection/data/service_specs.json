@@ -5549,12 +5549,55 @@
     "product_codes": [],
     "charge_types": [
       {
+        "id": "fargate_ephemeral",
+        "description": "Fargate Ephemeral Storage -> GKE Autopilot pod ephemeral storage requests.",
+        "match": {
+          "usage_type_re": "ephemeral"
+        },
+        "mechanic": "per_request",
+        "component": "ephemeral",
+        "allowed_target_families": [
+          "Storage",
+          "Ephemeral Storage"
+        ],
+        "disallowed_target_families": [
+          "Memory",
+          "RAM",
+          "Compute"
+        ],
+        "fields": [
+          {
+            "name": "gb_hours",
+            "cur_column": "lineItem/UsageAmount",
+            "source": "cur",
+            "required": true
+          },
+          {
+            "name": "region",
+            "cur_column": "product/region",
+            "source": "cur",
+            "required": true
+          }
+        ],
+        "source_rule": "per_request (Fargate Ephemeral Storage -> GKE Autopilot Ephemeral Storage)"
+      },
+      {
         "id": "fargate_vcpu",
         "description": "Fargate vCPU-Hours -> GKE Autopilot pod CPU requests.",
         "match": {
           "usage_type_re": "vCPU"
         },
         "mechanic": "per_request",
+        "component": "vcpu",
+        "allowed_target_families": [
+          "Compute",
+          "CPU"
+        ],
+        "disallowed_target_families": [
+          "Memory",
+          "Storage",
+          "Ephemeral Storage"
+        ],
         "fields": [
           {
             "name": "vcpu_hours",
@@ -5575,9 +5618,20 @@
         "id": "fargate_memory",
         "description": "Fargate GB-Hours -> GKE Autopilot pod memory requests.",
         "match": {
-          "usage_type_re": "GB-Hours|Memory"
+          "usage_type_re": "GB-Hours|Memory",
+          "exclude_usage_type_re": "ephemeral"
         },
         "mechanic": "per_request",
+        "component": "memory",
+        "allowed_target_families": [
+          "Memory",
+          "RAM"
+        ],
+        "disallowed_target_families": [
+          "Storage",
+          "Ephemeral Storage",
+          "Compute"
+        ],
         "fields": [
           {
             "name": "gb_hours",

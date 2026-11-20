@@ -87,6 +87,15 @@ Legend: 🔴 real dollar error · 🟡 needs decision/verify · ⚪ low/cosmetic
 
 ## SYSTEMIC (do alongside service work)
 
+0. 🔴 **Unit-conversion engine + three-layer multiplier architecture → WORKORDER WRITTEN (0%).**
+   `docs/WORKORDER_unit_conversion_engine.md`. The conversion engine (`unit_equivalence.conversion_factor`) exists but
+   has 0 callers; 230 hand-coded `unit_multiplier` sites across 45 mechanics; GB_TO_GIB has drifted from the exact
+   table value; physical-unit / SKU-granularity / semantic-component are conflated into one number. Staged P0–P6,
+   per-mechanic tracker, exhaustive-unit gate (every catalog unit typed, generated from the billing API). Highest
+   structural leverage — makes the io1/io2-IOPS and Fargate-ephemeral bug classes impossible. See
+   [[project_unit_conversion_engine]].
+
+
 1. Populate `service_usage_catalog.json` per service → completeness gate protects every variant. Highest leverage.
 2. Extend `gcp_candidates` best-fit beyond ElastiCache (DynamoDB, RDS, Redshift, FSx).
 3. Kill `else`-branch `strategy=map` on a guessed target (latent silent mis-targets).

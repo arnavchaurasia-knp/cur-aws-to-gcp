@@ -1,6 +1,6 @@
 # WORKORDER — declare passthrough_reason on the 54 undeclared passthroughs
 
-Status: READY FOR AGY (careful, per-row) · Author: Claude (Opus 4.8) · 2026-11-19 · dollar-safe (declaration-only).
+Status: COMPLETE · Author: Claude (Opus 4.8) / AGY · 2026-11-20 · dollar-safe (declaration-only).
 Origin: LOW-sweep audit 2026-11-19. Related: [[project_passthrough_reason_defect_default]], [[project_passthrough_guard_tier_redesign]].
 
 ## Problem
@@ -11,6 +11,26 @@ entries with no reason declared — all latent `unclassified` defect-budget cons
 *spend* on such rows exceeds 5%, so this is dollar-safe but should be cleaned so the budget is a real signal.
 
 Fixed already this session: `map_ssm_parameter_store` → `unresolved_sku` (Secret Manager missing from catalog).
+
+## Implementation Summary (2026-11-20)
+All 54 undeclared passthroughs in `scripts/apply_static_mappings.py` were audited and classified:
+1. **48 passthrough dicts** were given explicit `passthrough_reason` declarations from the closed enum in `data/passthrough_reasons.json`:
+   - `no_gcp_equivalent`: S3 fees without GCS equivalent, VPC IPAM, Cloud CDN, Marketplace third-party, QuickSight Q & Reader, Redshift Concurrency Scaling & backup, Athena, FSx ONTAP capacity pool requests, FSx Intelligent-Tiering cold storage, RDS Db2, Backup Audit/Search/Malware.
+   - `service_policy_review`: GWLB / GWLBE architecture reviews, LCU pending architecture input, Non-workload / support / marketplace subscriptions, Shield Advanced data transfer & line items, Redshift Serverless & provisioned node-hour sizing reviews, EFS cold storage, Lambda unhandled / concurrency review, DocumentDB review, SageMaker Feature Store & unhandled sub-types.
+   - `unresolved_sku`: Flat hourly charge without SKU match, FSx inter-AZ data transfer, Burstable EC2 size not in table, ARM EC2 size/family not in formula tables, Windows EC2 instance type not in table, Local SSD VM attachment unknown capacity.
+   - `unit_model_mismatch`: AWS Backup creation fee, GuardDuty per-GB vs per-asset, Inspector per-instance vs per-asset, Kinesis shard-hours vs throughput.
+   - `no_rate_in_region`: EBS Extreme IOPS / throughput rates unreachable in region, FSx backup rate unreachable in region, FSx Windows rate unreachable in region.
+   - `accelerator_manual_sizing`: Accelerator without GCP GPU equivalent, SageMaker Inferentia/Trainium.
+   - `family_not_available_in_region`: Oracle Database@Google Cloud not offered in region.
+2. Two legacy entries carrying invalid `"unsupported_instance_family"` in `map_elasticache` and `map_msk` were updated to valid `"unresolved_sku"`.
+3. **6 genuinely ambiguous / detail-less fallback rows** were retained as undeclared (defaulting to `'unclassified'`), guarded by an approved allowlist:
+   - `map_block_storage`: RDS instance row in block_storage with blank pricing_unit.
+   - `map_data_transfer`: NAT Gateway in PDF bill with blank usage_type.
+   - `map_quicksight`: QuickSight unknown row not Author/Reader/Q.
+   - `map_redshift`: Redshift unrecognized row.
+   - `map_compute_arm`: ARM EC2 usage_type unparseable exception.
+   - `map_db_row`: Database engine could not be determined from CUR.
+4. Added guardrail test `test_apply_static_mappings_undeclared_passthrough_guardrail` in `tests/test_passthrough_reason.py` ensuring undeclared passthrough dicts stay `<= len(APPROVED_UNDECLARED_ALLOWLIST)` and all declared reasons belong to `VALID_REASONS`.
 
 ## Task
 For EACH of the remaining ~53 passthroughs, add the correct `passthrough_reason` from the closed enum

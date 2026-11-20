@@ -186,3 +186,89 @@ def test_gate_flags_undeclared_passthrough():
     assert violations[0]["gate"] == "passthrough_integrity"
     assert violations[0]["aws_li_key"] == "k1"
     assert "passthrough written with no passthrough_reason" in violations[0]["message"]
+
+
+def test_apply_static_mappings_undeclared_passthrough_guardrail():
+    """6. Guardrail: Scans scripts/apply_static_mappings.py to assert that inline
+    dicts with strategy='passthrough' declare an explicit passthrough_reason from
+    data/passthrough_reasons.json, leaving only a strict, approved allowlist of
+    genuinely ambiguous fallback rows undeclared (WORKORDER_passthrough_reason_declarations.md).
+    """
+    import ast
+
+    mappings_path = os.path.join(os.path.dirname(__file__), "..", "scripts", "apply_static_mappings.py")
+    with open(mappings_path, "r", encoding="utf-8") as f:
+        src = f.read()
+
+    tree = ast.parse(src)
+
+    # Approved allowlist of genuinely ambiguous fallback rows that lack detail/signal
+    # Each entry is (function_name, note_substring)
+    APPROVED_UNDECLARED_ALLOWLIST = [
+        ("map_block_storage", "blank pricing_unit"),
+        ("map_data_transfer", "usage_type blank"),
+        ("map_quicksight", "not Author/Reader/Q"),
+        ("map_redshift", "Redshift row unrecognized"),
+        ("map_compute_arm", "usage_type not parseable"),
+        ("map_db_row", "engine could not be determined"),
+    ]
+
+    undeclared = []
+    declared_reasons = set()
+
+    class GuardrailVisitor(ast.NodeVisitor):
+        def __init__(self):
+            self.current_func = "top_level"
+
+        def visit_FunctionDef(self, node):
+            prev = self.current_func
+            self.current_func = node.name
+            self.generic_visit(node)
+            self.current_func = prev
+
+        def visit_Dict(self, node):
+            is_pt = False
+            reason = None
+            note = ""
+            for k, v in zip(node.keys, node.values):
+                if k and isinstance(k, ast.Constant):
+                    if k.value == "strategy" and isinstance(v, ast.Constant) and v.value == "passthrough":
+                        is_pt = True
+                    elif k.value == "passthrough_reason" and isinstance(v, ast.Constant):
+                        reason = v.value
+                    elif k.value in ("projection_note", "note"):
+                        if isinstance(v, ast.Constant):
+                            note = str(v.value)
+                        elif isinstance(v, ast.JoinedStr):
+                            parts = [str(p.value) for p in v.values if isinstance(p, ast.Constant)]
+                            note = "".join(parts)
+            if is_pt:
+                if reason:
+                    declared_reasons.add(reason)
+                else:
+                    undeclared.append((self.current_func, note))
+            self.generic_visit(node)
+
+    v = GuardrailVisitor()
+    v.visit(tree)
+
+    # All declared reasons must be in the closed enum
+    invalid_reasons = declared_reasons - pr.VALID_REASONS
+    assert not invalid_reasons, f"Found invalid passthrough_reasons in apply_static_mappings.py: {invalid_reasons}"
+
+    # Undeclared passthrough dicts must not exceed the approved allowlist size
+    assert len(undeclared) <= len(APPROVED_UNDECLARED_ALLOWLIST), (
+        f"Found {len(undeclared)} undeclared passthrough dicts (max allowed: {len(APPROVED_UNDECLARED_ALLOWLIST)}). "
+        f"Undeclared entries: {undeclared}"
+    )
+
+    # Verify each undeclared entry matches an entry in the allowlist
+    for func_name, note in undeclared:
+        matched = any(
+            func_name == al_func and al_substr in note
+            for al_func, al_substr in APPROVED_UNDECLARED_ALLOWLIST
+        )
+        assert matched, (
+            f"Undeclared passthrough in {func_name} with note '{note[:80]}' is not in the approved allowlist."
+        )
+

@@ -38,6 +38,11 @@ Legend: 🔴 real dollar error · 🟡 needs decision/verify · ⚪ low/cosmetic
   (`_estimate_vms_per_gateway`), wired in with committed default 32 as fallback (no resource_id in CUR). 1746 tests.
   SP/RI netting already DECIDED (OD-vs-OD, [[project_pricing_and_cutover_decisions]]).
 
+- ⚙ **passthrough_reason declarations (54 undeclared passthroughs) → WORKORDER WRITTEN.** LOW-sweep audit found 54
+  inline passthroughs with no `passthrough_reason` → default `unclassified` (5% defect-budget consumers; dollar-safe).
+  Fixed SSM (→ unresolved_sku). The rest need per-row judgement (don't auto-stamp) — spec in
+  `docs/WORKORDER_passthrough_reason_declarations.md`. Overlaps [[project_passthrough_guard_tier_redesign]].
+
 - ⚪ **LOW / cosmetic sweep (all dollar-safe today; declaration tidy-ups only):**
   - CloudTrail free management-events → explicitly declared IGNORE
   - S3 requests / retrieval → passthrough (confirm declared)

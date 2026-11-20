@@ -5873,6 +5873,7 @@ def map_ssm_parameter_store(rows):
             "gcp_sku_name":       None,
             "component":          "api-requests",
             "strategy":           "passthrough",
+            "passthrough_reason": "unresolved_sku",
             "unit_multiplier":    1.0,
             "gcp_region":         gcp_region,
             "projection_note":    (

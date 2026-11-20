@@ -19,6 +19,7 @@ from collections import namedtuple
 import duckdb
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import catalog_db  # single catalog-read repository (owns the one cached connection)
 from synthetic_skus import SYNTHETIC_SKU_IDS
 try:
     from log_utils import get_logger
@@ -93,33 +94,15 @@ _COMPONENT_DISALLOWED_PATTERNS: dict[str, list[re.Pattern]] = {
 
 
 def get_catalog_connection() -> duckdb.DuckDBPyConnection | None:
-    """Return a cached read-only DuckDB connection to catalog.duckdb, or None if unavailable (B)."""
-    global _CATALOG_CONN
-    if _CATALOG_CONN is not None:
-        try:
-            _CATALOG_CONN.execute("SELECT 1")
-            return _CATALOG_CONN
-        except Exception:
-            _CATALOG_CONN = None
-
-    if not os.path.exists(CATALOG_DB):
-        return None
-    try:
-        _CATALOG_CONN = duckdb.connect(CATALOG_DB, read_only=True)
-        return _CATALOG_CONN
-    except Exception:
-        return None
+    """Return the shared cached read-only connection to catalog.duckdb, or None if
+    unavailable (B). Delegates to catalog_db — the single repository that owns the
+    one catalog connection, so resolve_sku no longer opens its own (S2)."""
+    return catalog_db.get_connection()
 
 
 def close_catalog_connection() -> None:
-    """Close the cached catalog connection if open."""
-    global _CATALOG_CONN
-    if _CATALOG_CONN is not None:
-        try:
-            _CATALOG_CONN.close()
-        except Exception:
-            pass
-        _CATALOG_CONN = None
+    """Close the shared cached catalog connection (delegates to catalog_db)."""
+    catalog_db.close_connection()
 
 
 def get_valid_catalog_services() -> set[str]:

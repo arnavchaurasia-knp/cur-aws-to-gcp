@@ -195,8 +195,11 @@ def test_section_c1c_fail_closed_confidence_cap(monkeypatch):
         with open(os.path.join(mappings_dir, "compute_mappings.json"), "w") as f:
             json.dump(mapping_content, f)
 
-        # Make catalog unavailable
+        # Make catalog unavailable — catalog_db owns the single connection now (S2)
+        import catalog_db
         resolve_sku.close_catalog_connection()
+        catalog_db.close_connection()
+        monkeypatch.setattr(catalog_db, "CATALOG_DB", os.path.join(tmp_dir, "nonexistent.duckdb"))
         monkeypatch.setattr(merge_mappings, "CATALOG_DB", os.path.join(tmp_dir, "nonexistent.duckdb"))
         monkeypatch.setattr(resolve_sku, "CATALOG_DB", os.path.join(tmp_dir, "nonexistent.duckdb"))
         monkeypatch.setattr(resolve_sku, "_VALID_SKUS_CACHE", None)

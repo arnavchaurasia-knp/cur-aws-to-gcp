@@ -3,6 +3,27 @@
 > **NEW AGENT:** read `ARCHITECTURE_MASTER_TRACKER.md` §0 first. This is subsystem **S2** (catalog reads). Update the
 > tracker §2 (S2) and `AUDIT_built_systems_wiring.md` (B, sku_catalog row) as you progress.
 
+Status: **IN PROGRESS — foundation done (repository pattern); dollar-path consumers staged.** Author: Claude (Opus 4.8) · 2026-11-20.
+
+## D-CAT-1 RESOLVED (industry-standard repository pattern, 2026-11-20)
+Chose the textbook option: a **dedicated Layer-0 repository `scripts/catalog_db.py`** that owns the ONE cached
+read-only connection + the query primitives (`get_connection`, `query_skus` list-all, `all_tiers`, `catalog_exists`).
+Higher layers build on it; nobody else opens the catalog.
+- ☑ S2.1 `catalog_db.py` created — single cached connection + primitives.
+- ☑ `resolve_sku.get_catalog_connection/close_catalog_connection` delegate to `catalog_db` → resolve_sku and
+  catalog_db share ONE connection (verified `conn is conn`). Resolution logic unchanged.
+- ☑ `sku_catalog.py` reduced to a thin back-compat shim re-exporting from `catalog_db`.
+- ☑ S2.3 list-all (`query_skus`) + `all_tiers` now live on the SSOT; shim keeps old callers/tests working.
+- ☑ S2.4 (partial) fail-closed tests repointed to patch `catalog_db.CATALOG_DB` (the SSOT); real fail-closed
+  behavior preserved (nonexistent path → `get_connection()` None → fail closed). Full suite 1816 passed, no dollar move.
+- ⏳ S2.2 **remaining (dollar-path, staged):** migrate `apply_rates.py:805`, `incremental_rerate.py:67`,
+  `catalog_manager.py:434/520` catalog reads to `catalog_db.get_connection()`. These feed rate joins → migrate one at
+  a time, parity-locked, suite-green, no dollar move. Watch connection lifecycle (don't let a phase close the shared
+  singleton mid-run).
+- ⏳ S2.5 once S2.2 lands, the only `duckdb.connect(CATALOG_DB)` calls left should be inside `catalog_db.py`.
+
+Below is the original design/decision writeup (kept for context).
+
 Status: **OPEN — design done, 1 decision blocking (D-CAT-1).** Author: Claude (Opus 4.8) · 2026-11-20.
 Related: `scripts/sku_catalog.py`, `scripts/resolve_sku.py`, `scripts/apply_rates.py`, `scripts/incremental_rerate.py`,
 `scripts/catalog_manager.py`, `AUDIT_built_systems_wiring.md`.

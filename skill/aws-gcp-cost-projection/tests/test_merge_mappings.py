@@ -321,7 +321,11 @@ def test_c1_fail_closed_tracking_when_catalog_absent(temp_env, monkeypatch):
     # Simulate missing catalog
     monkeypatch.setattr(merge_mappings, "CATALOG_DB", os.path.join(tmp_dir, "nonexistent_catalog.duckdb"))
     import resolve_sku
+    import catalog_db
     resolve_sku.close_catalog_connection()
+    # catalog_db owns the single connection now (S2) — point the absence simulation at it
+    catalog_db.close_connection()
+    monkeypatch.setattr(catalog_db, "CATALOG_DB", os.path.join(tmp_dir, "nonexistent_catalog.duckdb"))
     monkeypatch.setattr(resolve_sku, "CATALOG_DB", os.path.join(tmp_dir, "nonexistent_catalog.duckdb"))
     monkeypatch.setattr(resolve_sku, "_VALID_SKUS_CACHE", None)
     monkeypatch.setattr(resolve_sku, "_SERVICES_CACHE", None)

@@ -87,6 +87,14 @@ Legend: 🔴 real dollar error · 🟡 needs decision/verify · ⚪ low/cosmetic
 
 ## SYSTEMIC (do alongside service work)
 
+0a. 🔴 **Built-systems wiring audit → `docs/AUDIT_built_systems_wiring.md` (0/10 decided).** The unit-conversion
+   finding is not unique: several SSOT/phase/unifier systems were built then never wired, so the ad-hoc code they were
+   meant to replace still stands. Confirmed bypassed: `spec_match` (built to replace 3 spec-comparison copies, 0
+   callers), `sku_catalog` (catalog-query SSOT, 0 importers — reads done ad-hoc), `candidate_tier` (Phase L, unwired),
+   `service_contracts` (Phase J pre-mapping validator, not orchestrated), `spec_parity`/`validate_report` (built,
+   not in CI). Every future fix must route through the intended system, not inline a 4th copy. See
+   [[project_unit_conversion_engine]].
+
 0. 🔴 **Unit-conversion engine + three-layer multiplier architecture → WORKORDER WRITTEN (0%).**
    `docs/WORKORDER_unit_conversion_engine.md`. The conversion engine (`unit_equivalence.conversion_factor`) exists but
    has 0 callers; 230 hand-coded `unit_multiplier` sites across 45 mechanics; GB_TO_GIB has drifted from the exact

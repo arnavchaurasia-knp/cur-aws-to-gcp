@@ -44,6 +44,16 @@ Legend: 🔴 real dollar error · 🟡 needs decision/verify · ⚪ low/cosmetic
   true for an IOPS count) → mislabelled Extreme PD Throughput ×1024, bypassing the Hyperdisk Extreme IOPS handler;
   guarded with `not is_iops`. 17 catalog dims (0 gaps), `test_ebs_full_modelling.py` (12 tests).
 
+- ✅ **Fargate (§4.26) full modelling — DONE+GATED 2026-11-20 (Claude, direct).** GKE Autopilot rates verified EXACT
+  vs official page (us-central1 Default): GP vCPU $0.0445 / GP Memory $0.0049225 / Scale-Out Arm vCPU $0.0356 /
+  Scale-Out Arm Memory $0.003938 / Pod Ephemeral Storage $0.0000548. **FIXED 2 bugs:** (1) ephemeral storage
+  (usage_type has "GB-Hours") was priced as pod MEMORY → ~90× over-projection; now → Autopilot Pod Ephemeral Storage
+  (storage). (2) ARM memory sweep included a phantom "Autopilot Arm Pod Memory" ($0.00352, NOT on official page);
+  removed so ARM memory uses Scale-Out Arm ($0.003938). 10 catalog dims, `test_fargate_full_modelling.py` (7 tests).
+  - ⚠️ **Follow-up (minor):** Windows Fargate dispatches cleanly to ecs_fargate_any WITH product_code set, but the
+    mapper prices it as Linux Autopilot (no Windows-container premium; GKE Autopilot has no Windows pods). Acceptable
+    approximation; a dedicated Windows-container decision (passthrough vs GKE Standard Windows node pool) is deferred.
+
 ## NEXT (pick after the above)
 
 - ✅ **PD Snapshot & GCS → REGIONAL targets — DONE+GATED 2026-11-19 (commit 4ef2a08).** AGY implemented, Claude-

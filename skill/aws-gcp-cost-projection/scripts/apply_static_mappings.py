@@ -3553,6 +3553,38 @@ def map_per_request(rows):
         # CUR bills put it in usage_type. Combine both for detection.
         fargate_blob = product + " " + ut_lower
         if "fargate" in fargate_blob:
+            # Fargate ephemeral storage (task storage beyond the 20 GiB free tier)
+            # is a STORAGE charge, not pod memory — but its usage_type carries
+            # "GB-Hours", which the is_memory heuristic below reads as memory and
+            # prices against Autopilot Pod Memory (~$0.0049/GiB-h) — roughly 90×
+            # the real ephemeral-storage rate. Route it to Autopilot's dedicated
+            # ephemeral-storage SKU instead. Rate verified vs official page
+            # (cloud.google.com/kubernetes-engine/pricing, us-central1):
+            # Autopilot Pod Ephemeral Storage $0.0000548/GiB-h.
+            if "ephemeral" in fargate_blob:
+                eph_desc = "Autopilot Pod Ephemeral Storage Requests"
+                eph_sku = (_strict_resolve_sku("Kubernetes Engine", eph_desc, gcp_region)
+                           or resolve_sku("Kubernetes Engine", eph_desc, gcp_region))
+                eph_entry = {
+                    "aws_li_key":         r["aws_li_key"],
+                    "gcp_service":        "Kubernetes Engine",
+                    "gcp_sku_id":         eph_sku if eph_sku else None,
+                    "gcp_sku_name":       eph_desc,
+                    "component":          "storage",
+                    "strategy":           "map" if eph_sku else "passthrough",
+                    "unit_multiplier":    GB_TO_GIB,  # AWS GB-Hours → GCP GiBy.h
+                    "gcp_region":         gcp_region,
+                    "projection_note":    ("Fargate ephemeral storage (GB-Hours beyond the 20 GiB free tier) "
+                                           "→ GKE Autopilot Pod Ephemeral Storage ($0.0000548/GiB-h, "
+                                           "cloud.google.com/kubernetes-engine/pricing) — NOT pod memory"),
+                    "mapping_confidence": 0.85 if eph_sku else 0.50,
+                }
+                if eph_sku:
+                    eph_entry["gcp_sku_unit"] = eph_sku.unit
+                else:
+                    eph_entry["passthrough_reason"] = "unresolved_sku"
+                out.append(eph_entry)
+                continue
             is_arm = "arm" in fargate_blob
             is_memory = "gb-hours" in fargate_blob or "memory" in fargate_blob
             component = "memory" if is_memory else "vcpu"
@@ -3605,7 +3637,16 @@ def map_per_request(rows):
                 ("General Purpose", "Autopilot Pod Memory Requests", ("x86",)),
                 ("Balanced", "Autopilot Balanced Pod Memory Requests", ("x86",)),
                 ("Scale-Out x86", "Autopilot Scale-Out x86 Pod Memory Requests", ("x86",)),
-                ("General Purpose Arm", "Autopilot Arm Pod Memory", ("arm",)),
+                # NB: the legacy "Autopilot Arm Pod Memory" SKU ($0.00352/GiB-h in
+                # us-central1) was REMOVED from this sweep. It is NOT on the official
+                # GKE pricing page (cloud.google.com/kubernetes-engine/pricing),
+                # which lists Arm memory only as Scale-Out Arm ($0.003938/GiB-h) —
+                # Arm Autopilot workloads run on the Scale-Out (Tau T2A) compute
+                # class, there is no separate general-purpose Arm class. Keeping the
+                # phantom cheaper SKU made the "pick cheapest" sweep under-project
+                # Arm Fargate memory. Mirrors the CPU side, which already uses
+                # Scale-Out Arm as the only Arm class (official-page tiebreaker,
+                # AGENTS.md). Verified 2026-11-20.
                 ("Scale-Out Arm", "Autopilot Scale-Out Arm Pod Memory Requests", ("arm",)),
             ]
             classes = _AUTOPILOT_MEM_CLASSES if is_memory else _AUTOPILOT_CPU_CLASSES

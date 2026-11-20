@@ -423,6 +423,78 @@
    "description": "EBS direct API snapshot reads"
   }
  ],
+ "ecs": [
+  {
+   "usage_type": "APS3-Fargate-vCPU-Hours:perCPU",
+   "unit": "Hrs",
+   "expected_mechanic": "per_request",
+   "expected_charge_type": "ecs_fargate_vcpu",
+   "description": "Fargate vCPU-hours (x86)"
+  },
+  {
+   "usage_type": "APS3-Fargate-GB-Hours",
+   "unit": "Hrs",
+   "expected_mechanic": "per_request",
+   "expected_charge_type": "ecs_fargate_memory",
+   "description": "Fargate memory GB-hours (x86)"
+  },
+  {
+   "usage_type": "APS3-Fargate-ARM-vCPU-Hours:perCPU",
+   "unit": "Hrs",
+   "expected_mechanic": "per_request",
+   "expected_charge_type": "ecs_fargate_any",
+   "description": "Fargate vCPU-hours (ARM/Graviton)"
+  },
+  {
+   "usage_type": "APS3-Fargate-ARM-GB-Hours",
+   "unit": "Hrs",
+   "expected_mechanic": "per_request",
+   "expected_charge_type": "ecs_fargate_any",
+   "description": "Fargate memory GB-hours (ARM/Graviton)"
+  },
+  {
+   "usage_type": "APS3-Fargate-vCPU-Hours:perCPU-SpotUsage",
+   "unit": "Hrs",
+   "expected_mechanic": "per_request",
+   "expected_charge_type": "ecs_fargate_vcpu",
+   "description": "Fargate Spot vCPU-hours"
+  },
+  {
+   "usage_type": "APS3-Fargate-GB-Hours-SpotUsage",
+   "unit": "Hrs",
+   "expected_mechanic": "per_request",
+   "expected_charge_type": "ecs_fargate_memory",
+   "description": "Fargate Spot memory GB-hours"
+  },
+  {
+   "usage_type": "APS3-Fargate-EphemeralStorage-GB-Hours",
+   "unit": "Hrs",
+   "expected_mechanic": "per_request",
+   "expected_charge_type": "ecs_fargate_any",
+   "description": "Fargate ephemeral storage GB-hours"
+  },
+  {
+   "usage_type": "APS3-Fargate-Windows-vCPU-Hours",
+   "unit": "Hrs",
+   "expected_mechanic": "per_request",
+   "expected_charge_type": "ecs_fargate_any",
+   "description": "Fargate Windows vCPU-hours"
+  },
+  {
+   "usage_type": "APS3-ECS-EC2-Cluster-Hours",
+   "unit": "Hrs",
+   "expected_mechanic": "ignore",
+   "expected_charge_type": "ecs_management",
+   "description": "ECS EC2-launch-type cluster/management fee"
+  },
+  {
+   "usage_type": "APS3-DataTransfer-Out-Bytes",
+   "unit": "GB",
+   "expected_mechanic": "data_transfer",
+   "expected_charge_type": "ecs_data_transfer",
+   "description": "ECS data transfer out"
+  }
+ ],
  "rds": [
   {
    "usage_type": "APS3-InstanceUsage:db.m5.large",

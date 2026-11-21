@@ -31,6 +31,11 @@ capability**, not 94 modules and 125 work orders that partially overlap.
    with the official-source cite; otherwise dollars must be unchanged. Full suite stays green (`pytest -q`).
 6. **Keep this tracker current.** When you finish or advance any initiative in §3, update its row (status + %) and the
    subsystem status in §2 in the SAME commit. That is how the next session knows where things stand.
+7. **Finish the standard, then DELETE the old duplicate — keep exactly one path per capability (user rule).** A
+   consolidation is not "done" while both the new SSOT and the old inline/duplicate code are live. Once every caller is
+   migrated and parity-locked, remove the dead code (old connections, superseded helpers, stale shims) and add a
+   ratchet test that fails if the duplicate pattern reappears. Two live paths for one capability is the exact debt this
+   whole effort exists to remove — never leave one behind "just in case."
 
 ---
 

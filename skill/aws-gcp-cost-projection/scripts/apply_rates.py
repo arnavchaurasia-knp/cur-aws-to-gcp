@@ -12,6 +12,7 @@ from projection_view import create_projection_view, compute_dominant_region
 from egress_rates import EGRESS_SKUS, CDN_EGRESS_TIERS, INTERNET_EGRESS_TIERS, INTERREGION_MATRIX
 from synthetic_skus import SYNTHETIC_SKU_IDS
 from resolve_sku import resolve_intent_to_sku
+import catalog_db
 from apply_static_mappings import GCP_COMPUTE_ENGINE, CUD_PCT_FALLBACK as _CUD_PCT_FALLBACK
 from config_loader import load_data_config, load_assumptions
 
@@ -21,7 +22,7 @@ JOB_DIR = os.getcwd()
 DB_PATH = os.path.join(JOB_DIR, "projection-audit", "projection.duckdb")
 SKILL_DIR = os.environ.get("SKILL_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(SKILL_DIR, "data")
-CATALOG_DB = os.path.join(DATA_DIR, "catalog.duckdb")
+CATALOG_DB = catalog_db.CATALOG_DB
 
 _REVIEW_CONFIG = load_data_config("review-config")
 _CATALOG_MAX_BUILD_AGE_DAYS = _REVIEW_CONFIG.get("catalog_max_build_age_days", 14)
@@ -802,21 +803,21 @@ def main():
     # Map sku_id → gcp_service as declared in mappings (for the INSERT below).
     sku_to_service = {sku_id: svc for sku_id, svc in skus_used}
 
-    cat = duckdb.connect(CATALOG_DB, read_only=True)
-    try:
-        placeholders = ",".join(["?" for _ in sku_ids])
-        catalog_rows = cat.execute(f"""
-            SELECT s.sku_id, s.service_name, s.description, s.resource_family,
-                   s.resource_group, s.usage_type, s.usage_unit, s.service_regions,
-                   t.tier_start, t.rate_usd
-            FROM skus s
-            JOIN tiered_rates t ON t.sku_id = s.sku_id
-            WHERE s.sku_id IN ({placeholders})
-              AND s.usage_type IN ('OnDemand', 'Commit1Yr', 'Commit3Yr')
-            ORDER BY s.sku_id, s.usage_type, t.tier_start
-        """, sku_ids).fetchall()
-    finally:
-        cat.close()
+    cat = catalog_db.get_connection(CATALOG_DB)
+    if cat is None:
+        log.warning("catalog.duckdb unavailable — skipping rate fill")
+        return
+    placeholders = ",".join(["?" for _ in sku_ids])
+    catalog_rows = cat.execute(f"""
+        SELECT s.sku_id, s.service_name, s.description, s.resource_family,
+               s.resource_group, s.usage_type, s.usage_unit, s.service_regions,
+               t.tier_start, t.rate_usd
+        FROM skus s
+        JOIN tiered_rates t ON t.sku_id = s.sku_id
+        WHERE s.sku_id IN ({placeholders})
+          AND s.usage_type IN ('OnDemand', 'Commit1Yr', 'Commit3Yr')
+        ORDER BY s.sku_id, s.usage_type, t.tier_start
+    """, sku_ids).fetchall()
 
     # ── Rate Fill Transaction (AR-C) ──────────────────────────────────────────
     # Wrap all rate table mutations and downstream view/triage updates in an atomic

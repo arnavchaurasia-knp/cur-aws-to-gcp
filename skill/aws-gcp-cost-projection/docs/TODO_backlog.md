@@ -13,6 +13,12 @@ Legend: 🔴 real dollar error · 🟡 needs decision/verify · ⚪ low/cosmetic
 
 ## DONE
 
+- ✅ **Catalog SSOT consolidation (S2) — DONE+GATED 2026-11-21.** Consolidated all catalog reads to `catalog_db.py`.
+  - **Single Repository:** `catalog_db.py` established as the Layer-0 data access repository with a cached read-only connection + list-all (`query_skus`) and `all_tiers` schedule lookup.
+  - **All Dollar-Path Readers Migrated:** `apply_rates.py:805`, `incremental_rerate.py:67`, `catalog_manager.py:434,520`, and `check_cud_coverage.py:71` migrated from direct `duckdb.connect` calls to `catalog_db.get_connection()`.
+  - **Dead Code Removed:** `resolve_sku._CATALOG_CONN` global removed; `sku_catalog.py` maintained as a 1-screen re-export shim for backwards compatibility.
+  - **Ratchet Test:** `test_single_catalog_connection.py` enforces AST check that no script outside `catalog_db.py` (and offline builder `build_catalog_index.py`) can open `catalog.duckdb`. Spec: `docs/WORKORDER_sku_catalog_consolidation.md`.
+
 - ✅ **`spec_match` consolidation (S3) — DONE+GATED 2026-11-20.** Consolidated target capacity adequacy definitions.
   - **Canonical Definition:** `spec_match.meets_or_exceeds(aws_spec, gcp_spec)` established as the canonical SSOT for absolute capacity adequacy (numeric GCP $\ge$ AWS; categorical exact match; fail-closed `unchecked` list).
   - **Parity Lock:** `reconcile_capacity.py`'s SQL capacity repair gate locked to `spec_match` via `test_spec_match_parity.py` (both unit specs and live in-memory DuckDB query parity).

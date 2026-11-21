@@ -33,6 +33,7 @@ _DATA_DIR = os.path.join(_SKILL_DIR, "data")
 CATALOG_DB = os.path.join(_DATA_DIR, "catalog.duckdb")
 
 _CONN: duckdb.DuckDBPyConnection | None = None
+_CACHED_PATH: str | None = None
 
 
 class CatalogUnavailable(RuntimeError):
@@ -60,23 +61,32 @@ def catalog_exists() -> bool:
     return os.path.exists(CATALOG_DB)
 
 
-def get_connection() -> duckdb.DuckDBPyConnection | None:
+def get_connection(db_path: str | None = None) -> duckdb.DuckDBPyConnection | None:
     """Return the ONE cached read-only connection to catalog.duckdb, or None if
     the catalog file is unavailable. Liveness-checked and re-opened if the cached
-    handle has gone stale. This is the single connection the whole pipeline shares
-    for catalog reads."""
-    global _CONN
-    if _CONN is not None:
+    handle has gone stale or if the target path changed (e.g. in test fixtures).
+    This is the single connection the whole pipeline shares for catalog reads."""
+    global _CONN, _CACHED_PATH
+    target = db_path or CATALOG_DB
+    if _CONN is not None and _CACHED_PATH == target:
         try:
             _CONN.execute("SELECT 1")
             return _CONN
         except Exception:
             _CONN = None
 
-    if not os.path.exists(CATALOG_DB):
+    if _CONN is not None and _CACHED_PATH != target:
+        try:
+            _CONN.close()
+        except Exception:
+            pass
+        _CONN = None
+
+    if not os.path.exists(target):
         return None
     try:
-        _CONN = duckdb.connect(CATALOG_DB, read_only=True)
+        _CONN = duckdb.connect(target, read_only=True)
+        _CACHED_PATH = target
         return _CONN
     except Exception:
         return None
@@ -84,13 +94,14 @@ def get_connection() -> duckdb.DuckDBPyConnection | None:
 
 def close_connection() -> None:
     """Close the cached connection if open (end-of-run cleanup)."""
-    global _CONN
+    global _CONN, _CACHED_PATH
     if _CONN is not None:
         try:
             _CONN.close()
         except Exception:
             pass
         _CONN = None
+    _CACHED_PATH = None
 
 
 def _require_connection() -> duckdb.DuckDBPyConnection:

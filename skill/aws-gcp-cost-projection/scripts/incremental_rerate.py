@@ -23,9 +23,9 @@ if sys.platform == "win32":
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import catalog_db
 from projection_view import create_projection_view
 from apply_rates import (
-    CATALOG_DB,
     CONTAINER_CODES,
     blended_rate,
     load_cud_pct,
@@ -55,7 +55,7 @@ def fill_missing_skus(conn):
         print("  incremental_rerate: no new SKUs to load")
         return 0
 
-    if not os.path.exists(CATALOG_DB):
+    if not catalog_db.catalog_exists():
         print(f"  incremental_rerate: catalog.duckdb not found — skipping {len(missing)} SKU(s)")
         return 0
 
@@ -64,21 +64,22 @@ def fill_missing_skus(conn):
     sku_ids = [sku_id for sku_id, _ in missing]
     sku_to_service = {sku_id: svc for sku_id, svc in missing}
 
-    cat = duckdb.connect(CATALOG_DB, read_only=True)
-    try:
-        placeholders = ",".join(["?" for _ in sku_ids])
-        catalog_rows = cat.execute(f"""
-            SELECT s.sku_id, s.service_name, s.description, s.resource_family,
-                   s.resource_group, s.usage_type, s.usage_unit, s.service_regions,
-                   t.tier_start, t.rate_usd
-            FROM skus s
-            JOIN tiered_rates t ON t.sku_id = s.sku_id
-            WHERE s.sku_id IN ({placeholders})
-              AND s.usage_type IN ('OnDemand', 'Preemptible', 'Commit1Yr', 'Commit3Yr')
-            ORDER BY s.sku_id, s.usage_type, t.tier_start
-        """, sku_ids).fetchall()
-    finally:
-        cat.close()
+    cat = catalog_db.get_connection()
+    if cat is None:
+        print("  incremental_rerate: catalog.duckdb not found — skipping")
+        return 0
+
+    placeholders = ",".join(["?" for _ in sku_ids])
+    catalog_rows = cat.execute(f"""
+        SELECT s.sku_id, s.service_name, s.description, s.resource_family,
+               s.resource_group, s.usage_type, s.usage_unit, s.service_regions,
+               t.tier_start, t.rate_usd
+        FROM skus s
+        JOIN tiered_rates t ON t.sku_id = s.sku_id
+        WHERE s.sku_id IN ({placeholders})
+          AND s.usage_type IN ('OnDemand', 'Preemptible', 'Commit1Yr', 'Commit3Yr')
+        ORDER BY s.sku_id, s.usage_type, t.tier_start
+    """, sku_ids).fetchall()
 
     sku_tiers: dict[tuple, list] = defaultdict(list)
     sku_meta: dict[tuple, tuple] = {}

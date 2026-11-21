@@ -430,10 +430,10 @@ def cmd_check(p, as_json=False):
     sku_count = meta.get("sku_count", 0)
     if not sku_count and artifact_ok:
         try:
-            import duckdb
-            con = duckdb.connect(p["catalog_db"], read_only=True)
-            sku_count = con.execute("SELECT count(*) FROM skus").fetchone()[0]
-            con.close()
+            import catalog_db
+            con = catalog_db.get_connection()
+            if con is not None:
+                sku_count = con.execute("SELECT count(*) FROM skus").fetchone()[0]
         except Exception:
             pass
 
@@ -516,18 +516,20 @@ def _artifact_sanity(p, quiet=False):
             print("  [artifact] catalog.duckdb MISSING")
         return False
     try:
-        import duckdb
-        con = duckdb.connect(p["catalog_db"], read_only=True)
+        import catalog_db
+        con = catalog_db.get_connection(p["catalog_db"])
+        if con is None:
+            if not quiet:
+                print("  [artifact] catalog.duckdb MISSING or unreadable")
+            return False
         tabs = {t[0] for t in con.execute(
             "SELECT table_name FROM information_schema.tables").fetchall()}
         if not {"skus", "tiered_rates"} <= tabs:
             if not quiet:
                 print(f"  [artifact] catalog.duckdb missing tables (have {sorted(tabs)})")
-            con.close()
             return False
         n_sku = con.execute("SELECT count(*) FROM skus").fetchone()[0]
         n_rate = con.execute("SELECT count(*) FROM tiered_rates").fetchone()[0]
-        con.close()
         if n_sku == 0 or n_rate == 0:
             if not quiet:
                 print(f"  [artifact] catalog.duckdb empty (skus={n_sku}, rates={n_rate})")

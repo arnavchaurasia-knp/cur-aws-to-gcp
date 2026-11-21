@@ -4,8 +4,8 @@
 > tracker §2 (S2) and `AUDIT_built_systems_wiring.md` (B) as you progress. **Discipline (user rule):** finish building
 > the standard system, THEN delete the old duplicate code — never leave two live paths for one capability.
 
-Status: **IN PROGRESS — foundation done; 3 dollar-path readers + cleanup remain.** Author: Claude (Opus 4.8)
-· opened 2026-11-20. Overall **3 / 11 tasks (27%)**.
+Status: **DONE — 100% (gated & verified)** · Author: Claude (Opus 4.8)
+· opened 2026-11-20 · closed 2026-11-21. Overall **11 / 11 tasks (100%)**.
 
 ## The standard (what everything must use)
 `scripts/catalog_db.py` is the one catalog-read SSOT (Layer-0 repository): a single cached read-only connection to
@@ -22,14 +22,14 @@ unchanged) unless an intended change is listed with an official-source cite.
 | **Foundation** | F1 `catalog_db.py` repository (1 cached conn + primitives) | ☑ |
 | | F2 `resolve_sku` connection delegates to `catalog_db` (shared singleton, verified) | ☑ |
 | | F3 `sku_catalog` → thin shim; fail-closed tests repointed to the SSOT | ☑ |
-| **Migrate dollar-path readers** | M1 `apply_rates.py:805` catalog read → `catalog_db.get_connection()` (parity-lock rate joins) | ⏳ |
-| | M2 `incremental_rerate.py:67` → `catalog_db.get_connection()` (parity-lock re-rate) | ⏳ |
-| | M3 `catalog_manager.py:434,520` health/coverage reads → `catalog_db` | ⏳ |
-| | M4 sweep for any other `duckdb.connect(CATALOG_DB)` (variable-named paths too) → migrate | ⏳ |
-| **Cleanup (delete old duplicates)** | C1 remove now-dead `resolve_sku._CATALOG_CONN` global + any unused `CATALOG_DB`/`duckdb` refs it left | ⏳ |
-| | C2 decide `sku_catalog` shim: keep thin (back-compat) OR delete + repoint its test to `catalog_db` | ⏳ |
-| | C3 ratchet test: **fail** if `duckdb.connect(…CATALOG_DB…)` appears in any script except `catalog_db.py` | ⏳ |
-| **Close** | C4 flip S2 🟢 in tracker + audit; retro in `TODO_backlog`; delete this file's stale design section | ⏳ |
+| **Migrate dollar-path readers** | M1 `apply_rates.py:805` catalog read → `catalog_db.get_connection()` (parity-lock rate joins) | ☑ |
+| | M2 `incremental_rerate.py:67` → `catalog_db.get_connection()` (parity-lock re-rate) | ☑ |
+| | M3 `catalog_manager.py:434,520` health/coverage reads → `catalog_db` | ☑ |
+| | M4 sweep for any other `duckdb.connect(CATALOG_DB)` (variable-named paths too) → migrate | ☑ |
+| **Cleanup (delete old duplicates)** | C1 remove now-dead `resolve_sku._CATALOG_CONN` global + any unused `CATALOG_DB`/`duckdb` refs it left | ☑ |
+| | C2 decide `sku_catalog` shim: keep thin (back-compat) OR delete + repoint its test to `catalog_db` | ☑ (kept thin shim) |
+| | C3 ratchet test: **fail** if `duckdb.connect(…CATALOG_DB…)` appears in any script except `catalog_db.py` | ☑ (`test_single_catalog_connection.py`) |
+| **Close** | C4 flip S2 🟢 in tracker + audit; retro in `TODO_backlog`; delete this file's stale design section | ☑ |
 
 ## Per-reader migration recipe (M1–M4 — the dollar-path part, do one at a time)
 1. **Baseline**: capture what the reader produces today (the rate rows it injects / the coverage numbers it prints) on

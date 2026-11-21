@@ -67,20 +67,28 @@ def check_cud_coverage(
         }
 
     try:
-        import duckdb
-        con = duckdb.connect(cat_file, read_only=True)
-        try:
-            total_commits = con.execute("""
-                SELECT COUNT(*) FROM skus
-                WHERE usage_type IN ('Commit1Yr', 'Commit3Yr')
-            """).fetchone()[0]
+        import catalog_db
+        con = catalog_db.get_connection(cat_file)
+        if con is None:
+            return {
+                "status": "MISSING",
+                "reason": f"catalog.duckdb not found at {cat_file}",
+                "complete": False,
+                "expected_count": len(eligible),
+                "fetched_count": 0,
+                "coverage_pct": 0.0,
+                "exit_code": 1,
+                "anomalies": [f"Missing {cat_file}"],
+            }
+        total_commits = con.execute("""
+            SELECT COUNT(*) FROM skus
+            WHERE usage_type IN ('Commit1Yr', 'Commit3Yr')
+        """).fetchone()[0]
 
-            db_services = {r[0] for r in con.execute("""
-                SELECT DISTINCT service_name FROM skus
-                WHERE usage_type IN ('Commit1Yr', 'Commit3Yr')
-            """).fetchall()}
-        finally:
-            con.close()
+        db_services = {r[0] for r in con.execute("""
+            SELECT DISTINCT service_name FROM skus
+            WHERE usage_type IN ('Commit1Yr', 'Commit3Yr')
+        """).fetchall()}
     except Exception as e:
         return {
             "source": "cud_coverage",

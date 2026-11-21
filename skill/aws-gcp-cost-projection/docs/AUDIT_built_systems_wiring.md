@@ -41,7 +41,7 @@ set (37 phase scripts), `main()` presence, and test-only imports. Numbers are a 
 | System | Built to be | Reality | Decision |
 |---|---|---|---|
 | `spec_match` (85 ln) | "one shared definition of 'does this GCP candidate meet/exceed the AWS spec'" | Canonical absolute rule; `reconcile_capacity` locked to it via `test_spec_match_parity`; `auto_review` clarified as shape/burstable review (D-SPEC-1 resolved). See `WORKORDER_spec_match_consolidation.md`. | ✅ LOCKED & CONSOLIDATED |
-| `sku_catalog` (137 ln) | "**single source of truth** for querying `catalog.duckdb`" | **CORRECTED 2026-11-20:** most `duckdb.connect` read the per-job DB, not the catalog. Catalog read by ~4 paths; `resolve_sku` is the de-facto SSOT (cached conn, resolve-one); `sku_catalog` is dormant but provides list-all (`query_skus`) which resolve_sku lacks. Real debt = no single catalog connection. Decision D-CAT-1. See `WORKORDER_sku_catalog_consolidation.md`. | ◐ RESOLVED repository-pattern: new `catalog_db` SSOT (1 cached conn + list-all); resolve_sku delegates, sku_catalog = shim; apply_rates/incremental_rerate/catalog_manager migration staged |
+| `sku_catalog` / `catalog_db` | "**single source of truth** for querying `catalog.duckdb`" | Consolidated into `catalog_db` (Layer-0 repository): 1 cached read-only connection + list-all (`query_skus`) and `all_tiers`. All dollar-path readers (`apply_rates`, `incremental_rerate`, `catalog_manager`, `check_cud_coverage`) migrated. Ratchet `test_single_catalog_connection` locked. See `WORKORDER_sku_catalog_consolidation.md`. | ✅ LOCKED & CONSOLIDATED |
 | `candidate_tier` (159 ln) | "Phase L: candidate tiering between hard-constraint filtering and scoring" | **0 callers, no CLI, not orchestrated.** `candidate_pool` (the scorer) runs without it. | ☐ wire into candidate_pool, or delete |
 
 ### C. Validation / review systems built, not orchestrated  🟡 (have CLI, pipeline never runs them)
@@ -91,14 +91,14 @@ Each needs an owner decision: **WIRE** (make it load-bearing), **DELETE** (remov
 |---|---|---|---|---|
 | 1 | unit_equivalence (conversion) | A | WIRE (via unit workorder) | ☑ |
 | 2 | spec_match | B | WIRE (canonical rule + parity locked) | ☑ |
-| 3 | sku_catalog | B | ? | ☐ |
+| 3 | sku_catalog / catalog_db | B | WIRE (catalog_db SSOT + ratchet locked) | ☑ |
 | 4 | candidate_tier | B | ? | ☐ |
 | 5 | service_contracts | C | ? | ☐ |
 | 6 | spec_parity | C | ? | ☐ |
 | 7 | validate_report | C | ? | ☐ |
 | 8 | equivalence_review | C | ? | ☐ |
 | 9 | admin tools (D, ×5) | D | CONFIRM-TOOL | ☐ |
-| 10 | catalog-read SSOT adoption (sweep ad-hoc `duckdb.connect`) | B | ? | ☐ |
+| 10 | catalog-read SSOT adoption (sweep ad-hoc `duckdb.connect`) | B | WIRE (all readers migrated to catalog_db) | ☑ |
 
 Recommended order: 2 and 3 first (highest duplication leverage — `spec_match` kills 3 copies, `sku_catalog` unifies
 every catalog read), then the unit engine (1), then the Phase-J/L decisions (4, 5), then CI wiring (6, 7), then the

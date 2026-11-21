@@ -35,13 +35,9 @@ except Exception:
     def diag(*args, **kwargs): pass
     WARN = "warn"
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-_SKILL_DIR = os.environ.get("SKILL_DIR", os.path.dirname(_SCRIPTS_DIR))
-_DATA_DIR = os.path.join(_SKILL_DIR, "data")
-CATALOG_DB = os.path.join(_DATA_DIR, "catalog.duckdb")
+CATALOG_DB = catalog_db.CATALOG_DB
 
-# Cache to avoid re-opening the database or re-querying sets repeatedly during a run (B)
-_CATALOG_CONN: duckdb.DuckDBPyConnection | None = None
+# Cache to avoid re-querying sets repeatedly during a run (B)
 _SERVICES_CACHE: set[str] | None = None
 _VALID_SKUS_CACHE: set[str] | None = None
 

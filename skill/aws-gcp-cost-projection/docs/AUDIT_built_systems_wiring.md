@@ -48,9 +48,9 @@ set (37 phase scripts), `main()` presence, and test-only imports. Numbers are a 
 
 | System | Built to be | Reality | Decision |
 |---|---|---|---|
-| `service_contracts` (410 ln) | "Phase J: every service has a contract of required fields; validate BEFORE mapping" | has `main()` + tests; **not in the orchestrator**, imported by nothing but its test. The pre-mapping contract gate never runs. | ☐ add as a phase, or demote to opt-in lint, or delete |
-| `spec_parity` (197 ln) | shadow-compare spec-dispatch vs legacy classify_mechanics over real jobs | read-only tool; **not in CI/orchestrator** — the cutover it was built to de-risk isn't being measured. | ☐ run in CI during the classify cutover, else archive |
-| `validate_report` (118 ln) | golden-test a rendered report against the source bill (EDP-net baseline, etc.) | has `main()`; **not orchestrated/CI**. The report-defect classes it guards are unguarded. | ☐ wire into CI, or fold into validate_fix |
+| `service_contracts` (410 ln) | "Phase J: every service has a contract of required fields; validate BEFORE mapping" | has `main()` + tests; not in the orchestrator. **DECISION D-CON-1** (`WORKORDER_s6_validators.md`): overlaps existing gates (completeness gate, resolve_sku guards, field_state)? Sweep real jobs for block-count → wire annotate-only / demote to lint / delete. | ◐ decision pending (overlap sweep first) |
+| `spec_parity` (197 ln) | shadow-compare spec-dispatch vs legacy classify_mechanics over real jobs | **CORRECTED 2026-11-25: it's an offline dev/CI TOOL, not pipeline debt** — "not orchestrated" is correct. Home = CI for the S1 classify cutover. | ◐ reclassified tool → CI (fold into S1) |
+| `validate_report` (118 ln) | golden-test a rendered report against the source bill (EDP-net baseline, etc.) | **CORRECTED 2026-11-25: offline CI/QA TOOL, not pipeline debt.** Home = CI (or fold its 3 checks into validate_fix). | ◐ reclassified tool → CI |
 | `equivalence_review` (273 ln) | review queue for equivalence claims ranked by $ exposure | part of the review/refinement layer; **not orchestrated.** | ☐ confirm intended (manual/admin) or wire |
 
 ### D. Standalone admin/debug tools — dormant by design  ⚪ (likely fine, confirm)

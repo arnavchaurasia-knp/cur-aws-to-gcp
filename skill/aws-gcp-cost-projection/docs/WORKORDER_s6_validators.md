@@ -3,7 +3,29 @@
 > **NEW AGENT:** read `ARCHITECTURE_MASTER_TRACKER.md` §0 first. This is subsystem **S6** (governance/gates). Update the
 > tracker §2 (S6) and `AUDIT_built_systems_wiring.md` (C) as you progress.
 
-Status: **OPEN — framed; 1 real decision (D-CON-1), 2 reclassified as tools.** Author: Claude (Opus 4.8) · 2026-11-25.
+Status: **IN PROGRESS — D-CON-1 resolved (industry dark-launch); orchestrator hookup + CI tools remain.** Author: Claude (Opus 4.8) · 2026-11-25.
+
+## D-CON-1 RESOLVED — industry shadow / dark-launch pattern (2026-11-25)
+The industry way to introduce a validation gate whose value is unmeasured and whose enforcement is risky is to
+**dark-launch it in observe-only mode**: it records what it *would* flag (telemetry/annotations), changes nothing,
+you measure from real runs, then **promote to enforce or retire** on the data. Never block/route on an unmeasured gate;
+never run two gates for the same check.
+- `service_contracts.validate_all_contracts` is **already observe-only by nature**: it writes only the annotation
+  columns `contract_issues` / `field_availability` and returns a summary — it touches NO mapping/strategy/dollar column.
+  So observe-mode is its real behavior, not a new mode to build.
+- ☑ **Invariant locked:** `tests/test_service_contracts_observe_only.py` asserts a shadow run leaves every
+  mapping/dollar column (`strategy`, `unit_multiplier`, `gcp_sku_*`, `aws_amortized_cost`, …) byte-identical and only
+  writes the two annotation columns. If anyone later makes it route/block, this test fails — so **promotion to enforce
+  is a deliberate, reviewed change, never an accident.**
+- **Measurement = the dark launch itself.** Running it on real jobs emits `contract_failures` + `details_by_service`
+  (how many rows it WOULD flag, which critical fields) — that is the overlap-vs-additive data we lacked. No need to
+  pre-run locally.
+- **Promotion criteria:** after it runs on real jobs, if `contract_failures` is ~0 or purely overlaps existing gates
+  (completeness gate / resolve_sku guards / field_state) → **retire / demote to lint**. If it flags a real class those
+  miss → consider promoting to routing, with a measured before/after (dollar-adjacent). Default stays observe-only.
+
+Remaining for D-CON-1: **T3-hookup (AGY/Go)** — run `validate_all_contracts` as an observe phase per job and log its
+summary to the diagnostics channel. Dollar-neutral by the invariant above; no routing.
 
 ## Corrected finding (the audit's "built but not orchestrated = debt" was wrong for 2 of 3)
 

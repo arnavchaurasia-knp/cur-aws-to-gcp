@@ -115,6 +115,12 @@ func (w *Watcher) watchUntilDead(jobID string, pid int) {
 	for pidAlive(pid) {
 		if m := w.activityMtime(jobDir); m.After(lastActivity) {
 			lastActivity = m
+			// Fresh pipeline activity: bump updated_at so the job's timestamp
+			// tracks liveness through long phases instead of freezing at
+			// submission time. No-op (and harmless) once the job is terminal.
+			if err := w.db.TouchJob(jobID); err != nil {
+				slog.Debug("watcher: TouchJob failed", "job_id", jobID, "err", err)
+			}
 		}
 		if time.Since(lastActivity) > staleTimeout {
 			log.Printf("watcher %s: no log activity for >%s, killing pid %d", jobID, staleTimeout, pid)
@@ -141,7 +147,6 @@ func (w *Watcher) activityMtime(jobDir string) time.Time {
 	}
 	return newest
 }
-
 
 func (w *Watcher) finalizeWithOffset(jobID string, allowRetry bool, logOffset int64) {
 	w.finalize(jobID, allowRetry, logOffset)
@@ -502,7 +507,6 @@ func PidAlive(pid int) bool { return pidAlive(pid) }
 // pidAlive reports whether pid is a *running* process (not zombie/defunct).
 // kill(pid, 0) returns nil for both running and zombie processes, so we also
 // query `ps -o stat` and treat a state starting with 'Z' as dead.
-
 
 // ValidatorOutcome describes what actually happened when the gate ran.
 // "could not run" is deliberately distinct from "passed": in that case the

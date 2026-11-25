@@ -120,12 +120,56 @@ def load_assumptions(job_dir: str | None = None) -> dict:
     return res
 
 
+# Keys whose passthrough is driven by a numeric value sentinel rather than an
+# explicit toggle: passthrough is active when the assumption value is <= 0
+# (e.g. inferentia_chip_to_tpu defaults to 0.0 → map Inferentia to nothing →
+# passthrough at AWS cost). Kept here as the single source of truth shared by
+# load_assumption_passthroughs and is_passthrough_enabled so the deterministic
+# passthrough_enforcer and the no_illegal_passthroughs gate agree.
+_VALUE_SENTINEL_PASSTHROUGH_KEYS = (
+    "inferentia_chip_to_tpu",
+    "trainium_chip_to_tpu",
+    "dynamodb_rcu_to_reads_sec",
+    "dynamodb_wcu_to_writes_sec",
+)
+
+
 def load_assumption_passthroughs(job_dir: str | None = None) -> set[str]:
     """Return the set of assumption keys for which passthrough is enabled for THIS job.
 
     Defaults are loaded from data/assumption-defaults.json ('passthrough' object),
-    then overlaid with <job_dir>/assumptions.json ('passthrough' object).
+    then overlaid with <job_dir>/assumptions.json ('passthrough' object). In
+    addition, value-sentinel keys (see _VALUE_SENTINEL_PASSTHROUGH_KEYS) are
+    included whenever their assumption value is <= 0 — without this, a default
+    like inferentia_chip_to_tpu=0.0 was silently NOT enabled, so the enforcer
+    never stamped passthrough_reason='operator_assumption' and the row tripped
+    the no_illegal_passthroughs gate, forcing an expensive LLM review-retry.
     Never raises. Returns set[str].
+    """
+    res = _load_explicit_passthrough_toggles(job_dir)
+
+    # Value-sentinel keys: enable passthrough when the numeric assumption value
+    # is <= 0 (e.g. inferentia_chip_to_tpu=0.0 → passthrough). Mirrors the rule
+    # in is_passthrough_enabled; without it these never entered the set.
+    try:
+        values = load_assumptions(job_dir)
+        for k in _VALUE_SENTINEL_PASSTHROUGH_KEYS:
+            v = values.get(k)
+            if v is not None and float(v) <= 0:
+                res.add(k)
+    except (ValueError, TypeError):
+        pass
+
+    return res
+
+
+def _load_explicit_passthrough_toggles(job_dir: str | None = None) -> set[str]:
+    """Return only the keys with an EXPLICIT passthrough toggle (no value sentinels).
+
+    Reads the 'passthrough' object (and 'items[].passthrough_enabled') from the
+    committed defaults and the per-job assumptions.json snapshot. Kept separate
+    from the value-sentinel logic so is_passthrough_enabled can treat a
+    caller-supplied `value` as authoritative.
     """
     res: set[str] = set()
 
@@ -172,14 +216,16 @@ def load_assumption_passthroughs(job_dir: str | None = None) -> set[str]:
 def is_passthrough_enabled(key: str, job_dir: str | None = None, value: float | None = None) -> bool:
     """Return whether passthrough is active for key, considering both explicit toggle and legacy value sentinels.
 
-    Rule: effective_passthrough(key) = (key in passthrough set) OR (mapper-specific legacy sentinel still true).
+    Rule: effective_passthrough(key) = (explicit toggle) OR (value-sentinel key
+    whose value <= 0). When the caller supplies `value` for a value-sentinel key
+    it is authoritative for the sentinel decision (overrides the loaded default),
+    but an explicit toggle can still force passthrough on.
     """
-    pts = load_assumption_passthroughs(job_dir)
-    if key in pts:
-        return True
-    if value is not None and key in ("inferentia_chip_to_tpu", "trainium_chip_to_tpu", "dynamodb_rcu_to_reads_sec", "dynamodb_wcu_to_writes_sec"):
-        return value <= 0
-    return False
+    if value is not None and key in _VALUE_SENTINEL_PASSTHROUGH_KEYS:
+        if value <= 0:
+            return True
+        return key in _load_explicit_passthrough_toggles(job_dir)
+    return key in load_assumption_passthroughs(job_dir)
 
 
 def load_report_settings(job_dir: str | None = None) -> dict:

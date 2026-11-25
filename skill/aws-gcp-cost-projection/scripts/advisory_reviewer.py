@@ -93,6 +93,33 @@ def run_advisory_review(job_dir: str) -> list[dict]:
 
         c_cols = {c[1].lower() for c in con.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
         has_aws_od = "aws_od_cost" in c_cols
+        p_cols = {c[1].lower() for c in con.execute("PRAGMA table_info('gcp_projection')").fetchall()}
+
+        # Schema-adaptive column sourcing. In the real pipeline gcp_projection is
+        # a VIEW that exposes neither gcp_sku_name (it lives only on the
+        # aws_li_to_gcp_li mapping table) nor a gcp_od_cost column (its on-demand
+        # figure is gcp_projected_cost) — selecting p.gcp_sku_name / p.gcp_od_cost
+        # there threw a DuckDB BinderException and the advisory reviewer never
+        # ran. Older/synthetic schemas expose those columns directly, so prefer
+        # them when present and otherwise fall back (join the mapping table for
+        # the SKU name; alias gcp_projected_cost as the GCP OD figure).
+        has_od_col = "gcp_od_cost" in p_cols
+        od_expr = "p.gcp_od_cost" if has_od_col else "p.gcp_projected_cost"
+        if "gcp_sku_name" in p_cols:
+            name_expr = "p.gcp_sku_name"
+            name_join = ""
+        elif "aws_li_to_gcp_li" in tables:
+            name_expr = "m.gcp_sku_name"
+            name_join = (
+                "LEFT JOIN ("
+                " SELECT aws_li_key, gcp_sku_id, MAX(gcp_sku_name) AS gcp_sku_name"
+                " FROM aws_li_to_gcp_li GROUP BY aws_li_key, gcp_sku_id"
+                ") m ON m.aws_li_key = p.aws_li_key"
+                " AND m.gcp_sku_id IS NOT DISTINCT FROM p.gcp_sku_id"
+            )
+        else:
+            name_expr = "NULL"
+            name_join = ""
 
         query = f"""
             SELECT
@@ -104,15 +131,16 @@ def run_advisory_review(job_dir: str) -> list[dict]:
                 {"c.aws_od_cost" if has_aws_od else "c.aws_amortized_cost"} AS aws_od,
                 c.instance_type,
                 p.gcp_service,
-                p.gcp_sku_name,
+                {name_expr} AS gcp_sku_name,
                 p.gcp_sku_id,
                 p.strategy,
                 p.unit_multiplier,
                 p.gcp_projected_cost,
-                p.gcp_od_cost,
+                {od_expr} AS gcp_od_cost,
                 p.projection_note
             FROM aws_li_catalog c
             JOIN gcp_projection p USING (aws_li_key)
+            {name_join}
             WHERE c.is_workload = TRUE
         """
         rows = con.execute(query).fetchall()

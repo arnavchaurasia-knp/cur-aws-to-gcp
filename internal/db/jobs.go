@@ -9,23 +9,23 @@ import (
 )
 
 type Job struct {
-	ID          string     `json:"id"`
-	Owner       string     `json:"owner"`
-	Prospect    string     `json:"prospect"`
-	Status      string     `json:"status"`
-	InputExt    string     `json:"input_ext"`
-	AWSSpend    *float64   `json:"aws_spend"`
-	GCPOD       *float64   `json:"gcp_od,omitempty"`
-	Error       string     `json:"error"`
-	SessionID   string     `json:"session_id"`
-	AgentPID    int        `json:"agent_pid"`
-	Attempts    int        `json:"attempts"`
-	Engine      string     `json:"engine,omitempty"`
-	EngineVersion string   `json:"engine_version,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	CancelledAt *time.Time `json:"cancelled_at,omitempty"`
-	AssumptionsVersion string    `json:"assumptions_version,omitempty"`
+	ID                 string     `json:"id"`
+	Owner              string     `json:"owner"`
+	Prospect           string     `json:"prospect"`
+	Status             string     `json:"status"`
+	InputExt           string     `json:"input_ext"`
+	AWSSpend           *float64   `json:"aws_spend"`
+	GCPOD              *float64   `json:"gcp_od,omitempty"`
+	Error              string     `json:"error"`
+	SessionID          string     `json:"session_id"`
+	AgentPID           int        `json:"agent_pid"`
+	Attempts           int        `json:"attempts"`
+	Engine             string     `json:"engine,omitempty"`
+	EngineVersion      string     `json:"engine_version,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	CancelledAt        *time.Time `json:"cancelled_at,omitempty"`
+	AssumptionsVersion string     `json:"assumptions_version,omitempty"`
 }
 
 func (d *DB) CreateJob(id, owner, prospect, inputExt, sessionID string) error {
@@ -221,6 +221,19 @@ func (d *DB) GetUserQuotaUsage(owner string) (jobsLast24h int, concurrentJobs in
 func (d *DB) UpdateJobRunning(id string) error {
 	_, err := d.conn.Exec(
 		`UPDATE jobs SET status='running', updated_at=datetime('now') WHERE id=?`, id,
+	)
+	return err
+}
+
+// TouchJob bumps updated_at for a running job without changing any other
+// column. The watcher calls this each time it observes fresh pipeline activity
+// (a new agy.log / progress.json mtime) so updated_at tracks liveness through
+// the long Mapping/Review phases instead of freezing at submission time.
+// Scoped to running jobs so a late tick can never resurrect the timestamp of a
+// job that has already reached a terminal state.
+func (d *DB) TouchJob(id string) error {
+	_, err := d.conn.Exec(
+		`UPDATE jobs SET updated_at=datetime('now') WHERE id=? AND status='running'`, id,
 	)
 	return err
 }
@@ -539,17 +552,17 @@ type UsageStats struct {
 	// ── Migration economics (the product's actual value) ──
 	// Computed over "done" jobs that carry both an AWS spend and a GCP
 	// projected cost. These are the numbers a sales/SE team cares about.
-	AnalyzedJobs   int     `json:"analyzed_jobs"`    // done jobs with both aws_spend + gcp_od
-	TotalAWSSpend  float64 `json:"total_aws_spend"`  // Σ AWS spend across analyzed bills
-	TotalGCPOD     float64 `json:"total_gcp_od"`     // Σ GCP on-demand projection
-	TotalSavings   float64 `json:"total_savings"`    // AWS − GCP
-	SavingsPct     float64 `json:"savings_pct"`      // portfolio-weighted savings %
-	AvgSavingsPct  float64 `json:"avg_savings_pct"`  // mean per-bill savings %
-	AvgBillSize    float64 `json:"avg_bill_size"`    // mean analyzed AWS spend
+	AnalyzedJobs  int     `json:"analyzed_jobs"`   // done jobs with both aws_spend + gcp_od
+	TotalAWSSpend float64 `json:"total_aws_spend"` // Σ AWS spend across analyzed bills
+	TotalGCPOD    float64 `json:"total_gcp_od"`    // Σ GCP on-demand projection
+	TotalSavings  float64 `json:"total_savings"`   // AWS − GCP
+	SavingsPct    float64 `json:"savings_pct"`     // portfolio-weighted savings %
+	AvgSavingsPct float64 `json:"avg_savings_pct"` // mean per-bill savings %
+	AvgBillSize   float64 `json:"avg_bill_size"`   // mean analyzed AWS spend
 
-	SpendByDay      []SpendDay      `json:"spend_by_day"`      // AWS vs GCP $ over 30d
-	TopProspects    []ProspectSaving `json:"top_prospects"`    // leaderboard by savings $
-	SavingsBuckets  []SavingsBucket `json:"savings_buckets"`   // distribution of savings %
+	SpendByDay     []SpendDay       `json:"spend_by_day"`    // AWS vs GCP $ over 30d
+	TopProspects   []ProspectSaving `json:"top_prospects"`   // leaderboard by savings $
+	SavingsBuckets []SavingsBucket  `json:"savings_buckets"` // distribution of savings %
 }
 
 type DayCount struct {
@@ -861,5 +874,3 @@ func (d *DB) GetJobTimestamps() (lastJobAt, lastFailureAt string, err error) {
 	}
 	return lastJobAt, lastFailureAt, nil
 }
-
-

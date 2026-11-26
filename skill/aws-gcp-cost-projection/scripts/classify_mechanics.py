@@ -51,6 +51,11 @@ try:
 except (ImportError, ModuleNotFoundError):
     def get_trusted_mapping(*_a, **_k): return None
     def load_refresh_store(*_a, **_k): return {"mappings": {}}
+try:
+    from workload_resolver import is_row_workload
+except (ImportError, ModuleNotFoundError):  # pragma: no cover
+    def is_row_workload(r):
+        return r.get("is_workload") if r.get("is_workload") is not None else True
 
 _svc_cfg = _cfg("service-classification")
 
@@ -227,7 +232,14 @@ RULES = [
     (
         "non_workload",
         lambda r: (
-            _ilike(r["product"], "Marketplace")
+            (
+                not is_row_workload(r)
+                and (
+                    r.get("_bill_has_discounted_usage", True)
+                    or r.get("line_item_type") not in ("RIFee", "SavingsPlanRecurringFee")
+                )
+            )
+            or _ilike(r["product"], "Marketplace")
             or _ilike(r["product"], "Support")
             or _ilike(r["product"], "AWS Support")
             or _ilike(r["product"], "AWSMarketplace")
@@ -1643,6 +1655,7 @@ def main():
     bf_expr = "billing_format" if "billing_format" in existing_cols else "NULL AS billing_format"
     pc_expr = "product_code" if "product_code" in existing_cols else "NULL AS product_code"
     cs_col_expr = "canonical_service" if "canonical_service" in existing_cols else "NULL AS canonical_service"
+    iw_expr = "is_workload" if "is_workload" in existing_cols else "TRUE AS is_workload"
     rows = con.execute(
         f"""
         SELECT
@@ -1660,7 +1673,8 @@ def main():
             instance_count,
             {bf_expr},
             {pc_expr},
-            {cs_col_expr}
+            {cs_col_expr},
+            {iw_expr}
         FROM aws_li_catalog
         """
     ).fetchall()
@@ -1669,7 +1683,7 @@ def main():
         "aws_li_key", "product", "usage_type", "operation",
         "unit", "line_item_type", "pricing_model", "aws_amortized_cost",
         "instance_type", "instance_vcpus", "instance_ram_gb", "instance_count",
-        "billing_format", "product_code", "canonical_service",
+        "billing_format", "product_code", "canonical_service", "is_workload",
     ]
 
     # --- Determine once, bill-wide, whether ignoring RIFee/SavingsPlanRecurringFee/

@@ -518,140 +518,19 @@ from currency_utils import (
 
 log = get_logger("ingest")
 
-_WL_CFG = _cfg("workload_classification")
-_WL_TYPES = set(_WL_CFG.get("workload_line_item_types", ["Usage", "DiscountedUsage", "SavingsPlanCoveredUsage"]))
-# Substring patterns (safe for multi-word phrases + concatenated product-code tokens).
-_NONWL_PATTERNS = _WL_CFG.get("nonworkload_patterns", [])
-# Word-boundary patterns (short words that would false-match inside longer words,
-# e.g. tax->syntax, credit->accredited). Matched with \b...\b, case-insensitive.
-_NONWL_WORD_PATTERNS = _WL_CFG.get("nonworkload_word_patterns", [])
-_NONWL_WORD_RES = [re.compile(r'\b' + wp + r'\b', re.IGNORECASE) for wp in _NONWL_WORD_PATTERNS]
-
-def _is_workload_py(line_item_type, *text_fields):
-    """Python-path verdict (PDF / usage-units parsers)."""
-    blob = " ".join((t or "") for t in text_fields).lower()
-    if any(p in blob for p in _NONWL_PATTERNS):
-        return False
-    if any(rx.search(blob) for rx in _NONWL_WORD_RES):
-        return False
-    if line_item_type and line_item_type not in _WL_TYPES:
-        return False          # authoritative enum says non-consumption
-    return True
-
-def classify_charge(*, line_item_type_raw=None, product="", usage_type="",
-                    operation="", cost=0.0, category=None):
-    """Return (charge_category, line_item_type, is_workload).
-
-    charge_category follows FOCUS: 'Usage' | 'Purchase' | 'Credit' | 'Tax'.
-    One definition, used by every ingest branch.
-    When a raw line_item_type is given (authoritative from CUR), trust it.
-    """
-    cost_val = float(cost or 0.0)
-    cat_str = str(category or "")
-    prod_str = str(product or "")
-    ut_str = str(usage_type or "")
-    op_str = str(operation or "")
-    blob = f"{prod_str} {ut_str} {op_str} {cat_str}".lower()
-
-    if line_item_type_raw and str(line_item_type_raw).strip():
-        lit = str(line_item_type_raw).strip()
-    else:
-        if cost_val < 0:
-            if "covered by" in blob and "savings plan" in blob:
-                lit = "SavingsPlanCoveredUsage"
-            else:
-                lit = "Credit"
-        elif "savings plan" in blob and any(w in blob for w in ("recurring", "hourly commitment", "commitment", "upfront")):
-            lit = "SavingsPlanRecurringFee"
-        elif "savings plans" in cat_str.lower() or "savings plan" in cat_str.lower():
-            lit = "SavingsPlanRecurringFee"
-        elif "reserved instance fee" in blob or "rifee" in blob:
-            lit = "RIFee"
-        elif "reserved instance applied" in blob or "reserved instances" in blob or "reserved instance" in blob or "discountedusage" in blob:
-            lit = "DiscountedUsage"
-        elif prod_str.strip().lower() == "tax" or ut_str.strip().lower() == "tax" or op_str.strip().lower() == "tax":
-            lit = "Tax"
-        else:
-            lit = "Usage"
-
-    if lit in ("SavingsPlanRecurringFee", "RIFee", "Fee", "Purchase"):
-        charge_category = "Purchase"
-    elif cost_val < 0 or lit in ("Credit", "Refund"):
-        charge_category = "Credit"
-    elif lit == "SavingsPlanCoveredUsage" and cost_val < 0:
-        charge_category = "Credit"
-    elif lit == "Tax" or "tax" in blob:
-        charge_category = "Tax"
-    else:
-        charge_category = "Usage"
-
-    is_workload = (charge_category == "Usage"
-                   and lit in _WL_TYPES
-                   and _is_workload_py(lit, prod_str, ut_str, op_str, cat_str))
-    return (charge_category, lit, is_workload)
-
-
-def _sql_classify_charge(cost_expr, product_expr, usage_type_expr, op_expr="''", category_expr="''", raw_lit_expr=None):
-    """Build single-source-of-truth SQL CASE expressions for (line_item_type, is_workload).
-
-    Generates the exact SQL counterpart of classify_charge() to guarantee no divergence
-    between Python and SQL branches.
-    """
-    if raw_lit_expr and raw_lit_expr != "NULL":
-        lit_case = f"COALESCE(NULLIF({raw_lit_expr}, ''), 'Usage')"
-    else:
-        lit_case = f"""(
-            CASE
-                WHEN {cost_expr} < 0 AND ({op_expr} ILIKE '%covered by%savings plan%' OR {usage_type_expr} ILIKE '%covered by%savings plan%' OR {product_expr} ILIKE '%covered by%savings plan%' OR {category_expr} ILIKE '%covered by%savings plan%')
-                    THEN 'SavingsPlanCoveredUsage'
-                WHEN {cost_expr} < 0
-                    THEN 'Credit'
-                WHEN ({category_expr} ILIKE '%savings plan%' OR {product_expr} ILIKE '%savings plan%' OR {usage_type_expr} ILIKE '%savings plan%' OR {op_expr} ILIKE '%savings plan%')
-                     AND ({category_expr} ILIKE '%recurring%' OR {category_expr} ILIKE '%hourly commitment%' OR {category_expr} ILIKE '%upfront%'
-                          OR {product_expr} ILIKE '%recurring%' OR {product_expr} ILIKE '%hourly commitment%' OR {product_expr} ILIKE '%upfront%'
-                          OR {usage_type_expr} ILIKE '%recurring%' OR {usage_type_expr} ILIKE '%hourly commitment%' OR {usage_type_expr} ILIKE '%upfront%'
-                          OR {op_expr} ILIKE '%recurring%' OR {op_expr} ILIKE '%hourly commitment%' OR {op_expr} ILIKE '%upfront%')
-                    THEN 'SavingsPlanRecurringFee'
-                WHEN {category_expr} ILIKE '%savings plans%' OR {category_expr} ILIKE '%savings plan%'
-                     OR {product_expr} ILIKE '%savings plans%' OR {product_expr} ILIKE '%savings plan%'
-                    THEN 'SavingsPlanRecurringFee'
-                WHEN {usage_type_expr} ILIKE '%rifee%' OR {op_expr} ILIKE '%rifee%'
-                     OR {usage_type_expr} ILIKE '%reserved instance fee%' OR {op_expr} ILIKE '%reserved instance fee%'
-                    THEN 'RIFee'
-                WHEN {usage_type_expr} ILIKE '%reserved instance applied%' OR {usage_type_expr} ILIKE '%reserved instances%' OR {usage_type_expr} ILIKE '%reserved instance%' OR {usage_type_expr} ILIKE '%discountedusage%'
-                     OR {op_expr} ILIKE '%reserved instance applied%' OR {op_expr} ILIKE '%reserved instances%' OR {op_expr} ILIKE '%reserved instance%' OR {op_expr} ILIKE '%discountedusage%'
-                     OR {product_expr} ILIKE '%reserved instance applied%' OR {product_expr} ILIKE '%reserved instances%' OR {product_expr} ILIKE '%reserved instance%' OR {product_expr} ILIKE '%discountedusage%'
-                    THEN 'DiscountedUsage'
-                WHEN {product_expr} = 'Tax' OR {usage_type_expr} = 'Tax' OR {op_expr} = 'Tax'
-                    THEN 'Tax'
-                ELSE 'Usage'
-            END
-        )"""
-
-    non_wl = _nonworkload_sql(product_expr, usage_type_expr, op_expr, category_expr)
-    is_wl_case = f"""(
-        CASE
-            WHEN {cost_expr} < 0 THEN FALSE
-            WHEN {lit_case} NOT IN ('Usage', 'DiscountedUsage', 'SavingsPlanCoveredUsage') THEN FALSE
-            WHEN {non_wl} THEN FALSE
-            ELSE TRUE
-        END
-    )"""
-    return lit_case, is_wl_case
-
-
-def _nonworkload_sql(*col_exprs):
-    """Build a SQL boolean that is TRUE when the row is NON-workload, from the
-    pattern list — so the spreadsheet/flat-CSV SQL CASEs stay in sync with the JSON.
-    Substring patterns use ILIKE; short word patterns use word-boundary regexp so
-    e.g. 'tax' does not match 'syntax'."""
-    ors = []
-    for col in col_exprs:
-        for p in _NONWL_PATTERNS:
-            ors.append(f"{col} ILIKE '%{p}%'")
-        for wp in _NONWL_WORD_PATTERNS:
-            ors.append(f"regexp_matches({col}, '\\b{wp}\\b', 'i')")
-    return "(" + " OR ".join(ors) + ")" if ors else "(FALSE)"
+from workload_resolver import (
+    is_workload as _is_workload_py,
+    classify_charge,
+    sql_classify_charge as _sql_classify_charge,
+    sql_nonworkload as _nonworkload_sql,
+    _WL_CFG,
+    _WL_TYPES,
+    _NONWL_PATTERNS,
+    _NONWL_WORD_PATTERNS,
+    _NONWL_WORD_RES,
+    is_workload,
+    is_row_workload,
+)
 
 
 def parse_money(val) -> float:

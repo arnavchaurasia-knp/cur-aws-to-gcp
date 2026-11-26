@@ -28,6 +28,24 @@ def is_valid(reason) -> bool:
     return reason in VALID_REASONS
 
 
+def resolve_reason(reason: str | None, default: str = UNCLASSIFIED) -> str:
+    """Normalize and validate a passthrough reason code.
+    Returns reason if valid, else default."""
+    if reason and reason in VALID_REASONS:
+        return reason
+    return default
+
+
+def is_intentional(reason: str | None) -> bool:
+    """Return True if reason is declared as an intentional passthrough."""
+    return reason in INTENTIONAL_REASONS
+
+
+def is_defect(reason: str | None) -> bool:
+    """Return True if reason is declared as a defect passthrough."""
+    return reason in DEFECT_REASONS
+
+
 def kind(reason) -> str:
     """Return 'intentional', 'defect', or 'unknown'."""
     return REASONS.get(reason, {}).get("kind", "unknown")

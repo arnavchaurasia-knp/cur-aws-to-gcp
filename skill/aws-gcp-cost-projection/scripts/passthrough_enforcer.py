@@ -26,6 +26,7 @@ if _SCRIPTS not in sys.path:
 
 from aws_normalizer import canonical_service
 from config_loader import load_assumption_passthroughs, load_data_config
+import passthrough_reasons as pr
 import row_state as rs
 
 try:
@@ -273,7 +274,8 @@ def enforce_assumption_passthroughs(
 
                         comp_set = ", component = NULL" if "component" in m_cols else ""
                         sku_set = ", gcp_sku_id = NULL, gcp_sku_name = NULL, gcp_sku_unit = NULL" if "gcp_sku_id" in m_cols else ""
-                        pt_set = ", passthrough_reason = 'operator_assumption'" if "passthrough_reason" in m_cols else ""
+                        pt_reason = pr.resolve_reason("operator_assumption")
+                        pt_set = f", passthrough_reason = '{pt_reason}'" if "passthrough_reason" in m_cols else ""
 
                         conn.execute(f"""
                             UPDATE aws_li_to_gcp_li

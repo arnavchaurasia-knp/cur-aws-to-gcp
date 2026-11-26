@@ -102,6 +102,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 			OnFailurePreScript: "scripts/prepare_ingest_fallback.py",
 			OnFailurePrompt: "Phase 1 fallback — Ingestion could not recognize this bill's format. " +
 				"Strict protocol, no deviations.\n\n" +
+				"EXECUTION RULE: Run all helper scripts (find-sku.sh, etc.) synchronously and wait for output. Do NOT background them or use async/background task execution.\n\n" +
 				"WORKING DIRECTORY: your job's absolute directory is <<JOB_DIR>>. Every " +
 				"relative path mentioned below means that path resolved against THIS " +
 				"absolute directory — e.g. \"projection-audit/normalized_bill.csv\" means " +
@@ -206,6 +207,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				return scripts
 			}(),
 			Prompt: "Phase 2 — LLM mapping only. Strict protocol, no deviations.\n\n" +
+				"EXECUTION RULE: Run all helper scripts (find-sku.sh, etc.) synchronously and wait for output. Do NOT background them or use async/background task execution.\n\n" +
 				"WORKING DIRECTORY: your job's absolute directory is <<JOB_DIR>>. Every\n" +
 				"relative path mentioned anywhere below (projection-audit/..., scripts/...,\n" +
 				"mapping-notes.md, etc.) means that path resolved against THIS absolute\n" +
@@ -342,6 +344,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				return []string{"?scripts/apply_review_fixes.py"}
 			}(),
 			Prompt: "Phase 3 — Review. Strict protocol, no deviations.\n\n" +
+				"EXECUTION RULE: Run all helper scripts (find-sku.sh, etc.) synchronously and wait for output. Do NOT background them or use async/background task execution.\n\n" +
 				"WORKING DIRECTORY: your job's absolute directory is <<JOB_DIR>>. Every\n" +
 				"relative path mentioned below (review_flags.md, review_fixes.json, etc.) means\n" +
 				"that path resolved against THIS absolute directory — e.g. \"review_flags.md\"\n" +
@@ -516,6 +519,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				return scripts
 			}(),
 			Prompt: "Phase 5 — Outlier Triage. Strict protocol, no deviations.\n\n" +
+				"EXECUTION RULE: Run all helper scripts (find-sku.sh, etc.) synchronously and wait for output. Do NOT background them or use async/background task execution.\n\n" +
 				"WORKING DIRECTORY: your job's absolute directory is <<JOB_DIR>>. Every\n" +
 				"relative path mentioned below (triage_suggestions.md, outlier_fixes.json, etc.)\n" +
 				"means that path resolved against THIS absolute directory — e.g.\n" +

@@ -18,6 +18,8 @@ const (
 	// AGYTimeoutMinutes bounds both agy's per-phase --print-timeout and the
 	// watcher's stale-job timeout. One number so they can never drift apart.
 	AGYTimeoutMinutes = 45
+	// DefaultJobMaxWallClockMinutes is the hard ceiling for a whole job's execution.
+	DefaultJobMaxWallClockMinutes = 90
 	// TotalPhases is the number of pipeline phases (ingest → report).
 	TotalPhases = 6
 )
@@ -28,6 +30,16 @@ var DefaultAllowedDomains = []string{"facets.cloud"}
 
 // AGYPrintTimeout renders AGYTimeoutMinutes in agy's duration form ("45m").
 func AGYPrintTimeout() string { return strconv.Itoa(AGYTimeoutMinutes) + "m" }
+
+// JobMaxWallClockMinutes returns the whole-job wall-clock ceiling in minutes.
+func JobMaxWallClockMinutes() int {
+	if s := strings.TrimSpace(os.Getenv("JOB_MAX_WALL_CLOCK_MINUTES")); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
+		}
+	}
+	return DefaultJobMaxWallClockMinutes
+}
 
 type Config struct {
 	Port               string
@@ -41,10 +53,10 @@ type Config struct {
 	AppBaseURL         string
 	// FrontendURL is the base URL of the React frontend (e.g. http://localhost:5173).
 	// Used in email links so "View Report" buttons open the frontend, not the API.
-	FrontendURL        string
-	SlackWebhookURL    string
-	DevAuthBypass      bool
-	AdminPassword      string
+	FrontendURL     string
+	SlackWebhookURL string
+	DevAuthBypass   bool
+	AdminPassword   string
 	// AGYPath is the path to the agy binary. From $AGY_PATH; defaults to
 	// "agy" (expects it on PATH). Set this on Windows where the binary lives
 	// at a fixed path and is not on PATH.

@@ -1,5 +1,7 @@
 # Phase 2 — Mapping
 
+> **EXECUTION RULE:** Run all helper scripts (find-sku.sh, etc.) synchronously and wait for output. Do NOT background them or use async/background task execution.
+
 ## Pre-Processing (ALREADY DONE by orchestrator — do NOT re-run)
 
 The orchestrator ran these scripts before spawning this agent:

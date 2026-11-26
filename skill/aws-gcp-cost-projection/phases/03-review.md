@@ -1,5 +1,7 @@
 # Phase 3 — Review
 
+> **EXECUTION RULE:** Run all helper scripts (find-sku.sh, etc.) synchronously and wait for output. Do NOT background them or use async/background task execution.
+
 **Run by:** one **fresh** sub-agent — not one of the mapping agents.
 **Reads:** `review_flags.md` + `review_candidates.json` (written by `auto_review.py` before this phase).
 **Writes:** `review_fixes.json` — the script applies all DB changes; the agent never touches the DB directly for flagged rows.

@@ -46,6 +46,11 @@ Key facts (verified):
 2. Locate the shared task store (likely under `~/.gemini/…` / antigravity dirs). Determine whether a per-invocation isolated store is possible (e.g. an env var or `--add-dir`-style scratch).
 3. Reproduce minimally: one `agy -p` call that backgrounds a trivial command, then a second `agy -p` call, and observe whether the second idles on the first's task.
 **Acceptance:** findings documented with the exact flag(s)/env/store path. If agy exposes a background-wait timeout or a no-background flag, WO-1c uses it; if not, WO-1c falls back to the watcher ceiling (WO-1d) as the guarantee.
+**Status: DONE (Spike Findings):**
+- `agy --help` inspects available CLI options: `--print-timeout`, `--settings`, `--add-dir`, `--mode`, `--sandbox`, etc.
+- No CLI flag exists to disable background tasks or set an idle/background wait timeout distinct from `--print-timeout`.
+- Background tasks are persisted in `<appDataDir>\brain\<conversation-id>\.system_generated\tasks\` and shared session state across invocations.
+- Per acceptance criteria: since agy exposes no background-wait flag or no-background option, WO-1c relies on WO-1b (synchronous prompt contract + immediate help exit) and WO-1d (watcher whole-job wall-clock ceiling) as the hard guarantee.
 **Risk:** low (read-only investigation).
 
 ### WO-1b — Stop backgrounding fast helpers (prompt + wrapper)

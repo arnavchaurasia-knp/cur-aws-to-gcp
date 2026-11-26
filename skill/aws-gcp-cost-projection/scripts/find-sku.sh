@@ -31,7 +31,24 @@ while [[ $# -gt 0 ]]; do
     --resource-group) RESOURCE_GROUP="$2"; shift 2 ;;
     --sku-id)         SKU_ID="$2";         shift 2 ;;
     --all-tiers)      ALL_TIERS="1";       shift   ;;
-    -h|--help) head -20 "$0" | tail -19; exit 0 ;;
+    -h|--help)
+      cat << 'EOF'
+Search the bundled SKU catalog via the pre-indexed catalog.duckdb.
+Output (default):  TSV — service<TAB>skuId<TAB>resource_group<TAB>usage_type<TAB>regions<TAB>description<TAB>rate_usd<TAB>unit
+Output (--all-tiers): CSV — tier_start,rate_usd (all pricing tiers for one SKU;
+  use this to compute blended rates for tiered services like Cloud Storage,
+  BigQuery, internet egress — see phases/04-rate-fill.md)
+
+Usage:
+  scripts/find-sku.sh --service "Compute Engine" --region asia-southeast1 \
+                      --resource-group CPU --keyword "N2D"
+  scripts/find-sku.sh --keyword "Hyperdisk Balanced" --region asia-southeast1
+  scripts/find-sku.sh --sku-id "8B4E-B458-AD51" --all-tiers
+
+All flags optional. Without --service, all services are scanned.
+Requires: duckdb on PATH, data/catalog.duckdb (run build-catalog-index.sh once).
+EOF
+      exit 0 ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
 done

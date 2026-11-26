@@ -43,15 +43,63 @@ const (
 // either kicked off by the handler when a new job is created, or attached at
 // startup to orphans surviving a backend restart.
 type Watcher struct {
-	db      *db.DB
-	spawner *Spawner
-	jobsDir string
-	notify  NotifyConfig
-	storage storage.Client
+	db             *db.DB
+	spawner        *Spawner
+	jobsDir        string
+	notify         NotifyConfig
+	storage        storage.Client
+	wallClockLimit time.Duration
+	nowFunc        func() time.Time
+	pollInterval   time.Duration
+	pidAliveFunc   func(pid int) bool
 }
 
 func NewWatcher(database *db.DB, spawner *Spawner, jobsDir string, nc NotifyConfig) *Watcher {
 	return &Watcher{db: database, spawner: spawner, jobsDir: jobsDir, notify: nc, storage: &storage.NoopClient{}}
+}
+
+func (w *Watcher) SetWallClockLimit(d time.Duration) {
+	w.wallClockLimit = d
+}
+
+func (w *Watcher) SetClock(nowFunc func() time.Time) {
+	w.nowFunc = nowFunc
+}
+
+func (w *Watcher) SetPollInterval(d time.Duration) {
+	w.pollInterval = d
+}
+
+func (w *Watcher) SetPidAliveFunc(fn func(pid int) bool) {
+	w.pidAliveFunc = fn
+}
+
+func (w *Watcher) now() time.Time {
+	if w.nowFunc != nil {
+		return w.nowFunc()
+	}
+	return time.Now()
+}
+
+func (w *Watcher) getWallClockLimit() time.Duration {
+	if w.wallClockLimit > 0 {
+		return w.wallClockLimit
+	}
+	return time.Duration(config.JobMaxWallClockMinutes()) * time.Minute
+}
+
+func (w *Watcher) getPollInterval() time.Duration {
+	if w.pollInterval > 0 {
+		return w.pollInterval
+	}
+	return pollInterval
+}
+
+func (w *Watcher) isPidAlive(pid int) bool {
+	if w.pidAliveFunc != nil {
+		return w.pidAliveFunc(pid)
+	}
+	return pidAlive(pid)
 }
 
 func (w *Watcher) SetStorage(s storage.Client) {
@@ -111,8 +159,12 @@ func (w *Watcher) watchUntilDead(jobID string, pid int) {
 	// Per-watch activity watermark. Initialized to spawn time (now) so a
 	// pre-existing log from a prior run doesn't false-trip stale detection
 	// in the first few seconds.
-	lastActivity := time.Now()
-	for pidAlive(pid) {
+	lastActivity := w.now()
+	jobStart := w.now()
+	ceiling := w.getWallClockLimit()
+	pInterval := w.getPollInterval()
+
+	for w.isPidAlive(pid) {
 		if m := w.activityMtime(jobDir); m.After(lastActivity) {
 			lastActivity = m
 			// Fresh pipeline activity: bump updated_at so the job's timestamp
@@ -122,11 +174,20 @@ func (w *Watcher) watchUntilDead(jobID string, pid int) {
 				slog.Debug("watcher: TouchJob failed", "job_id", jobID, "err", err)
 			}
 		}
-		if time.Since(lastActivity) > staleTimeout {
+		now := w.now()
+		if ceiling > 0 && now.Sub(jobStart) > ceiling {
+			reason := fmt.Sprintf("Job exceeded maximum wall-clock ceiling of %s (started at %s, budget %s)",
+				ceiling, jobStart.UTC().Format(time.RFC3339), ceiling)
+			log.Printf("watcher %s: whole-job wall-clock ceiling exceeded (%s > %s), killing pid %d", jobID, now.Sub(jobStart), ceiling, pid)
+			_ = os.WriteFile(filepath.Join(jobDir, "failure.txt"), []byte(reason), 0644)
+			killGroup(pid)
+			break
+		}
+		if now.Sub(lastActivity) > staleTimeout {
 			log.Printf("watcher %s: no log activity for >%s, killing pid %d", jobID, staleTimeout, pid)
 			killGroup(pid)
 		}
-		time.Sleep(pollInterval)
+		time.Sleep(pInterval)
 	}
 }
 
@@ -177,6 +238,30 @@ func (w *Watcher) finalize(jobID string, allowRetry bool, logOffset int64) {
 			metrics.JobsCancelled.Add(1)
 		}
 		log.Printf("watcher %s: cancel observed (stopAll=%v) — not resuming", jobID, stopAllActive)
+		return
+	}
+
+	// Authoritative kill check: if failure.txt contains "wall-clock ceiling",
+	// the job was terminated because its wall-clock budget expired. Mark failed immediately
+	// without retry and do not treat any partial report as success.
+	if reason := readFailureReason(jobDir); strings.Contains(reason, "wall-clock ceiling") {
+		if err := w.db.UpdateJobFailed(jobID, reason); err != nil {
+			log.Printf("watcher %s: UpdateJobFailed (wall-clock ceiling): %v", jobID, err)
+		}
+		metrics.JobsFailed.Add(1)
+		slog.Error("job failed", "job_id", jobID, "prospect", job.Prospect, "reason", reason, "attempts", job.Attempts)
+		w.recordJobLogDigest(jobID, "initial", jobDir)
+		w.syncRemote(jobID, jobDir)
+		go func() {
+			if err := notify.SendJobFailed(w.emailCfg(), job.Owner, job.Owner, job.Prospect); err != nil {
+				slog.Warn("SendJobFailed failed", "job_id", jobID, "err", err)
+			}
+		}()
+		go func() {
+			if err := notify.PostJobFailed(w.slackURL(), job.Prospect, job.Owner, jobID); err != nil {
+				slog.Warn("PostJobFailed failed", "job_id", jobID, "err", err)
+			}
+		}()
 		return
 	}
 

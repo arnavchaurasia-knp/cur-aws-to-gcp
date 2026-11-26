@@ -102,6 +102,12 @@ var registry = []Var{
 		Description: "Model used only when no default engine is chosen in Report Settings. The model actually used is set in Report Settings → Default engine.",
 		Mode:        ModeDeployment,
 	},
+	{
+		Key: "JOB_MAX_WALL_CLOCK_MINUTES", Title: "Maximum job wall-clock runtime (minutes)", Category: CatEngine,
+		Description: "Maximum total wall-clock duration (in minutes) a single job is allowed to run across all phases before the watcher terminates it. Default is 90 minutes.",
+		Example:     "90",
+		Mode:        ModeManaged,
+	},
 
 	// ── Pricing catalog ──────────────────────────────────────────────────
 	{

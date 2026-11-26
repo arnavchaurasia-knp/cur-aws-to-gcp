@@ -1,5 +1,7 @@
 # Phase 2 — Shared Principles
 
+> **EXECUTION RULE:** Run all helper scripts (find-sku.sh, etc.) synchronously and wait for output. Do NOT background them or use async/background task execution.
+
 Every service-specific prompt file in this directory builds on these. Read this first.
 
 ---

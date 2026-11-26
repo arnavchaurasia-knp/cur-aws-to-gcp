@@ -1,5 +1,7 @@
 # Phase 5 — Outlier triage
 
+> **EXECUTION RULE:** Run all helper scripts (find-sku.sh, etc.) synchronously and wait for output. Do NOT background them or use async/background task execution.
+
 **Run by:** one sub-agent. Like the Phase 3 review agent, this one
 comes in fresh — without the mapping agents' or main agent's
 investment in the picks — and is more willing to overturn them.

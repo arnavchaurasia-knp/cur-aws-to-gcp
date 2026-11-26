@@ -10,6 +10,7 @@ from config_loader import load_report_settings, load_assumptions
 from assumptions_impact import load_assumption_impact
 from currency_utils import load_currency_info
 from license_split import get_aws_license_split
+from schema_contract import mapping_columns, catalog_columns, require_columns
 
 
 def _augment_aws_license_split(headers, rows, cur_sym):
@@ -52,7 +53,7 @@ def _augment_applied_directives(headers, rows, job_dir, conn):
         return headers, out_rows
 
     try:
-        m_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+        m_cols = mapping_columns(conn)
         if "applied_directives" not in m_cols:
             return headers, out_rows
 
@@ -173,7 +174,7 @@ def _build_query_line_item(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=N
     assumption_col = "''"
     if conn is not None:
         try:
-            m_cols_chk = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+            m_cols_chk = mapping_columns(conn)
             if "assumption_note" in m_cols_chk:
                 assumption_col = "COALESCE(NULLIF(m.assumption_note, ''), '')"
             elif "is_assumption" in m_cols_chk:
@@ -182,14 +183,14 @@ def _build_query_line_item(fx_rate=1.0, curr_code="USD", aws_fx_rate=1.0, conn=N
             pass
     if conn is not None:
         try:
-            m_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+            m_cols = mapping_columns(conn)
             if "gcp_sku_name" in m_cols:
                 sku_name_col = "COALESCE(NULLIF(m.gcp_sku_name, ''), m.gcp_sku_id)"
             if "component" not in m_cols:
                 comp_col = "'default'"
             if "gcp_machine_type" in m_cols:
                 machine_type_col = "m.gcp_machine_type"
-            c_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+            c_cols = catalog_columns(conn)
             if "usage_type" not in c_cols:
                 usage_type_col = "''"
             if "line_item_description" not in c_cols:

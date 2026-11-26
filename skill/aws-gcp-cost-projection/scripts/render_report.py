@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from log_utils import get_logger, fatal
 from currency_utils import load_currency_info
 from config_loader import load_report_settings, load_data_config
+from schema_contract import mapping_columns, catalog_columns, projection_columns, require_columns
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _SKILL_DIR = os.environ.get("SKILL_DIR", os.path.dirname(_SCRIPTS_DIR))
@@ -592,6 +593,7 @@ def main():
     # Infrastructure baseline = everything except marketplace (the "true" IaaS+PaaS spend)
     aws_infra_baseline = aws_grand - aws_marketplace
 
+    require_columns(conn, "gcp_projection", ["gcp_projected_cost", "gcp_cost_1yr_cud", "gcp_cost_3yr_cud", "is_workload"])
     gcp_od   = (conn.execute("SELECT COALESCE(SUM(gcp_projected_cost),0) FROM gcp_projection WHERE is_workload").fetchone()[0]) * fx_rate
     # For the summary totals, rows without a CUD rate fall back to their OD cost so the
     # grand total reflects actual expected spend; per-row display uses NULL to show "—".
@@ -747,15 +749,15 @@ def main():
     # erroring, same guarded-column pattern used elsewhere in this pipeline
     # (classify_mechanics.py's billing_format, aws_normalizer.py's
     # canonical_service).
-    _m2g_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+    _m2g_cols = mapping_columns(conn)
     _machine_type_expr = (
         "ANY_VALUE(m.gcp_machine_type)" if "gcp_machine_type" in _m2g_cols else "NULL"
     )
     _has_assumption = "is_assumption" in _m2g_cols
     _assumption_expr = "BOOL_OR(COALESCE(m.is_assumption, FALSE))" if _has_assumption else "FALSE"
 
-    _c_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
-    _p_cols = {r[1].lower() for r in conn.execute("PRAGMA table_info('gcp_projection')").fetchall()}
+    _c_cols = catalog_columns(conn)
+    _p_cols = projection_columns(conn)
     _commitment_basis_expr = (
         "COALESCE(ANY_VALUE(p.commitment_basis), 'on_demand')" if "commitment_basis" in _p_cols
         else "'on_demand'"

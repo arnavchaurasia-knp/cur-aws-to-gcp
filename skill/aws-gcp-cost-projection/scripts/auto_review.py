@@ -23,6 +23,7 @@ if sys.platform == "win32":
 
 SKILL_DIR = os.environ.get("SKILL_DIR", os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(SKILL_DIR, "scripts"))
+from schema_contract import mapping_columns
 from apply_static_mappings import resolve_sku, intentional_passthrough_exclude_clause, _strict_resolve_sku
 from config_loader import load_data_config as _cfg
 
@@ -60,7 +61,7 @@ def main():
     # ------------------------------------------------------------------ #
 
     note_exclude = intentional_passthrough_exclude_clause("m.projection_note")
-    cols = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+    cols = mapping_columns(conn)
     reprice_cond = "OR m.strategy = 'needs_reprice'" + (" OR m.needs_reprice = TRUE" if "needs_reprice" in cols else "")
     illegal_rows = conn.execute(f"""
         SELECT c.aws_li_key, c.product, c.usage_type, c.operation,

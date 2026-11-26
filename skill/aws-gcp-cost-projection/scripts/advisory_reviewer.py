@@ -39,6 +39,12 @@ sys.path.insert(0, _SKILL_DIR)
 sys.path.insert(0, os.path.join(_SKILL_DIR, "scripts"))
 
 try:
+    from schema_contract import catalog_columns, projection_columns
+except Exception:
+    def catalog_columns(con): return {c[1].lower() for c in con.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+    def projection_columns(con): return {c[1].lower() for c in con.execute("PRAGMA table_info('gcp_projection')").fetchall()}
+
+try:
     from aws_normalizer import canonical_service
 except Exception:
     def canonical_service(p):
@@ -91,9 +97,9 @@ def run_advisory_review(job_dir: str) -> list[dict]:
             print("[advisory_reviewer] Missing catalog or projection table, skipping.")
             return []
 
-        c_cols = {c[1].lower() for c in con.execute("PRAGMA table_info('aws_li_catalog')").fetchall()}
+        c_cols = catalog_columns(con)
         has_aws_od = "aws_od_cost" in c_cols
-        p_cols = {c[1].lower() for c in con.execute("PRAGMA table_info('gcp_projection')").fetchall()}
+        p_cols = projection_columns(con)
 
         # Schema-adaptive column sourcing. In the real pipeline gcp_projection is
         # a VIEW that exposes neither gcp_sku_name (it lives only on the

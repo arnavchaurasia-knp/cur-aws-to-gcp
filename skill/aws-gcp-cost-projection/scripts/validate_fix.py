@@ -62,6 +62,7 @@ try:
 except Exception:
     import logging
     log = logging.getLogger("validate_fix")
+from schema_contract import mapping_columns, projection_columns, require_columns
 from apply_static_mappings import (
     intentional_passthrough_exclude_clause,
     CUD_PCT_FALLBACK as _CUD_PCT_FALLBACK,
@@ -1160,7 +1161,7 @@ def _repair_illegal_passthrough(conn):
         """, params).fetchall()
 
     restored, unresolved = 0, 0
-    cols_m = {c[1].lower() for c in conn.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+    cols_m = mapping_columns(conn)
     has_pt_reason = "passthrough_reason" in cols_m
 
     for aws_li_key, component, product, gcp_service, gcp_sku_name, has_rate in rows:
@@ -1479,7 +1480,7 @@ def check_llm_slice_invariants(con, jobdir=None):
         return targets
 
     # Check available tables and columns
-    cols_m = {c[1].lower() for c in con.execute("PRAGMA table_info('aws_li_to_gcp_li')").fetchall()}
+    cols_m = mapping_columns(con)
     has_decided_by = "decided_by" in cols_m
     has_pt_reason = "passthrough_reason" in cols_m
     tables = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
@@ -2414,6 +2415,7 @@ def main():
     # ---------- deterministic totals + verdict ----------------------------
     gcp_od = gcp_1yr = gcp_3yr = None
     if has_view:
+        require_columns(con, "gcp_projection", ["gcp_projected_cost", "gcp_cost_1yr_cud", "gcp_cost_3yr_cud", "is_workload"])
         gcp_od, gcp_1yr, gcp_3yr = con.execute("""
             SELECT ROUND(COALESCE(SUM(gcp_projected_cost),0),2),
                    ROUND(COALESCE(SUM(gcp_cost_1yr_cud),0),2),

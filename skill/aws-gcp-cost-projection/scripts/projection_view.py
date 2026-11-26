@@ -460,3 +460,8 @@ def create_projection_view(conn, dominant_region=None, assumptions=None, job_dir
         pass
 
     conn.execute(_build_projection_view_sql(clean_reg, assumptions, cat_cols, has_custom_assumptions=has_custom))
+    try:
+        from schema_contract import clear_schema_cache
+        clear_schema_cache(conn)
+    except Exception:
+        pass

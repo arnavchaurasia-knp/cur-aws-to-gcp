@@ -60,6 +60,18 @@ type phaseSpec struct {
 	// of violations). Empty CheckSQL skips the gate.
 	CheckName string `json:"check_name,omitempty"`
 	CheckSQL  string `json:"check_sql,omitempty"`
+	// RepairScripts: deterministic repair run when CheckSQL fails, BEFORE any
+	// LLM retry. Each entry is a script (same "?"-soft / "$DB" syntax as
+	// Pre/PostLLMScripts). The orchestrator runs them, then re-evaluates the
+	// gate; if the gate now passes the LLM retry is skipped entirely (no tokens,
+	// no agy idle-wait). Use this for gates whose violations are mechanically
+	// repairable — e.g. no_illegal_passthroughs, where passthrough_enforcer
+	// deterministically stamps an assumption-forced row's passthrough_reason so
+	// the gate passes. The LLM retry remains the fallback for genuinely
+	// ambiguous rows the repair could not resolve. Contrast with
+	// mapping_coverage's ensure_full_coverage backstop, which intentionally runs
+	// AFTER the LLM retry (the model should attempt real mappings first).
+	RepairScripts []string `json:"repair_scripts,omitempty"`
 }
 
 // phaseSpecs returns the six per-phase prompts + their deterministic gates.
@@ -418,6 +430,12 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"AND c.product NOT ILIKE '%NatGateway%' " +
 				"AND c.product NOT ILIKE '%Nat:%' " +
 				"AND COALESCE(m.projection_note, '') NOT ILIKE '%forced via assumption%'",
+			// Deterministic repair before any LLM retry: re-run the assumption
+			// passthrough enforcer so an operator-forced passthrough row (e.g.
+			// Inferentia under inferentia_chip_to_tpu=0) is stamped with its
+			// reason + "forced via assumption" note and the gate passes without
+			// spending an LLM retry — the common cause of this gate firing.
+			RepairScripts: []string{"?scripts/passthrough_enforcer.py $DB"},
 		},
 		{
 			Num: 4, Name: "Rate-Card Fill", Activity: "Fetching GCP rates",
@@ -428,7 +446,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"?scripts/ensure_catalog_coverage.py",
 				"?scripts/passthrough_enforcer.py $DB",
 			},
-			Script:        "scripts/apply_rates.py",
+			Script: "scripts/apply_rates.py",
 			// After rates load, run the deterministic autofixer (regional-SKU
 			// repair, CUD synthesis, per-N clamping, illegal-passthrough repair)
 			// BEFORE the gate evaluates. Previously this only ran read-only in
@@ -438,7 +456,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"?scripts/assert_pricing_matrix.py ",
 				"?scripts/render_notes.py $DB",
 			},
-			CheckName:      "no_null_projected_cost",
+			CheckName: "no_null_projected_cost",
 			// validate_fix.py already computes null_gcp_service and gcp_service_echo
 			// as hard violations in validation_report.json, but it's invoked as a
 			// SOFT ('?') script above — its own exit(1) is logged and thrown away,
@@ -592,7 +610,7 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"?scripts/render_notes.py $DB",
 				"?scripts/final_mapping_sanity_check.py $DB",
 			},
-			Script:        "scripts/render_report.py",
+			Script: "scripts/render_report.py",
 			PostLLMScripts: []string{
 				"?scripts/run_diag_summary.py $JOBDIR",
 				"?scripts/advisory_reviewer.py $JOBDIR",
@@ -1859,6 +1877,28 @@ def run_phase(ph):
                   "gate '" + str(ph.get("check_name","?")) + "' not evaluated: "
                   + str(gerr), phase=ph["num"])
         elif v > 0:
+            # Deterministic repair BEFORE any LLM retry. If the gate declares
+            # repair_scripts, run them and re-evaluate; a gate that passes after
+            # deterministic repair needs no LLM retry at all (no tokens, and no
+            # agy background-task idle-wait). Only genuinely un-repairable
+            # violations fall through to the targeted LLM retry below.
+            repair_scripts = ph.get("repair_scripts") or []
+            if repair_scripts:
+                log("gate %%s FAILED: %%d violation(s) — attempting deterministic repair" %% (ph.get("check_name","?"), v))
+                for _rcmd in repair_scripts:
+                    run_script(_rcmd)
+                vr, _rerr = gate(sql)
+                if vr == 0:
+                    log("gate %%s repaired deterministically — skipping LLM retry" %% ph.get("check_name","?"))
+                    phase_entry["duration_seconds"] = int(time.time() - _phase_start_t)
+                    phase_entry["end_time"] = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
+                    write_phase_checkpoint(ph["num"], duration=phase_entry["duration_seconds"],
+                                           phase_name=ph["name"], status="ok")
+                    return
+                if vr is not None:
+                    log("gate %%s after deterministic repair: %%d remaining — escalating to LLM retry" %% (ph.get("check_name","?"), vr))
+                    v = vr
+
             log("gate %%s FAILED: %%d violation(s) — re-running phase once" %% (ph.get("check_name","?"), v))
 
             start_pos_retry = 0

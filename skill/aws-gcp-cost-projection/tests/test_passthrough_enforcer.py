@@ -171,3 +171,74 @@ def test_passthrough_enforcer_collapses_breakdown_components(tmp_path):
     assert rows[0][1] == 1.0
     assert rows[0][2] is None
     assert rows[0][3] == "operator_assumption"
+
+
+# The exact no_illegal_passthroughs gate CheckSQL from orchestrate.go. Kept in
+# sync here so the regression test asserts the real gate the orchestrator runs.
+_NO_ILLEGAL_PASSTHROUGHS_SQL = (
+    "SELECT count(*) FROM aws_li_catalog c JOIN aws_li_to_gcp_li m USING(aws_li_key) "
+    "WHERE m.strategy = 'passthrough' "
+    "AND (c.product ILIKE '%Elastic Compute Cloud%' OR c.product ILIKE '%Elastic Block Store%' "
+    "OR c.product ILIKE '%Relational Database%' OR c.product ILIKE '%Aurora%' "
+    "OR c.product ILIKE '%ElastiCache%' OR c.product ILIKE '%Simple Storage%' "
+    "OR c.product ILIKE '%Load Balanc%') "
+    "AND c.product NOT ILIKE '%NatGateway%' AND c.product NOT ILIKE '%Nat:%' "
+    "AND COALESCE(m.projection_note, '') NOT ILIKE '%forced via assumption%'"
+)
+
+
+def test_value_sentinel_passthrough_stamped_on_pdf_row_and_gate_passes(tmp_path):
+    """Regression: an Inferentia Spot EC2 row on a PDF-style bill (empty
+    usage_type, inf1 only in `operation`) forced to passthrough by the value
+    sentinel inferentia_chip_to_tpu=0 — NOT an explicit toggle — must be stamped
+    operator_assumption by the enforcer so the no_illegal_passthroughs gate
+    passes deterministically (no LLM review-retry). This is the exact scenario
+    that silently no-op'd and forced a ~17 min Review phase before the fix.
+    """
+    con = duckdb.connect(":memory:")
+    con.execute("""
+        CREATE TABLE aws_li_catalog (
+            aws_li_key VARCHAR PRIMARY KEY, product VARCHAR, product_code VARCHAR,
+            usage_type VARCHAR, operation VARCHAR, pricing_unit VARCHAR,
+            instance_type VARCHAR, mechanic_group VARCHAR, mechanic_rule VARCHAR,
+            is_workload BOOLEAN, aws_amortized_cost DOUBLE
+        );
+        CREATE TABLE aws_li_to_gcp_li (
+            aws_li_key VARCHAR PRIMARY KEY, gcp_service VARCHAR, component VARCHAR,
+            strategy VARCHAR, unit_multiplier DOUBLE, projection_note VARCHAR,
+            passthrough_reason VARCHAR
+        );
+    """)
+    # PDF-style row: usage_type is empty; the inf1 signal lives only in operation.
+    con.execute("""
+        INSERT INTO aws_li_catalog VALUES
+            ('inf1', 'Amazon Elastic Compute Cloud running Linux/UNIX Spot Instances', NULL,
+             '', 'inf1.xlarge Linux/UNIX Spot Instance-hour in Asia Pacific (Singapore) (748.206 Hrs)',
+             'Hrs', NULL, NULL, NULL, TRUE, 59.62);
+        INSERT INTO aws_li_to_gcp_li VALUES
+            ('inf1', 'Cloud TPU', 'accelerator', 'passthrough', 1.0,
+             'Passed through at AWS cost per operator assumption override.', 'unclassified');
+    """)
+
+    # Value sentinel only — no explicit "passthrough" toggle object at all.
+    snap = {"values": {"inferentia_chip_to_tpu": 0}}
+    with open(tmp_path / "assumptions.json", "w", encoding="utf-8") as f:
+        json.dump(snap, f)
+
+    # Gate fails BEFORE enforcement (unclassified passthrough on an EC2 row).
+    assert con.execute(_NO_ILLEGAL_PASSTHROUGHS_SQL).fetchone()[0] == 1
+
+    res = enforce_assumption_passthroughs(job_dir_or_db=str(tmp_path), conn=con)
+    assert res.get("inferentia_chip_to_tpu", {}).get("rows") == 1
+
+    row = con.execute("""
+        SELECT strategy, passthrough_reason, forced_assumption_key, projection_note
+        FROM aws_li_to_gcp_li WHERE aws_li_key = 'inf1'
+    """).fetchone()
+    assert row[0] == "passthrough"
+    assert row[1] == "operator_assumption"
+    assert row[2] == "inferentia_chip_to_tpu"
+    assert "[passthrough: forced via assumption inferentia_chip_to_tpu]" in row[3]
+
+    # Gate now passes deterministically — no LLM retry needed.
+    assert con.execute(_NO_ILLEGAL_PASSTHROUGHS_SQL).fetchone()[0] == 0

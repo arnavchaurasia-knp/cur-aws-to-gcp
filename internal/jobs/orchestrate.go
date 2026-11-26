@@ -152,6 +152,9 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"?scripts/aws_normalizer.py $DB",
 				"?scripts/resolve_unknown_product_codes.py $DB",
 			},
+			// Gate rationale: Mechanical repair is impossible if the catalog has 0 rows;
+			// empty catalog indicates unrecognized or malformed bill format.
+			// OnFailurePrompt invokes the LLM format fallback.
 			CheckName: "ingestion_nonempty",
 			CheckSQL:  "SELECT (count(*)=0)::int FROM aws_li_catalog",
 		},
@@ -319,6 +322,9 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"    `misc_annotation.guardrails` (never fabricate a SKU, never alter aws_* values,\n" +
 				"    passthrough = one row, cite the mechanism). Do not exceed `confidence_max`.\n" +
 				"  • STOP after writing the 3 _mappings.json files and mapping-notes.md. Nothing else.",
+			// Gate rationale: Model-first mapping is correct to attempt semantic mapping.
+			// Post-retry backstop: ensure_full_coverage.py deterministically covers any
+			// residual unmapped rows so Phase 3 never encounters coverage holes.
 			CheckName: "mapping_coverage",
 			CheckSQL: "SELECT count(*) FROM aws_li_catalog c WHERE NOT EXISTS " +
 				"(SELECT 1 FROM aws_li_to_gcp_li m WHERE m.aws_li_key = c.aws_li_key)",
@@ -459,6 +465,13 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"?scripts/assert_pricing_matrix.py ",
 				"?scripts/render_notes.py $DB",
 			},
+			// Mechanical repair before retry: validate_fix --repair-only deterministically
+			// downgrades unreachable-rate mappings to passthrough, clears echo service names,
+			// and fixes null services; projection_view.py then refreshes gcp_projection.
+			RepairScripts: []string{
+				"?scripts/validate_fix.py --repair-only $JOBDIR",
+				"?scripts/projection_view.py $DB",
+			},
 			CheckName: "no_null_projected_cost",
 			// validate_fix.py already computes null_gcp_service and gcp_service_echo
 			// as hard violations in validation_report.json, but it's invoked as a
@@ -594,6 +607,9 @@ func phaseSpecs(inputExt string) []phaseSpec {
 				"    row is out of scope for this phase. apply_outlier_fixes.py rejects and ignores any\n" +
 				"    decision for a key outside the triaged set.\n" +
 				"  • STOP after writing outlier_fixes.json. Nothing else.",
+			// Gate rationale: Judgment gate — model evaluates flagged outliers (>3x or $0)
+			// to pick alternate SKUs or confirm valid variance. Targeted retry sends only
+			// violating rows.
 			CheckName: "over_and_under_projection",
 			// Under-projection zero-check uses a $10 materiality floor: a small
 			// row can legitimately project to $0 on GCP (usage within a free

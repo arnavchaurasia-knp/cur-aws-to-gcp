@@ -12,6 +12,7 @@ the SQL never drifts between phases.
 import os
 import re
 import sys
+import duckdb
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config_loader import load_assumptions
@@ -465,3 +466,12 @@ def create_projection_view(conn, dominant_region=None, assumptions=None, job_dir
         clear_schema_cache(conn)
     except Exception:
         pass
+
+
+if __name__ == "__main__":
+    db_path = sys.argv[1] if len(sys.argv) > 1 else "projection-audit/projection.duckdb"
+    con = duckdb.connect(db_path)
+    job_dir = os.path.dirname(os.path.dirname(os.path.abspath(db_path)))
+    create_projection_view(con, job_dir=job_dir)
+    con.close()
+    print(f"Created gcp_projection view in {db_path}")

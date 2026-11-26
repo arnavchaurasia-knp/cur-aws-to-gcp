@@ -62,7 +62,7 @@ try:
 except Exception:
     import logging
     log = logging.getLogger("validate_fix")
-from schema_contract import mapping_columns, projection_columns, require_columns
+from schema_contract import mapping_columns, projection_columns, require_columns, catalog_columns, table_columns
 from apply_static_mappings import (
     intentional_passthrough_exclude_clause,
     CUD_PCT_FALLBACK as _CUD_PCT_FALLBACK,
@@ -1073,6 +1073,9 @@ def _repair_null_sku_names(conn):
     resolve the SKU from the catalog.
     Root cause: G-4 clamp destroying deterministic mappings.
     """
+    cat_cols = catalog_columns(conn)
+    if "mechanic_group" not in cat_cols:
+        return 0
     note_exclude = intentional_passthrough_exclude_clause("m.projection_note")
     rows = conn.execute(f"""
         SELECT m.aws_li_key, cat.usage_type, cat.product
@@ -1617,7 +1620,8 @@ def check_llm_slice_invariants(con, jobdir=None):
 def main():
     args = [a for a in sys.argv[1:]]
     check_only = "--check-only" in args
-    args = [a for a in args if a != "--check-only"]
+    repair_only = "--repair-only" in args
+    args = [a for a in args if a not in ("--check-only", "--repair-only")]
     jobdir = args[0] if args else "."
     db = os.path.join(jobdir, "projection-audit", "projection.duckdb")
     if not os.path.exists(db):
@@ -1673,14 +1677,18 @@ def main():
                 f"WHERE aws_li_key IN ({','.join(['?']*len(zeroed_keys))})", zeroed_keys)
 
         # Repair instance family mismatches
-        family_mismatches = con.execute("""
-            SELECT DISTINCT m.aws_li_key, c.instance_type, c.instance_arch, m.gcp_sku_id, r.gcp_sku_name, c.gcp_region
-            FROM aws_li_to_gcp_li m
-            JOIN aws_li_catalog c USING (aws_li_key)
-            JOIN gcp_sku_rates  r ON r.gcp_sku_id = m.gcp_sku_id AND r.pricing_type='OnDemand'
-            WHERE m.strategy='break_down' AND m.component IN ('core','ram')
-              AND m.gcp_service='Compute Engine' AND c.instance_type IS NOT NULL
-        """).fetchall()
+        family_mismatches = []
+        cat_cols = catalog_columns(con)
+        rates_cols = table_columns(con, "gcp_sku_rates")
+        if "instance_type" in cat_cols and "instance_arch" in cat_cols and "gcp_sku_name" in rates_cols:
+            family_mismatches = con.execute("""
+                SELECT DISTINCT m.aws_li_key, c.instance_type, c.instance_arch, m.gcp_sku_id, r.gcp_sku_name, c.gcp_region
+                FROM aws_li_to_gcp_li m
+                JOIN aws_li_catalog c USING (aws_li_key)
+                JOIN gcp_sku_rates  r ON r.gcp_sku_id = m.gcp_sku_id AND r.pricing_type='OnDemand'
+                WHERE m.strategy='break_down' AND m.component IN ('core','ram')
+                  AND m.gcp_service='Compute Engine' AND c.instance_type IS NOT NULL
+            """).fetchall()
         
         fam_repaired = 0
         for key, itype, arch, bad_sku, sku_name, target_region in family_mismatches:
@@ -2056,6 +2064,37 @@ def main():
         except Exception as _exc:
             print(f"  autofix: detail-less downgrade failed ({_exc})", file=sys.stderr)
 
+    # AUTOFIX: null gcp_service repair for is_workload rows
+    null_service_repaired = 0
+    if not check_only:
+        try:
+            con.execute("""
+                UPDATE aws_li_to_gcp_li
+                SET gcp_service = (
+                    SELECT MAX(r.gcp_service) FROM gcp_sku_rates r WHERE r.gcp_sku_id = aws_li_to_gcp_li.gcp_sku_id
+                )
+                WHERE (gcp_service IS NULL OR TRIM(gcp_service) = '')
+                  AND gcp_sku_id IS NOT NULL
+                  AND EXISTS (SELECT 1 FROM gcp_sku_rates r WHERE r.gcp_sku_id = aws_li_to_gcp_li.gcp_sku_id AND r.gcp_service IS NOT NULL)
+            """)
+            con.execute("""
+                UPDATE aws_li_to_gcp_li
+                SET gcp_service = 'N/A (cost-parity passthrough)'
+                WHERE (gcp_service IS NULL OR TRIM(gcp_service) = '')
+                  AND strategy IN ('passthrough', 'needs_reprice')
+            """)
+            con.execute("""
+                UPDATE aws_li_to_gcp_li
+                SET strategy = 'passthrough',
+                    gcp_service = 'N/A (cost-parity passthrough)',
+                    passthrough_reason = 'unresolved_service'
+                WHERE (gcp_service IS NULL OR TRIM(gcp_service) = '')
+                  AND strategy NOT IN ('ignore')
+            """)
+            null_service_repaired = 1
+        except Exception as _exc:
+            print(f"  autofix: null gcp_service repair failed ({_exc})", file=sys.stderr)
+
     report["autofixes"] = {"per_n_multiplier_clamped": clamped,
                            "zero_throughput_info_rows_ignored": len(zeroed_keys),
                            "cud_rates_synthesized": cud_synth,
@@ -2063,6 +2102,11 @@ def main():
                            "map_no_rate_downgraded": no_rate_downgraded,
                            "echo_gcp_service_cleared": echo_cleared,
                            "detail_less_downgraded": detail_less_downgraded}
+
+    if repair_only:
+        con.close()
+        print("  autofix: repair pass completed successfully.")
+        sys.exit(0)
 
     has_view = True
     try:

@@ -85,3 +85,25 @@ def read_all(job_dir=None):
     except Exception:
         pass
     return out
+
+
+def gate_repaired(gate, phase, violations=0, source="orchestrator", job_dir=None):
+    """Emit a structured diagnostic when a gate is resolved deterministically."""
+    diag(INFO, "gate_repaired_deterministically", source,
+         f"gate '{gate}' repaired deterministically ({violations} violations resolved)",
+         rows=violations, phase=phase, detail={"gate": str(gate), "initial_violations": violations}, job_dir=job_dir)
+
+
+def gate_escalated(gate, phase, residual=0, initial=0, source="orchestrator", job_dir=None):
+    """Emit a structured diagnostic when an unresolved gate escalates to an LLM retry."""
+    diag(WARN, "gate_escalated_to_llm", source,
+         f"gate '{gate}' residual {residual} violation(s) — escalating to LLM retry",
+         rows=residual, phase=phase, detail={"gate": str(gate), "residual_violations": residual, "initial_violations": initial}, job_dir=job_dir)
+
+
+def idle_wait(phase, seconds, source="orchestrator", job_dir=None):
+    """Emit a structured diagnostic recording idle or elapsed execution seconds."""
+    diag(INFO, "phase_idle_wait_seconds", source,
+         f"phase '{phase}' elapsed {seconds}s",
+         rows=0, phase=phase, detail={"phase": str(phase), "seconds": seconds}, job_dir=job_dir)
+

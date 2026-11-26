@@ -791,6 +791,7 @@ func (w *Watcher) recordJobLogDigest(jobID, runID, jobDir string) {
 
 	var debugLines, agyLines []string
 	var errCount, warnCount int
+	var gateRepairedCount, gateRetryCount int
 	var firstError string
 
 	// 1. Scan diagnostics.jsonl first (structured, authoritative)
@@ -812,6 +813,13 @@ func (w *Watcher) recordJobLogDigest(jobID, runID, jobDir string) {
 			}
 			if err := json.Unmarshal([]byte(line), &rec); err == nil {
 				lvl := strings.ToLower(rec.Level)
+				if rec.Code == "gate_repaired_deterministically" {
+					gateRepairedCount++
+					metrics.GateRepaired.Add(1)
+				} else if rec.Code == "gate_escalated_to_llm" {
+					gateRetryCount++
+					metrics.GateLLMRetry.Add(1)
+				}
 				if lvl == "error" || lvl == "critical" {
 					errCount++
 					if firstError == "" {
@@ -895,6 +903,10 @@ func (w *Watcher) recordJobLogDigest(jobID, runID, jobDir string) {
 	} else {
 		lastLines = strings.Join(tailSource, "\n")
 	}
+	if gateRepairedCount > 0 || gateRetryCount > 0 {
+		gateSummary := fmt.Sprintf("[digest] gates: %d repaired deterministically, %d escalated to LLM retry\n", gateRepairedCount, gateRetryCount)
+		lastLines = gateSummary + lastLines
+	}
 
 	digest := db.JobLogDigest{
 		JobID:      jobID,
@@ -908,7 +920,7 @@ func (w *Watcher) recordJobLogDigest(jobID, runID, jobDir string) {
 	if err := w.db.SaveJobLogDigest(digest); err != nil {
 		slog.Warn("watcher: SaveJobLogDigest failed", "job_id", jobID, "err", err)
 	} else {
-		slog.Info("saved job log digest", "job_id", jobID, "errors", errCount, "warns", warnCount)
+		slog.Info("saved job log digest", "job_id", jobID, "errors", errCount, "warns", warnCount, "gate_repaired", gateRepairedCount, "gate_retry", gateRetryCount)
 	}
 }
 

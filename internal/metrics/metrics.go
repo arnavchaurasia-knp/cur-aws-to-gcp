@@ -13,4 +13,7 @@ var (
 
 	ValidationViolations = expvar.NewInt("validation_violations")
 	ValidationNotRun     = expvar.NewInt("validation_not_run")
+
+	GateRepaired = expvar.NewInt("gate_repaired")
+	GateLLMRetry = expvar.NewInt("gate_llm_retry")
 )

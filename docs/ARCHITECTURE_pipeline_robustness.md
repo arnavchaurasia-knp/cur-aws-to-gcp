@@ -117,29 +117,23 @@ Until (1)–(3) land, P1 is the mitigation: with deterministic repair in front o
 
 | Principle | Enforcement point | Locked by |
 |---|---|---|
-| P1 deterministic‑first | `phaseSpec.RepairScripts` + orchestrator gate path | render + py_compile tests; §2.2 |
-| P2 one passthrough resolver | `config_loader._VALUE_SENTINEL_PASSTHROUGH_KEYS`, `load_assumption_passthroughs` | `test_passthrough_enforcer`, `test_config_loader_passthrough` |
-| P3 schema contract | `advisory_reviewer` introspection (interim); `projection_columns()` (target) | `test_advisory_reviewer` |
-| P4 budgets/lifecycle | watcher + orchestrator (target) | — (open) |
+| P1 deterministic‑first | `phaseSpec.RepairScripts` + orchestrator gate path | render + py_compile tests; `test_gate_repair_audit.py` |
+| P2 one passthrough resolver | `workload_resolver.py`, `config_loader._VALUE_SENTINEL_PASSTHROUGH_KEYS`, `load_assumption_passthroughs` | `test_workload_resolution.py`, `test_passthrough_enforcer.py` |
+| P3 schema contract | `schema_contract.py` (`projection_columns()`, `require_columns()`) | `test_schema_contract.py` |
+| P4 budgets/lifecycle | watcher (`JobMaxWallClockMinutes`), synchronous helper contract | `watcher_ceiling_test.go` |
 | P5 gates verify post‑repair | AUTOFIX→GATES ordering in `validate_fix.py`; repair‑before‑retry in orchestrator | validator tests |
 
 ---
 
 ## 7. Current → Target → Migration
 
-**Done (commit on `main`, 2026‑11‑26):**
-- P1: `RepairScripts` contract + `no_illegal_passthroughs` deterministic repair before LLM retry.
-- P2: unified passthrough resolution; value‑sentinel keys honored; regression test.
-- P3: `advisory_reviewer` schema‑adaptive query.
-- (adjacent) job `updated_at` liveness via `db.TouchJob` from the watcher activity loop.
-
-**Open, in priority order:**
-1. **P4 task reaping + idle‑wait budget** (Bug A) — highest remaining leverage; deeper agy/orchestration work. Reap background tasks at phase boundaries; stop backgrounding fast helpers; give the idle‑wait its own short ceiling.
-2. **P4 whole‑job wall‑clock ceiling** — watcher‑enforced; see `WORKORDER_round2_risk_remediation.md`.
-3. **P3 `projection_columns()` contract helper** — fold every `gcp_projection`/`aws_li_to_gcp_li` reader onto one introspected schema contract.
-4. **P1 audit of remaining gates** — for each `CheckSQL` gate, classify violations as mechanically‑repairable / partly / judgment, and declare `RepairScripts` (or document why not). Candidates first: echo‑bug, no‑rate downgrade (both already have AUTOFIX in `validate_fix.py` — move the same rules in front of any orchestrator gate that can trip on them).
-
-**Migration stance:** additive and test‑gated. Each gate gains `RepairScripts` independently; the passthrough resolver and schema helper are drop‑in; the P4 lifecycle work is the one item that touches the hot orchestrator loop and lands behind its own tests.
+**All phases complete (commits on `main`, 2026‑11‑26):**
+- **WO-0 (P1/P2/P3 interim):** `RepairScripts` contract, unified passthrough resolution, advisory schema adaptation, job `updated_at` liveness.
+- **WO-1 (P4):** agy task spike documented, synchronous execution contract for helper scripts across phase prompts, watcher whole-job wall-clock ceiling (`JobMaxWallClockMinutes`).
+- **WO-2 (P3):** `schema_contract.py` single source of truth for projection, mapping, and catalog schemas; `projection_columns()` and `require_columns()` enforced across all readers.
+- **WO-3 (P1):** audit of all 5 orchestrator gates; deterministic repair for `no_null_projected_cost` (`validate_fix --repair-only`, `projection_view.py`) and documented model-first/LLM-retry rationales.
+- **WO-4 (P2):** `workload_resolver.py` unified `is_workload` and passthrough reason resolution across ingest, classifier, enforcer, and validator.
+- **WO-5 (Observability):** structured diagnostic emitters (`gate_repaired_deterministically`, `gate_escalated_to_llm`, `phase_idle_wait_seconds`), Go expvar metrics (`metrics.GateRepaired`, `metrics.GateLLMRetry`), watcher log digest gate summary, and `run_diag_summary.py` rollups.
 
 ---
 

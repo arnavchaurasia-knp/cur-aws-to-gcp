@@ -1028,7 +1028,7 @@ def write_phase_checkpoint(num, duration=None, phase_name=None, status="ok"):
     with open(ckpt_file, "w") as f:
         json.dump(data, f)
 
-def _diag(level, code, source, message, rows=0, usd=0.0, phase=None):
+def _diag(level, code, source, message, rows=0, usd=0.0, phase=None, detail=None):
     """Append a diagnostic record. Mirrors scripts/diagnostics.py's format.
     Never raises."""
     try:
@@ -1036,7 +1036,7 @@ def _diag(level, code, source, message, rows=0, usd=0.0, phase=None):
                "level": level, "code": code, "source": source,
                "phase": phase, "message": str(message)[:2000],
                "rows": int(rows or 0), "usd": round(float(usd or 0.0), 2),
-               "detail": {}}
+               "detail": detail or {}}
         log("[diag] " + level + " " + code + " :: " + str(message)[:500])
         d = os.path.join(JOB_DIR, "projection-audit")
         os.makedirs(d, exist_ok=True)
@@ -1135,6 +1135,11 @@ def run_agy(prompt, phase_label=""):
     elapsed = int(time.time() - t0)
     log("[LLM:END] phase=%%s elapsed=%%ds exit_code=%%d ts=%%s" %% (
         phase_label, elapsed, rc, time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")))
+    if elapsed > 0:
+        _diag("info", "phase_idle_wait_seconds", "orchestrator",
+              "phase '" + str(phase_label) + "' total elapsed " + str(elapsed) + "s",
+              rows=0, usd=0.0, phase=None,
+              detail={"phase_label": str(phase_label), "elapsed_seconds": elapsed})
     return rc
 
 def gate(sql):
@@ -1910,6 +1915,10 @@ def run_phase(ph):
                 vr, _rerr = gate(sql)
                 if vr == 0:
                     log("gate %%s repaired deterministically — skipping LLM retry" %% ph.get("check_name","?"))
+                    _diag("info", "gate_repaired_deterministically", "orchestrator",
+                          "gate '" + str(ph.get("check_name","?")) + "' repaired deterministically (" + str(v) + " violations resolved)",
+                          rows=v, phase=ph["num"], detail={"gate": str(ph.get("check_name","?")), "initial_violations": v})
+                    phase_entry["gate_repaired"] = True
                     phase_entry["duration_seconds"] = int(time.time() - _phase_start_t)
                     phase_entry["end_time"] = time.strftime("%%Y-%%m-%%dT%%H:%%M:%%S")
                     write_phase_checkpoint(ph["num"], duration=phase_entry["duration_seconds"],
@@ -1917,8 +1926,16 @@ def run_phase(ph):
                     return
                 if vr is not None:
                     log("gate %%s after deterministic repair: %%d remaining — escalating to LLM retry" %% (ph.get("check_name","?"), vr))
+                    _diag("warn", "gate_escalated_to_llm", "orchestrator",
+                          "gate '" + str(ph.get("check_name","?")) + "' residual " + str(vr) + " violation(s) after repair — escalating to LLM",
+                          rows=vr, phase=ph["num"], detail={"gate": str(ph.get("check_name","?")), "residual_violations": vr, "initial_violations": v})
                     v = vr
+            else:
+                _diag("warn", "gate_escalated_to_llm", "orchestrator",
+                      "gate '" + str(ph.get("check_name","?")) + "' " + str(v) + " violation(s) — escalating to LLM retry",
+                      rows=v, phase=ph["num"], detail={"gate": str(ph.get("check_name","?")), "initial_violations": v, "residual_violations": v})
 
+            phase_entry["gate_retried"] = True
             log("gate %%s FAILED: %%d violation(s) — re-running phase once" %% (ph.get("check_name","?"), v))
 
             start_pos_retry = 0

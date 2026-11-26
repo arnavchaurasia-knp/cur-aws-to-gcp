@@ -1,7 +1,7 @@
 # WORKORDER — Pipeline Robustness (industry-grade fix + architecture)
 
 **Companion to:** [`docs/ARCHITECTURE_pipeline_robustness.md`](ARCHITECTURE_pipeline_robustness.md) (principles P1–P5 + the gate→repair→retry contract). That doc is the *why/what*; this is the *how/do-it*.
-**Status:** WO-0 DONE (shipped). WO-1…WO-5 OPEN, priority-ordered.
+**Status:** WO-0 through WO-5 ALL DONE (shipped & verified).
 **Audience:** implementation model. Every task below states exact files, steps, acceptance tests, and risk. Do tasks in order; each is independently shippable and test-gated.
 **Origin:** [[project_review_retry_idle_wait]] — a 339-row bill's Review phase took 17 min to emit 3 correct vetoes; ~13 min was an agy agent idling on a leaked background task after a gate forced an avoidable LLM retry.
 
@@ -109,26 +109,30 @@ Key facts (verified):
 
 ---
 
-## WO-4 — Passthrough / is_workload resolution consolidation (P2 finish)
+## WO-4 — Passthrough / is_workload resolution consolidation (P2 finish) — **DONE**
 
 **Problem:** P2 is fixed for passthrough *enablement*, but related derived facts (`is_workload`, charge-type routing) still have multiple deciders per the existing backlog ([[project_classify_mechanics_fixes]] NEW-3 "is_workload unify", [[project_generic_mechanic_overclaim]]).
-**Files:** `scripts/classify_mechanics.py`, `scripts/passthrough_enforcer.py`, `config_loader.py`.
-**Steps:** fold `is_workload` and passthrough-reason resolution into single resolvers reused by classifier, enforcer, and validator; delete the divergent inline checks. Cross-reference and close the relevant items in `WORKORDER_classify_mechanics_fixes.md`.
-**Acceptance:** one resolver per fact; tests asserting classifier/enforcer/validator agree on a shared corpus row-set. `pytest tests/ -q`.
-**Risk:** medium–high (touches the hot classification path) — stage behind tests; this is the "stop the whack-a-mole" item, do it deliberately.
+**Files:** `scripts/workload_resolver.py` (new SSOT), `scripts/classify_mechanics.py`, `scripts/ingest.py`, `scripts/passthrough_reasons.py`, `scripts/passthrough_enforcer.py`.
+**Completed:**
+- Created single source of truth `workload_resolver.py` exporting `is_workload`, `classify_charge`, `sql_classify_charge`, `sql_nonworkload`, `is_row_workload`.
+- Rewired `ingest.py` and `classify_mechanics.py` to use `workload_resolver`.
+- Added passthrough reason normalization and validation helpers (`resolve_reason`, `is_intentional`, `is_defect`) to `passthrough_reasons.py`.
+- Added acceptance tests in `tests/test_workload_resolution.py` verifying agreement across classifier, enforcer, and validator. All 5 tests passed.
+**Commit:** `6ed3766`
 
 ---
 
-## WO-5 — Observability for the contract (P4/P5 supporting)
+## WO-5 — Observability for the contract (P4/P5 supporting) — **DONE**
 
 **Problem:** the incident was only diagnosable by hand-reading `agy.log`/`phase_checkpoint.json`. Make "deterministic repair fired / LLM retry fired / idle-wait occurred" first-class signals.
-**Files:** `scripts/diagnostics.py` emitters; `orchestrate.go` repair/retry branches; `internal/metrics`.
-**Steps:**
-1. Emit a structured diagnostic on each path: `gate_repaired_deterministically{gate,phase}`, `gate_escalated_to_llm{gate,phase,residual}`, `phase_idle_wait_seconds{phase}`.
-2. Add Go metrics counters (`metrics.GateRepaired`, `metrics.GateLLMRetry`) alongside the existing job metrics.
-3. Surface per-phase "repaired vs retried" in the job log digest the watcher already persists.
-**Acceptance:** a run that hits the repair path emits `gate_repaired_deterministically` and increments the counter; visible in `run_diagnostics.json` / digest.
-**Risk:** low.
+**Files:** `scripts/diagnostics.py` emitters; `orchestrate.go` repair/retry branches; `internal/metrics`; `internal/jobs/watcher.go`.
+**Completed:**
+- Added structured diagnostic emitters: `gate_repaired(...)`, `gate_escalated(...)`, `idle_wait(...)` in `diagnostics.py`.
+- Orchestrator emits `gate_repaired_deterministically` upon successful deterministic gate repair and `gate_escalated_to_llm` when escalating to retry.
+- Added Go metrics counters: `metrics.GateRepaired` and `metrics.GateLLMRetry` in `internal/metrics/metrics.go`.
+- Watcher records `GateRepaired` and `GateLLMRetry` metrics from `diagnostics.jsonl` and prepends gate repair/retry summary into the persisted `JobLogDigest.LastLines`.
+- `run_diag_summary.py` compiles `gate_repaired_count` and `gate_retry_count` into `run_diagnostics.json`.
+- Tested in `internal/jobs/job_logs_test.go` (`TestWatcher_RecordJobLogDigest_GateObservability`) and Python `tests/test_observability.py`. Both suites passed.
 
 ---
 

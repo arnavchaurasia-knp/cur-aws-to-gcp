@@ -3,11 +3,11 @@ package jobs_test
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/facets/cur-web/internal/db"
@@ -185,7 +185,6 @@ func TestPhase1_JobLogs_AudienceAndStreams(t *testing.T) {
 	}
 }
 
-
 func TestWatcher_RecordJobLogDigest_DualStream(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
@@ -238,6 +237,38 @@ func TestWatcher_RecordJobLogDigest_DualStream(t *testing.T) {
 	assert.Contains(t, digest.LastLines, "[SCRIPT] FATAL")
 }
 
+func TestWatcher_RecordJobLogDigest_GateObservability(t *testing.T) {
+	d, err := db.Open(":memory:")
+	require.NoError(t, err)
+	defer d.Close()
+
+	w := jobs.NewWatcher(d, nil, t.TempDir(), jobs.NotifyConfig{})
+	jobID := "00000000-0000-0000-0000-000000000100"
+	err = d.CreateJob(jobID, "bob@company.com", "Acme", ".csv", "")
+	require.NoError(t, err)
+
+	jobDir := t.TempDir()
+	auditDir := filepath.Join(jobDir, "projection-audit")
+	require.NoError(t, os.MkdirAll(auditDir, 0755))
+
+	diagContent := `{"ts":"2026-10-28T10:00:00","level":"info","code":"gate_repaired_deterministically","source":"orchestrator","message":"gate repaired"}
+{"ts":"2026-10-28T10:00:01","level":"warn","code":"gate_escalated_to_llm","source":"orchestrator","message":"gate escalated to retry"}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(auditDir, "diagnostics.jsonl"), []byte(diagContent), 0644))
+
+	agyContent := `[orchestrator] completed
+[LLM:END] phase=Review elapsed=5s exit_code=0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(jobDir, "agy.log"), []byte(agyContent), 0644))
+
+	w.RecordJobLogDigest(jobID, "initial", jobDir)
+
+	digest, err := d.GetJobLogDigest(jobID, "initial")
+	require.NoError(t, err)
+	require.NotNil(t, digest)
+
+	assert.Contains(t, digest.LastLines, "[digest] gates: 1 repaired deterministically, 1 escalated to LLM retry")
+}
 
 func TestJobLogs_TailPaginationAndDownload(t *testing.T) {
 	d, err := db.Open(":memory:")

@@ -39,12 +39,15 @@ def main():
 
     errors = [r for r in recs if r.get("level") == "error"]
     warns = [r for r in recs if r.get("level") == "warn"]
+    infos = [r for r in recs if r.get("level") == "info"]
     error_usd = sum(float(r.get("usd") or 0) for r in errors)
     pct = (100.0 * error_usd / workload) if workload else 0.0
     not_evaluated = [r for r in recs if r.get("code") in NOT_EVALUATED_CODES]
+    gate_repaired = [r for r in recs if r.get("code") == "gate_repaired_deterministically"]
+    gate_retried = [r for r in recs if r.get("code") == "gate_escalated_to_llm"]
 
     by_code = {}
-    for r in errors + warns:
+    for r in recs:
         k = r.get("code", "?")
         e = by_code.setdefault(k, {"level": r.get("level"), "count": 0,
                                    "rows": 0, "usd": 0.0, "sources": []})
@@ -60,6 +63,9 @@ def main():
         "error_pct_of_workload": round(pct, 2),
         "error_count": len(errors),
         "warn_count": len(warns),
+        "info_count": len(infos),
+        "gate_repaired_count": len(gate_repaired),
+        "gate_retry_count": len(gate_retried),
         "checks_not_evaluated": len(not_evaluated),
         "by_code": by_code,
     }

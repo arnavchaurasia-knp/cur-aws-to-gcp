@@ -1,6 +1,7 @@
 # Pipeline Robustness Architecture
 
 **Status:** living design. Principles P1–P5 are the contract; §7 tracks current → target.
+**Execution plan:** [`docs/WORKORDER_pipeline_robustness.md`](WORKORDER_pipeline_robustness.md) — task-by-task (WO-1…WO-5) with files, steps, acceptance tests.
 **Owner subsystem:** the 6‑phase projection pipeline (`internal/jobs/orchestrate.go` + `skill/aws-gcp-cost-projection/scripts/*`).
 **Origin:** diagnosed 2026‑11‑26 from a robustness run where a 339‑row bill's *Review* phase took 17 min to emit 3 (correct) veto decisions. See [[project_review_retry_idle_wait]].
 
